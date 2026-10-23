@@ -114,8 +114,8 @@ tries to bring their work to the Mac.
   [GNOME Human Interface Guidelines](https://developer.gnome.org/hig/).
 - **The Adwaita icon theme designers.** The icons here are original drawings
   made in the Adwaita style; no icon files were copied.
-- **Adwaita Sans** by the Inter Project Authors, Renzhi Li and Jamie Gravendeel,
-  bundled under the SIL Open Font License 1.1
+- **Adwaita Sans** by the Inter Project Authors, Renzhi Li, Jamie Gravendeel and
+  Florian Müllner, bundled unmodified under the SIL Open Font License 1.1
   (`src/assets/fonts/AdwaitaSans-LICENSE.txt`).
 - **[Tauri](https://tauri.app/)** and the Rust crates this app builds on,
   including [`trash`](https://crates.io/crates/trash) and
@@ -141,4 +141,12 @@ This program is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 PARTICULAR PURPOSE.
 
-The bundled Adwaita Sans font remains under the SIL Open Font License 1.1.
+### Third-party licenses
+
+- The bundled Adwaita Sans font stays under the SIL Open Font License 1.1.
+- Rust crates and npm packages are under MIT, Apache-2.0, BSD, ISC, Zlib,
+  Unicode-3.0, Unlicense or MPL-2.0 licenses, all compatible with GPL-3.0.
+- A built `.app` carries this project's license and the font license in
+  `Contents/Resources/licenses/`. If you publish built binaries, also include
+  the dependencies' notices (for example with
+  [`cargo-about`](https://github.com/EmbarkStudios/cargo-about)).

@@ -1027,6 +1027,16 @@ kbd {
   margin: 0 auto 8px;
 }
 
+.about {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: center;
+  line-height: 1.4;
+}
+.about .about-icon { margin-bottom: 0; }
+.about .dim { font-size: 9.5pt; }
+
 /* Keyboard focus ring on the cursor item (only while navigating by keyboard) */
 .view.keyboard-nav:focus .item.cursor {
   outline: 2px solid color-mix(in srgb, var(--accent-bg) 50%, transparent);

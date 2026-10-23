@@ -1805,12 +1805,18 @@ function showShortcuts(): void {
   openDialog({ heading: "Keyboard Shortcuts", extra: grid, responses: [{ id: "close", label: "Close" }], defaultResponse: "close", closeResponse: "close" });
 }
 
+declare const __APP_VERSION__: string;
+
 function showAbout(): void {
   const extra = document.createElement("div");
-  extra.style.textAlign = "center";
+  extra.className = "about";
   extra.innerHTML = `<svg class="about-icon" viewBox="0 0 64 64"><use href="#fc-folder-home"/></svg>
-    <p class="dim">A GNOME Files look-alike for macOS.<br/>Version 0.1.0</p>`;
-  openDialog({ heading: "Files", extra, responses: [{ id: "close", label: "Close" }], defaultResponse: "close", closeResponse: "close" });
+    <p>A GNOME Files look-alike for macOS.<br/>Version ${escapeHtml(__APP_VERSION__)}</p>
+    <p class="dim">An independent hobby project, not affiliated with or endorsed by the
+      GNOME Project, Apple or anyone else. Design credit goes to the GNOME Files team.</p>
+    <p class="dim">Licensed under the GNU General Public License, version 3 or later.
+      This program comes with absolutely no warranty.</p>`;
+  openDialog({ heading: "File Browser", extra, responses: [{ id: "close", label: "Close" }], defaultResponse: "close", closeResponse: "close" });
 }
 
 // ---------------------------------------------------------------------------

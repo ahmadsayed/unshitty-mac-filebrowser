@@ -46,6 +46,10 @@
     "shortDescription": "A GNOME Files-style file browser for macOS",
     "macOS": {
       "signingIdentity": "-"
+    },
+    "resources": {
+      "../LICENSE": "licenses/LICENSE",
+      "../src/assets/fonts/AdwaitaSans-LICENSE.txt": "licenses/AdwaitaSans-LICENSE.txt"
     }
   },
   "plugins": {

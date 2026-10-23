@@ -1,6 +1,11 @@
 import { defineConfig } from "vite";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
+// @ts-expect-error type error without @types/node package
+import { readFileSync } from "node:fs";
+
+// The About dialog shows the version from package.json.
+const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 const host = process.env.TAURI_DEV_HOST;
 // `npm run dev:mock` swaps the Tauri API for an in-memory fake so the UI can
 // be previewed in a plain browser.
@@ -8,6 +13,9 @@ const mock = process.env.MOCK_TAURI === "1";
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
+  define: {
+    __APP_VERSION__: JSON.stringify(version),
+  },
   resolve: mock
     ? {
         alias: {
