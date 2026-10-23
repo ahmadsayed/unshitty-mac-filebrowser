@@ -21,6 +21,8 @@ TypeScript + Vite frontend draws the GNOME-style UI.
   segment; hovering a folder opens it. Same disk moves, another disk copies;
   hold ⌥ to copy or ⌘ to move. Dropping on Trash trashes. Files dragged in from
   Finder land in the folder under the pointer
+- Thumbnails for images (HEIC too), videos, PDFs and office documents, made by
+  macOS Quick Look and cached on disk; toggle with "Show Thumbnails" in the menu
 - Rename, new folder, Move to Trash
 - Open files in their default app (double-click or Enter); `.app` bundles launch,
   with "Show Package Contents" in the context menu
@@ -56,7 +58,9 @@ exact build: after rebuilding, toggle the permission off and on again.
   with a fake in-memory filesystem (`dev/mock-tauri/`), handy for UI work without
   the Rust side. Type `/big` in the path bar for a 10,000-item folder.
 - `cd src-tauri && cargo test` runs the backend tests (listing, copy/move/trash
-  safety checks, settings files).
+  safety checks, settings files, thumbnails).
+- Thumbnails are cached in `~/Library/Caches/io.github.ahmadsayed.filebrowser/thumbnails`;
+  entries unused for 60 days are removed at startup.
 - Design notes and the implementation plan live in `docs/superpowers/`.
 
 ## Not supported yet

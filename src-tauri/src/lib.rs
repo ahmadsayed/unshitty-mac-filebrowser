@@ -1,7 +1,8 @@
 mod config_store;
 mod fs_ops;
+mod thumbnails;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 fn config_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
@@ -46,10 +47,32 @@ fn has_full_disk_access(app: tauri::AppHandle) -> bool {
         .unwrap_or(true)
 }
 
+fn thumbnail_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_cache_dir().ok().map(|d| d.join("thumbnails"))
+}
+
+/// PNG bytes of a thumbnail for `path`, at most `size` pixels square; empty
+/// when the file has no thumbnail. Raw bytes avoid JSON-encoding the image.
+#[tauri::command(async)]
+fn thumbnail(app: tauri::AppHandle, path: String, size: u32) -> tauri::ipc::Response {
+    let png = thumbnail_dir(&app)
+        .and_then(|dir| thumbnails::thumbnail(Path::new(&path), size.clamp(32, 1024), &dir).ok().flatten())
+        .and_then(|p| std::fs::read(p).ok())
+        .unwrap_or_default();
+    tauri::ipc::Response::new(png)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            // Drop thumbnails nobody has needed for two months.
+            if let Some(dir) = thumbnail_dir(app.handle()) {
+                std::thread::spawn(move || thumbnails::prune(&dir, std::time::Duration::from_secs(60 * 86_400)));
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             fs_ops::list_dir,
             fs_ops::item_counts,
@@ -65,6 +88,7 @@ pub fn run() {
             get_flag,
             set_flag,
             has_full_disk_access,
+            thumbnail,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

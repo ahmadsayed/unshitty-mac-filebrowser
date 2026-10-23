@@ -5,7 +5,8 @@ import {
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
   type Entry,
 } from "./api";
-import { entryIcon, fileTypeLabel, installIconSprite, isAppBundle, sym, type FolderKind } from "./icons";
+import { entryIcon, fileKind, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
+import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 
@@ -26,6 +27,7 @@ const prefs = {
   showHidden: false,
   gridZoom: 2,
   listZoom: 1,
+  showThumbnails: true,
 };
 
 function loadPrefs(): void {
@@ -505,13 +507,77 @@ function itemHtml(i: number): string {
   const sel = selected.has(e.path);
   if (prefs.view === "grid") {
     return `<div class="grid-item item${cls}" data-index="${i}" role="option" aria-selected="${sel}" title="${escapeHtml(e.name)}" ${pos}>` +
-      `<div class="icon">${entryIcon(e, folderKind(e))}</div>` +
+      `<div class="icon">${iconHtml(e)}</div>` +
       `<div class="name">${escapeHtml(e.name)}</div></div>`;
   }
   return `<div class="list-row item${cls}" data-index="${i}" role="option" aria-selected="${sel}" ${pos}>` +
-    `<div class="name-cell"><div class="icon">${entryIcon(e, folderKind(e))}</div><span class="name">${escapeHtml(e.name)}</span></div>` +
+    `<div class="name-cell"><div class="icon">${iconHtml(e)}</div><span class="name">${escapeHtml(e.name)}</span></div>` +
     `<span class="meta size">${sizeText(e)}</span>` +
     `<span class="meta" title="${escapeHtml(formatDateDetailed(e.modified))}">${formatDate(e.modified)}</span></div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Thumbnails (images, video, PDF and documents, via Quick Look on macOS)
+// ---------------------------------------------------------------------------
+
+const THUMB_KINDS = new Set<FileKind>(["image", "video", "pdf", "document", "spreadsheet", "presentation"]);
+
+function wantsThumb(e: Entry): boolean {
+  return prefs.showThumbnails && !e.is_dir && THUMB_KINDS.has(fileKind(e.name));
+}
+
+/** Pixel size to request: the displayed icon size at screen resolution, in a few steps. */
+function thumbSize(): number {
+  const shownAt = prefs.view === "grid" ? GRID_SIZES[prefs.gridZoom] : LIST_SIZES[prefs.listZoom];
+  const px = shownAt * devicePixelRatio;
+  return px <= 128 ? 128 : px <= 256 ? 256 : 512;
+}
+
+function thumbKeyFor(e: Entry, size = thumbSize()): string {
+  return thumbKey(e.path, e.modified, e.size, size);
+}
+
+/** The thumbnail if it's loaded, otherwise the type icon. */
+function iconHtml(e: Entry): string {
+  if (wantsThumb(e)) {
+    const url = cachedThumb(thumbKeyFor(e));
+    if (url) {
+      const link = e.is_symlink ? `<span class="emblem">${sym("emblem-symbolic-link")}</span>` : "";
+      return `<img class="thumb" src="${url}" alt="" draggable="false">${link}`;
+    }
+  }
+  return entryIcon(e, folderKind(e));
+}
+
+/** Request thumbnails for the rendered items; queued ones scrolled away are dropped. */
+function loadThumbs(start: number, end: number): void {
+  if (!prefs.showThumbnails) return;
+  const size = thumbSize();
+  const keys = new Set<string>();
+  for (let i = start; i <= end; i++) {
+    const e = shown[i];
+    if (!wantsThumb(e)) continue;
+    const key = thumbKeyFor(e, size);
+    keys.add(key);
+    if (cachedThumb(key) === undefined) {
+      requestThumb(key, e.path, size, (url) => url && patchIcon(e.path));
+    }
+  }
+  keepOnly(keys);
+}
+
+function patchIcon(path: string): void {
+  if (!itemsLayer) return;
+  for (const el of itemsLayer.children as HTMLCollectionOf<HTMLElement>) {
+    const e = shown[Number(el.dataset.index)];
+    if (e?.path === path) el.querySelector(".icon")!.innerHTML = iconHtml(e);
+  }
+}
+
+function toggleThumbnails(): void {
+  prefs.showThumbnails = !prefs.showThumbnails;
+  savePrefs();
+  renderViewKeepingScroll();
 }
 
 function itemEl(index: number): HTMLElement | null {
@@ -594,6 +660,7 @@ function renderWindow(force = false): void {
   const html: string[] = [];
   for (let i = start; i <= end; i++) html.push(itemHtml(i));
   itemsLayer.innerHTML = html.join("");
+  loadThumbs(start, end);
   if (prefs.view === "list") {
     const dirs: string[] = [];
     for (let i = start; i <= end; i++) if (shown[i].is_dir) dirs.push(shown[i].path);
@@ -1014,6 +1081,7 @@ function openViewMenu(anchor: HTMLElement): void {
 function openMainMenu(anchor: HTMLElement): void {
   openMenu(anchor, [
     { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
+    { label: "Show Thumbnails", check: prefs.showThumbnails, action: toggleThumbnails },
     { separator: true },
     { label: "Keyboard Shortcuts", action: showShortcuts },
     { label: "About Files", action: showAbout },
@@ -1341,7 +1409,7 @@ function beginDrag(e: MouseEvent): void {
   }
   const ghost = document.createElement("div");
   ghost.className = "drag-ghost";
-  ghost.innerHTML = `<div class="drag-icon">${entryIcon(sel[0], folderKind(sel[0]))}</div>` +
+  ghost.innerHTML = `<div class="drag-icon">${iconHtml(sel[0])}</div>` +
     (sel.length > 1 ? `<span class="drag-count">${sel.length}</span>` : "") +
     `<span class="drag-op" hidden>+</span>`;
   document.body.appendChild(ghost);

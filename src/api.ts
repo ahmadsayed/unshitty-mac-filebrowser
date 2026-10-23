@@ -106,3 +106,8 @@ export interface PathInfo {
 export async function pathInfo(paths: string[]): Promise<(PathInfo | null)[]> {
   return invoke<(PathInfo | null)[]>("path_info", { paths });
 }
+
+/** PNG bytes of a thumbnail no larger than `size` px; empty when there is none. */
+export async function thumbnail(path: string, size: number): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("thumbnail", { path, size });
+}
