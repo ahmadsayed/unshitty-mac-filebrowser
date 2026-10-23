@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 #[tauri::command]
@@ -131,6 +131,170 @@ pub fn item_counts(paths: Vec<String>, show_hidden: bool) -> Vec<Option<u32>> {
         .map(|p| count_items(Path::new(p), show_hidden))
         .collect()
 }
+
+// ---------------------------------------------------------------------------
+// Copy / move / trash
+//
+// Nothing here ever deletes data outright except the source of a finished
+// cross-volume move. A replaced target goes to the Trash, and the new item is
+// staged under a temporary name first so a failed copy leaves the target alone.
+// ---------------------------------------------------------------------------
+
+/// True if something (even a broken symlink) exists at `path`.
+#[tauri::command]
+pub fn path_exists(path: String) -> bool {
+    std::fs::symlink_metadata(&path).is_ok()
+}
+
+/// Absolute, symlink-resolved form of `path`, which may not exist yet.
+fn resolve(path: &Path) -> PathBuf {
+    if let Ok(p) = path.canonicalize() {
+        return p;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => resolve(parent).join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// True when `child` is `ancestor` itself or lies anywhere inside it.
+pub fn is_subpath(child: &Path, ancestor: &Path) -> bool {
+    resolve(child).starts_with(resolve(ancestor))
+}
+
+/// Copy a file, symlink or whole directory tree. Symlinks are recreated, not
+/// followed, so a link pointing at a parent can't cause an endless copy.
+pub fn copy_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(from)?;
+    if meta.file_type().is_symlink() {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(std::fs::read_link(from)?, to)?;
+        #[cfg(not(unix))]
+        std::fs::copy(from, to)?;
+    } else if meta.is_dir() {
+        std::fs::create_dir(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_recursive(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        std::fs::set_permissions(to, meta.permissions())?;
+    } else {
+        std::fs::copy(from, to)?;
+    }
+    Ok(())
+}
+
+fn remove_any(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+/// A free hidden name next to `to`, used to stage a copy before it replaces `to`.
+fn staging_path(to: &Path) -> PathBuf {
+    let dir = to.parent().unwrap_or(Path::new("/"));
+    let name = to.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let mut n = 0u32;
+    loop {
+        let candidate = dir.join(format!(".{}.filebrowser-{}-{}", name, std::process::id(), n));
+        if std::fs::symlink_metadata(&candidate).is_err() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Shared refusals for copy and move, checked before anything is written.
+fn check_transfer(from: &Path, to: &Path, overwrite: bool) -> Result<bool, String> {
+    if std::fs::symlink_metadata(from).is_err() {
+        return Err(format!("“{}” no longer exists", from.display()));
+    }
+    if resolve(from) == resolve(to) {
+        return Err("The source and destination are the same".to_string());
+    }
+    if is_subpath(to, from) {
+        return Err("Cannot copy or move a folder into itself".to_string());
+    }
+    let to_exists = std::fs::symlink_metadata(to).is_ok();
+    if to_exists {
+        if !overwrite {
+            return Err(format!("Target already exists: {}", to.display()));
+        }
+        if is_subpath(from, to) {
+            return Err("Cannot replace a folder with an item inside it".to_string());
+        }
+    }
+    Ok(to_exists)
+}
+
+/// Swap the staged item into place, sending whatever was at `to` to the Trash.
+fn replace_with_staged(staged: &Path, to: &Path) -> Result<(), String> {
+    if let Err(e) = trash::delete(to) {
+        let _ = remove_any(staged);
+        return Err(format!("Could not move the existing item to the Trash: {}", e));
+    }
+    std::fs::rename(staged, to).map_err(|e| format!("Failed to replace: {}", e))
+}
+
+fn is_cross_device(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::CrossesDevices || e.raw_os_error() == Some(18) // EXDEV
+}
+
+/// Copy `from` to `to` (recursively for folders).
+#[tauri::command]
+pub fn copy_entry(from: String, to: String, overwrite: bool) -> Result<(), String> {
+    let (from, to) = (Path::new(&from), Path::new(&to));
+    let replacing = check_transfer(from, to, overwrite)?;
+    let dest = if replacing { staging_path(to) } else { to.to_path_buf() };
+    if let Err(e) = copy_recursive(from, &dest) {
+        let _ = remove_any(&dest);
+        return Err(format!("Failed to copy: {}", e));
+    }
+    if replacing {
+        replace_with_staged(&dest, to)?;
+    }
+    Ok(())
+}
+
+/// Move `from` to `to`: a rename on the same volume, copy-then-delete across volumes.
+#[tauri::command]
+pub fn move_entry(from: String, to: String, overwrite: bool) -> Result<(), String> {
+    let (from, to) = (Path::new(&from), Path::new(&to));
+    let replacing = check_transfer(from, to, overwrite)?;
+    let dest = if replacing { staging_path(to) } else { to.to_path_buf() };
+    match std::fs::rename(from, &dest) {
+        Ok(()) => {}
+        Err(e) if is_cross_device(&e) => {
+            if let Err(e) = copy_recursive(from, &dest) {
+                let _ = remove_any(&dest);
+                return Err(format!("Failed to move: {}", e));
+            }
+            if replacing {
+                replace_with_staged(&dest, to)?;
+            }
+            // Only now, with the copy complete, is the source removed.
+            return remove_any(from).map_err(|e| format!("Moved, but could not remove the original: {}", e));
+        }
+        Err(e) => return Err(format!("Failed to move: {}", e)),
+    }
+    if replacing {
+        replace_with_staged(&dest, to)?;
+    }
+    Ok(())
+}
+
+/// Move `path` to the system Trash (recoverable).
+#[tauri::command]
+pub fn trash_entry(path: String) -> Result<(), String> {
+    if std::fs::symlink_metadata(&path).is_err() {
+        return Err(format!("“{}” no longer exists", path));
+    }
+    trash::delete(&path).map_err(|e| format!("Failed to move to Trash: {}", e))
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -287,5 +451,186 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err();
         assert!(msg.contains("already exists"), "unexpected error: {}", msg);
+    }
+
+    // ----- copy / move / trash tests -----
+
+    fn s(p: &Path) -> String {
+        p.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn copy_entry_copies_file() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        fs::write(&src, "hello").unwrap();
+
+        copy_entry(s(&src), s(&dst), false).unwrap();
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "hello");
+        assert!(src.exists());
+    }
+
+    #[test]
+    fn copy_entry_copies_dir_tree() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("tree");
+        fs::create_dir_all(src.join("sub/deeper")).unwrap();
+        fs::write(src.join("top.txt"), "1").unwrap();
+        fs::write(src.join("sub/deeper/leaf.txt"), "2").unwrap();
+        let dst = dir.path().join("copy");
+
+        copy_entry(s(&src), s(&dst), false).unwrap();
+        assert_eq!(fs::read_to_string(dst.join("top.txt")).unwrap(), "1");
+        assert_eq!(fs::read_to_string(dst.join("sub/deeper/leaf.txt")).unwrap(), "2");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_entry_recreates_symlinks_instead_of_following() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("tree");
+        fs::create_dir(&src).unwrap();
+        // A link back to its own parent would recurse forever if followed.
+        std::os::unix::fs::symlink(&src, src.join("loop")).unwrap();
+        let dst = dir.path().join("copy");
+
+        copy_entry(s(&src), s(&dst), false).unwrap();
+        let meta = fs::symlink_metadata(dst.join("loop")).unwrap();
+        assert!(meta.file_type().is_symlink());
+    }
+
+    #[test]
+    fn copy_entry_refuses_existing_target_without_overwrite() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        fs::write(&src, "new").unwrap();
+        fs::write(&dst, "old").unwrap();
+
+        let err = copy_entry(s(&src), s(&dst), false).unwrap_err();
+        assert!(err.contains("already exists"), "unexpected error: {}", err);
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "old");
+    }
+
+    #[test]
+    fn copy_entry_overwrites_when_asked() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        fs::write(&src, "new").unwrap();
+        fs::write(&dst, "old").unwrap();
+
+        copy_entry(s(&src), s(&dst), true).unwrap();
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "new");
+        // No staging leftovers in the folder.
+        let names: Vec<_> = fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names.len(), 2, "unexpected entries: {:?}", names);
+    }
+
+    #[test]
+    fn is_subpath_detects_nesting() {
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a");
+        fs::create_dir(&a).unwrap();
+        assert!(is_subpath(&a.join("b/c"), &a));
+        assert!(is_subpath(&a, &a));
+        assert!(!is_subpath(&dir.path().join("ab"), &a));
+        assert!(!is_subpath(dir.path(), &a));
+    }
+
+    #[test]
+    fn copy_and_move_refuse_into_itself() {
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a");
+        fs::create_dir(&a).unwrap();
+        let inside = a.join("a");
+
+        assert!(copy_entry(s(&a), s(&inside), false).is_err());
+        assert!(move_entry(s(&a), s(&inside), false).is_err());
+        assert!(!inside.exists());
+    }
+
+    #[test]
+    fn copy_and_move_refuse_same_path() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("f.txt");
+        fs::write(&f, "x").unwrap();
+
+        assert!(copy_entry(s(&f), s(&f), true).is_err());
+        assert!(move_entry(s(&f), s(&f), true).is_err());
+        assert_eq!(fs::read_to_string(&f).unwrap(), "x");
+    }
+
+    #[test]
+    fn replacing_a_folder_with_its_own_child_is_refused() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("p");
+        fs::create_dir_all(parent.join("child")).unwrap();
+
+        assert!(copy_entry(s(&parent.join("child")), s(&parent), true).is_err());
+        assert!(move_entry(s(&parent.join("child")), s(&parent), true).is_err());
+        assert!(parent.join("child").exists());
+    }
+
+    #[test]
+    fn move_entry_moves_file_and_removes_source() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        fs::create_dir(dir.path().join("dest")).unwrap();
+        let dst = dir.path().join("dest/a.txt");
+        fs::write(&src, "hello").unwrap();
+
+        move_entry(s(&src), s(&dst), false).unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "hello");
+    }
+
+    #[test]
+    fn move_entry_refuses_existing_target_without_overwrite() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        fs::write(&src, "new").unwrap();
+        fs::write(&dst, "old").unwrap();
+
+        assert!(move_entry(s(&src), s(&dst), false).is_err());
+        assert!(src.exists());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "old");
+    }
+
+    #[test]
+    fn move_entry_overwrites_when_asked() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        fs::write(&src, "new").unwrap();
+        fs::write(&dst, "old").unwrap();
+
+        move_entry(s(&src), s(&dst), true).unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "new");
+    }
+
+    #[test]
+    fn trash_entry_removes_file_from_its_location() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("trash-me.txt");
+        fs::write(&f, "bye").unwrap();
+
+        trash_entry(s(&f)).unwrap();
+        assert!(!f.exists());
+    }
+
+    #[test]
+    fn operations_on_vanished_path_return_err() {
+        let dir = tempdir().unwrap();
+        let gone = dir.path().join("gone");
+        let dst = dir.path().join("dst");
+
+        assert!(copy_entry(s(&gone), s(&dst), false).is_err());
+        assert!(move_entry(s(&gone), s(&dst), false).is_err());
+        assert!(trash_entry(s(&gone)).is_err());
+        assert!(!path_exists(s(&gone)));
     }
 }
