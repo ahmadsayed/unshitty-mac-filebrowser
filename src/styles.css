@@ -1,116 +1,332 @@
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
+/* =========================================================
+   Adwaita-inspired styles for the File Browser
+   ========================================================= */
 
-.logo.typescript:hover {
-  filter: drop-shadow(0 0 2em #2d79c7);
-}
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
+/* ----- Reset / root ----- */
+*, *::before, *::after {
+  box-sizing: border-box;
   margin: 0;
-  padding-top: 10vh;
+  padding: 0;
+}
+
+:root {
+  /* Adwaita-ish neutral palette */
+  --bg:             #f6f5f4;
+  --sidebar-bg:     #ededec;
+  --sidebar-border: #d3d0cb;
+  --toolbar-bg:     #ffffff;
+  --toolbar-border: #e0ddd8;
+  --text:           #3d3846;
+  --text-dim:       #8a8490;
+  --accent:         #3584e4;
+  --accent-text:    #ffffff;
+  --hover:          #e0ddd8;
+  --active-bg:      #dddad5;
+  --row-hover:      #f0eeeb;
+  --error:          #c01c28;
+
+  font-family: "Cantarell", "Source Sans Pro", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  background-color: var(--bg);
+}
+
+body {
+  overflow: hidden;
+  height: 100vh;
+}
+
+/* ----- App shell layout ----- */
+.app-shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ----- Sidebar ----- */
+.sidebar {
+  width: 200px;
+  min-width: 160px;
+  max-width: 280px;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--sidebar-border);
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  text-align: center;
+  overflow-y: auto;
+  user-select: none;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
+.sidebar-header {
+  padding: 10px 12px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
 }
 
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
+.sidebar-places {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 6px;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  transition: background 0.1s;
 }
 
-a:hover {
-  color: #535bf2;
+.sidebar-item:hover {
+  background: var(--hover);
 }
 
-h1 {
+.sidebar-item.active {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.sidebar-icon {
+  font-size: 16px;
+  width: 20px;
   text-align: center;
+  flex-shrink: 0;
 }
 
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
+.sidebar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ----- Main area ----- */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* ----- Toolbar ----- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--toolbar-border);
+  min-height: 44px;
+}
+
+.toolbar-nav {
+  display: flex;
+  gap: 2px;
+}
+
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--toolbar-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.toolbar-btn:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--sidebar-border);
+}
+
+.toolbar-btn:active:not(:disabled) {
+  background: var(--active-bg);
+}
+
+.toolbar-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.toolbar-path {
+  flex: 1;
+  overflow: hidden;
+}
+
+.path-label {
+  font-size: 13px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: 2px;
+}
+
+/* ----- Listing container ----- */
+.listing-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.listing {
+  min-height: 100%;
+}
+
+/* ----- Error / empty states ----- */
+.listing-error {
+  padding: 24px;
+  color: var(--error);
+  font-size: 13px;
+}
+
+.listing-empty {
+  padding: 48px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+/* ----- List view table ----- */
+.listing-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.listing-table thead tr {
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--toolbar-border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.listing-table th {
+  padding: 6px 12px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.listing-table tbody tr {
+  border-bottom: 1px solid var(--toolbar-border);
+  cursor: default;
+  transition: background 0.08s;
+}
+
+.listing-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.listing-table tbody tr:hover {
+  background: var(--row-hover);
+}
+
+.listing-table td {
+  padding: 5px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+}
+
+.col-icon {
+  width: 32px;
+  text-align: center;
+  font-size: 16px;
+  padding: 4px 6px !important;
+}
+
+.col-name {
+  min-width: 160px;
+  width: 55%;
   font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
 }
 
-button {
+.col-size {
+  width: 90px;
+  text-align: right;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.col-modified {
+  width: 130px;
+  color: var(--text-dim);
+}
+
+/* Double-click cursor for directories */
+.entry-row[data-is-dir="true"] {
   cursor: pointer;
 }
 
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
+/* ----- Icon view grid ----- */
+.icon-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 16px;
+  align-content: flex-start;
 }
 
-#greet-input {
-  margin-right: 5px;
+.icon-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 88px;
+  padding: 8px 6px;
+  border-radius: 8px;
+  cursor: default;
+  transition: background 0.1s;
+  overflow: hidden;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
+.icon-item:hover {
+  background: var(--hover);
+}
 
-  a:hover {
-    color: #24c8db;
-  }
+.icon-item[data-is-dir="true"] {
+  cursor: pointer;
+}
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
-  }
-  button:active {
-    background-color: #0f0f0f69;
-  }
+.icon-item-icon {
+  font-size: 32px;
+  line-height: 1.2;
+  margin-bottom: 4px;
+}
+
+.icon-item-name {
+  font-size: 12px;
+  text-align: center;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-height: 2.8em;
+  color: var(--text);
 }
