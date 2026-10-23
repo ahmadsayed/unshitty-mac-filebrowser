@@ -1078,3 +1078,60 @@ kbd {
 }
 
 .banner .btn { background: color-mix(in srgb, currentColor 10%, transparent); }
+
+/* =============================================================================
+   DRAG AND DROP
+   ============================================================================= */
+
+.dragging, .dragging * { cursor: inherit !important; }
+
+.item, .sidebar-row, .crumb { -webkit-user-drag: none; }
+
+.drag-ghost {
+  position: fixed;
+  z-index: 300;
+  width: 56px;
+  height: 56px;
+  pointer-events: none;
+  opacity: 0.85;
+}
+.drag-ghost .drag-icon { width: 100%; height: 100%; position: relative; }
+
+.drag-count,
+.drag-op {
+  position: absolute;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  font-size: 9pt;
+  font-weight: 700;
+  background: var(--accent-bg);
+  color: var(--accent-fg);
+  box-shadow: 0 1px 3px rgba(0, 0, 6, 0.3);
+}
+.drag-count { right: -8px; top: -6px; }
+.drag-op { left: -8px; bottom: -4px; font-size: 12pt; }
+
+.item.drop-target {
+  background: var(--item-selected-solid);
+  outline: 2px solid var(--accent-bg);
+  outline-offset: -2px;
+}
+
+.view-overlay.drop-target::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 2px var(--accent-bg);
+}
+
+.sidebar-row.drop-target,
+.crumb.drop-target {
+  background: var(--item-selected);
+  box-shadow: inset 0 0 0 2px var(--accent-bg);
+}

@@ -17,6 +17,10 @@ TypeScript + Vite frontend draws the GNOME-style UI.
   current folder
 - Copy, cut, paste with Replace / Skip / Keep Both on name clashes; replacing
   sends the old item to the Trash, never deletes it
+- Drag and drop: drag items onto a folder, a sidebar entry or a path-bar
+  segment; hovering a folder opens it. Same disk moves, another disk copies;
+  hold ⌥ to copy or ⌘ to move. Dropping on Trash trashes. Files dragged in from
+  Finder land in the folder under the pointer
 - Rename, new folder, Move to Trash
 - Open files in their default app (double-click or Enter); `.app` bundles launch,
   with "Show Package Contents" in the context menu
@@ -58,7 +62,8 @@ exact build: after rebuilding, toggle the permission off and on again.
 ## Not supported yet
 
 Recent, Starred and Network are placeholders; there is no Undo after Move to
-Trash, no drag and drop, no tabs, and no disk-wide search.
+Trash, no dragging files out of the app into Finder or other apps, no tabs,
+and no disk-wide search.
 
 ## Credits
 

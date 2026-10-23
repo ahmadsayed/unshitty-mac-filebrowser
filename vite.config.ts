@@ -14,6 +14,7 @@ export default defineConfig(() => ({
           "@tauri-apps/api/core": "/dev/mock-tauri/core.ts",
           "@tauri-apps/api/path": "/dev/mock-tauri/path.ts",
           "@tauri-apps/plugin-opener": "/dev/mock-tauri/opener.ts",
+          "@tauri-apps/api/webview": "/dev/mock-tauri/webview.ts",
         },
       }
     : undefined,

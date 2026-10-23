@@ -148,6 +148,39 @@ pub fn path_exists(path: String) -> bool {
     std::fs::symlink_metadata(&path).is_ok()
 }
 
+#[derive(Debug, Serialize, PartialEq)]
+pub struct PathInfo {
+    pub is_dir: bool,
+    /// Filesystem the path lives on; equal ids mean a move is a cheap rename.
+    pub device: u64,
+}
+
+#[cfg(unix)]
+fn device_id(meta: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    meta.dev()
+}
+
+#[cfg(not(unix))]
+fn device_id(_: &std::fs::Metadata) -> u64 {
+    0
+}
+
+/// Kind and filesystem of each path (following symlinks); `None` if it's gone.
+/// Used for drag and drop: files dropped from Finder arrive as bare paths.
+#[tauri::command(async)]
+pub fn path_info(paths: Vec<String>) -> Vec<Option<PathInfo>> {
+    paths
+        .iter()
+        .map(|p| {
+            std::fs::metadata(p).ok().map(|m| PathInfo {
+                is_dir: m.is_dir(),
+                device: device_id(&m),
+            })
+        })
+        .collect()
+}
+
 /// Absolute, symlink-resolved form of `path`, which may not exist yet.
 fn resolve(path: &Path) -> PathBuf {
     if let Ok(p) = path.canonicalize() {
@@ -622,6 +655,23 @@ mod tests {
 
         trash_entry(s(&f)).unwrap();
         assert!(!f.exists());
+    }
+
+    #[test]
+    fn path_info_reports_kind_device_and_missing() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("f.txt");
+        fs::write(&f, "x").unwrap();
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+
+        let info = path_info(vec![s(&f), s(&sub), s(&dir.path().join("missing"))]);
+        let file = info[0].as_ref().unwrap();
+        let folder = info[1].as_ref().unwrap();
+        assert!(!file.is_dir);
+        assert!(folder.is_dir);
+        assert_eq!(file.device, folder.device);
+        assert!(info[2].is_none());
     }
 
     #[test]

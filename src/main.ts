@@ -1,7 +1,8 @@
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
   listDir, makeDir, renameEntry, itemCounts, copyEntry, moveEntry, trashEntry, pathExists,
-  openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess,
+  openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
   type Entry,
 } from "./api";
 import { entryIcon, fileTypeLabel, installIconSprite, isAppBundle, sym, type FolderKind } from "./icons";
@@ -872,15 +873,19 @@ function onViewMouseDown(e: MouseEvent): void {
   } else if (!selected.has(shown[index].path)) {
     selectOnly(index);
   } else {
-    // Clicking inside an existing multi-selection narrows it on release.
+    // Clicking inside an existing multi-selection narrows it on release,
+    // unless the press turns into a drag of the whole selection.
     const narrow = () => {
       selectOnly(index);
       viewEl.removeEventListener("mouseup", narrow);
+      pendingNarrow = null;
     };
+    pendingNarrow = narrow;
     viewEl.addEventListener("mouseup", narrow);
     anchorIndex = cursorIndex = index;
     updateSelection();
   }
+  if (selected.has(shown[index].path)) armDrag(e);
 }
 
 function startRubberband(start: MouseEvent, additive: boolean): void {
@@ -1091,17 +1096,21 @@ async function freeCopyName(dir: string, name: string, isDir: boolean): Promise<
   }
 }
 
-let pasting = false;
+let transferring = false;
 
-async function paste(destDir: string): Promise<void> {
-  if (!clipboard || pasting || isPseudo(destDir)) return;
-  pasting = true;
-  const { paths, dirs, mode } = clipboard;
-  const verb = mode === "cut" ? "Moving" : "Copying";
+/**
+ * Copy or move `paths` into `destDir`, asking about name clashes. Shared by
+ * paste and drag and drop; `move(path)` says whether that item is moved.
+ * Resolves true when every item was handled (none failed, nothing cancelled).
+ */
+async function runTransfer(paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string): Promise<boolean> {
+  if (transferring || isPseudo(destDir)) return false;
+  transferring = true;
   let progressShown = false;
 
-  const pasted: string[] = [];
+  const done: string[] = [];
   const errors: string[] = [];
+  let anyMove = false;
   let cancelled = false;
   let applyToAll: ConflictChoice | null = null;
 
@@ -1109,13 +1118,15 @@ async function paste(destDir: string): Promise<void> {
     const from = paths[i];
     const name = basename(from);
     const isDir = dirs.has(from);
+    const moving = move(from);
+    anyMove ||= moving;
     let to = joinPath(destDir, name);
     let overwrite = false;
 
     if (from === to) {
-      // Pasting a copy into its own folder makes a duplicate, as in GNOME Files;
-      // cutting and pasting into the same folder does nothing.
-      if (mode === "cut") continue;
+      // A copy into its own folder makes a duplicate, as in GNOME Files;
+      // moving into the same folder does nothing.
+      if (moving) continue;
       to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
     } else if (await pathExists(to)) {
       let choice: ConflictChoice | null = applyToAll;
@@ -1136,29 +1147,39 @@ async function paste(destDir: string): Promise<void> {
     // Only a slow transfer gets a progress toast, never one waiting on the dialog.
     const slow = setTimeout(() => {
       progressShown = true;
-      showToast(`${verb} “${name}”…`, { timeout: 600_000 });
+      showToast(`${moving ? "Moving" : "Copying"} “${name}”…`, { timeout: 600_000 });
     }, 600);
     try {
-      if (mode === "cut") await moveEntry(from, to, overwrite);
+      if (moving) await moveEntry(from, to, overwrite);
       else await copyEntry(from, to, overwrite);
-      pasted.push(to);
+      done.push(to);
     } catch (err) {
       errors.push(`“${name}”: ${cleanError(err)}`);
     }
     clearTimeout(slow);
   }
 
-  pasting = false;
-  // A cut is only consumed once every item has been dealt with.
-  if (mode === "cut" && !cancelled && errors.length === 0) clipboard = null;
-
+  transferring = false;
+  const verb = anyMove ? "move" : "copy";
   if (errors.length) {
-    showToast(errors.length === 1 ? `Could not paste ${errors[0]}` : `Could not paste ${errors.length} items. ${errors[0]}`);
+    showToast(errors.length === 1 ? `Could not ${verb} ${errors[0]}` : `Could not ${verb} ${errors.length} items. ${errors[0]}`);
   } else if (progressShown) {
     document.querySelectorAll(".toast").forEach((t) => t.remove());
   }
-  if (destDir === location) await reload(pasted.length ? pasted : undefined);
+  if (destDir === location) await reload(done.length ? done : undefined);
   else await reload();
+  return !cancelled && errors.length === 0;
+}
+
+async function paste(destDir: string): Promise<void> {
+  if (!clipboard) return;
+  const { paths, dirs, mode } = clipboard;
+  const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir);
+  // A cut is only consumed once every item has been dealt with.
+  if (mode === "cut" && complete && clipboard?.paths === paths) {
+    clipboard = null;
+    refreshCutMarks();
+  }
 }
 
 function inTrash(): boolean {
@@ -1166,25 +1187,311 @@ function inTrash(): boolean {
 }
 
 async function trashSelection(): Promise<void> {
-  const sel = selectedEntries();
-  if (sel.length === 0 || inTrash()) return;
+  if (inTrash()) return;
+  await trashPaths(selectedEntries().map((e) => e.path));
+}
+
+async function trashPaths(paths: string[]): Promise<void> {
+  if (paths.length === 0) return;
   const errors: string[] = [];
   let done = 0;
-  for (const e of sel) {
+  for (const p of paths) {
     try {
-      await trashEntry(e.path);
+      await trashEntry(p);
       done++;
     } catch (err) {
-      errors.push(`“${e.name}”: ${cleanError(err)}`);
+      errors.push(`“${basename(p)}”: ${cleanError(err)}`);
     }
   }
   if (clipboard) {
-    clipboard.paths = clipboard.paths.filter((p) => !sel.some((e) => e.path === p));
+    clipboard.paths = clipboard.paths.filter((p) => !paths.includes(p));
     if (clipboard.paths.length === 0) clipboard = null;
   }
   if (errors.length) showToast(`Could not move ${errors[0]} to the Trash`);
-  else showToast(done === 1 ? `“${sel[0].name}” moved to trash` : `${done} items moved to trash`);
+  else showToast(done === 1 ? `“${basename(paths[0])}” moved to trash` : `${done} items moved to trash`);
   await reload([]);
+}
+
+// ---------------------------------------------------------------------------
+// Drag and drop
+//
+// Dragging inside the window is done with mouse events rather than HTML5
+// drag and drop, which WKWebView handles unreliably. Files dragged in from
+// Finder arrive through Tauri's native drag-drop events instead.
+// ---------------------------------------------------------------------------
+
+type DropOp = "move" | "copy" | "trash";
+
+interface DropTarget {
+  dir: string;
+  el: HTMLElement | null;
+}
+
+/** Where a drop at client point (x, y) lands, ignoring the dragged `sources`. */
+function dropTargetAt(x: number, y: number, sources: string[]): DropTarget | null {
+  const el = document.elementFromPoint(x, y) as HTMLElement | null;
+  if (!el) return null;
+  const item = el.closest<HTMLElement>(".item");
+  if (item && viewEl.contains(item)) {
+    const e = shown[Number(item.dataset.index)];
+    if (e?.is_dir && !isAppBundle(e) && !sources.includes(e.path)) return { dir: e.path, el: item };
+  }
+  const row = el.closest<HTMLElement>(".sidebar-row");
+  if (row) return isPseudo(row.dataset.location!) ? null : { dir: row.dataset.location!, el: row };
+  const crumb = el.closest<HTMLElement>(".crumb");
+  if (crumb) return crumb.dataset.path && !isPseudo(crumb.dataset.path) ? { dir: crumb.dataset.path, el: crumb } : null;
+  // Anywhere else in the view means the folder being shown.
+  if (el.closest(".view-overlay") && !isPseudo(location) && listingError === null) {
+    return { dir: location, el: $(".view-overlay") };
+  }
+  return null;
+}
+
+/** The volume a path is on, for a quick guess before device ids arrive. */
+function volumeRoot(path: string): string {
+  return path.match(/^\/Volumes\/[^/]+/)?.[0] ?? "/";
+}
+
+/** The operation a drop would do, or null if it would do nothing useful. */
+function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, devices?: Map<string, number>): DropOp | null {
+  const dir = target.dir;
+  // Into itself or its own subfolder: refused.
+  if (sources.some((src) => dir === src || dir.startsWith(src + "/"))) return null;
+  if (dir === trashPath) return inTrash() ? null : "trash";
+  const forceCopy = isMac ? mods.altKey : mods.ctrlKey;
+  const forceMove = isMac ? mods.metaKey : mods.shiftKey;
+  // Moving items to the folder they are already in does nothing.
+  const allHere = sources.every((src) => parentOf(src) === dir);
+  if (forceCopy) return "copy";
+  if (allHere) return null;
+  if (forceMove) return "move";
+  // Same filesystem moves, another one copies (GNOME and Finder agree here).
+  const same = (src: string) => {
+    const a = devices?.get(src), b = devices?.get(dir);
+    return a !== undefined && b !== undefined ? a === b : volumeRoot(src) === volumeRoot(dir);
+  };
+  return sources.every(same) ? "move" : "copy";
+}
+
+async function deviceMap(paths: string[]): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  try {
+    const info = await pathInfo(paths);
+    paths.forEach((p, i) => info[i] && map.set(p, info[i]!.device));
+  } catch {
+    /* fall back to the volume guess */
+  }
+  return map;
+}
+
+/** Run a drop exactly as its cursor showed: trash, copy or move. */
+async function performDrop(sources: string[], dirs: Set<string>, target: DropTarget, op: DropOp): Promise<void> {
+  if (op === "trash") return trashPaths(sources);
+  await runTransfer(sources, dirs, () => op === "move", target.dir);
+}
+
+let dropHighlight: HTMLElement | null = null;
+
+function setDropHighlight(el: HTMLElement | null): void {
+  if (dropHighlight === el) return;
+  dropHighlight?.classList.remove("drop-target");
+  dropHighlight = el;
+  el?.classList.add("drop-target");
+}
+
+interface DragState {
+  paths: string[];
+  dirs: Set<string>;
+  ghost: HTMLElement;
+  target: DropTarget | null;
+  op: DropOp | null;
+  x: number;
+  y: number;
+  mods: { altKey: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean };
+  devices: Map<string, number>;
+  springTimer: number;
+  scrollTimer: number;
+}
+
+let drag: DragState | null = null;
+/** Set while a press on a selected item may still narrow the selection on release. */
+let pendingNarrow: (() => void) | null = null;
+
+/** After a press on an item, start dragging once the pointer moves a few pixels. */
+function armDrag(start: MouseEvent): void {
+  const onMove = (e: MouseEvent) => {
+    if (Math.hypot(e.clientX - start.clientX, e.clientY - start.clientY) < 5) return;
+    cleanup();
+    beginDrag(e);
+  };
+  const cleanup = () => {
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", cleanup);
+  };
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", cleanup);
+}
+
+function beginDrag(e: MouseEvent): void {
+  const sel = selectedEntries();
+  if (sel.length === 0) return;
+  if (pendingNarrow) {
+    viewEl.removeEventListener("mouseup", pendingNarrow);
+    pendingNarrow = null;
+  }
+  const ghost = document.createElement("div");
+  ghost.className = "drag-ghost";
+  ghost.innerHTML = `<div class="drag-icon">${entryIcon(sel[0], folderKind(sel[0]))}</div>` +
+    (sel.length > 1 ? `<span class="drag-count">${sel.length}</span>` : "") +
+    `<span class="drag-op" hidden>+</span>`;
+  document.body.appendChild(ghost);
+  document.documentElement.classList.add("dragging");
+
+  const paths = sel.map((x) => x.path);
+  drag = {
+    paths,
+    dirs: new Set(sel.filter((x) => x.is_dir).map((x) => x.path)),
+    ghost,
+    target: null,
+    op: null,
+    x: e.clientX,
+    y: e.clientY,
+    mods: { altKey: e.altKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey },
+    devices: new Map(),
+    springTimer: 0,
+    scrollTimer: window.setInterval(autoScrollDuringDrag, 50),
+  };
+  deviceMap(paths).then((m) => {
+    if (drag?.paths === paths) for (const [k, v] of m) drag.devices.set(k, v);
+  });
+
+  window.addEventListener("mousemove", onDragMove);
+  window.addEventListener("mouseup", onDragEnd);
+  window.addEventListener("keydown", onDragKey, true);
+  window.addEventListener("keyup", onDragKey, true);
+  updateDrag();
+}
+
+function onDragMove(e: MouseEvent): void {
+  if (!drag) return;
+  drag.x = e.clientX;
+  drag.y = e.clientY;
+  drag.mods = { altKey: e.altKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey };
+  updateDrag();
+}
+
+function onDragKey(e: KeyboardEvent): void {
+  if (!drag) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.type === "keydown" && e.key === "Escape") return endDrag(false);
+  drag.mods = { altKey: e.altKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey };
+  updateDrag();
+}
+
+/** Recompute target, operation, ghost and cursor for the current pointer. */
+function updateDrag(): void {
+  if (!drag) return;
+  const d = drag;
+  d.ghost.style.left = `${d.x + 4}px`;
+  d.ghost.style.top = `${d.y + 4}px`;
+  const target = dropTargetAt(d.x, d.y, d.paths);
+  // Fetch the target's device id once, for an exact move/copy decision.
+  if (target && !d.devices.has(target.dir)) {
+    d.devices.set(target.dir, -1);
+    deviceMap([target.dir]).then((m) => {
+      if (drag === d && m.has(target.dir)) {
+        d.devices.set(target.dir, m.get(target.dir)!);
+        updateDrag();
+      }
+    });
+  }
+  const known = new Map([...d.devices].filter(([, v]) => v !== -1));
+  const op = target ? dropOp(target, d.paths, d.mods, known) : null;
+
+  // Hovering a folder for a moment opens it, so the drop can go deeper.
+  if (target?.dir !== d.target?.dir) {
+    clearTimeout(d.springTimer);
+    if (target && op && op !== "trash" && target.dir !== location && target.el !== $(".view-overlay")) {
+      d.springTimer = window.setTimeout(() => {
+        if (drag === d && d.target?.dir === target.dir) navigate(target.dir).then(() => updateDrag());
+      }, 1000);
+    }
+  }
+  d.target = target;
+  d.op = op;
+  setDropHighlight(op ? target!.el : null);
+  d.ghost.querySelector<HTMLElement>(".drag-op")!.hidden = op !== "copy";
+  document.documentElement.style.cursor = op === "copy" ? "copy" : op ? "default" : "no-drop";
+}
+
+function autoScrollDuringDrag(): void {
+  if (!drag) return;
+  const r = scrollEl.getBoundingClientRect();
+  if (drag.x < r.left || drag.x > r.right) return;
+  if (drag.y > r.bottom - 24 && drag.y < r.bottom + 24) scrollEl.scrollTop += 16;
+  else if (drag.y < r.top + 24 && drag.y > r.top - 24) scrollEl.scrollTop -= 16;
+  else return;
+  updateDrag();
+}
+
+function onDragEnd(): void {
+  endDrag(true);
+}
+
+function endDrag(drop: boolean): void {
+  const d = drag;
+  if (!d) return;
+  drag = null;
+  clearTimeout(d.springTimer);
+  clearInterval(d.scrollTimer);
+  window.removeEventListener("mousemove", onDragMove);
+  window.removeEventListener("mouseup", onDragEnd);
+  window.removeEventListener("keydown", onDragKey, true);
+  window.removeEventListener("keyup", onDragKey, true);
+  d.ghost.remove();
+  document.documentElement.classList.remove("dragging");
+  document.documentElement.style.cursor = "";
+  setDropHighlight(null);
+  if (drop && d.target && d.op) performDrop(d.paths, d.dirs, d.target, d.op);
+}
+
+/** Files dragged in from Finder (or any other app) arrive as paths. */
+function initExternalDrops(): void {
+  let sources: string[] = [];
+  getCurrentWebview()
+    .onDragDropEvent(async (event) => {
+      const p = event.payload;
+      if (p.type === "leave") {
+        sources = [];
+        setDropHighlight(null);
+        return;
+      }
+      const x = p.position.x / devicePixelRatio;
+      const y = p.position.y / devicePixelRatio;
+      if (p.type === "enter") sources = p.paths;
+      const target = dropTargetAt(x, y, sources);
+      // Finder doesn't tell us the modifier keys; use the default operation.
+      const noMods = { altKey: false, metaKey: false, ctrlKey: false, shiftKey: false };
+      if (p.type !== "drop") {
+        const op = target ? dropOp(target, sources, noMods) : null;
+        setDropHighlight(op ? target!.el : null);
+        return;
+      }
+      setDropHighlight(null);
+      const paths = p.paths;
+      sources = [];
+      if (!target || paths.length === 0) return;
+      const devices = await deviceMap([...paths, target.dir]);
+      const op = dropOp(target, paths, noMods, devices);
+      if (!op) return;
+      const info = await pathInfo(paths).catch(() => []);
+      const dirs = new Set(paths.filter((_, i) => info[i]?.is_dir));
+      await performDrop(paths, dirs, target, op);
+    })
+    .catch(() => {
+      /* not running under Tauri */
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1759,6 +2066,7 @@ async function init(): Promise<void> {
   trashPath = home ? joinPath(home, ".Trash") : "";
   await buildSidebar();
   await navigate(home || "/", { history: "none" });
+  initExternalDrops();
   await initAccessBanner();
 }
 

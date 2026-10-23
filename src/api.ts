@@ -95,3 +95,14 @@ export async function setFlag(name: string, value: boolean): Promise<void> {
 export async function hasFullDiskAccess(): Promise<boolean> {
   return invoke<boolean>("has_full_disk_access");
 }
+
+export interface PathInfo {
+  is_dir: boolean;
+  /** Filesystem id; equal ids mean a move is a cheap rename. */
+  device: number;
+}
+
+/** Kind and filesystem of each path; `null` where a path no longer exists. */
+export async function pathInfo(paths: string[]): Promise<(PathInfo | null)[]> {
+  return invoke<(PathInfo | null)[]>("path_info", { paths });
+}

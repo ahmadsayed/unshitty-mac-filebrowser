@@ -56,6 +56,7 @@ pub fn run() {
             fs_ops::make_dir,
             fs_ops::rename_entry,
             fs_ops::path_exists,
+            fs_ops::path_info,
             fs_ops::copy_entry,
             fs_ops::move_entry,
             fs_ops::trash_entry,

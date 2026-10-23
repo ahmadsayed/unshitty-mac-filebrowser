@@ -134,6 +134,11 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
       return undefined as T;
     case "has_full_disk_access":
       return false as T;
+    case "path_info":
+      return (args.paths as string[]).map((p) => {
+        const node = lookup(p);
+        return node ? { is_dir: node.dir, device: p.startsWith("/Volumes/Backup Drive") ? 2 : 1 } : null;
+      }) as T;
     case "path_exists":
       return (lookup(args.path as string) !== undefined) as T;
     case "copy_entry":
