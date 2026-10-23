@@ -3,8 +3,36 @@
 A file browser for macOS that looks and works like **GNOME Files 50** (Nautilus
 with libadwaita), for people who find Finder hard to live with.
 
-Built with Tauri 2: a Rust backend does all filesystem work, and a plain
-TypeScript + Vite frontend draws the GNOME-style UI.
+> [!NOTE]
+> **Independent hobby project.** This is a personal, non-commercial project
+> made in spare time, for fun. It is **not affiliated with, sponsored by or
+> endorsed by** the GNOME Project, the GNOME Foundation, the GNOME Files
+> (Nautilus) developers, Apple Inc., or any employer, company or organisation.
+> It contains no code from GNOME Files; it is a from-scratch look-alike.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/grid-dark.png">
+  <img alt="File Browser showing the home folder in grid view" src="docs/screenshots/grid-light.png">
+</picture>
+
+## Screenshots
+
+| Light | Dark |
+| --- | --- |
+| ![Grid view, light](docs/screenshots/grid-light.png) | ![Grid view, dark](docs/screenshots/grid-dark.png) |
+| **List view** with sizes, item counts and GNOME-style dates | |
+| ![List view, light](docs/screenshots/list-light.png) | ![List view, dark](docs/screenshots/list-dark.png) |
+| **Thumbnails** for photos, videos, PDFs and documents | |
+| ![Thumbnails, light](docs/screenshots/thumbnails-light.png) | ![Thumbnails, dark](docs/screenshots/thumbnails-dark.png) |
+| **Paste with name clashes**: Replace, Skip or Keep Both | |
+| ![Conflict dialog, light](docs/screenshots/conflict-light.png) | ![Conflict dialog, dark](docs/screenshots/conflict-dark.png) |
+| **Drag and drop**, here copying two files to Music (⌥ held) | |
+| ![Drag and drop, light](docs/screenshots/dragdrop-light.png) | ![Drag and drop, dark](docs/screenshots/dragdrop-dark.png) |
+| **Context menus** in the libadwaita popover style | |
+| ![Context menu, light](docs/screenshots/menu-light.png) | ![Context menu, dark](docs/screenshots/menu-dark.png) |
+
+<sub>Screenshots are from the development preview (`npm run dev:mock`) with sample
+files, so the photo thumbnails are placeholders.</sub>
 
 ## Features
 
@@ -56,7 +84,8 @@ exact build: after rebuilding, toggle the permission off and on again.
 
 - `npm run dev:mock` opens the UI in a normal browser at http://localhost:1420
   with a fake in-memory filesystem (`dev/mock-tauri/`), handy for UI work without
-  the Rust side. Type `/big` in the path bar for a 10,000-item folder.
+  the Rust side. Type `/big` in the path bar for a 10,000-item folder; add `?demo`
+  to the URL to hide the test-only folders.
 - `cd src-tauri && cargo test` runs the backend tests (listing, copy/move/trash
   safety checks, settings files, thumbnails).
 - Thumbnails are cached in `~/Library/Caches/io.github.ahmadsayed.filebrowser/thumbnails`;
@@ -69,9 +98,47 @@ Recent, Starred and Network are placeholders; there is no Undo after Move to
 Trash, no dragging files out of the app into Finder or other apps, no tabs,
 and no disk-wide search.
 
-## Credits
+## Credits and thanks
 
-Adwaita Sans is © The Inter Project Authors, Renzhi Li and Jamie Gravendeel,
-under the SIL Open Font License (`src/assets/fonts/AdwaitaSans-LICENSE.txt`).
-The look follows the GNOME Human Interface Guidelines and libadwaita; icons are
-original drawings in that style.
+All credit for the design goes to the people behind GNOME. This project only
+tries to bring their work to the Mac.
+
+- **The GNOME Files (Nautilus) team and contributors.** The layout, behaviour
+  and wording of this app (the sidebar, path bar, views, menus, dialogs and
+  messages such as "Folder is Empty") follow GNOME Files. Thank you for the file
+  manager this project is trying to imitate.
+  [apps.gnome.org/Nautilus](https://apps.gnome.org/Nautilus/) ·
+  [gitlab.gnome.org/GNOME/nautilus](https://gitlab.gnome.org/GNOME/nautilus)
+- **The libadwaita developers and the GNOME design team.** The colours,
+  spacing and widget styles follow libadwaita and the
+  [GNOME Human Interface Guidelines](https://developer.gnome.org/hig/).
+- **The Adwaita icon theme designers.** The icons here are original drawings
+  made in the Adwaita style; no icon files were copied.
+- **Adwaita Sans** by the Inter Project Authors, Renzhi Li and Jamie Gravendeel,
+  bundled under the SIL Open Font License 1.1
+  (`src/assets/fonts/AdwaitaSans-LICENSE.txt`).
+- **[Tauri](https://tauri.app/)** and the Rust crates this app builds on,
+  including [`trash`](https://crates.io/crates/trash) and
+  [`image`](https://crates.io/crates/image).
+
+## Trademarks
+
+"GNOME" and the GNOME logo are trademarks of the GNOME Foundation. Apple, Mac,
+macOS and Finder are trademarks of Apple Inc. These names are used only to
+describe what this project is inspired by and runs on; no endorsement is
+implied.
+
+## License
+
+Copyright © 2026 ahmadsayed.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the **GNU General Public License, version 3 or (at your option) any
+later version** (`GPL-3.0-or-later`), the same license GNOME Files uses. See
+[`LICENSE`](LICENSE) for the full text.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.
+
+The bundled Adwaita Sans font remains under the SIL Open Font License 1.1.

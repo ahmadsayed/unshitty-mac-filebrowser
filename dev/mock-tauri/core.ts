@@ -70,6 +70,10 @@ function lookup(path: string): Node | undefined {
   return node;
 }
 
+// `?demo` hides the entries that only exist for testing (used for README screenshots).
+const DEMO = new URLSearchParams(location.search).has("demo");
+const TEST_ONLY = new Set(["/Users/me/a-very-long-folder-name-that-needs-to-wrap-onto-two-lines", "/big"]);
+
 function list(path: string, showHidden: boolean): Entry[] {
   const node = lookup(path);
   if (!node) throw `Failed to read directory: No such file or directory (os error 2)`;
@@ -78,6 +82,7 @@ function list(path: string, showHidden: boolean): Entry[] {
   const base = path.replace(/\/$/, "");
   return Object.entries(node.children)
     .filter(([name]) => showHidden || !name.startsWith("."))
+    .filter(([name]) => !DEMO || !TEST_ONLY.has(`${base}/${name}`))
     .map(([name, child]) => ({
       name,
       path: `${base}/${name}`,
