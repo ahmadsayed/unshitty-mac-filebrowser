@@ -1982,9 +1982,10 @@ async function buildSidebar(): Promise<void> {
   sidebarRow(places, "Network", "network-workgroup", `${PSEUDO_PREFIX}network`);
   if (trashPath) sidebarRow(places, "Trash", "user-trash", trashPath);
 
-  // GNOME's default bookmarks, resolved to this machine's folders
+  // Desktop plus GNOME's default bookmarks, resolved to this machine's folders
   // (on macOS "Videos" is ~/Movies, so labels use the real folder name).
   const xdg: [FolderKind, () => Promise<string>, string][] = [
+    ["desktop", desktopDir, "user-desktop"],
     ["documents", documentDir, "folder-documents"],
     ["music", audioDir, "folder-music"],
     ["pictures", pictureDir, "folder-pictures"],
@@ -1998,8 +1999,6 @@ async function buildSidebar(): Promise<void> {
     folderKinds.set(path, kind);
     sidebarRow(bookmarks, basename(path), icon, path);
   }
-  const desktop = await tryDir(desktopDir);
-  if (desktop) folderKinds.set(desktop, "desktop");
   const pub = await tryDir(publicDir);
   if (pub) folderKinds.set(pub, "publicshare");
 
