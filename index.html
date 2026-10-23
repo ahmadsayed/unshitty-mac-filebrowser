@@ -59,6 +59,13 @@
           </div>
         </header>
 
+        <!-- AdwBanner: shown on macOS until Full Disk Access is granted or dismissed -->
+        <div class="banner" id="fda-banner" role="status" hidden>
+          <span class="banner-title">To show every folder, allow “File Browser” Full Disk Access, then restart it.</span>
+          <button class="btn" id="fda-open">Open Settings</button>
+          <button class="flat-btn" id="fda-dismiss" aria-label="Dismiss" title="Dismiss"></button>
+        </div>
+
         <div class="view-overlay">
           <div class="view-scroll" id="view-scroll">
             <div class="view" id="view" tabindex="0" role="listbox" aria-multiselectable="true"></div>

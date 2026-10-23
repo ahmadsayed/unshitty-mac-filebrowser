@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 
 export interface Entry {
   name: string;
@@ -60,4 +61,37 @@ export async function moveEntry(from: string, to: string, overwrite: boolean): P
 /** Move `path` to the Trash. */
 export async function trashEntry(path: string): Promise<void> {
   return invoke<void>("trash_entry", { path });
+}
+
+/** Open a file (or an .app bundle) with its default macOS application. */
+export async function openFile(path: string): Promise<void> {
+  return openPath(path);
+}
+
+/** Open System Settings at Privacy & Security → Full Disk Access. */
+export async function openFullDiskAccessSettings(): Promise<void> {
+  return openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
+}
+
+/** Folders pinned to the sidebar. */
+export async function loadPins(): Promise<string[]> {
+  return invoke<string[]>("load_pins");
+}
+
+export async function savePins(paths: string[]): Promise<void> {
+  return invoke<void>("save_pins", { paths });
+}
+
+/** A persisted UI flag (false until set). */
+export async function getFlag(name: string): Promise<boolean> {
+  return invoke<boolean>("get_flag", { name });
+}
+
+export async function setFlag(name: string, value: boolean): Promise<void> {
+  return invoke<void>("set_flag", { name, value });
+}
+
+/** False when macOS hasn't granted the app Full Disk Access. */
+export async function hasFullDiskAccess(): Promise<boolean> {
+  return invoke<boolean>("has_full_disk_access");
 }

@@ -84,7 +84,7 @@ function folderSymbol(kind: FolderKind): string {
     <path d="M6 13a4 4 0 0 1 4-4h13.2a4 4 0 0 1 2.83 1.17L29 13h25a4 4 0 0 1 4 4v35H6z" fill="#438de6"/>
     <rect x="9" y="15" width="46" height="20" rx="2" fill="#f6f5f4"/>
     <rect x="6" y="19" width="52" height="38" rx="4" fill="url(#fc-folder-front)"/>
-    <rect x="6" y="53" width="52" height="4" rx="2" fill="#62a0ea" opacity=".55"/>
+    <path d="M6 53h52a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="#62a0ea" opacity=".55"/>
     <rect x="6" y="19" width="52" height="1" fill="#ffffff" opacity=".55"/>
     ${glyph}
   </symbol>`;
@@ -199,9 +199,19 @@ export function sym(name: string, cls = ""): string {
   return `<svg class="sym ${cls}" viewBox="0 0 16 16" aria-hidden="true"><use href="#sym-${name}"/></svg>`;
 }
 
+/** A macOS .app bundle: a folder that behaves like a file. */
+export function isAppBundle(entry: Entry): boolean {
+  return entry.is_dir && /\.app$/i.test(entry.name);
+}
+
 /** Full-colour icon for a listing entry; `folderKind` comes from the XDG folder map. */
 export function entryIcon(entry: Entry, folderKind: FolderKind = "plain"): string {
-  const id = entry.is_dir ? `fc-folder-${folderKind}` : `fc-file-${fileKind(entry.name)}`;
+  // macOS app bundles are folders, but show (and open) as applications.
+  const id = isAppBundle(entry)
+    ? "fc-file-executable"
+    : entry.is_dir
+      ? `fc-folder-${folderKind}`
+      : `fc-file-${fileKind(entry.name)}`;
   const link = entry.is_symlink
     ? `<span class="emblem">${sym("emblem-symbolic-link")}</span>`
     : "";

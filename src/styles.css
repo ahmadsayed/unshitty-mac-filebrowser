@@ -49,6 +49,8 @@
   --item-hover: rgba(0, 0, 6, 0.04);
   --item-selected: rgba(53, 132, 228, 0.18);
   --item-selected-hover: rgba(53, 132, 228, 0.24);
+  --item-selected-solid: color-mix(in srgb, #3584e4 18%, var(--view-bg));
+  --item-selected-hover-solid: color-mix(in srgb, #3584e4 24%, var(--view-bg));
   --fill: rgba(0, 0, 6, 0.08);
   --dim: 0.55;
 
@@ -92,6 +94,8 @@
     --item-hover: rgba(255, 255, 255, 0.04);
     --item-selected: rgba(53, 132, 228, 0.3);
     --item-selected-hover: rgba(53, 132, 228, 0.38);
+    --item-selected-solid: color-mix(in srgb, #3584e4 30%, var(--view-bg));
+    --item-selected-hover-solid: color-mix(in srgb, #3584e4 38%, var(--view-bg));
     --fill: rgba(255, 255, 255, 0.1);
     --popover-shadow: 0 0 0 1px rgba(0, 0, 6, 0.4), 0 1px 5px 1px rgba(0, 0, 6, 0.3), 0 2px 14px 3px rgba(0, 0, 6, 0.2);
     --dialog-shadow: 0 0 0 1px rgba(0, 0, 6, 0.4), 0 4px 16px 4px rgba(0, 0, 6, 0.3), 0 10px 40px 10px rgba(0, 0, 6, 0.3);
@@ -504,15 +508,17 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 }
 
 /* ----- Grid view ----- */
+/* Grid and list items are absolutely positioned slots (see the virtualized
+   layout in main.ts); --cell-w / --cell-h come from the same layout code. */
 .grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(calc(var(--icon-size) + 36px), 1fr));
-  gap: 6px;
-  padding: 12px;
-  align-content: start;
+  position: relative;
 }
 
 .grid-item {
+  position: absolute;
+  width: var(--cell-w);
+  height: var(--cell-h);
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -524,8 +530,14 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 }
 
 .grid-item:hover { background: var(--item-hover); }
-.grid-item.selected { background: var(--item-selected); }
-.grid-item.selected:hover { background: var(--item-selected-hover); }
+/* A selected item grows to show its whole name, over the row below. */
+.grid-item.selected {
+  height: auto;
+  min-height: var(--cell-h);
+  z-index: 1;
+  background: var(--item-selected-solid);
+}
+.grid-item.selected:hover { background: var(--item-selected-hover-solid); }
 .grid-item:focus-visible { outline-offset: -2px; }
 
 .grid-item .icon {
@@ -540,7 +552,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   text-align: center;
   overflow-wrap: anywhere;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   line-height: 1.3;
@@ -571,10 +583,8 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 .emblem .sym { width: 60%; height: 60%; }
 
 /* ----- List view ----- */
-.list {
-  display: flex;
-  flex-direction: column;
-  padding: 0 6px 6px;
+.list-body {
+  position: relative;
 }
 
 .list-header,
@@ -590,7 +600,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   top: 0;
   z-index: 1;
   height: 32px;
-  margin: 0 -6px 3px;
+  margin: 0 0 3px;
   padding: 0 18px;
   background: var(--view-bg);
   box-shadow: inset 0 -1px var(--shade);
@@ -614,7 +624,9 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 .list-header .sym { width: 12px; height: 12px; }
 
 .list-row {
-  min-height: calc(var(--list-icon-size) + 12px);
+  position: absolute;
+  width: var(--cell-w);
+  height: var(--cell-h);
   padding: 0 12px;
   border-radius: 6px;
   transition: background-color 0.1s;
@@ -1043,3 +1055,26 @@ kbd {
   height: 18px;
   accent-color: var(--accent-bg);
 }
+
+/* =============================================================================
+   BANNER (AdwBanner)
+   ============================================================================= */
+
+.banner {
+  flex-shrink: 0;
+  min-height: 47px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px 6px 18px;
+  background: color-mix(in srgb, var(--accent-bg) 30%, var(--view-bg));
+  box-shadow: inset 0 -1px var(--headerbar-shade);
+}
+
+.banner-title {
+  flex: 1;
+  text-align: center;
+  line-height: 1.3;
+}
+
+.banner .btn { background: color-mix(in srgb, currentColor 10%, transparent); }

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "filebrowser",
+  "productName": "File Browser",
   "version": "0.1.0",
-  "identifier": "com.i551095.filebrowser",
+  "identifier": "io.github.ahmadsayed.filebrowser",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -32,13 +32,25 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "app"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "category": "Utility",
+    "shortDescription": "A GNOME Files-style file browser for macOS",
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "opener": {
+      "requireLiteralLeadingDot": false
+    }
   }
 }

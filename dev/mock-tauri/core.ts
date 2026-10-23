@@ -53,8 +53,10 @@ const tree: Record<string, Node> = {
       ".Trash": d({ "old.txt": f(42, 9 * day) }),
     }),
   }),
+  // 10k entries for checking large-folder performance: type /big in the path bar.
+  big: d({ ...files("file", 9_000, "txt"), ...Object.fromEntries(Array.from({ length: 1_000 }, (_, i) => [`folder ${i}`, d()])) }),
   Volumes: d({ "Macintosh HD": d({}, day, true), "Backup Drive": d() }),
-  Applications: d(),
+  Applications: d({ "Calculator.app": d({ Contents: d({ "Info.plist": f(1_204, 90 * day) }) }) }),
   System: d(),
 };
 
@@ -101,6 +103,9 @@ function trash(parent: Node & { dir: true }, name: string): void {
   delete parent.children[name];
 }
 
+let pins: string[] = ["/Users/me/Documents/Projects"];
+const flags: Record<string, boolean> = {};
+
 export async function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((r) => setTimeout(r, 30));
   switch (cmd) {
@@ -117,6 +122,18 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
       parent.children[name] = d({}, 0);
       return undefined as T;
     }
+    case "load_pins":
+      return [...pins] as T;
+    case "save_pins":
+      pins = [...(args.paths as string[])];
+      return undefined as T;
+    case "get_flag":
+      return (flags[args.name as string] ?? false) as T;
+    case "set_flag":
+      flags[args.name as string] = args.value as boolean;
+      return undefined as T;
+    case "has_full_disk_access":
+      return false as T;
     case "path_exists":
       return (lookup(args.path as string) !== undefined) as T;
     case "copy_entry":

@@ -13,6 +13,7 @@ export default defineConfig(() => ({
         alias: {
           "@tauri-apps/api/core": "/dev/mock-tauri/core.ts",
           "@tauri-apps/api/path": "/dev/mock-tauri/path.ts",
+          "@tauri-apps/plugin-opener": "/dev/mock-tauri/opener.ts",
         },
       }
     : undefined,

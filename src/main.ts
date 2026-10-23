@@ -1,8 +1,12 @@
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
-import { listDir, makeDir, renameEntry, itemCounts, copyEntry, moveEntry, trashEntry, pathExists, type Entry } from "./api";
-import { entryIcon, fileTypeLabel, installIconSprite, sym, type FolderKind } from "./icons";
+import {
+  listDir, makeDir, renameEntry, itemCounts, copyEntry, moveEntry, trashEntry, pathExists,
+  openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess,
+  type Entry,
+} from "./api";
+import { entryIcon, fileTypeLabel, installIconSprite, isAppBundle, sym, type FolderKind } from "./icons";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
-import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor } from "./ui";
+import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -70,6 +74,11 @@ let forwardStack: string[] = [];
 
 /** Files copied or cut, waiting to be pasted. */
 let clipboard: { paths: string[]; dirs: Set<string>; mode: "copy" | "cut" } | null = null;
+
+/** Folders the user added to the sidebar, after GNOME's default bookmarks. */
+let pins: string[] = [];
+/** Paths the sidebar always shows (places, default bookmarks, volumes). */
+const fixedSidebarPaths = new Set<string>();
 
 let home = "";
 let trashPath = "";
@@ -186,7 +195,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
       next = await listDir(loc, prefs.showHidden);
     } catch (err) {
       if (location) {
-        showToast(`Unable to access “${basename(loc)}”: ${cleanError(err)}`);
+        showAccessError(basename(loc), cleanError(err));
         return false;
       }
       error = cleanError(err);
@@ -202,6 +211,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   entries = next;
   listingError = error;
   counts.clear();
+  countsInFlight.clear();
   selected.clear();
   anchorIndex = cursorIndex = -1;
   if (opts.select) selected.add(opts.select);
@@ -235,6 +245,16 @@ async function reload(select?: string[]): Promise<void> {
   renderView();
   scrollEl.scrollTop = top;
   if (select?.[0]) revealPath(select[0]);
+}
+
+/** A failed folder open; macOS privacy blocks get a shortcut to the setting. */
+function showAccessError(name: string, message: string): void {
+  const blocked = isMac && /not permitted/i.test(message);
+  showToast(`Unable to access “${name}”: ${message}`, blocked ? { button: { label: "Grant Access", onClick: openSettingsSafely } } : {});
+}
+
+function openSettingsSafely(): void {
+  openFullDiskAccessSettings().catch((err) => showToast(`Could not open System Settings: ${cleanError(err)}`));
 }
 
 function cleanError(err: unknown): string {
@@ -357,7 +377,9 @@ async function submitPathEntry(): Promise<void> {
   try {
     await listDir(typed, prefs.showHidden);
   } catch (err) {
-    showToast(`Unable to find “${typed}”: ${cleanError(err)}`);
+    const message = cleanError(err);
+    if (/not permitted/i.test(message)) showAccessError(typed, message);
+    else showToast(`Unable to find “${typed}”: ${message}`);
     pathEntry.focus();
     return;
   }
@@ -427,6 +449,8 @@ function sizeText(entry: Entry): string {
 function renderView(): void {
   computeShown();
   applyZoom();
+  itemsLayer = null;
+  windowRange = { start: 0, end: -1 };
   const pseudo = isPseudo(location) ? PSEUDO[location.slice(PSEUDO_PREFIX.length) as Pseudo] : null;
 
   if (pseudo) {
@@ -438,35 +462,30 @@ function renderView(): void {
   } else if (shown.length === 0) {
     viewEl.innerHTML = statusPage("folder", "Folder is Empty", "");
   } else if (prefs.view === "grid") {
-    viewEl.innerHTML = gridHtml();
+    viewEl.innerHTML = `<div class="grid"></div>`;
+    itemsLayer = viewEl.querySelector<HTMLElement>(".grid");
   } else {
-    viewEl.innerHTML = listHtml();
-    requestCounts();
+    viewEl.innerHTML = `<div class="list">${listHeaderHtml()}<div class="list-body"></div></div>`;
+    itemsLayer = viewEl.querySelector<HTMLElement>(".list-body");
+    // Sorting by size needs every folder's count; otherwise only visible rows ask.
+    if (prefs.sortKey === "size") requestCounts(shown.filter((e) => e.is_dir).map((e) => e.path), true);
   }
+  relayout();
   updateViewButtons();
-  updateSelection();
+  updateFloatingBar();
 }
 
 function statusPage(icon: string, title: string, text: string): string {
   return `<div class="status-page">${sym(icon)}<h1>${escapeHtml(title)}</h1>${text ? `<p>${escapeHtml(text)}</p>` : ""}</div>`;
 }
 
-function itemClasses(e: Entry): string {
+function itemClasses(e: Entry, i: number): string {
   const cut = clipboard?.mode === "cut" && clipboard.paths.includes(e.path);
-  return (e.is_hidden ? " hidden-entry" : "") + (cut ? " cut" : "");
+  return (e.is_hidden ? " hidden-entry" : "") + (cut ? " cut" : "") +
+    (selected.has(e.path) ? " selected" : "") + (i === cursorIndex ? " cursor" : "");
 }
 
-function gridHtml(): string {
-  const items = shown.map((e, i) => {
-    const hidden = itemClasses(e);
-    return `<div class="grid-item item${hidden}" data-index="${i}" role="option" title="${escapeHtml(e.name)}">` +
-      `<div class="icon">${entryIcon(e, folderKind(e))}</div>` +
-      `<div class="name">${escapeHtml(e.name)}</div></div>`;
-  });
-  return `<div class="grid">${items.join("")}</div>`;
-}
-
-function listHtml(): string {
+function listHeaderHtml(): string {
   const col = (key: SortKey, label: string) => {
     const active = prefs.sortKey === key;
     // The arrow shows the visual direction: name ascends A→Z, size/date descend.
@@ -474,19 +493,124 @@ function listHtml(): string {
     const arrow = active ? sym(descending ? "sort-descending" : "sort-ascending") : "";
     return `<button data-sort="${key}" class="${active ? "sorted" : ""}">${label}${arrow}</button>`;
   };
-  const header = `<div class="list-header">${col("name", "Name")}${col("size", "Size")}${col("modified", "Modified")}</div>`;
-  const rows = shown.map((e, i) => {
-    const hidden = itemClasses(e);
-    return `<div class="list-row item${hidden}" data-index="${i}" role="option">` +
-      `<div class="name-cell"><div class="icon">${entryIcon(e, folderKind(e))}</div><span class="name">${escapeHtml(e.name)}</span></div>` +
-      `<span class="meta size">${sizeText(e)}</span>` +
-      `<span class="meta" title="${escapeHtml(formatDateDetailed(e.modified))}">${formatDate(e.modified)}</span></div>`;
-  });
-  return `<div class="list">${header}${rows.join("")}</div>`;
+  return `<div class="list-header">${col("name", "Name")}${col("size", "Size")}${col("modified", "Modified")}</div>`;
+}
+
+function itemHtml(i: number): string {
+  const e = shown[i];
+  const { x, y } = itemPos(i);
+  const pos = `style="left:${x}px;top:${y}px"`;
+  const cls = itemClasses(e, i);
+  const sel = selected.has(e.path);
+  if (prefs.view === "grid") {
+    return `<div class="grid-item item${cls}" data-index="${i}" role="option" aria-selected="${sel}" title="${escapeHtml(e.name)}" ${pos}>` +
+      `<div class="icon">${entryIcon(e, folderKind(e))}</div>` +
+      `<div class="name">${escapeHtml(e.name)}</div></div>`;
+  }
+  return `<div class="list-row item${cls}" data-index="${i}" role="option" aria-selected="${sel}" ${pos}>` +
+    `<div class="name-cell"><div class="icon">${entryIcon(e, folderKind(e))}</div><span class="name">${escapeHtml(e.name)}</span></div>` +
+    `<span class="meta size">${sizeText(e)}</span>` +
+    `<span class="meta" title="${escapeHtml(formatDateDetailed(e.modified))}">${formatDate(e.modified)}</span></div>`;
 }
 
 function itemEl(index: number): HTMLElement | null {
   return viewEl.querySelector<HTMLElement>(`.item[data-index="${index}"]`);
+}
+
+// ---------------------------------------------------------------------------
+// Virtualized layout. Items sit in fixed-size slots positioned by arithmetic,
+// and only the ones in or near the viewport exist in the DOM, so a folder
+// with 10k entries opens and scrolls like a small one.
+// ---------------------------------------------------------------------------
+
+const GRID_PAD = 12;
+const GRID_GAP = 6;
+/** Height of the sticky list header plus its bottom margin. */
+const LIST_HEADER_H = 35;
+
+interface Layout {
+  cols: number;
+  itemW: number;
+  itemH: number;
+  gap: number;
+  padX: number;
+  padY: number;
+  /** Where the items layer starts within the scrolled content. */
+  bodyTop: number;
+}
+
+let layout: Layout = { cols: 1, itemW: 0, itemH: 0, gap: 0, padX: 0, padY: 0, bodyTop: 0 };
+let itemsLayer: HTMLElement | null = null;
+let windowRange = { start: 0, end: -1 };
+
+function computeLayout(): void {
+  const width = scrollEl.clientWidth;
+  const lineH = parseFloat(getComputedStyle(document.body).fontSize) * 1.3;
+  if (prefs.view === "grid") {
+    const icon = GRID_SIZES[prefs.gridZoom];
+    const inner = width - GRID_PAD * 2;
+    const cols = Math.max(1, Math.floor((inner + GRID_GAP) / (icon + 36 + GRID_GAP)));
+    const itemW = Math.floor((inner - GRID_GAP * (cols - 1)) / cols);
+    // icon + gap + two lines of label + padding; a selected item grows to show its full name.
+    const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9);
+    layout = { cols, itemW, itemH, gap: GRID_GAP, padX: GRID_PAD, padY: GRID_PAD, bodyTop: 0 };
+  } else {
+    const itemH = Math.max(LIST_SIZES[prefs.listZoom] + 12, 34);
+    layout = { cols: 1, itemW: width - 12, itemH, gap: 0, padX: 6, padY: 0, bodyTop: LIST_HEADER_H };
+  }
+}
+
+/** Top-left of item `i` within the items layer. */
+function itemPos(i: number): { x: number; y: number } {
+  const row = Math.floor(i / layout.cols);
+  const col = i % layout.cols;
+  return { x: layout.padX + col * (layout.itemW + layout.gap), y: layout.padY + row * (layout.itemH + layout.gap) };
+}
+
+function relayout(): void {
+  if (!itemsLayer) return;
+  computeLayout();
+  const rows = Math.ceil(shown.length / layout.cols);
+  const height = layout.padY * 2 + rows * (layout.itemH + layout.gap) - layout.gap + (prefs.view === "list" ? 6 : 0);
+  itemsLayer.style.height = `${height}px`;
+  viewEl.style.setProperty("--cell-w", `${layout.itemW}px`);
+  viewEl.style.setProperty("--cell-h", `${layout.itemH}px`);
+  renderWindow(true);
+}
+
+/** Render the items that intersect the viewport (plus a few rows either side). */
+function renderWindow(force = false): void {
+  if (!itemsLayer) return;
+  const pitch = layout.itemH + layout.gap;
+  const top = scrollEl.scrollTop - layout.bodyTop - layout.padY;
+  const overscan = prefs.view === "grid" ? 2 : 8;
+  const firstRow = Math.max(0, Math.floor(top / pitch) - overscan);
+  const lastRow = Math.floor((top + scrollEl.clientHeight) / pitch) + overscan;
+  const start = firstRow * layout.cols;
+  const end = Math.min(shown.length - 1, (lastRow + 1) * layout.cols - 1);
+  if (!force && start === windowRange.start && end === windowRange.end) return;
+  windowRange = { start, end };
+  const html: string[] = [];
+  for (let i = start; i <= end; i++) html.push(itemHtml(i));
+  itemsLayer.innerHTML = html.join("");
+  if (prefs.view === "list") {
+    const dirs: string[] = [];
+    for (let i = start; i <= end; i++) if (shown[i].is_dir) dirs.push(shown[i].path);
+    requestCounts(dirs, false);
+  }
+}
+
+/** Scroll just enough to show item `i`, then render it. */
+function scrollToIndex(i: number): void {
+  if (!itemsLayer || i < 0 || i >= shown.length) return;
+  const y = layout.bodyTop + itemPos(i).y;
+  const visibleTop = scrollEl.scrollTop + layout.bodyTop;
+  if (y - layout.padY < visibleTop) {
+    scrollEl.scrollTop = y - layout.bodyTop - layout.padY;
+  } else if (y + layout.itemH + layout.padY > scrollEl.scrollTop + scrollEl.clientHeight) {
+    scrollEl.scrollTop = y + layout.itemH + layout.padY - scrollEl.clientHeight;
+  }
+  renderWindow();
 }
 
 function applyZoom(): void {
@@ -503,6 +627,8 @@ function zoom(delta: number): void {
   }
   savePrefs();
   applyZoom();
+  relayout();
+  scrollToIndex(cursorIndex);
 }
 
 function resetZoom(): void {
@@ -510,6 +636,8 @@ function resetZoom(): void {
   prefs.listZoom = 1;
   savePrefs();
   applyZoom();
+  relayout();
+  scrollToIndex(cursorIndex);
 }
 
 function setView(view: ViewMode): void {
@@ -517,7 +645,7 @@ function setView(view: ViewMode): void {
   prefs.view = view;
   savePrefs();
   renderView();
-  if (cursorIndex >= 0) itemEl(cursorIndex)?.scrollIntoView({ block: "nearest" });
+  scrollToIndex(cursorIndex);
 }
 
 function setSort(key: SortKey, reversed: boolean): void {
@@ -545,27 +673,27 @@ function updateViewButtons(): void {
   toggle.title = target === "list" ? `List View (${MOD}1)` : `Grid View (${MOD}2)`;
 }
 
-/** Fetch "N items" for folders shown in list view, then patch the cells. */
-let countsToken = 0;
-async function requestCounts(): Promise<void> {
-  const token = ++countsToken;
+/** Fetch "N items" for `paths`, then patch the visible cells. */
+const countsInFlight = new Set<string>();
+async function requestCounts(paths: string[], resortWhenDone: boolean): Promise<void> {
   const loc = location;
-  const pending = shown.filter((e) => e.is_dir && !counts.has(e.path)).map((e) => e.path);
+  const pending = paths.filter((p) => !counts.has(p) && !countsInFlight.has(p));
+  if (pending.length === 0) return;
+  pending.forEach((p) => countsInFlight.add(p));
   for (let i = 0; i < pending.length; i += 400) {
     const batch = pending.slice(i, i + 400);
-    let result: (number | null)[];
+    let result: (number | null)[] = [];
     try {
       result = await itemCounts(batch, prefs.showHidden);
     } catch {
-      return;
+      /* leave those cells blank */
     }
-    if (token !== countsToken || loc !== location) return;
-    batch.forEach((p, j) => counts.set(p, result[j]));
+    batch.forEach((p) => countsInFlight.delete(p));
+    if (loc !== location) return;
+    batch.forEach((p, j) => counts.set(p, result[j] ?? null));
     patchCounts();
   }
-  if (prefs.sortKey === "size" && pending.length) {
-    renderViewKeepingScroll();
-  }
+  if (resortWhenDone && prefs.sortKey === "size") renderViewKeepingScroll();
 }
 
 function patchCounts(): void {
@@ -586,6 +714,7 @@ function renderViewKeepingScroll(): void {
 // Selection
 // ---------------------------------------------------------------------------
 
+/** Sync the rendered items (only those in the DOM) with the selection state. */
 function updateSelection(): void {
   viewEl.querySelectorAll<HTMLElement>(".item").forEach((el) => {
     const i = Number(el.dataset.index);
@@ -631,7 +760,7 @@ function revealPath(path: string): void {
   if (i < 0) return;
   anchorIndex = cursorIndex = i;
   updateSelection();
-  itemEl(i)?.scrollIntoView({ block: "nearest" });
+  scrollToIndex(i);
 }
 
 /** The floating bar in the bottom-right corner describes the selection. */
@@ -644,7 +773,9 @@ function updateFloatingBar(): void {
   let text: string;
   if (sel.length === 1) {
     const e = sel[0];
-    if (e.is_dir) {
+    if (isAppBundle(e)) {
+      text = `“${e.name}” selected`;
+    } else if (e.is_dir) {
       const n = counts.get(e.path);
       if (n === undefined) fetchCount(e.path);
       text = `“${e.name}” selected` + (n === undefined || n === null ? "" : ` (containing ${n === 1 ? "1 item" : `${n.toLocaleString()} items`})`);
@@ -679,17 +810,25 @@ function fetchCount(path: string): void {
 // ---------------------------------------------------------------------------
 
 function activate(entry: Entry): void {
-  if (entry.is_dir) {
-    navigate(entry.path);
-  } else {
-    showToast(`Opening files isn't supported yet`);
+  if (entry.is_dir && !isAppBundle(entry)) navigate(entry.path);
+  else openEntry(entry);
+}
+
+async function openEntry(entry: Entry): Promise<void> {
+  try {
+    await openFile(entry.path);
+  } catch (err) {
+    showToast(`Could not open “${entry.name}”: ${cleanError(err)}`);
   }
 }
 
+/** Enter / Open: one item activates; several open every file (folders can't all be shown). */
 function activateSelection(): void {
   const sel = selectedEntries();
-  if (sel.length === 1) activate(sel[0]);
-  else if (sel.length > 1) showToast(`Opening several items isn't supported yet`);
+  if (sel.length === 1) return activate(sel[0]);
+  const openable = sel.filter((e) => !e.is_dir || isAppBundle(e));
+  if (openable.length) openable.forEach(openEntry);
+  else if (sel.length) navigate(sel[0].path);
 }
 
 // ---------------------------------------------------------------------------
@@ -751,16 +890,6 @@ function startRubberband(start: MouseEvent, additive: boolean): void {
   const origin = overlay.getBoundingClientRect();
   const startX = start.clientX - origin.left;
   const startY = start.clientY - origin.top + scrollEl.scrollTop;
-  const items = [...viewEl.querySelectorAll<HTMLElement>(".item")].map((el) => {
-    const r = el.getBoundingClientRect();
-    return {
-      index: Number(el.dataset.index),
-      left: r.left - origin.left,
-      right: r.right - origin.left,
-      top: r.top - origin.top + scrollEl.scrollTop,
-      bottom: r.bottom - origin.top + scrollEl.scrollTop,
-    };
-  });
   let moved = false;
 
   const onMove = (e: MouseEvent) => {
@@ -777,8 +906,23 @@ function startRubberband(start: MouseEvent, additive: boolean): void {
     band.style.height = `${b - t}px`;
     selected.clear();
     for (const p of base) selected.add(p);
-    for (const it of items) {
-      if (it.right > l && it.left < r && it.bottom > t && it.top < b) selected.add(shown[it.index].path);
+    // Items hit by the band, found from the layout rather than the DOM.
+    const pitchX = layout.itemW + layout.gap;
+    const pitchY = layout.itemH + layout.gap;
+    const top = t - layout.bodyTop - layout.padY;
+    const bottom = b - layout.bodyTop - layout.padY;
+    const firstRow = Math.max(0, Math.floor(top / pitchY));
+    const lastRow = Math.floor(bottom / pitchY);
+    const firstCol = Math.max(0, Math.floor((l - layout.padX) / pitchX));
+    const lastCol = Math.min(layout.cols - 1, Math.floor((r - layout.padX) / pitchX));
+    for (let row = firstRow; row <= lastRow; row++) {
+      // Skip the gap below a row if the band only covers that gap.
+      if (row * pitchY + layout.itemH < top) continue;
+      for (let col = firstCol; col <= lastCol; col++) {
+        if ((l - layout.padX) > col * pitchX + layout.itemW) continue;
+        const i = row * layout.cols + col;
+        if (i < shown.length) selected.add(shown[i].path);
+      }
     }
     // Scroll when dragging past the top or bottom edge.
     const edge = e.clientY - origin.top;
@@ -811,9 +955,12 @@ function openItemMenu(at: Anchor): void {
   const sel = selectedEntries();
   if (sel.length === 0) return;
   const single = sel.length === 1 ? sel[0] : null;
-  const intoFolder = single?.is_dir ? single : null;
+  const intoFolder = single?.is_dir && !isAppBundle(single) ? single : null;
+  const app = single && isAppBundle(single) ? single : null;
   openMenu(at, [
     { label: "Open", action: activateSelection },
+    ...(app ? [{ label: "Show Package Contents", action: () => navigate(app.path) }] : []),
+    ...(intoFolder ? [bookmarkMenuItem(intoFolder.path)] : []),
     { separator: true },
     { label: "Cut", action: () => setClipboard("cut") },
     { label: "Copy", action: () => setClipboard("copy") },
@@ -838,6 +985,7 @@ function openLocationMenu(anchor: HTMLElement): void {
   const real = !isPseudo(location);
   openMenu(anchor, [
     { label: "New Folder…", disabled: !real, action: promptNewFolder },
+    ...(real ? [bookmarkMenuItem(location)] : []),
     { separator: true },
     { label: "Copy Location", disabled: !real, action: copyLocation },
     { label: "Paste", disabled: !real || !clipboard, action: () => paste(location) },
@@ -1040,6 +1188,68 @@ async function trashSelection(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Bookmarks (folders pinned to the sidebar)
+// ---------------------------------------------------------------------------
+
+function bookmarkMenuItem(path: string): MenuItem {
+  if (pins.includes(path)) return { label: "Remove from Bookmarks", action: () => setBookmarked(path, false) };
+  return { label: "Add to Bookmarks", disabled: fixedSidebarPaths.has(path), action: () => setBookmarked(path, true) };
+}
+
+async function setBookmarked(path: string, on: boolean): Promise<void> {
+  if (on === pins.includes(path) || (on && fixedSidebarPaths.has(path))) return;
+  const next = on ? [...pins, path] : pins.filter((p) => p !== path);
+  try {
+    await savePins(next);
+  } catch (err) {
+    showToast(`Could not save bookmarks: ${cleanError(err)}`);
+    return;
+  }
+  pins = next;
+  renderPins();
+}
+
+function renderPins(): void {
+  const section = $("#sidebar-bookmarks");
+  section.querySelectorAll(".sidebar-row.pin").forEach((r) => r.remove());
+  for (const path of pins) sidebarRow(section, basename(path), "folder", path, false).classList.add("pin");
+  updateSidebarSelection();
+}
+
+function onSidebarContextMenu(e: MouseEvent): void {
+  const row = (e.target as HTMLElement).closest<HTMLElement>(".sidebar-row");
+  if (!row) return;
+  e.preventDefault();
+  const loc = row.dataset.location!;
+  const items: MenuItem[] = [{ label: "Open", action: () => navigate(loc) }];
+  if (row.classList.contains("pin")) {
+    items.push({ separator: true }, { label: "Remove from Bookmarks", action: () => setBookmarked(loc, false) });
+  }
+  openMenu({ x: e.clientX, y: e.clientY }, items);
+}
+
+// ---------------------------------------------------------------------------
+// Full Disk Access banner (macOS)
+// ---------------------------------------------------------------------------
+
+async function initAccessBanner(): Promise<void> {
+  if (!isMac) return;
+  const banner = $("#fda-banner");
+  $("#fda-dismiss").innerHTML = sym("window-close");
+  $("#fda-open").addEventListener("click", openSettingsSafely);
+  $("#fda-dismiss").addEventListener("click", () => {
+    banner.hidden = true;
+    setFlag("fda-banner-dismissed", true).catch(() => {});
+  });
+  try {
+    if (await getFlag("fda-banner-dismissed")) return;
+    banner.hidden = await hasFullDiskAccess();
+  } catch {
+    /* no banner if the check itself fails */
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Name validation (messages match GNOME Files)
 // ---------------------------------------------------------------------------
 
@@ -1079,9 +1289,9 @@ function showValidation(v: Validation, entry: HTMLElement, message: HTMLElement)
 function startRename(entry: Entry): void {
   const index = shown.findIndex((e) => e.path === entry.path);
   if (index < 0) return;
+  scrollToIndex(index);
   const el = itemEl(index);
   if (!el) return;
-  el.scrollIntoView({ block: "nearest" });
 
   const box = document.createElement("div");
   box.className = "rename-popover";
@@ -1197,7 +1407,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
   ["Files", [
     ["Open", "Enter"], ["Rename", "F2"], ["New folder", isMac ? "⇧⌘N" : "Shift+Ctrl+N"], ["Select all", `${MOD}A`],
     ["Copy / Cut / Paste", `${MOD}C / ${MOD}X / ${MOD}V`], ["Move to Trash", isMac ? "⌘⌫ or Delete" : "Delete"],
-    ["Cancel cut", "Esc"],
+    ["Cancel cut", "Esc"], ["Bookmark this folder", `${MOD}D`],
   ]],
 ];
 
@@ -1232,29 +1442,20 @@ function showAbout(): void {
 // Keyboard handling
 // ---------------------------------------------------------------------------
 
-function gridColumns(): number {
-  const items = viewEl.querySelectorAll<HTMLElement>(".grid-item");
-  if (items.length === 0) return 1;
-  const top = items[0].offsetTop;
-  let n = 0;
-  while (n < items.length && items[n].offsetTop === top) n++;
-  return Math.max(n, 1);
-}
-
 function moveCursor(to: number, extend: boolean): void {
   if (shown.length === 0) return;
   to = Math.min(Math.max(to, 0), shown.length - 1);
   viewEl.classList.add("keyboard-nav");
   if (extend && anchorIndex >= 0) selectRange(anchorIndex, to, false);
   else selectOnly(to);
-  itemEl(to)?.scrollIntoView({ block: "nearest" });
+  scrollToIndex(to);
 }
 
 function onViewKeyDown(e: KeyboardEvent): void {
   const mod = isMac ? e.metaKey : e.ctrlKey;
-  const cols = prefs.view === "grid" ? gridColumns() : 1;
+  const cols = layout.cols;
   const cur = cursorIndex;
-  const page = Math.max(Math.floor(scrollEl.clientHeight / 48), 1) * cols;
+  const page = Math.max(Math.floor(scrollEl.clientHeight / (layout.itemH + layout.gap)), 1) * cols;
 
   switch (e.key) {
     case "ArrowRight":
@@ -1339,6 +1540,7 @@ function onGlobalKeyDown(e: KeyboardEvent): void {
   if (mod && !e.shiftKey && key === "l") return run(() => openPathEntry());
   if (mod && !e.shiftKey && key === "f") return run(() => openSearch());
   if (mod && e.shiftKey && key === "n") return run(promptNewFolder);
+  if (mod && !e.shiftKey && key === "d" && !isPseudo(location)) return run(() => setBookmarked(location, !pins.includes(location)));
   if ((mod && e.shiftKey && (e.key === "." || e.key === ">")) || (e.ctrlKey && !e.shiftKey && key === "h")) return run(toggleHidden);
   if ((mod && !e.shiftKey && key === "r") || e.key === "F5") return run(() => reload());
   if (mod && (e.key === "?" || (e.shiftKey && e.key === "/"))) return run(showShortcuts);
@@ -1365,7 +1567,8 @@ function onGlobalKeyDown(e: KeyboardEvent): void {
 // Sidebar
 // ---------------------------------------------------------------------------
 
-function sidebarRow(section: HTMLElement, label: string, icon: string, loc: string): void {
+/** Add a sidebar row; `fixed` rows are built-in and can't be bookmarked again. */
+function sidebarRow(section: HTMLElement, label: string, icon: string, loc: string, fixed = true): HTMLElement {
   const row = document.createElement("div");
   row.className = "sidebar-row";
   row.dataset.location = loc;
@@ -1375,6 +1578,8 @@ function sidebarRow(section: HTMLElement, label: string, icon: string, loc: stri
   row.title = isPseudo(loc) ? label : loc;
   row.addEventListener("click", () => navigate(loc));
   section.appendChild(row);
+  if (fixed && !isPseudo(loc)) fixedSidebarPaths.add(loc);
+  return row;
 }
 
 function updateSidebarSelection(): void {
@@ -1431,6 +1636,9 @@ async function buildSidebar(): Promise<void> {
     /* no /Volumes on this system */
   }
   $("#sidebar-mounts-separator").hidden = mounts.childElementCount === 0;
+
+  pins = await loadPins().catch(() => []);
+  renderPins();
 }
 
 // ---------------------------------------------------------------------------
@@ -1529,6 +1737,12 @@ async function init(): Promise<void> {
     // Clicks below the last item land on the scroller, not the view.
     if (e.target === scrollEl) onViewMouseDown(e);
   });
+  let scrollFrame = 0;
+  scrollEl.addEventListener("scroll", () => {
+    cancelAnimationFrame(scrollFrame);
+    scrollFrame = requestAnimationFrame(() => renderWindow());
+  });
+  new ResizeObserver(() => relayout()).observe(scrollEl);
   scrollEl.addEventListener("contextmenu", (e) => {
     if (e.target === scrollEl) onViewContextMenu(e);
   });
@@ -1539,11 +1753,13 @@ async function init(): Promise<void> {
     if (e.button === 4) goForward();
   });
   window.addEventListener("blur", closePopover);
+  $(".sidebar").addEventListener("contextmenu", onSidebarContextMenu);
 
   home = await homeDir().catch(() => "");
   trashPath = home ? joinPath(home, ".Trash") : "";
   await buildSidebar();
   await navigate(home || "/", { history: "none" });
+  await initAccessBanner();
 }
 
 window.addEventListener("DOMContentLoaded", () => {

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Source for the app icon. Regenerate with: render to a 1024px PNG, then `npx tauri icon <png>` -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#e8e8ec"/></linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a4caee"/><stop offset="1" stop-color="#8dbbf0"/></linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000006" flood-opacity=".22"/></filter>
+  </defs>
+  <!-- macOS app icon grid: 824px squircle-ish tile centred on a 1024 canvas -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#sh)"/>
+  <rect x="100.5" y="100.5" width="823" height="823" rx="185" fill="none" stroke="#000006" stroke-opacity=".08"/>
+  <g transform="translate(192 200) scale(10)">
+    <path d="M6 13a4 4 0 0 1 4-4h13.2a4 4 0 0 1 2.83 1.17L29 13h25a4 4 0 0 1 4 4v35H6z" fill="#438de6"/>
+    <rect x="9" y="15" width="46" height="20" rx="2" fill="#f6f5f4"/>
+    <rect x="6" y="19" width="52" height="38" rx="4" fill="url(#front)"/>
+    <path d="M6 53h52a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="#62a0ea" opacity=".55"/>
+    <rect x="6" y="19" width="52" height="1" fill="#ffffff" opacity=".55"/>
+    <g transform="translate(23 30.5) scale(1.125)" fill="#3584e4" opacity=".85">
+      <path d="M8 1.25.75 7.5H2.5V14a1 1 0 0 0 1 1H6.5v-4.5h3V15h3a1 1 0 0 0 1-1V7.5h1.75z"/>
+    </g>
+  </g>
+</svg>
