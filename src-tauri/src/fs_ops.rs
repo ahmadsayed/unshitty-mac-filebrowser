@@ -108,7 +108,9 @@ pub fn read_entries(path: &Path, show_hidden: bool) -> Result<Vec<Entry>, String
     Ok(entries)
 }
 
-#[tauri::command]
+// Commands that touch many files are `async` so Tauri runs them off the main
+// thread and the window stays responsive during big listings or copies.
+#[tauri::command(async)]
 pub fn list_dir(path: String, show_hidden: bool) -> Result<Vec<Entry>, String> {
     read_entries(Path::new(&path), show_hidden)
 }
@@ -124,7 +126,7 @@ pub fn count_items(path: &Path, show_hidden: bool) -> Option<u32> {
 }
 
 /// Item counts for several folders at once (the "12 items" size column).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn item_counts(paths: Vec<String>, show_hidden: bool) -> Vec<Option<u32>> {
     paths
         .iter()
@@ -244,7 +246,7 @@ fn is_cross_device(e: &std::io::Error) -> bool {
 }
 
 /// Copy `from` to `to` (recursively for folders).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn copy_entry(from: String, to: String, overwrite: bool) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let replacing = check_transfer(from, to, overwrite)?;
@@ -260,7 +262,7 @@ pub fn copy_entry(from: String, to: String, overwrite: bool) -> Result<(), Strin
 }
 
 /// Move `from` to `to`: a rename on the same volume, copy-then-delete across volumes.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn move_entry(from: String, to: String, overwrite: bool) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let replacing = check_transfer(from, to, overwrite)?;
@@ -287,7 +289,7 @@ pub fn move_entry(from: String, to: String, overwrite: bool) -> Result<(), Strin
 }
 
 /// Move `path` to the system Trash (recoverable).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn trash_entry(path: String) -> Result<(), String> {
     if std::fs::symlink_metadata(&path).is_err() {
         return Err(format!("“{}” no longer exists", path));

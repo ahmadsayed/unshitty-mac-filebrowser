@@ -38,3 +38,26 @@ export async function makeDir(path: string): Promise<void> {
 export async function renameEntry(from: string, to: string): Promise<void> {
   return invoke<void>("rename_entry", { from, to });
 }
+
+/** True if anything (even a broken symlink) exists at `path`. */
+export async function pathExists(path: string): Promise<boolean> {
+  return invoke<boolean>("path_exists", { path });
+}
+
+/**
+ * Copy `from` to `to`, recursively for folders. With `overwrite`, an existing
+ * `to` is moved to the Trash and replaced; otherwise an existing `to` is an error.
+ */
+export async function copyEntry(from: string, to: string, overwrite: boolean): Promise<void> {
+  return invoke<void>("copy_entry", { from, to, overwrite });
+}
+
+/** Move `from` to `to`; same conflict rules as `copyEntry`. */
+export async function moveEntry(from: string, to: string, overwrite: boolean): Promise<void> {
+  return invoke<void>("move_entry", { from, to, overwrite });
+}
+
+/** Move `path` to the Trash. */
+export async function trashEntry(path: string): Promise<void> {
+  return invoke<void>("trash_entry", { path });
+}

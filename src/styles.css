@@ -547,7 +547,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 }
 
 .grid-item.selected .name { -webkit-line-clamp: unset; }
-.grid-item.cut .icon { opacity: 0.5; }
+.item.cut .icon { opacity: 0.5; }
 .hidden-entry .icon { opacity: 0.6; }
 
 /* Symlink emblem: small badge at the icon's bottom-left */
@@ -946,7 +946,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   padding: 0 24px 24px;
 }
 
-.dialog-responses .btn { flex: 1; }
+.dialog-responses .btn { flex: 1 1 auto; white-space: nowrap; padding: 0 12px; }
 
 /* AdwEntryRow inside a boxed list */
 .entry-row {
@@ -1024,3 +1024,22 @@ kbd {
 .view:focus-visible { outline: none; }
 .searchbar-entry:focus-visible,
 .entry-row input:focus-visible { outline: none; }
+
+/* Destructive button (libadwaita .destructive-action) */
+.btn.destructive {
+  background: var(--fill);
+  color: var(--destructive);
+}
+
+/* Checkbox row, e.g. "Apply this action to all conflicts" */
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: center;
+}
+.check-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent-bg);
+}

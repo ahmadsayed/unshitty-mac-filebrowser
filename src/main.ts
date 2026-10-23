@@ -1,5 +1,5 @@
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
-import { listDir, makeDir, renameEntry, itemCounts, type Entry } from "./api";
+import { listDir, makeDir, renameEntry, itemCounts, copyEntry, moveEntry, trashEntry, pathExists, type Entry } from "./api";
 import { entryIcon, fileTypeLabel, installIconSprite, sym, type FolderKind } from "./icons";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor } from "./ui";
@@ -67,6 +67,9 @@ let searchQuery: string | null = null;
 const counts = new Map<string, number | null>();
 let backStack: string[] = [];
 let forwardStack: string[] = [];
+
+/** Files copied or cut, waiting to be pasted. */
+let clipboard: { paths: string[]; dirs: Set<string>; mode: "copy" | "cut" } | null = null;
 
 let home = "";
 let trashPath = "";
@@ -448,9 +451,14 @@ function statusPage(icon: string, title: string, text: string): string {
   return `<div class="status-page">${sym(icon)}<h1>${escapeHtml(title)}</h1>${text ? `<p>${escapeHtml(text)}</p>` : ""}</div>`;
 }
 
+function itemClasses(e: Entry): string {
+  const cut = clipboard?.mode === "cut" && clipboard.paths.includes(e.path);
+  return (e.is_hidden ? " hidden-entry" : "") + (cut ? " cut" : "");
+}
+
 function gridHtml(): string {
   const items = shown.map((e, i) => {
-    const hidden = e.is_hidden ? " hidden-entry" : "";
+    const hidden = itemClasses(e);
     return `<div class="grid-item item${hidden}" data-index="${i}" role="option" title="${escapeHtml(e.name)}">` +
       `<div class="icon">${entryIcon(e, folderKind(e))}</div>` +
       `<div class="name">${escapeHtml(e.name)}</div></div>`;
@@ -468,7 +476,7 @@ function listHtml(): string {
   };
   const header = `<div class="list-header">${col("name", "Name")}${col("size", "Size")}${col("modified", "Modified")}</div>`;
   const rows = shown.map((e, i) => {
-    const hidden = e.is_hidden ? " hidden-entry" : "";
+    const hidden = itemClasses(e);
     return `<div class="list-row item${hidden}" data-index="${i}" role="option">` +
       `<div class="name-cell"><div class="icon">${entryIcon(e, folderKind(e))}</div><span class="name">${escapeHtml(e.name)}</span></div>` +
       `<span class="meta size">${sizeText(e)}</span>` +
@@ -803,15 +811,17 @@ function openItemMenu(at: Anchor): void {
   const sel = selectedEntries();
   if (sel.length === 0) return;
   const single = sel.length === 1 ? sel[0] : null;
+  const intoFolder = single?.is_dir ? single : null;
   openMenu(at, [
     { label: "Open", action: activateSelection },
     { separator: true },
-    { label: "Cut", disabled: true },
-    { label: "Copy", disabled: true },
+    { label: "Cut", action: () => setClipboard("cut") },
+    { label: "Copy", action: () => setClipboard("copy") },
+    ...(intoFolder ? [{ label: "Paste Into Folder", disabled: !clipboard, action: () => paste(intoFolder.path) }] : []),
     { separator: true },
     { label: "Rename…", disabled: !single, action: () => single && startRename(single) },
     { separator: true },
-    { label: "Move to Trash", disabled: true },
+    { label: "Move to Trash", disabled: inTrash(), action: trashSelection },
   ]);
 }
 
@@ -819,7 +829,7 @@ function openBackgroundMenu(at: Anchor): void {
   openMenu(at, [
     { label: "New Folder…", action: promptNewFolder },
     { separator: true },
-    { label: "Paste", disabled: true },
+    { label: "Paste", disabled: !clipboard, action: () => paste(location) },
     { label: "Select All", action: selectAll },
   ]);
 }
@@ -830,7 +840,7 @@ function openLocationMenu(anchor: HTMLElement): void {
     { label: "New Folder…", disabled: !real, action: promptNewFolder },
     { separator: true },
     { label: "Copy Location", disabled: !real, action: copyLocation },
-    { label: "Paste", disabled: true },
+    { label: "Paste", disabled: !real || !clipboard, action: () => paste(location) },
     { label: "Select All", disabled: !real, action: selectAll },
   ]);
 }
@@ -863,6 +873,170 @@ async function copyLocation(): Promise<void> {
   } catch {
     showToast("Could not copy the location");
   }
+}
+
+// ---------------------------------------------------------------------------
+// Clipboard: copy / cut / paste
+// ---------------------------------------------------------------------------
+
+function setClipboard(mode: "copy" | "cut"): void {
+  const sel = selectedEntries();
+  if (sel.length === 0) return;
+  clipboard = { paths: sel.map((e) => e.path), dirs: new Set(sel.filter((e) => e.is_dir).map((e) => e.path)), mode };
+  // Paths also go to the system clipboard as text, handy for terminals.
+  navigator.clipboard?.writeText(clipboard.paths.join("\n")).catch(() => {});
+  refreshCutMarks();
+}
+
+function cancelCut(): boolean {
+  if (clipboard?.mode !== "cut") return false;
+  clipboard = null;
+  refreshCutMarks();
+  return true;
+}
+
+function refreshCutMarks(): void {
+  const cut = clipboard?.mode === "cut" ? new Set(clipboard.paths) : null;
+  viewEl.querySelectorAll<HTMLElement>(".item").forEach((el) => {
+    el.classList.toggle("cut", !!cut?.has(shown[Number(el.dataset.index)]?.path));
+  });
+}
+
+type ConflictChoice = "replace" | "skip" | "keepboth" | "cancel";
+
+/** GNOME-style conflict dialog. Resolves with the choice and whether to apply it to the rest. */
+function askConflict(name: string, isDir: boolean, destDir: string, remaining: number): Promise<{ choice: ConflictChoice; all: boolean }> {
+  return new Promise((resolve) => {
+    const kind = isDir ? "folder" : "file";
+    let all = false;
+    let extra: HTMLElement | undefined;
+    if (remaining > 0) {
+      extra = document.createElement("label");
+      extra.className = "check-row";
+      extra.innerHTML = `<input type="checkbox" /><span>Apply this action to all conflicts (${remaining + 1})</span>`;
+      extra.querySelector("input")!.addEventListener("change", (e) => (all = (e.target as HTMLInputElement).checked));
+    }
+    openDialog({
+      heading: `Replace ${kind} “${name}”?`,
+      body: `Another ${kind} with the same name already exists in “${locationName(destDir)}”. Replacing it moves the existing ${kind} to the Trash.`,
+      extra,
+      responses: [
+        { id: "skip", label: "Skip" },
+        { id: "keepboth", label: "Keep Both" },
+        { id: "replace", label: "Replace", style: "destructive" },
+      ],
+      // Enter keeps both: the safe choice, nothing is replaced by accident.
+      defaultResponse: "keepboth",
+      closeResponse: "cancel",
+      onResponse: (id) => resolve({ choice: id as ConflictChoice, all }),
+    });
+  });
+}
+
+/** "name (copy).txt", then "name (copy 2).txt", … — the first one that's free. */
+async function freeCopyName(dir: string, name: string, isDir: boolean): Promise<string> {
+  const dot = isDir ? -1 : name.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  for (let n = 1; ; n++) {
+    const candidate = `${stem} (copy${n > 1 ? ` ${n}` : ""})${ext}`;
+    if (!(await pathExists(joinPath(dir, candidate)))) return candidate;
+  }
+}
+
+let pasting = false;
+
+async function paste(destDir: string): Promise<void> {
+  if (!clipboard || pasting || isPseudo(destDir)) return;
+  pasting = true;
+  const { paths, dirs, mode } = clipboard;
+  const verb = mode === "cut" ? "Moving" : "Copying";
+  let progressShown = false;
+
+  const pasted: string[] = [];
+  const errors: string[] = [];
+  let cancelled = false;
+  let applyToAll: ConflictChoice | null = null;
+
+  for (let i = 0; i < paths.length; i++) {
+    const from = paths[i];
+    const name = basename(from);
+    const isDir = dirs.has(from);
+    let to = joinPath(destDir, name);
+    let overwrite = false;
+
+    if (from === to) {
+      // Pasting a copy into its own folder makes a duplicate, as in GNOME Files;
+      // cutting and pasting into the same folder does nothing.
+      if (mode === "cut") continue;
+      to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
+    } else if (await pathExists(to)) {
+      let choice: ConflictChoice | null = applyToAll;
+      if (!choice) {
+        const answer = await askConflict(name, isDir, destDir, paths.length - i - 1);
+        choice = answer.choice;
+        if (answer.all) applyToAll = choice;
+      }
+      if (choice === "cancel") {
+        cancelled = true;
+        break;
+      }
+      if (choice === "skip") continue;
+      if (choice === "keepboth") to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
+      else overwrite = true;
+    }
+
+    // Only a slow transfer gets a progress toast, never one waiting on the dialog.
+    const slow = setTimeout(() => {
+      progressShown = true;
+      showToast(`${verb} “${name}”…`, { timeout: 600_000 });
+    }, 600);
+    try {
+      if (mode === "cut") await moveEntry(from, to, overwrite);
+      else await copyEntry(from, to, overwrite);
+      pasted.push(to);
+    } catch (err) {
+      errors.push(`“${name}”: ${cleanError(err)}`);
+    }
+    clearTimeout(slow);
+  }
+
+  pasting = false;
+  // A cut is only consumed once every item has been dealt with.
+  if (mode === "cut" && !cancelled && errors.length === 0) clipboard = null;
+
+  if (errors.length) {
+    showToast(errors.length === 1 ? `Could not paste ${errors[0]}` : `Could not paste ${errors.length} items. ${errors[0]}`);
+  } else if (progressShown) {
+    document.querySelectorAll(".toast").forEach((t) => t.remove());
+  }
+  if (destDir === location) await reload(pasted.length ? pasted : undefined);
+  else await reload();
+}
+
+function inTrash(): boolean {
+  return !!trashPath && (location === trashPath || location.startsWith(trashPath + "/"));
+}
+
+async function trashSelection(): Promise<void> {
+  const sel = selectedEntries();
+  if (sel.length === 0 || inTrash()) return;
+  const errors: string[] = [];
+  let done = 0;
+  for (const e of sel) {
+    try {
+      await trashEntry(e.path);
+      done++;
+    } catch (err) {
+      errors.push(`“${e.name}”: ${cleanError(err)}`);
+    }
+  }
+  if (clipboard) {
+    clipboard.paths = clipboard.paths.filter((p) => !sel.some((e) => e.path === p));
+    if (clipboard.paths.length === 0) clipboard = null;
+  }
+  if (errors.length) showToast(`Could not move ${errors[0]} to the Trash`);
+  else showToast(done === 1 ? `“${sel[0].name}” moved to trash` : `${done} items moved to trash`);
+  await reload([]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1022,6 +1196,8 @@ const SHORTCUTS: [string, [string, string][]][] = [
   ]],
   ["Files", [
     ["Open", "Enter"], ["Rename", "F2"], ["New folder", isMac ? "⇧⌘N" : "Shift+Ctrl+N"], ["Select all", `${MOD}A`],
+    ["Copy / Cut / Paste", `${MOD}C / ${MOD}X / ${MOD}V`], ["Move to Trash", isMac ? "⌘⌫ or Delete" : "Delete"],
+    ["Cancel cut", "Esc"],
   ]],
 ];
 
@@ -1121,10 +1297,14 @@ function onViewKeyDown(e: KeyboardEvent): void {
     }
     case "Escape":
       if (searchQuery !== null) closeSearch();
-      else clearSelection();
+      else if (!cancelCut()) clearSelection();
+      break;
+    case "Delete":
+      trashSelection();
       break;
     case "Backspace":
-      goBack();
+      if (mod) trashSelection();
+      else goBack();
       break;
     case " ":
       if (cur >= 0 && mod) {
@@ -1176,6 +1356,9 @@ function onGlobalKeyDown(e: KeyboardEvent): void {
   if (isMac && e.metaKey && e.key === "ArrowUp") return run(goUp);
   if (inInput) return;
   if (mod && key === "a") return run(selectAll);
+  if (mod && !e.shiftKey && key === "c" && selected.size) return run(() => setClipboard("copy"));
+  if (mod && !e.shiftKey && key === "x" && selected.size) return run(() => setClipboard("cut"));
+  if (mod && !e.shiftKey && key === "v" && clipboard && !isPseudo(location)) return run(() => paste(location));
 }
 
 // ---------------------------------------------------------------------------

@@ -92,6 +92,15 @@ function parentAndName(path: string): [Node | undefined, string] {
   return [lookup(path.slice(0, i) || "/"), path.slice(i + 1)];
 }
 
+function trash(parent: Node & { dir: true }, name: string): void {
+  const bin = lookup("/Users/me/.Trash");
+  if (!bin?.dir) throw "no trash";
+  let target = name;
+  for (let n = 2; bin.children[target]; n++) target = `${name} ${n}`;
+  bin.children[target] = parent.children[name];
+  delete parent.children[name];
+}
+
 export async function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   await new Promise((r) => setTimeout(r, 30));
   switch (cmd) {
@@ -106,6 +115,32 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
       if (!parent?.dir) throw "Failed to create directory: No such file or directory";
       if (parent.children[name]) throw `Path already exists: ${args.path}`;
       parent.children[name] = d({}, 0);
+      return undefined as T;
+    }
+    case "path_exists":
+      return (lookup(args.path as string) !== undefined) as T;
+    case "copy_entry":
+    case "move_entry": {
+      const from = args.from as string, to = args.to as string;
+      const [fromParent, fromName] = parentAndName(from);
+      const [toParent, toName] = parentAndName(to);
+      const node = fromParent?.dir ? fromParent.children[fromName] : undefined;
+      if (!node || !fromParent?.dir) throw `“${from}” no longer exists`;
+      if (!toParent?.dir) throw "Failed to copy: No such file or directory";
+      if (from === to) throw "The source and destination are the same";
+      if (to.startsWith(from + "/")) throw "Cannot copy or move a folder into itself";
+      if (toParent.children[toName]) {
+        if (!args.overwrite) throw `Target already exists: ${to}`;
+        trash(toParent, toName);
+      }
+      toParent.children[toName] = cmd === "copy_entry" ? structuredClone(node) : node;
+      if (cmd === "move_entry") delete fromParent.children[fromName];
+      return undefined as T;
+    }
+    case "trash_entry": {
+      const [parent, name] = parentAndName(args.path as string);
+      if (!parent?.dir || !parent.children[name]) throw `“${args.path}” no longer exists`;
+      trash(parent, name);
       return undefined as T;
     }
     case "rename_entry": {
