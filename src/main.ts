@@ -1,53 +1,94 @@
-import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir } from "@tauri-apps/api/path";
-import { listDir, makeDir, renameEntry, type Entry } from "./api";
-import { folderIcon, fileIcon } from "./icons";
+import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
+import { listDir, makeDir, renameEntry, itemCounts, type Entry } from "./api";
+import { entryIcon, fileTypeLabel, installIconSprite, sym, type FolderKind } from "./icons";
+import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
+import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor } from "./ui";
 
 // ---------------------------------------------------------------------------
-// Module-level state
+// Preferences (persisted per machine; storage may be unavailable)
 // ---------------------------------------------------------------------------
-export let currentPath = "";
-export type ViewMode = "list" | "icon";
-export let viewMode: ViewMode = "icon";
-let showHidden = false;
 
-// History stacks: back contains paths we navigated away from; forward contains
-// paths we went back from.
+type ViewMode = "grid" | "list";
+type SortKey = "name" | "size" | "modified" | "type";
+
+const GRID_SIZES = [48, 64, 96, 128, 192, 256];
+const LIST_SIZES = [16, 32, 48];
+
+const prefs = {
+  view: "grid" as ViewMode,
+  sortKey: "name" as SortKey,
+  sortReversed: false,
+  showHidden: false,
+  gridZoom: 2,
+  listZoom: 1,
+};
+
+function loadPrefs(): void {
+  try {
+    Object.assign(prefs, JSON.parse(localStorage.getItem("prefs") ?? "{}"));
+  } catch {
+    /* defaults */
+  }
+}
+
+function savePrefs(): void {
+  try {
+    localStorage.setItem("prefs", JSON.stringify(prefs));
+  } catch {
+    /* not persisted */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+/** Sidebar places that aren't real folders yet. */
+type Pseudo = "recent" | "starred" | "network";
+const PSEUDO: Record<Pseudo, { label: string; icon: string; title: string; text: string }> = {
+  recent: { label: "Recent", icon: "document-open-recent", title: "No Recent Files", text: "Recently used files aren't tracked yet." },
+  starred: { label: "Starred", icon: "starred", title: "No Starred Files", text: "Starring files isn't supported yet." },
+  network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Network locations aren't supported yet." },
+};
+const PSEUDO_PREFIX = "pseudo:";
+
+/** Current location: an absolute path, or "pseudo:<name>". */
+let location = "";
+let entries: Entry[] = [];
+/** Entries in display order (sorted + search-filtered). */
+let shown: Entry[] = [];
+let listingError: string | null = null;
+
+const selected = new Set<string>();
+let anchorIndex = -1;
+let cursorIndex = -1;
+let searchQuery: string | null = null;
+
+const counts = new Map<string, number | null>();
 let backStack: string[] = [];
 let forwardStack: string[] = [];
 
-export function setViewMode(mode: ViewMode): void {
-  viewMode = mode;
-}
+let home = "";
+let trashPath = "";
+const folderKinds = new Map<string, FolderKind>();
+
+const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
+const MOD = isMac ? "⌘" : "Ctrl+";
 
 // ---------------------------------------------------------------------------
-// DOM refs (set in init)
-// ---------------------------------------------------------------------------
-let listingEl: HTMLElement | null = null;
-let crumbSegmentsEl: HTMLElement | null = null;
-let crumbbarEl: HTMLElement | null = null;
-let btnBack: HTMLButtonElement | null = null;
-let btnForward: HTMLButtonElement | null = null;
-let errorBannerEl: HTMLElement | null = null;
-
-// ---------------------------------------------------------------------------
-// Helpers
+// DOM
 // ---------------------------------------------------------------------------
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
+const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
-function formatDate(unixSeconds: number): string {
-  if (unixSeconds === 0) return "—";
-  return new Date(unixSeconds * 1000).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
+let viewEl: HTMLElement;
+let scrollEl: HTMLElement;
+let crumbsEl: HTMLElement;
+let pathbarEl: HTMLElement;
+let pathEntry: HTMLInputElement;
+let searchbarEl: HTMLElement;
+let searchEntry: HTMLInputElement;
+let floatingBar: HTMLElement;
 
 // SECURITY: escape HTML entities in user-derived strings before innerHTML insertion
 export function escapeHtml(text: string): string {
@@ -58,644 +99,1268 @@ export function escapeHtml(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function sortEntries(entries: Entry[]): Entry[] {
-  return [...entries].sort((a, b) => {
-    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-    return a.name.localeCompare(b.name);
+function basename(path: string): string {
+  return path.replace(/\/+$/, "").split("/").pop() || "/";
+}
+
+function parentOf(path: string): string {
+  const p = path.replace(/\/+$/, "").replace(/\/[^/]*$/, "");
+  return p || "/";
+}
+
+function joinPath(dir: string, name: string): string {
+  return dir.replace(/\/+$/, "") + "/" + name;
+}
+
+function isPseudo(loc: string): loc is `pseudo:${Pseudo}` {
+  return loc.startsWith(PSEUDO_PREFIX);
+}
+
+function locationName(loc: string): string {
+  if (isPseudo(loc)) return PSEUDO[loc.slice(PSEUDO_PREFIX.length) as Pseudo].label;
+  if (loc === home) return "Home";
+  if (loc === trashPath) return "Trash";
+  return basename(loc);
+}
+
+// ---------------------------------------------------------------------------
+// Sorting + filtering
+// ---------------------------------------------------------------------------
+
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+function sortValue(e: Entry): number {
+  if (prefs.sortKey === "modified") return e.modified;
+  if (e.is_dir) return counts.get(e.path) ?? -1;
+  return e.size;
+}
+
+function compareEntries(a: Entry, b: Entry): number {
+  // Folders always come first, as in GNOME Files' default.
+  if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+  let r = 0;
+  switch (prefs.sortKey) {
+    case "name":
+      r = collator.compare(a.name, b.name);
+      break;
+    case "type":
+      r = collator.compare(fileTypeLabel(a), fileTypeLabel(b)) || collator.compare(a.name, b.name);
+      break;
+    // Size and date sort largest/newest first by default.
+    case "size":
+    case "modified":
+      r = sortValue(b) - sortValue(a) || collator.compare(a.name, b.name);
+      break;
+  }
+  return prefs.sortReversed ? -r : r;
+}
+
+function fold(s: string): string {
+  return s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+}
+
+function computeShown(): void {
+  const q = searchQuery ? fold(searchQuery.trim()) : "";
+  const list = q ? entries.filter((e) => fold(e.name).includes(q)) : entries;
+  shown = [...list].sort(compareEntries);
+}
+
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
+
+/**
+ * Go to `loc`. Listing happens before anything changes, so a folder that
+ * can't be read leaves the current view intact and shows a toast instead.
+ */
+async function navigate(loc: string, opts: { history?: "push" | "none"; select?: string } = {}): Promise<boolean> {
+  if (searchQuery !== null) closeSearch(false);
+
+  let next: Entry[] = [];
+  let error: string | null = null;
+  if (!isPseudo(loc)) {
+    try {
+      next = await listDir(loc, prefs.showHidden);
+    } catch (err) {
+      if (location) {
+        showToast(`Unable to access “${basename(loc)}”: ${cleanError(err)}`);
+        return false;
+      }
+      error = cleanError(err);
+    }
+  }
+
+  if (opts.history !== "none" && location && loc !== location) {
+    backStack.push(location);
+    forwardStack = [];
+  }
+
+  location = loc;
+  entries = next;
+  listingError = error;
+  counts.clear();
+  selected.clear();
+  anchorIndex = cursorIndex = -1;
+  if (opts.select) selected.add(opts.select);
+
+  document.title = locationName(loc);
+  updateNavButtons();
+  updateSidebarSelection();
+  buildPathbar();
+  renderView();
+  scrollEl.scrollTop = 0;
+  if (opts.select) revealPath(opts.select);
+  viewEl.focus({ preventScroll: true });
+  return true;
+}
+
+/** Re-list the current folder, keeping the selection where possible. */
+async function reload(select?: string[]): Promise<void> {
+  if (isPseudo(location)) return;
+  try {
+    entries = await listDir(location, prefs.showHidden);
+    listingError = null;
+  } catch (err) {
+    entries = [];
+    listingError = cleanError(err);
+  }
+  const keep = select ?? [...selected];
+  selected.clear();
+  const paths = new Set(entries.map((e) => e.path));
+  for (const p of keep) if (paths.has(p)) selected.add(p);
+  const top = scrollEl.scrollTop;
+  renderView();
+  scrollEl.scrollTop = top;
+  if (select?.[0]) revealPath(select[0]);
+}
+
+function cleanError(err: unknown): string {
+  // "Failed to read directory: Permission denied (os error 13)" → "Permission denied"
+  return String(err).replace(/^[^:]*:\s*/, "").replace(/\s*\(os error \d+\)$/, "");
+}
+
+function goBack(): void {
+  const prev = backStack.pop();
+  if (!prev) return;
+  const from = location;
+  navigate(prev, { history: "none", select: childOf(prev, from) }).then((ok) => {
+    if (ok) forwardStack.push(from);
+    else backStack.push(prev);
+    updateNavButtons();
   });
 }
 
-// ---------------------------------------------------------------------------
-// Error banner
-// ---------------------------------------------------------------------------
-
-function showErrorBanner(message: string): void {
-  if (!errorBannerEl) return;
-  errorBannerEl.textContent = message;
-  errorBannerEl.classList.add("visible");
+function goForward(): void {
+  const next = forwardStack.pop();
+  if (!next) return;
+  const from = location;
+  navigate(next, { history: "none" }).then((ok) => {
+    if (ok) backStack.push(from);
+    else forwardStack.push(next);
+    updateNavButtons();
+  });
 }
 
-function hideErrorBanner(): void {
-  if (!errorBannerEl) return;
-  errorBannerEl.classList.remove("visible");
+function goUp(): void {
+  if (isPseudo(location) || location === "/") return;
+  navigate(parentOf(location), { select: location });
 }
 
-// ---------------------------------------------------------------------------
-// History stack management
-// ---------------------------------------------------------------------------
+/** If `child` lives directly inside `dir`, its path (so going back re-selects it). */
+function childOf(dir: string, child: string): string | undefined {
+  return !isPseudo(child) && parentOf(child) === dir ? child : undefined;
+}
 
 function updateNavButtons(): void {
-  if (btnBack) btnBack.disabled = backStack.length === 0;
-  if (btnForward) btnForward.disabled = forwardStack.length === 0;
+  $<HTMLButtonElement>("#btn-back").disabled = backStack.length === 0;
+  $<HTMLButtonElement>("#btn-forward").disabled = forwardStack.length === 0;
 }
 
 // ---------------------------------------------------------------------------
-// Breadcrumb (normal mode)
+// Path bar
 // ---------------------------------------------------------------------------
-function buildBreadcrumb(path: string): void {
-  if (!crumbbarEl || !crumbSegmentsEl) return;
 
-  // Ensure we're showing the crumb bar (not the path input)
-  const existingInput = crumbbarEl.querySelector<HTMLInputElement>(".path-input");
-  if (existingInput) {
-    existingInput.remove();
+interface Crumb {
+  label: string;
+  path: string;
+  icon?: string;
+}
+
+function crumbsFor(loc: string): Crumb[] {
+  if (isPseudo(loc)) {
+    const p = PSEUDO[loc.slice(PSEUDO_PREFIX.length) as Pseudo];
+    return [{ label: p.label, path: loc, icon: p.icon }];
   }
-  crumbSegmentsEl.style.display = "";
-
-  const crumbHome = crumbbarEl.querySelector<HTMLElement>("#crumb-home");
-  if (crumbHome) crumbHome.style.display = "";
-
-  const parts = path.replace(/^\//, "").split("/").filter(Boolean);
-
-  if (parts.length === 0) {
-    crumbSegmentsEl.innerHTML = "";
-    return;
+  if (trashPath && (loc === trashPath || loc.startsWith(trashPath + "/"))) {
+    return [{ label: "Trash", path: trashPath, icon: "user-trash" }, ...segments(trashPath, loc)];
   }
-
-  const frags: string[] = [];
-  for (let i = 0; i < parts.length; i++) {
-    if (i > 0) {
-      frags.push(`<span class="crumb-sep" aria-hidden="true">›</span>`);
-    }
-    // Build the path up to this segment
-    const segPath = "/" + parts.slice(0, i + 1).join("/");
-    // SECURITY: escape each path segment before insertion
-    frags.push(
-      `<span class="crumb-seg" data-path="${escapeHtml(segPath)}" role="button" tabindex="0">${escapeHtml(parts[i])}</span>`
-    );
+  if (home && (loc === home || loc.startsWith(home + "/"))) {
+    return [{ label: "Home", path: home, icon: "user-home" }, ...segments(home, loc)];
   }
-  crumbSegmentsEl.innerHTML = frags.join("");
+  const volume = loc.match(/^\/Volumes\/[^/]+/);
+  if (volume) {
+    return [{ label: basename(volume[0]), path: volume[0], icon: "drive-harddisk" }, ...segments(volume[0], loc)];
+  }
+  return [{ label: "", path: "/", icon: "drive-harddisk" }, ...segments("/", loc)];
+}
 
-  // Wire up click handlers on each crumb segment
-  crumbSegmentsEl.querySelectorAll<HTMLElement>(".crumb-seg").forEach((seg) => {
-    const segPath = seg.dataset.path;
-    if (!segPath) return;
-    seg.addEventListener("click", () => {
-      navigate(segPath).catch(console.error);
-    });
-    seg.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        navigate(segPath).catch(console.error);
-      }
-    });
+function segments(base: string, loc: string): Crumb[] {
+  const rest = loc.slice(base.length).split("/").filter(Boolean);
+  return rest.map((name, i) => ({ label: name, path: joinPath(base, rest.slice(0, i + 1).join("/")) }));
+}
+
+function buildPathbar(): void {
+  const crumbs = crumbsFor(location);
+  crumbsEl.innerHTML = crumbs
+    .map((c, i) => {
+      const cls = i === crumbs.length - 1 ? "crumb current" : "crumb";
+      const icon = c.icon ? sym(c.icon) : "";
+      const label = c.label ? `<span>${escapeHtml(c.label)}</span>` : "";
+      const title = c.label || "Computer";
+      const sep = i > 0 ? `<span class="crumb-sep">/</span>` : "";
+      return `${sep}<button class="${cls}" data-path="${escapeHtml(c.path)}" title="${escapeHtml(title)}">${icon}${label}</button>`;
+    })
+    .join("");
+  requestAnimationFrame(() => {
+    crumbsEl.scrollLeft = crumbsEl.scrollWidth;
+    crumbsEl.classList.toggle("overflowing", crumbsEl.scrollWidth > crumbsEl.clientWidth);
   });
 }
 
+function openPathEntry(prefill?: string): void {
+  if (searchQuery !== null) closeSearch(false);
+  pathbarEl.classList.add("editing");
+  crumbsEl.hidden = true;
+  pathEntry.hidden = false;
+  pathEntry.value = prefill ?? (isPseudo(location) ? "" : location);
+  pathEntry.focus();
+  if (prefill === undefined) pathEntry.select();
+}
+
+function closePathEntry(): void {
+  if (pathEntry.hidden) return;
+  pathEntry.hidden = true;
+  crumbsEl.hidden = false;
+  pathbarEl.classList.remove("editing");
+  buildPathbar();
+}
+
+async function submitPathEntry(): Promise<void> {
+  let typed = pathEntry.value.trim();
+  if (!typed) return;
+  if (typed === "~" || typed.startsWith("~/")) typed = home + typed.slice(1);
+  else if (!typed.startsWith("/") && !isPseudo(location)) typed = joinPath(location, typed);
+  typed = typed.length > 1 ? typed.replace(/\/+$/, "") : typed;
+  try {
+    await listDir(typed, prefs.showHidden);
+  } catch (err) {
+    showToast(`Unable to find “${typed}”: ${cleanError(err)}`);
+    pathEntry.focus();
+    return;
+  }
+  closePathEntry();
+  await navigate(typed);
+}
+
 // ---------------------------------------------------------------------------
-// Editable path bar (Cmd+L / Ctrl+L)
+// Search (filters the current folder; replaces the path bar)
 // ---------------------------------------------------------------------------
 
-function openPathInput(): void {
-  if (!crumbbarEl || !crumbSegmentsEl) return;
+function openSearch(initial = ""): void {
+  if (isPseudo(location)) return;
+  closePathEntry();
+  if (searchQuery === null) {
+    searchQuery = "";
+    pathbarEl.hidden = true;
+    searchbarEl.hidden = false;
+    $("#btn-search").classList.add("open");
+    searchEntry.placeholder = `Search ${locationName(location)}`;
+  }
+  if (initial) searchEntry.value = initial;
+  searchEntry.focus();
+  onSearchInput();
+}
 
-  // Don't open if already open
-  if (crumbbarEl.querySelector(".path-input")) return;
+function closeSearch(rerender = true): void {
+  if (searchQuery === null) return;
+  searchQuery = null;
+  searchEntry.value = "";
+  searchbarEl.hidden = true;
+  pathbarEl.hidden = false;
+  $("#btn-search").classList.remove("open");
+  if (rerender) {
+    renderView();
+    viewEl.focus({ preventScroll: true });
+  }
+}
 
-  // Hide breadcrumb content
-  crumbSegmentsEl.style.display = "none";
-  const crumbHome = crumbbarEl.querySelector<HTMLElement>("#crumb-home");
-  if (crumbHome) crumbHome.style.display = "none";
+function onSearchInput(): void {
+  searchQuery = searchEntry.value;
+  anchorIndex = cursorIndex = -1;
+  renderView();
+  // Like GNOME Files, the first match is selected so Enter opens it.
+  if (searchQuery && shown.length) {
+    selected.clear();
+    selected.add(shown[0].path);
+    cursorIndex = anchorIndex = 0;
+    updateSelection();
+  }
+}
 
-  const input = document.createElement("input");
-  input.type = "text";
-  input.className = "path-input";
-  input.value = currentPath;
-  input.setAttribute("aria-label", "Path");
-  input.setAttribute("spellcheck", "false");
-  input.setAttribute("autocomplete", "off");
-  crumbbarEl.appendChild(input);
+// ---------------------------------------------------------------------------
+// Views
+// ---------------------------------------------------------------------------
 
-  // Focus and select all text
-  input.focus();
-  input.select();
+function folderKind(entry: Entry): FolderKind {
+  return folderKinds.get(entry.path) ?? "plain";
+}
 
-  const closeInput = (shouldNavigate: boolean) => {
-    const typed = input.value.trim();
-    if (input.parentNode) {
-      input.remove();
-    }
-    crumbSegmentsEl!.style.display = "";
-    if (crumbHome) crumbHome.style.display = "";
+function sizeText(entry: Entry): string {
+  if (!entry.is_dir) return formatSize(entry.size);
+  const n = counts.get(entry.path);
+  return n === undefined || n === null ? "" : formatItemCount(n);
+}
 
-    if (shouldNavigate && typed) {
-      navigate(typed).catch(console.error);
-    } else {
-      // Just rebuild the crumb for current path (revert)
-      buildBreadcrumb(currentPath);
-    }
+function renderView(): void {
+  computeShown();
+  applyZoom();
+  const pseudo = isPseudo(location) ? PSEUDO[location.slice(PSEUDO_PREFIX.length) as Pseudo] : null;
+
+  if (pseudo) {
+    viewEl.innerHTML = statusPage(pseudo.icon, pseudo.title, pseudo.text);
+  } else if (listingError !== null) {
+    viewEl.innerHTML = statusPage("dialog-error", "Unable to Access Location", listingError);
+  } else if (shown.length === 0 && searchQuery) {
+    viewEl.innerHTML = statusPage("system-search", "No Results Found", "Try a different search.");
+  } else if (shown.length === 0) {
+    viewEl.innerHTML = statusPage("folder", "Folder is Empty", "");
+  } else if (prefs.view === "grid") {
+    viewEl.innerHTML = gridHtml();
+  } else {
+    viewEl.innerHTML = listHtml();
+    requestCounts();
+  }
+  updateViewButtons();
+  updateSelection();
+}
+
+function statusPage(icon: string, title: string, text: string): string {
+  return `<div class="status-page">${sym(icon)}<h1>${escapeHtml(title)}</h1>${text ? `<p>${escapeHtml(text)}</p>` : ""}</div>`;
+}
+
+function gridHtml(): string {
+  const items = shown.map((e, i) => {
+    const hidden = e.is_hidden ? " hidden-entry" : "";
+    return `<div class="grid-item item${hidden}" data-index="${i}" role="option" title="${escapeHtml(e.name)}">` +
+      `<div class="icon">${entryIcon(e, folderKind(e))}</div>` +
+      `<div class="name">${escapeHtml(e.name)}</div></div>`;
+  });
+  return `<div class="grid">${items.join("")}</div>`;
+}
+
+function listHtml(): string {
+  const col = (key: SortKey, label: string) => {
+    const active = prefs.sortKey === key;
+    // The arrow shows the visual direction: name ascends A→Z, size/date descend.
+    const descending = (key === "name" || key === "type") === prefs.sortReversed;
+    const arrow = active ? sym(descending ? "sort-descending" : "sort-ascending") : "";
+    return `<button data-sort="${key}" class="${active ? "sorted" : ""}">${label}${arrow}</button>`;
   };
+  const header = `<div class="list-header">${col("name", "Name")}${col("size", "Size")}${col("modified", "Modified")}</div>`;
+  const rows = shown.map((e, i) => {
+    const hidden = e.is_hidden ? " hidden-entry" : "";
+    return `<div class="list-row item${hidden}" data-index="${i}" role="option">` +
+      `<div class="name-cell"><div class="icon">${entryIcon(e, folderKind(e))}</div><span class="name">${escapeHtml(e.name)}</span></div>` +
+      `<span class="meta size">${sizeText(e)}</span>` +
+      `<span class="meta" title="${escapeHtml(formatDateDetailed(e.modified))}">${formatDate(e.modified)}</span></div>`;
+  });
+  return `<div class="list">${header}${rows.join("")}</div>`;
+}
 
-  input.addEventListener("keydown", (e: KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      const typed = input.value.trim();
-      // Try navigating; if it fails, keep the input open with error banner
-      navigateWithValidation(typed, input).catch(console.error);
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      closeInput(false);
+function itemEl(index: number): HTMLElement | null {
+  return viewEl.querySelector<HTMLElement>(`.item[data-index="${index}"]`);
+}
+
+function applyZoom(): void {
+  const root = document.documentElement.style;
+  root.setProperty("--icon-size", `${GRID_SIZES[prefs.gridZoom]}px`);
+  root.setProperty("--list-icon-size", `${LIST_SIZES[prefs.listZoom]}px`);
+}
+
+function zoom(delta: number): void {
+  if (prefs.view === "grid") {
+    prefs.gridZoom = Math.min(Math.max(prefs.gridZoom + delta, 0), GRID_SIZES.length - 1);
+  } else {
+    prefs.listZoom = Math.min(Math.max(prefs.listZoom + delta, 0), LIST_SIZES.length - 1);
+  }
+  savePrefs();
+  applyZoom();
+}
+
+function resetZoom(): void {
+  prefs.gridZoom = 2;
+  prefs.listZoom = 1;
+  savePrefs();
+  applyZoom();
+}
+
+function setView(view: ViewMode): void {
+  if (prefs.view === view) return;
+  prefs.view = view;
+  savePrefs();
+  renderView();
+  if (cursorIndex >= 0) itemEl(cursorIndex)?.scrollIntoView({ block: "nearest" });
+}
+
+function setSort(key: SortKey, reversed: boolean): void {
+  prefs.sortKey = key;
+  prefs.sortReversed = reversed;
+  savePrefs();
+  const keep = cursorIndex >= 0 ? shown[cursorIndex]?.path : undefined;
+  renderView();
+  if (keep) {
+    cursorIndex = anchorIndex = shown.findIndex((e) => e.path === keep);
+  }
+}
+
+function toggleHidden(): void {
+  prefs.showHidden = !prefs.showHidden;
+  savePrefs();
+  reload();
+}
+
+function updateViewButtons(): void {
+  const toggle = $("#btn-view-toggle");
+  // Shows the view it switches to, like GNOME Files.
+  const target = prefs.view === "grid" ? "list" : "grid";
+  toggle.innerHTML = sym(`view-${target}`);
+  toggle.title = target === "list" ? `List View (${MOD}1)` : `Grid View (${MOD}2)`;
+}
+
+/** Fetch "N items" for folders shown in list view, then patch the cells. */
+let countsToken = 0;
+async function requestCounts(): Promise<void> {
+  const token = ++countsToken;
+  const loc = location;
+  const pending = shown.filter((e) => e.is_dir && !counts.has(e.path)).map((e) => e.path);
+  for (let i = 0; i < pending.length; i += 400) {
+    const batch = pending.slice(i, i + 400);
+    let result: (number | null)[];
+    try {
+      result = await itemCounts(batch, prefs.showHidden);
+    } catch {
+      return;
     }
+    if (token !== countsToken || loc !== location) return;
+    batch.forEach((p, j) => counts.set(p, result[j]));
+    patchCounts();
+  }
+  if (prefs.sortKey === "size" && pending.length) {
+    renderViewKeepingScroll();
+  }
+}
+
+function patchCounts(): void {
+  viewEl.querySelectorAll<HTMLElement>(".list-row").forEach((row) => {
+    const e = shown[Number(row.dataset.index)];
+    if (e?.is_dir) row.querySelector(".size")!.textContent = sizeText(e);
   });
-
-  // Blur = revert (click away)
-  input.addEventListener("blur", () => {
-    // Small timeout to allow Enter keydown to fire first
-    setTimeout(() => {
-      if (input.parentNode) {
-        closeInput(false);
-      }
-    }, 100);
-  });
+  updateFloatingBar();
 }
 
-async function navigateWithValidation(path: string, input: HTMLInputElement): Promise<void> {
-  try {
-    // Validate by trying to list the dir
-    await listDir(path, showHidden);
-    // Success — close input and navigate
-    input.remove();
-    const crumbSegmentsElLocal = document.querySelector<HTMLElement>("#crumb-segments");
-    if (crumbSegmentsElLocal) crumbSegmentsElLocal.style.display = "";
-    const crumbHome = crumbbarEl?.querySelector<HTMLElement>("#crumb-home");
-    if (crumbHome) crumbHome.style.display = "";
-    await navigate(path);
-  } catch (err) {
-    showErrorBanner(`Cannot navigate to "${escapeHtml(path)}": ${String(err)}`);
-    // Keep input open
-    input.focus();
-    input.select();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Core navigate function (updates history) vs render (does not push history)
-// ---------------------------------------------------------------------------
-
-/**
- * Navigate to a new path. Pushes currentPath onto backStack and clears forwardStack.
- */
-export async function navigate(path: string): Promise<void> {
-  if (path === currentPath) return;
-  if (currentPath) {
-    backStack.push(currentPath);
-  }
-  forwardStack = [];
-  await renderInternal(path);
-  updateNavButtons();
-}
-
-/**
- * Core render: update currentPath and re-render the listing.
- * Does NOT manipulate history — called by navigate, back, forward.
- */
-async function renderInternal(path: string): Promise<void> {
-  if (!listingEl) return;
-
-  currentPath = path;
-  hideErrorBanner();
-
-  // Update breadcrumb
-  buildBreadcrumb(path);
-
-  // Mark the matching sidebar item active
-  document.querySelectorAll<HTMLElement>(".sidebar-item").forEach((item) => {
-    item.classList.toggle("active", item.dataset.path === path);
-  });
-
-  listingEl.innerHTML = "";
-
-  let entries: Entry[];
-  try {
-    entries = await listDir(path, showHidden);
-  } catch (err) {
-    const errEl = document.createElement("div");
-    errEl.className = "listing-error";
-    errEl.textContent = `Could not read directory: ${String(err)}`;
-    listingEl.appendChild(errEl);
-    return;
-  }
-
-  const sorted = sortEntries(entries);
-
-  if (sorted.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "listing-empty";
-    empty.textContent = "No items";
-    listingEl.appendChild(empty);
-    return;
-  }
-
-  const view =
-    viewMode === "icon" ? renderIconView(sorted) : renderListView(sorted);
-  listingEl.appendChild(view);
-}
-
-/**
- * Public render: navigates to the path (pushes history).
- * Preserved as the exported API for backward compat.
- */
-export async function render(path: string): Promise<void> {
-  await navigate(path);
-}
-
-// ---------------------------------------------------------------------------
-// Render: list view
-// ---------------------------------------------------------------------------
-function renderListView(entries: Entry[]): HTMLElement {
-  const container = document.createElement("div");
-  container.className = "listing-list";
-
-  const header = document.createElement("div");
-  header.className = "list-header";
-  header.innerHTML = `
-    <span></span>
-    <span>Name</span>
-    <span style="text-align:right;padding-right:16px">Size</span>
-    <span>Modified</span>
-  `;
-  container.appendChild(header);
-
-  for (const entry of entries) {
-    const row = document.createElement("div");
-    row.className = "list-row";
-    if (entry.is_dir) row.dataset.isDir = "true";
-    row.dataset.path = entry.path;
-
-    const sizeText = entry.is_dir ? "—" : formatSize(entry.size);
-    const iconSvg = entry.is_dir ? folderIcon(entry.name) : fileIcon(entry);
-    const nameHtml = escapeHtml(entry.name);
-
-    row.innerHTML = `
-      <span class="list-cell-icon">${iconSvg}</span>
-      <span class="list-cell-name">${nameHtml}</span>
-      <span class="list-cell-size">${sizeText}</span>
-      <span class="list-cell-modified">${formatDate(entry.modified)}</span>
-    `;
-
-    row.addEventListener("click", () => {
-      selectEntry(row);
-    });
-
-    row.addEventListener("dblclick", () => {
-      if (entry.is_dir) {
-        navigate(entry.path).catch(console.error);
-      }
-    });
-
-    row.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.key === "F2" || (e.key === "Enter" && row.classList.contains("selected"))) {
-        e.preventDefault();
-        startRename(entry, row);
-      }
-    });
-
-    container.appendChild(row);
-  }
-
-  return container;
-}
-
-// ---------------------------------------------------------------------------
-// Render: grid / icon view
-// ---------------------------------------------------------------------------
-function renderIconView(entries: Entry[]): HTMLElement {
-  const grid = document.createElement("div");
-  grid.className = "icon-grid";
-
-  for (const entry of entries) {
-    const item = document.createElement("div");
-    item.className = "icon-item";
-    item.dataset.path = entry.path;
-    if (entry.is_dir) item.dataset.isDir = "true";
-    item.tabIndex = 0;
-
-    const iconSvg = entry.is_dir ? folderIcon(entry.name) : fileIcon(entry);
-    const nameHtml = escapeHtml(entry.name);
-
-    item.innerHTML = `
-      <span class="icon-item-icon">${iconSvg}</span>
-      <span class="icon-item-name">${nameHtml}</span>
-    `;
-
-    item.addEventListener("click", () => {
-      selectEntry(item);
-    });
-
-    item.addEventListener("dblclick", () => {
-      if (entry.is_dir) {
-        navigate(entry.path).catch(console.error);
-      }
-    });
-
-    item.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.key === "F2" || (e.key === "Enter" && item.classList.contains("selected"))) {
-        e.preventDefault();
-        startRename(entry, item);
-      }
-    });
-
-    grid.appendChild(item);
-  }
-  return grid;
+function renderViewKeepingScroll(): void {
+  const top = scrollEl.scrollTop;
+  renderView();
+  scrollEl.scrollTop = top;
 }
 
 // ---------------------------------------------------------------------------
 // Selection
 // ---------------------------------------------------------------------------
 
-let selectedEl: HTMLElement | null = null;
+function updateSelection(): void {
+  viewEl.querySelectorAll<HTMLElement>(".item").forEach((el) => {
+    const i = Number(el.dataset.index);
+    const isSel = selected.has(shown[i]?.path);
+    el.classList.toggle("selected", isSel);
+    el.setAttribute("aria-selected", String(isSel));
+    el.classList.toggle("cursor", i === cursorIndex);
+  });
+  updateFloatingBar();
+}
 
-function selectEntry(el: HTMLElement): void {
-  if (selectedEl) selectedEl.classList.remove("selected");
-  selectedEl = el;
-  el.classList.add("selected");
-  el.focus();
+function selectOnly(index: number): void {
+  selected.clear();
+  if (shown[index]) selected.add(shown[index].path);
+  anchorIndex = cursorIndex = index;
+  updateSelection();
+}
+
+function selectRange(from: number, to: number, additive: boolean): void {
+  if (!additive) selected.clear();
+  const [a, b] = from < to ? [from, to] : [to, from];
+  for (let i = a; i <= b; i++) if (shown[i]) selected.add(shown[i].path);
+  cursorIndex = to;
+  updateSelection();
+}
+
+function selectAll(): void {
+  for (const e of shown) selected.add(e.path);
+  updateSelection();
+}
+
+function clearSelection(): void {
+  selected.clear();
+  updateSelection();
+}
+
+function selectedEntries(): Entry[] {
+  return shown.filter((e) => selected.has(e.path));
+}
+
+function revealPath(path: string): void {
+  const i = shown.findIndex((e) => e.path === path);
+  if (i < 0) return;
+  anchorIndex = cursorIndex = i;
+  updateSelection();
+  itemEl(i)?.scrollIntoView({ block: "nearest" });
+}
+
+/** The floating bar in the bottom-right corner describes the selection. */
+function updateFloatingBar(): void {
+  const sel = selectedEntries();
+  if (sel.length === 0) {
+    floatingBar.hidden = true;
+    return;
+  }
+  let text: string;
+  if (sel.length === 1) {
+    const e = sel[0];
+    if (e.is_dir) {
+      const n = counts.get(e.path);
+      if (n === undefined) fetchCount(e.path);
+      text = `“${e.name}” selected` + (n === undefined || n === null ? "" : ` (containing ${n === 1 ? "1 item" : `${n.toLocaleString()} items`})`);
+    } else {
+      text = `“${e.name}” selected (${formatSize(e.size)})`;
+    }
+  } else {
+    const files = sel.filter((e) => !e.is_dir);
+    const folders = sel.length - files.length;
+    if (folders === 0) {
+      text = `${sel.length.toLocaleString()} items selected (${formatSize(files.reduce((s, e) => s + e.size, 0))})`;
+    } else if (files.length === 0) {
+      text = `${folders.toLocaleString()} folders selected`;
+    } else {
+      text = `${sel.length.toLocaleString()} items selected`;
+    }
+  }
+  floatingBar.textContent = text;
+  floatingBar.hidden = false;
+}
+
+function fetchCount(path: string): void {
+  counts.set(path, null);
+  itemCounts([path], prefs.showHidden).then(([n]) => {
+    counts.set(path, n);
+    updateFloatingBar();
+  }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
-// Rename (inline prompt)
+// Activation
 // ---------------------------------------------------------------------------
 
-function startRename(entry: Entry, _el: HTMLElement): void {
-  // Show a simple prompt-style overlay inside the item
-  const oldName = entry.name;
-  const newName = window.prompt(`Rename "${oldName}" to:`, oldName);
-  if (!newName || newName === oldName) return;
+function activate(entry: Entry): void {
+  if (entry.is_dir) {
+    navigate(entry.path);
+  } else {
+    showToast(`Opening files isn't supported yet`);
+  }
+}
 
-  const newPath = currentPath.replace(/\/$/, "") + "/" + newName;
-  renameEntry(entry.path, newPath)
-    .then(() => render(currentPath))
-    .catch((err: unknown) => {
-      showErrorBanner(`Rename failed: ${String(err)}`);
-    });
+function activateSelection(): void {
+  const sel = selectedEntries();
+  if (sel.length === 1) activate(sel[0]);
+  else if (sel.length > 1) showToast(`Opening several items isn't supported yet`);
 }
 
 // ---------------------------------------------------------------------------
-// New folder dialog
+// Mouse interaction in the view: click, modifiers, rubber band, menus
+// ---------------------------------------------------------------------------
+
+function indexFromEvent(e: MouseEvent): number {
+  const item = (e.target as HTMLElement).closest<HTMLElement>(".item");
+  return item ? Number(item.dataset.index) : -1;
+}
+
+function onViewMouseDown(e: MouseEvent): void {
+  viewEl.classList.remove("keyboard-nav");
+  const sortBtn = (e.target as HTMLElement).closest<HTMLElement>("[data-sort]");
+  if (sortBtn) return;
+
+  const index = indexFromEvent(e);
+  const toggleMod = isMac ? e.metaKey : e.ctrlKey;
+
+  if (index < 0) {
+    if (e.button !== 0) return;
+    if (!toggleMod && !e.shiftKey) clearSelection();
+    startRubberband(e, toggleMod || e.shiftKey);
+    return;
+  }
+
+  if (e.button === 2) {
+    if (!selected.has(shown[index].path)) selectOnly(index);
+    return;
+  }
+  if (e.button !== 0) return;
+
+  if (e.shiftKey && anchorIndex >= 0) {
+    selectRange(anchorIndex, index, toggleMod);
+  } else if (toggleMod) {
+    const p = shown[index].path;
+    if (selected.has(p)) selected.delete(p);
+    else selected.add(p);
+    anchorIndex = cursorIndex = index;
+    updateSelection();
+  } else if (!selected.has(shown[index].path)) {
+    selectOnly(index);
+  } else {
+    // Clicking inside an existing multi-selection narrows it on release.
+    const narrow = () => {
+      selectOnly(index);
+      viewEl.removeEventListener("mouseup", narrow);
+    };
+    viewEl.addEventListener("mouseup", narrow);
+    anchorIndex = cursorIndex = index;
+    updateSelection();
+  }
+}
+
+function startRubberband(start: MouseEvent, additive: boolean): void {
+  const band = $("#rubberband");
+  const overlay = scrollEl.parentElement!;
+  const base = new Set(additive ? selected : []);
+  const origin = overlay.getBoundingClientRect();
+  const startX = start.clientX - origin.left;
+  const startY = start.clientY - origin.top + scrollEl.scrollTop;
+  const items = [...viewEl.querySelectorAll<HTMLElement>(".item")].map((el) => {
+    const r = el.getBoundingClientRect();
+    return {
+      index: Number(el.dataset.index),
+      left: r.left - origin.left,
+      right: r.right - origin.left,
+      top: r.top - origin.top + scrollEl.scrollTop,
+      bottom: r.bottom - origin.top + scrollEl.scrollTop,
+    };
+  });
+  let moved = false;
+
+  const onMove = (e: MouseEvent) => {
+    const x = Math.min(Math.max(e.clientX - origin.left, 0), overlay.clientWidth);
+    const y = Math.max(e.clientY - origin.top + scrollEl.scrollTop, 0);
+    if (!moved && Math.hypot(x - startX, y - startY) < 4) return;
+    moved = true;
+    const l = Math.min(x, startX), r = Math.max(x, startX);
+    const t = Math.min(y, startY), b = Math.max(y, startY);
+    band.hidden = false;
+    band.style.left = `${l}px`;
+    band.style.top = `${t - scrollEl.scrollTop}px`;
+    band.style.width = `${r - l}px`;
+    band.style.height = `${b - t}px`;
+    selected.clear();
+    for (const p of base) selected.add(p);
+    for (const it of items) {
+      if (it.right > l && it.left < r && it.bottom > t && it.top < b) selected.add(shown[it.index].path);
+    }
+    // Scroll when dragging past the top or bottom edge.
+    const edge = e.clientY - origin.top;
+    if (edge > overlay.clientHeight - 16) scrollEl.scrollTop += 12;
+    else if (edge < 16) scrollEl.scrollTop -= 12;
+    updateSelection();
+  };
+  const onUp = () => {
+    band.hidden = true;
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+  };
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
+
+function onViewContextMenu(e: MouseEvent): void {
+  e.preventDefault();
+  if (isPseudo(location) || listingError !== null) return;
+  const at = { x: e.clientX, y: e.clientY };
+  if (indexFromEvent(e) >= 0) openItemMenu(at);
+  else openBackgroundMenu(at);
+}
+
+// ---------------------------------------------------------------------------
+// Menus
+// ---------------------------------------------------------------------------
+
+function openItemMenu(at: Anchor): void {
+  const sel = selectedEntries();
+  if (sel.length === 0) return;
+  const single = sel.length === 1 ? sel[0] : null;
+  openMenu(at, [
+    { label: "Open", action: activateSelection },
+    { separator: true },
+    { label: "Cut", disabled: true },
+    { label: "Copy", disabled: true },
+    { separator: true },
+    { label: "Rename…", disabled: !single, action: () => single && startRename(single) },
+    { separator: true },
+    { label: "Move to Trash", disabled: true },
+  ]);
+}
+
+function openBackgroundMenu(at: Anchor): void {
+  openMenu(at, [
+    { label: "New Folder…", action: promptNewFolder },
+    { separator: true },
+    { label: "Paste", disabled: true },
+    { label: "Select All", action: selectAll },
+  ]);
+}
+
+function openLocationMenu(anchor: HTMLElement): void {
+  const real = !isPseudo(location);
+  openMenu(anchor, [
+    { label: "New Folder…", disabled: !real, action: promptNewFolder },
+    { separator: true },
+    { label: "Copy Location", disabled: !real, action: copyLocation },
+    { label: "Paste", disabled: true },
+    { label: "Select All", disabled: !real, action: selectAll },
+  ]);
+}
+
+function openViewMenu(anchor: HTMLElement): void {
+  const is = (k: SortKey, rev: boolean) => prefs.sortKey === k && prefs.sortReversed === rev;
+  openMenu(anchor, [
+    { heading: "Sort" },
+    { label: "A–Z", radio: is("name", false), action: () => setSort("name", false) },
+    { label: "Z–A", radio: is("name", true), action: () => setSort("name", true) },
+    { label: "Last Modified", radio: is("modified", false), action: () => setSort("modified", false) },
+    { label: "First Modified", radio: is("modified", true), action: () => setSort("modified", true) },
+    { label: "Size", radio: is("size", false), action: () => setSort("size", false) },
+    { label: "Type", radio: is("type", false), action: () => setSort("type", false) },
+  ]);
+}
+
+function openMainMenu(anchor: HTMLElement): void {
+  openMenu(anchor, [
+    { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
+    { separator: true },
+    { label: "Keyboard Shortcuts", action: showShortcuts },
+    { label: "About Files", action: showAbout },
+  ]);
+}
+
+async function copyLocation(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(location);
+  } catch {
+    showToast("Could not copy the location");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Name validation (messages match GNOME Files)
+// ---------------------------------------------------------------------------
+
+interface Validation {
+  valid: boolean;
+  message: string;
+  error: boolean;
+}
+
+function validateName(name: string, isDir: boolean, original?: string): Validation {
+  const noun = isDir ? "Folder" : "File";
+  const lower = isDir ? "folder" : "file";
+  if (name === "" || name === original) return { valid: false, message: "", error: false };
+  if (name.includes("/")) return { valid: false, message: `${noun} names cannot contain “/”.`, error: true };
+  if (name === "." || name === "..") return { valid: false, message: `A ${lower} cannot be called “${name}”.`, error: true };
+  if (new TextEncoder().encode(name).length > 255) return { valid: false, message: `${noun} name is too long.`, error: true };
+  const clash = entries.find((e) => e.name === name && e.name !== original);
+  if (clash) {
+    return { valid: false, message: `A ${clash.is_dir ? "folder" : "file"} with that name already exists.`, error: true };
+  }
+  if (name.startsWith(".")) {
+    return { valid: true, message: `${noun}s with “.” at the beginning of their name are hidden.`, error: false };
+  }
+  return { valid: true, message: "", error: false };
+}
+
+function showValidation(v: Validation, entry: HTMLElement, message: HTMLElement): void {
+  message.textContent = v.message;
+  message.classList.toggle("error", v.error);
+  entry.classList.toggle("error", v.error);
+}
+
+// ---------------------------------------------------------------------------
+// Rename (popover anchored to the item, as in GNOME Files)
+// ---------------------------------------------------------------------------
+
+function startRename(entry: Entry): void {
+  const index = shown.findIndex((e) => e.path === entry.path);
+  if (index < 0) return;
+  const el = itemEl(index);
+  if (!el) return;
+  el.scrollIntoView({ block: "nearest" });
+
+  const box = document.createElement("div");
+  box.className = "rename-popover";
+  box.innerHTML = `
+    <div class="title">${entry.is_dir ? "Rename Folder" : "Rename File"}</div>
+    <div class="row">
+      <input class="entry" type="text" spellcheck="false" aria-label="New name" />
+      <button class="btn suggested" disabled>Rename</button>
+    </div>
+    <div class="field-message"></div>`;
+  const input = box.querySelector("input")!;
+  const button = box.querySelector("button")!;
+  const message = box.querySelector<HTMLElement>(".field-message")!;
+  input.value = entry.name;
+
+  const validate = () => {
+    const v = validateName(input.value, entry.is_dir, entry.name);
+    showValidation(v, input, message);
+    button.disabled = !v.valid;
+    return v.valid;
+  };
+
+  const submit = async () => {
+    if (!validate()) return;
+    const target = joinPath(location, input.value);
+    button.disabled = true;
+    try {
+      await renameEntry(entry.path, target);
+    } catch (err) {
+      showValidation({ valid: false, message: cleanError(err), error: true }, input, message);
+      return;
+    }
+    handle.close();
+    await reload([target]);
+  };
+
+  input.addEventListener("input", validate);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submit();
+    }
+  });
+  button.addEventListener("click", submit);
+
+  const anchor = el.querySelector<HTMLElement>(".name") ?? el;
+  const handle = openPopover(anchor, box, { focus: input });
+  // Select the name without its extension, like GNOME Files.
+  const dot = entry.name.lastIndexOf(".");
+  input.setSelectionRange(0, !entry.is_dir && dot > 0 ? dot : entry.name.length);
+}
+
+// ---------------------------------------------------------------------------
+// New folder (AdwDialog with an entry row)
 // ---------------------------------------------------------------------------
 
 function promptNewFolder(): void {
-  const name = window.prompt("New folder name:");
-  if (!name) return;
+  if (isPseudo(location) || listingError !== null) return;
+  const extra = document.createElement("div");
+  extra.innerHTML = `
+    <div class="entry-row"><label for="new-folder-name">Folder Name</label><input id="new-folder-name" type="text" spellcheck="false" /></div>
+    <div class="field-message" style="margin-top:8px"></div>`;
+  const row = extra.querySelector<HTMLElement>(".entry-row")!;
+  const input = extra.querySelector("input")!;
+  const message = extra.querySelector<HTMLElement>(".field-message")!;
+  const dir = location;
 
-  const newPath = currentPath.replace(/\/$/, "") + "/" + name;
-  makeDir(newPath)
-    .then(() => render(currentPath))
-    .catch((err: unknown) => {
-      showErrorBanner(`Could not create folder: ${String(err)}`);
-    });
-}
+  const validate = () => {
+    const v = validateName(input.value, true);
+    showValidation(v, row, message);
+    dialog.setResponseEnabled("create", v.valid);
+    return v.valid;
+  };
 
-// ---------------------------------------------------------------------------
-// Sidebar helpers
-// ---------------------------------------------------------------------------
-function addSidebarItem(
-  label: string,
-  iconHtml: string,
-  path: string,
-  section: HTMLElement,
-  isEmoji = false
-): void {
-  const item = document.createElement("div");
-  item.className = "sidebar-item";
-  item.dataset.path = path;
-
-  const iconClass = isEmoji ? "sidebar-item-emoji" : "sidebar-item-icon";
-  item.innerHTML = `<span class="${iconClass}">${iconHtml}</span><span class="sidebar-item-label">${escapeHtml(label)}</span>`;
-
-  item.addEventListener("click", () => {
-    navigate(path).catch(console.error);
+  const dialog = openDialog({
+    heading: "New Folder",
+    extra,
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "create", label: "Create", style: "suggested" },
+    ],
+    defaultResponse: "create",
+    onResponse: async (id) => {
+      if (id !== "create") return;
+      if (!validate()) return false;
+      const target = joinPath(dir, input.value);
+      try {
+        await makeDir(target);
+      } catch (err) {
+        showValidation({ valid: false, message: cleanError(err), error: true }, row, message);
+        return false;
+      }
+      if (location === dir) await reload([target]);
+    },
   });
-  section.appendChild(item);
-}
-
-function addSidebarPlaceholder(
-  label: string,
-  iconHtml: string,
-  section: HTMLElement
-): void {
-  const item = document.createElement("div");
-  item.className = "sidebar-item";
-  item.innerHTML = `<span class="sidebar-item-emoji">${iconHtml}</span><span class="sidebar-item-label">${escapeHtml(label)}</span>`;
-  section.appendChild(item);
+  input.addEventListener("input", validate);
+  validate();
 }
 
 // ---------------------------------------------------------------------------
-// Sidebar SVG icons for Places section
+// Keyboard shortcuts + about
 // ---------------------------------------------------------------------------
-const PLACES_ICONS: Record<string, string> = {
-  home: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M2 8 L8 2 L14 8"/><path d="M4 7 v7 h3 V10 h2 v4 h3 V7"/>
-  </svg>`,
-  recent: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-    <circle cx="8" cy="8" r="6"/><path d="M8 5 v3 l2.5 2"/>
-  </svg>`,
-  starred: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-    <polygon points="8,2 10,6.5 15,7.2 11.5,10.5 12.5,15.5 8,13 3.5,15.5 4.5,10.5 1,7.2 6,6.5"/>
-  </svg>`,
-  network: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-    <rect x="1" y="1" width="5" height="4" rx="1"/><rect x="10" y="1" width="5" height="4" rx="1"/>
-    <rect x="5" y="11" width="6" height="4" rx="1"/>
-    <path d="M8 5 v3 m-4.5-3 v2 l4.5 1 m4.5-3 v2 l-4.5 1"/>
-  </svg>`,
-  trash: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3 5 h10 l-1 9 H4 z"/><path d="M6 5 V3 h4 v2"/><line x1="1" y1="5" x2="15" y2="5"/>
-    <line x1="6.5" y1="7" x2="6.5" y2="12"/><line x1="9.5" y1="7" x2="9.5" y2="12"/>
-  </svg>`,
-};
+
+const SHORTCUTS: [string, [string, string][]][] = [
+  ["Navigation", [
+    ["Back", "Alt+←"], ["Forward", "Alt+→"], ["Parent folder", "Alt+↑"], ["Home folder", "Alt+Home"],
+    ["Enter location", `${MOD}L`], ["Search", `${MOD}F`], ["Reload", `${MOD}R`],
+  ]],
+  ["View", [
+    ["List view", `${MOD}1`], ["Grid view", `${MOD}2`], ["Zoom in / out", `${MOD}+ / ${MOD}−`],
+    ["Reset zoom", `${MOD}0`], ["Show hidden files", isMac ? "⇧⌘." : "Ctrl+H"],
+  ]],
+  ["Files", [
+    ["Open", "Enter"], ["Rename", "F2"], ["New folder", isMac ? "⇧⌘N" : "Shift+Ctrl+N"], ["Select all", `${MOD}A`],
+  ]],
+];
+
+function showShortcuts(): void {
+  const grid = document.createElement("div");
+  grid.className = "shortcuts";
+  for (const [group, rows] of SHORTCUTS) {
+    const g = document.createElement("div");
+    g.className = "group";
+    g.textContent = group;
+    grid.appendChild(g);
+    for (const [label, keys] of rows) {
+      const l = document.createElement("span");
+      l.textContent = label;
+      const k = document.createElement("kbd");
+      k.textContent = keys;
+      grid.append(l, k);
+    }
+  }
+  openDialog({ heading: "Keyboard Shortcuts", extra: grid, responses: [{ id: "close", label: "Close" }], defaultResponse: "close", closeResponse: "close" });
+}
+
+function showAbout(): void {
+  const extra = document.createElement("div");
+  extra.style.textAlign = "center";
+  extra.innerHTML = `<svg class="about-icon" viewBox="0 0 64 64"><use href="#fc-folder-home"/></svg>
+    <p class="dim">A GNOME Files look-alike for macOS.<br/>Version 0.1.0</p>`;
+  openDialog({ heading: "Files", extra, responses: [{ id: "close", label: "Close" }], defaultResponse: "close", closeResponse: "close" });
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard handling
+// ---------------------------------------------------------------------------
+
+function gridColumns(): number {
+  const items = viewEl.querySelectorAll<HTMLElement>(".grid-item");
+  if (items.length === 0) return 1;
+  const top = items[0].offsetTop;
+  let n = 0;
+  while (n < items.length && items[n].offsetTop === top) n++;
+  return Math.max(n, 1);
+}
+
+function moveCursor(to: number, extend: boolean): void {
+  if (shown.length === 0) return;
+  to = Math.min(Math.max(to, 0), shown.length - 1);
+  viewEl.classList.add("keyboard-nav");
+  if (extend && anchorIndex >= 0) selectRange(anchorIndex, to, false);
+  else selectOnly(to);
+  itemEl(to)?.scrollIntoView({ block: "nearest" });
+}
+
+function onViewKeyDown(e: KeyboardEvent): void {
+  const mod = isMac ? e.metaKey : e.ctrlKey;
+  const cols = prefs.view === "grid" ? gridColumns() : 1;
+  const cur = cursorIndex;
+  const page = Math.max(Math.floor(scrollEl.clientHeight / 48), 1) * cols;
+
+  switch (e.key) {
+    case "ArrowRight":
+      if (e.altKey || mod) return;
+      if (prefs.view === "grid") moveCursor(cur < 0 ? 0 : cur + 1, e.shiftKey);
+      break;
+    case "ArrowLeft":
+      if (e.altKey || mod) return;
+      if (prefs.view === "grid") moveCursor(cur < 0 ? 0 : cur - 1, e.shiftKey);
+      break;
+    case "ArrowDown":
+      if (e.altKey) return;
+      if (mod) activateSelection();
+      else moveCursor(cur < 0 ? 0 : cur + cols, e.shiftKey);
+      break;
+    case "ArrowUp":
+      if (e.altKey || mod) return;
+      moveCursor(cur < 0 ? 0 : cur - cols, e.shiftKey);
+      break;
+    case "Home":
+      if (e.altKey) return;
+      moveCursor(0, e.shiftKey);
+      break;
+    case "End":
+      moveCursor(shown.length - 1, e.shiftKey);
+      break;
+    case "PageDown":
+      moveCursor(cur + page, e.shiftKey);
+      break;
+    case "PageUp":
+      moveCursor(cur - page, e.shiftKey);
+      break;
+    case "Enter":
+      activateSelection();
+      break;
+    case "F2": {
+      const sel = selectedEntries();
+      if (sel.length === 1) startRename(sel[0]);
+      break;
+    }
+    case "Escape":
+      if (searchQuery !== null) closeSearch();
+      else clearSelection();
+      break;
+    case "Backspace":
+      goBack();
+      break;
+    case " ":
+      if (cur >= 0 && mod) {
+        const p = shown[cur].path;
+        if (selected.has(p)) selected.delete(p);
+        else selected.add(p);
+        updateSelection();
+      }
+      break;
+    default:
+      // Type-ahead: printable keys start a search, like GNOME Files.
+      if (e.key.length === 1 && !mod && !e.altKey && !e.ctrlKey && !e.metaKey && e.key !== " ") {
+        e.preventDefault();
+        openSearch(e.key);
+      }
+      return;
+  }
+  e.preventDefault();
+}
+
+function onGlobalKeyDown(e: KeyboardEvent): void {
+  if (hasOpenOverlay()) return;
+  const mod = isMac ? e.metaKey : e.ctrlKey;
+  const key = e.key.toLowerCase();
+  const inInput = (e.target as HTMLElement).tagName === "INPUT";
+
+  const run = (fn: () => void) => {
+    e.preventDefault();
+    fn();
+  };
+
+  if (mod && !e.shiftKey && key === "l") return run(() => openPathEntry());
+  if (mod && !e.shiftKey && key === "f") return run(() => openSearch());
+  if (mod && e.shiftKey && key === "n") return run(promptNewFolder);
+  if ((mod && e.shiftKey && (e.key === "." || e.key === ">")) || (e.ctrlKey && !e.shiftKey && key === "h")) return run(toggleHidden);
+  if ((mod && !e.shiftKey && key === "r") || e.key === "F5") return run(() => reload());
+  if (mod && (e.key === "?" || (e.shiftKey && e.key === "/"))) return run(showShortcuts);
+  if (mod && key === "1") return run(() => setView("list"));
+  if (mod && key === "2") return run(() => setView("grid"));
+  if (mod && (e.key === "=" || e.key === "+")) return run(() => zoom(1));
+  if (mod && e.key === "-") return run(() => zoom(-1));
+  if (mod && key === "0") return run(resetZoom);
+  if (e.altKey && e.key === "ArrowLeft") return run(goBack);
+  if (e.altKey && e.key === "ArrowRight") return run(goForward);
+  if (e.altKey && e.key === "ArrowUp") return run(goUp);
+  if (e.altKey && e.key === "Home") return run(() => navigate(home));
+  if (isMac && e.metaKey && e.key === "[") return run(goBack);
+  if (isMac && e.metaKey && e.key === "]") return run(goForward);
+  if (isMac && e.metaKey && e.key === "ArrowUp") return run(goUp);
+  if (inInput) return;
+  if (mod && key === "a") return run(selectAll);
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar
+// ---------------------------------------------------------------------------
+
+function sidebarRow(section: HTMLElement, label: string, icon: string, loc: string): void {
+  const row = document.createElement("div");
+  row.className = "sidebar-row";
+  row.dataset.location = loc;
+  row.setAttribute("role", "link");
+  row.innerHTML = `${sym(icon)}<span class="sidebar-row-label"></span>`;
+  row.querySelector(".sidebar-row-label")!.textContent = label;
+  row.title = isPseudo(loc) ? label : loc;
+  row.addEventListener("click", () => navigate(loc));
+  section.appendChild(row);
+}
+
+function updateSidebarSelection(): void {
+  document.querySelectorAll<HTMLElement>(".sidebar-row").forEach((row) => {
+    row.classList.toggle("selected", row.dataset.location === location);
+  });
+}
+
+async function buildSidebar(): Promise<void> {
+  const places = $("#sidebar-places");
+  const bookmarks = $("#sidebar-bookmarks");
+  const mounts = $("#sidebar-mounts");
+
+  const tryDir = async (fn: () => Promise<string>) => {
+    try {
+      return await fn();
+    } catch {
+      return "";
+    }
+  };
+
+  if (home) sidebarRow(places, "Home", "user-home", home);
+  sidebarRow(places, "Recent", "document-open-recent", `${PSEUDO_PREFIX}recent`);
+  sidebarRow(places, "Starred", "starred", `${PSEUDO_PREFIX}starred`);
+  sidebarRow(places, "Network", "network-workgroup", `${PSEUDO_PREFIX}network`);
+  if (trashPath) sidebarRow(places, "Trash", "user-trash", trashPath);
+
+  // GNOME's default bookmarks, resolved to this machine's folders
+  // (on macOS "Videos" is ~/Movies, so labels use the real folder name).
+  const xdg: [FolderKind, () => Promise<string>, string][] = [
+    ["documents", documentDir, "folder-documents"],
+    ["music", audioDir, "folder-music"],
+    ["pictures", pictureDir, "folder-pictures"],
+    ["videos", videoDir, "folder-videos"],
+    ["download", downloadDir, "folder-download"],
+  ];
+  if (home) folderKinds.set(home, "home");
+  for (const [kind, fn, icon] of xdg) {
+    const path = await tryDir(fn);
+    if (!path) continue;
+    folderKinds.set(path, kind);
+    sidebarRow(bookmarks, basename(path), icon, path);
+  }
+  const desktop = await tryDir(desktopDir);
+  if (desktop) folderKinds.set(desktop, "desktop");
+  const pub = await tryDir(publicDir);
+  if (pub) folderKinds.set(pub, "publicshare");
+
+  // Mounted volumes (macOS lists them in /Volumes).
+  try {
+    const volumes = (await listDir("/Volumes", false)).sort((a, b) => collator.compare(a.name, b.name));
+    for (const v of volumes) sidebarRow(mounts, v.name, "drive-harddisk", v.path);
+  } catch {
+    /* no /Volumes on this system */
+  }
+  $("#sidebar-mounts-separator").hidden = mounts.childElementCount === 0;
+}
 
 // ---------------------------------------------------------------------------
 // Initialise
 // ---------------------------------------------------------------------------
+
 async function init(): Promise<void> {
-  listingEl = document.querySelector<HTMLElement>("#listing");
-  crumbSegmentsEl = document.querySelector<HTMLElement>("#crumb-segments");
-  crumbbarEl = document.querySelector<HTMLElement>("#crumbbar");
+  loadPrefs();
+  installIconSprite();
+  if (isMac) document.documentElement.classList.add("platform-mac");
 
-  // Create and insert error banner
-  const mainEl = document.querySelector<HTMLElement>(".main");
-  if (mainEl) {
-    errorBannerEl = document.createElement("div");
-    errorBannerEl.className = "error-banner";
-    errorBannerEl.setAttribute("role", "alert");
-    errorBannerEl.setAttribute("aria-live", "polite");
+  viewEl = $("#view");
+  scrollEl = $("#view-scroll");
+  crumbsEl = $("#crumbs");
+  pathbarEl = $("#pathbar");
+  pathEntry = $<HTMLInputElement>("#path-entry");
+  searchbarEl = $("#searchbar");
+  searchEntry = $<HTMLInputElement>("#search-entry");
+  floatingBar = $("#floating-bar");
 
-    const dismissBtn = document.createElement("button");
-    dismissBtn.className = "error-banner-dismiss";
-    dismissBtn.textContent = "×";
-    dismissBtn.setAttribute("aria-label", "Dismiss");
-    dismissBtn.addEventListener("click", hideErrorBanner);
-    errorBannerEl.appendChild(dismissBtn);
+  // Static icons
+  $("#btn-search").innerHTML = sym("system-search");
+  $("#btn-main-menu").innerHTML = sym("open-menu");
+  $("#btn-back").innerHTML = sym("go-previous");
+  $("#btn-forward").innerHTML = sym("go-next");
+  $("#btn-location-menu").innerHTML = sym("view-more");
+  $("#btn-new-folder").innerHTML = sym("folder-new");
+  $("#btn-view-menu").innerHTML = sym("pan-down");
+  $("#search-icon").innerHTML = sym("system-search");
 
-    // Insert after headerbar
-    const headerbar = mainEl.querySelector(".headerbar");
-    if (headerbar && headerbar.parentNode) {
-      headerbar.parentNode.insertBefore(errorBannerEl, headerbar.nextSibling);
+  // Headerbar
+  $("#btn-back").addEventListener("click", goBack);
+  $("#btn-forward").addEventListener("click", goForward);
+  $("#btn-search").addEventListener("click", () => (searchQuery === null ? openSearch() : closeSearch()));
+  $("#btn-main-menu").addEventListener("click", (e) => openMainMenu(e.currentTarget as HTMLElement));
+  $("#btn-location-menu").addEventListener("click", (e) => openLocationMenu(e.currentTarget as HTMLElement));
+  $("#btn-new-folder").addEventListener("click", promptNewFolder);
+  $("#btn-view-toggle").addEventListener("click", () => setView(prefs.view === "grid" ? "list" : "grid"));
+  $("#btn-view-menu").addEventListener("click", (e) => openViewMenu(e.currentTarget as HTMLElement));
+
+  // Path bar: crumbs navigate; clicking the empty part edits the location.
+  crumbsEl.addEventListener("click", (e) => {
+    const crumb = (e.target as HTMLElement).closest<HTMLElement>(".crumb");
+    if (crumb?.dataset.path) {
+      if (crumb.dataset.path !== location) navigate(crumb.dataset.path, { select: childOf(crumb.dataset.path, location) });
     } else {
-      mainEl.prepend(errorBannerEl);
+      openPathEntry();
     }
-  }
-
-  btnBack = document.querySelector<HTMLButtonElement>("#btn-back");
-  btnForward = document.querySelector<HTMLButtonElement>("#btn-forward");
-
-  // Wire up back / forward / up navigation
-  if (btnBack) {
-    btnBack.addEventListener("click", () => {
-      if (backStack.length === 0) return;
-      const prev = backStack.pop()!;
-      forwardStack.push(currentPath);
-      renderInternal(prev).then(updateNavButtons).catch(console.error);
-    });
-  }
-
-  if (btnForward) {
-    btnForward.addEventListener("click", () => {
-      if (forwardStack.length === 0) return;
-      const next = forwardStack.pop()!;
-      backStack.push(currentPath);
-      renderInternal(next).then(updateNavButtons).catch(console.error);
-    });
-  }
-
-  // Wire up Cmd+L / Ctrl+L for editable path bar
-  document.addEventListener("keydown", (e: KeyboardEvent) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "l") {
+  });
+  pathbarEl.addEventListener("click", (e) => {
+    if (e.target === pathbarEl) openPathEntry();
+  });
+  pathEntry.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
       e.preventDefault();
-      openPathInput();
-      return;
+      submitPathEntry();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closePathEntry();
+      viewEl.focus();
     }
+  });
+  pathEntry.addEventListener("blur", () => setTimeout(closePathEntry, 0));
 
-    // Cmd+Shift+. (or Ctrl+Shift+.) to toggle hidden files
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === ".") {
+  // Search
+  searchEntry.addEventListener("input", onSearchInput);
+  searchEntry.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
       e.preventDefault();
-      showHidden = !showHidden;
-      renderInternal(currentPath).catch(console.error);
-      return;
-    }
-
-    // F2 on selected item: start rename
-    if (e.key === "F2" && selectedEl) {
+      closeSearch();
+    } else if (e.key === "Enter") {
       e.preventDefault();
-      const path = selectedEl.dataset.path;
-      if (path) {
-        // Find the entry for this path from the listing
-        const entryName = path.split("/").pop() ?? "";
-        const isDir = selectedEl.dataset.isDir === "true";
-        const fakeEntry: Entry = {
-          name: entryName,
-          path,
-          is_dir: isDir,
-          size: 0,
-          modified: 0,
-          is_hidden: entryName.startsWith("."),
-          is_symlink: false,
-        };
-        startRename(fakeEntry, selectedEl);
-      }
-      return;
+      activateSelection();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      viewEl.focus();
+      moveCursor(cursorIndex < 0 ? 0 : cursorIndex, false);
     }
   });
 
-  // Wire up view toggle buttons
-  const btnGrid = document.querySelector<HTMLButtonElement>("#btn-view-grid");
-  if (btnGrid) {
-    btnGrid.addEventListener("click", () => {
-      setViewMode("icon");
-      renderInternal(currentPath).catch(console.error);
-    });
-  }
-
-  // View toggle chevron: toggle between icon and list view
-  const btnChevron = document.querySelector<HTMLButtonElement>("#btn-view-chevron");
-  if (btnChevron) {
-    btnChevron.addEventListener("click", () => {
-      setViewMode(viewMode === "icon" ? "list" : "icon");
-      renderInternal(currentPath).catch(console.error);
-    });
-  }
-
-  // New folder button
-  const btnNewFolder = document.querySelector<HTMLButtonElement>("#btn-new-folder");
-  if (btnNewFolder) {
-    btnNewFolder.addEventListener("click", () => {
-      promptNewFolder();
-    });
-  }
-
-  // Up button: navigate to parent directory
-  // We use the crumb-home icon as an "up/home" shortcut click handler
-  const crumbHomeEl = document.querySelector<HTMLElement>("#crumb-home");
-  if (crumbHomeEl) {
-    crumbHomeEl.style.cursor = "pointer";
-    crumbHomeEl.addEventListener("click", () => {
-      if (!currentPath) return;
-      const parent = currentPath.replace(/\/[^/]+\/?$/, "") || "/";
-      if (parent !== currentPath) {
-        navigate(parent).catch(console.error);
-      }
-    });
-  }
-
-  // Deselect on clicking the listing background
-  listingEl?.addEventListener("click", (e: MouseEvent) => {
-    const target = e.target as HTMLElement;
-    if (target === listingEl || target.classList.contains("icon-grid") || target.classList.contains("listing-list")) {
-      if (selectedEl) {
-        selectedEl.classList.remove("selected");
-        selectedEl = null;
-      }
-    }
+  // View
+  viewEl.addEventListener("mousedown", onViewMouseDown);
+  viewEl.addEventListener("dblclick", (e) => {
+    const i = indexFromEvent(e);
+    if (i >= 0 && !e.shiftKey && !e.metaKey && !e.ctrlKey) activate(shown[i]);
   });
+  viewEl.addEventListener("contextmenu", onViewContextMenu);
+  viewEl.addEventListener("keydown", onViewKeyDown);
+  viewEl.addEventListener("click", (e) => {
+    const sortBtn = (e.target as HTMLElement).closest<HTMLElement>("[data-sort]");
+    if (!sortBtn) return;
+    const key = sortBtn.dataset.sort as SortKey;
+    setSort(key, prefs.sortKey === key ? !prefs.sortReversed : false);
+  });
+  scrollEl.addEventListener("mousedown", (e) => {
+    // Clicks below the last item land on the scroller, not the view.
+    if (e.target === scrollEl) onViewMouseDown(e);
+  });
+  scrollEl.addEventListener("contextmenu", (e) => {
+    if (e.target === scrollEl) onViewContextMenu(e);
+  });
+  document.addEventListener("keydown", onGlobalKeyDown);
+  // Mouse back/forward buttons
+  window.addEventListener("mouseup", (e) => {
+    if (e.button === 3) goBack();
+    if (e.button === 4) goForward();
+  });
+  window.addEventListener("blur", closePopover);
 
-  const placesSection = document.querySelector<HTMLElement>("#sidebar-places");
-  const bookmarksSection = document.querySelector<HTMLElement>("#sidebar-bookmarks");
-  if (!placesSection || !bookmarksSection) return;
-
-  // Resolve standard paths
-  let home = "";
-  try { home = await homeDir(); } catch { home = ""; }
-
-  let documents = "";
-  let downloads = "";
-  let music = "";
-  let pictures = "";
-  let videos = "";
-  try {
-    documents = await documentDir();
-    downloads = await downloadDir();
-    music = await audioDir();
-    pictures = await pictureDir();
-    videos = await videoDir();
-  } catch {
-    documents = home ? `${home}/Documents` : "";
-    downloads = home ? `${home}/Downloads` : "";
-    music     = home ? `${home}/Music`     : "";
-    pictures  = home ? `${home}/Pictures`  : "";
-    videos    = home ? `${home}/Videos`    : "";
-  }
-
-  if (home) {
-    addSidebarItem("Home", PLACES_ICONS.home, home, placesSection);
-  }
-  addSidebarPlaceholder("Recent",  PLACES_ICONS.recent,  placesSection);
-  addSidebarPlaceholder("Starred", PLACES_ICONS.starred, placesSection);
-  addSidebarPlaceholder("Network", PLACES_ICONS.network, placesSection);
-  addSidebarPlaceholder("Trash",   PLACES_ICONS.trash,   placesSection);
-
-  if (documents) addSidebarItem("Documents", folderIcon("Documents"), documents, bookmarksSection);
-  if (music)     addSidebarItem("Music",     folderIcon("Music"),     music,      bookmarksSection);
-  if (pictures)  addSidebarItem("Pictures",  folderIcon("Pictures"),  pictures,   bookmarksSection);
-  if (videos)    addSidebarItem("Videos",    folderIcon("Videos"),    videos,     bookmarksSection);
-  if (downloads) addSidebarItem("Downloads", folderIcon("Downloads"), downloads,  bookmarksSection);
-
-  updateNavButtons();
-
-  if (home) {
-    await renderInternal(home);
-  }
+  home = await homeDir().catch(() => "");
+  trashPath = home ? joinPath(home, ".Trash") : "";
+  await buildSidebar();
+  await navigate(home || "/", { history: "none" });
 }
 
 window.addEventListener("DOMContentLoaded", () => {

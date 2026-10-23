@@ -113,6 +113,25 @@ pub fn list_dir(path: String, show_hidden: bool) -> Result<Vec<Entry>, String> {
     read_entries(Path::new(&path), show_hidden)
 }
 
+/// Number of entries directly inside `path`, or `None` if it can't be read.
+pub fn count_items(path: &Path, show_hidden: bool) -> Option<u32> {
+    let read_dir = std::fs::read_dir(path).ok()?;
+    let count = read_dir
+        .filter_map(|e| e.ok())
+        .filter(|e| show_hidden || !e.file_name().to_string_lossy().starts_with('.'))
+        .count();
+    Some(count as u32)
+}
+
+/// Item counts for several folders at once (the "12 items" size column).
+#[tauri::command]
+pub fn item_counts(paths: Vec<String>, show_hidden: bool) -> Vec<Option<u32>> {
+    paths
+        .iter()
+        .map(|p| count_items(Path::new(p), show_hidden))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +198,32 @@ mod tests {
             let entry = entries.iter().find(|e| e.name == "broken_link").expect("broken_link not found");
             assert!(entry.is_symlink);
         }
+    }
+
+    // ----- item_counts tests -----
+
+    #[test]
+    fn count_items_respects_hidden_flag() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "a").unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join(".hidden"), "h").unwrap();
+
+        assert_eq!(count_items(dir.path(), false), Some(2));
+        assert_eq!(count_items(dir.path(), true), Some(3));
+    }
+
+    #[test]
+    fn item_counts_returns_none_for_unreadable_path() {
+        let dir = tempdir().unwrap();
+        let counts = item_counts(
+            vec![
+                dir.path().to_string_lossy().to_string(),
+                "/no/such/path/exists/here".to_string(),
+            ],
+            false,
+        );
+        assert_eq!(counts, vec![Some(0), None]);
     }
 
     // ----- make_dir tests -----

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "MOCK_TAURI=1 vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"

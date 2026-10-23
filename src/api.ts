@@ -21,6 +21,14 @@ export async function listDir(
   return invoke<Entry[]>("list_dir", { path, showHidden });
 }
 
+/** Item counts for several folders; `null` where a folder can't be read. */
+export async function itemCounts(
+  paths: string[],
+  showHidden: boolean
+): Promise<(number | null)[]> {
+  return invoke<(number | null)[]>("item_counts", { paths, showHidden });
+}
+
 /** Create a new directory at the given path. Errors if the path already exists. */
 export async function makeDir(path: string): Promise<void> {
   return invoke<void>("make_dir", { path });
