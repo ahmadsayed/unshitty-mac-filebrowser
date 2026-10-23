@@ -3,9 +3,6 @@
    Adwaita palette: light + dark via prefers-color-scheme
    ============================================================================= */
 
-/* ----- Google Fonts: Cantarell ----- */
-@import url('https://fonts.googleapis.com/css2?family=Cantarell:wght@400;600;700&display=swap');
-
 /* ----- Reset ----- */
 *, *::before, *::after {
   box-sizing: border-box;
