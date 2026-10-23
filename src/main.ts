@@ -1,12 +1,13 @@
-import { homeDir, desktopDir, documentDir, downloadDir } from "@tauri-apps/api/path";
+import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir } from "@tauri-apps/api/path";
 import { listDir, type Entry } from "./api";
+import { folderIcon, fileIcon } from "./icons";
 
 // ---------------------------------------------------------------------------
 // Module-level state (Task 4+ navigation will mutate these)
 // ---------------------------------------------------------------------------
 export let currentPath = "";
 export type ViewMode = "list" | "icon";
-export let viewMode: ViewMode = "list";
+export let viewMode: ViewMode = "icon";   // Default: grid/icon view
 
 export function setViewMode(mode: ViewMode): void {
   viewMode = mode;
@@ -16,7 +17,7 @@ export function setViewMode(mode: ViewMode): void {
 // DOM refs
 // ---------------------------------------------------------------------------
 let listingEl: HTMLElement | null = null;
-let pathLabelEl: HTMLElement | null = null;
+let crumbSegmentsEl: HTMLElement | null = null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -40,18 +41,15 @@ function formatDate(unixSeconds: number): string {
   });
 }
 
-/** Determine the icon character for a given entry. */
-function entryIcon(entry: Entry): string {
-  if (entry.is_symlink) return "🔗";
-  if (entry.is_dir) return "📁";
-  // Basic file-type icons by extension
-  const ext = entry.name.split(".").pop()?.toLowerCase() ?? "";
-  if (["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"].includes(ext)) return "🖼";
-  if (["mp4", "mkv", "mov", "avi", "webm"].includes(ext)) return "🎬";
-  if (["mp3", "wav", "flac", "ogg", "aac"].includes(ext)) return "🎵";
-  if (["pdf"].includes(ext)) return "📄";
-  if (["zip", "tar", "gz", "bz2", "xz", "7z", "rar"].includes(ext)) return "📦";
-  return "📄";
+// ---------------------------------------------------------------------------
+// XSS protection — escape HTML entities in filenames (SECURITY: preserved)
+// ---------------------------------------------------------------------------
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 // ---------------------------------------------------------------------------
@@ -65,54 +63,85 @@ function sortEntries(entries: Entry[]): Entry[] {
 }
 
 // ---------------------------------------------------------------------------
+// Breadcrumb update
+// ---------------------------------------------------------------------------
+function updateBreadcrumb(path: string): void {
+  if (!crumbSegmentsEl) return;
+
+  // Strip leading slash and split
+  const parts = path.replace(/^\//, "").split("/").filter(Boolean);
+
+  if (parts.length === 0) {
+    crumbSegmentsEl.innerHTML = "";
+    return;
+  }
+
+  const frags: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) {
+      frags.push(`<span class="crumb-sep" aria-hidden="true">›</span>`);
+    }
+    // SECURITY: escape each path segment before insertion
+    frags.push(`<span class="crumb-seg">${escapeHtml(parts[i])}</span>`);
+  }
+  crumbSegmentsEl.innerHTML = frags.join("");
+}
+
+// ---------------------------------------------------------------------------
 // Render: list view
 // ---------------------------------------------------------------------------
 function renderListView(entries: Entry[]): HTMLElement {
-  const table = document.createElement("table");
-  table.className = "listing-table";
+  const container = document.createElement("div");
+  container.className = "listing-list";
 
-  const thead = document.createElement("thead");
-  thead.innerHTML = `
-    <tr>
-      <th class="col-icon"></th>
-      <th class="col-name">Name</th>
-      <th class="col-size">Size</th>
-      <th class="col-modified">Modified</th>
-    </tr>
+  // Header row
+  const header = document.createElement("div");
+  header.className = "list-header";
+  // The header has 4 cells: icon (empty), Name, Size, Modified
+  header.innerHTML = `
+    <span></span>
+    <span>Name</span>
+    <span style="text-align:right;padding-right:16px">Size</span>
+    <span>Modified</span>
   `;
-  table.appendChild(thead);
+  container.appendChild(header);
 
-  const tbody = document.createElement("tbody");
   for (const entry of entries) {
-    const tr = document.createElement("tr");
-    tr.className = "entry-row";
-    if (entry.is_dir) tr.dataset.isDir = "true";
-    tr.dataset.path = entry.path;
+    const row = document.createElement("div");
+    row.className = "list-row";
+    if (entry.is_dir) row.dataset.isDir = "true";
+    row.dataset.path = entry.path;
 
     const sizeText = entry.is_dir ? "—" : formatSize(entry.size);
 
-    tr.innerHTML = `
-      <td class="col-icon">${entryIcon(entry)}</td>
-      <td class="col-name">${escapeHtml(entry.name)}</td>
-      <td class="col-size">${sizeText}</td>
-      <td class="col-modified">${formatDate(entry.modified)}</td>
+    // Icon: SVG from icons.ts — safe fixed template strings
+    const iconSvg = entry.is_dir ? folderIcon(entry.name) : fileIcon(entry);
+
+    // Name: SECURITY — escapeHtml applied
+    const nameHtml = escapeHtml(entry.name);
+
+    row.innerHTML = `
+      <span class="list-cell-icon">${iconSvg}</span>
+      <span class="list-cell-name">${nameHtml}</span>
+      <span class="list-cell-size">${sizeText}</span>
+      <span class="list-cell-modified">${formatDate(entry.modified)}</span>
     `;
 
-    tr.addEventListener("dblclick", () => {
+    row.addEventListener("dblclick", () => {
       if (entry.is_dir) {
         render(entry.path).catch(console.error);
       }
       // Files: no-op for now (Task 7 will handle open-in-default-app)
     });
 
-    tbody.appendChild(tr);
+    container.appendChild(row);
   }
-  table.appendChild(tbody);
-  return table;
+
+  return container;
 }
 
 // ---------------------------------------------------------------------------
-// Render: icon view
+// Render: grid / icon view
 // ---------------------------------------------------------------------------
 function renderIconView(entries: Entry[]): HTMLElement {
   const grid = document.createElement("div");
@@ -124,9 +153,15 @@ function renderIconView(entries: Entry[]): HTMLElement {
     item.dataset.path = entry.path;
     if (entry.is_dir) item.dataset.isDir = "true";
 
+    // Icon: SVG from icons.ts — safe fixed template strings
+    const iconSvg = entry.is_dir ? folderIcon(entry.name) : fileIcon(entry);
+
+    // Name: SECURITY — escapeHtml applied
+    const nameHtml = escapeHtml(entry.name);
+
     item.innerHTML = `
-      <span class="icon-item-icon">${entryIcon(entry)}</span>
-      <span class="icon-item-name">${escapeHtml(entry.name)}</span>
+      <span class="icon-item-icon">${iconSvg}</span>
+      <span class="icon-item-name">${nameHtml}</span>
     `;
 
     item.addEventListener("dblclick", () => {
@@ -141,17 +176,6 @@ function renderIconView(entries: Entry[]): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// XSS protection – escape HTML entities in filenames
-// ---------------------------------------------------------------------------
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-// ---------------------------------------------------------------------------
 // Core render function (called by this module and future tasks)
 // ---------------------------------------------------------------------------
 export async function render(path: string): Promise<void> {
@@ -159,10 +183,8 @@ export async function render(path: string): Promise<void> {
 
   currentPath = path;
 
-  // Update path label in toolbar
-  if (pathLabelEl) {
-    pathLabelEl.textContent = path;
-  }
+  // Update breadcrumb
+  updateBreadcrumb(path);
 
   // Mark the matching sidebar item active
   document.querySelectorAll<HTMLElement>(".sidebar-item").forEach((item) => {
@@ -198,60 +220,124 @@ export async function render(path: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Sidebar place link helper
+// Sidebar: add a clickable place with an SVG icon
 // ---------------------------------------------------------------------------
-function addSidebarPlace(
+function addSidebarItem(
   label: string,
-  iconChar: string,
+  iconHtml: string,
   path: string,
-  sidebarList: HTMLElement
+  section: HTMLElement,
+  isEmoji = false
 ): void {
   const item = document.createElement("div");
   item.className = "sidebar-item";
   item.dataset.path = path;
-  item.innerHTML = `<span class="sidebar-icon">${iconChar}</span><span class="sidebar-label">${label}</span>`;
+
+  const iconClass = isEmoji ? "sidebar-item-emoji" : "sidebar-item-icon";
+  // SECURITY: label comes from our own code, iconHtml is our own SVG template — both safe
+  item.innerHTML = `<span class="${iconClass}">${iconHtml}</span><span class="sidebar-item-label">${escapeHtml(label)}</span>`;
+
   item.addEventListener("click", () => {
     render(path).catch(console.error);
   });
-  sidebarList.appendChild(item);
+  section.appendChild(item);
 }
+
+/** Add a non-navigable placeholder sidebar item (no path). */
+function addSidebarPlaceholder(
+  label: string,
+  iconHtml: string,
+  section: HTMLElement
+): void {
+  const item = document.createElement("div");
+  item.className = "sidebar-item";
+  item.innerHTML = `<span class="sidebar-item-emoji">${iconHtml}</span><span class="sidebar-item-label">${escapeHtml(label)}</span>`;
+  section.appendChild(item);
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar SVG icons for Places section
+// ---------------------------------------------------------------------------
+const PLACES_ICONS: Record<string, string> = {
+  home: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2 8 L8 2 L14 8"/><path d="M4 7 v7 h3 V10 h2 v4 h3 V7"/>
+  </svg>`,
+  recent: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+    <circle cx="8" cy="8" r="6"/><path d="M8 5 v3 l2.5 2"/>
+  </svg>`,
+  starred: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <polygon points="8,2 10,6.5 15,7.2 11.5,10.5 12.5,15.5 8,13 3.5,15.5 4.5,10.5 1,7.2 6,6.5"/>
+  </svg>`,
+  network: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+    <rect x="1" y="1" width="5" height="4" rx="1"/><rect x="10" y="1" width="5" height="4" rx="1"/>
+    <rect x="5" y="11" width="6" height="4" rx="1"/>
+    <path d="M8 5 v3 m-4.5-3 v2 l4.5 1 m4.5-3 v2 l-4.5 1"/>
+  </svg>`,
+  trash: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 5 h10 l-1 9 H4 z"/><path d="M6 5 V3 h4 v2"/><line x1="1" y1="5" x2="15" y2="5"/>
+    <line x1="6.5" y1="7" x2="6.5" y2="12"/><line x1="9.5" y1="7" x2="9.5" y2="12"/>
+  </svg>`,
+};
 
 // ---------------------------------------------------------------------------
 // Initialise
 // ---------------------------------------------------------------------------
 async function init(): Promise<void> {
   listingEl = document.querySelector<HTMLElement>("#listing");
-  pathLabelEl = document.querySelector<HTMLElement>("#path-label");
+  crumbSegmentsEl = document.querySelector<HTMLElement>("#crumb-segments");
 
-  const sidebarList = document.querySelector<HTMLElement>("#sidebar-places");
-  if (!sidebarList) return;
+  const placesSection = document.querySelector<HTMLElement>("#sidebar-places");
+  const bookmarksSection = document.querySelector<HTMLElement>("#sidebar-bookmarks");
+  if (!placesSection || !bookmarksSection) return;
+
+  // Wire up view toggle buttons
+  const btnGrid = document.querySelector<HTMLButtonElement>("#btn-view-grid");
+  if (btnGrid) {
+    btnGrid.addEventListener("click", () => {
+      setViewMode("icon");
+      render(currentPath).catch(console.error);
+    });
+  }
 
   // Resolve standard paths
   let home = "";
-  try {
-    home = await homeDir();
-  } catch {
-    home = "";
-  }
+  try { home = await homeDir(); } catch { home = ""; }
 
-  let desktop = "";
   let documents = "";
   let downloads = "";
+  let music = "";
+  let pictures = "";
+  let videos = "";
   try {
-    desktop = await desktopDir();
     documents = await documentDir();
     downloads = await downloadDir();
+    music = await audioDir();
+    pictures = await pictureDir();
+    videos = await videoDir();
   } catch {
-    // Fallback: build paths from home dir if specific API calls fail
-    desktop = home ? `${home}/Desktop` : "";
+    // Fallback: build paths from home dir
     documents = home ? `${home}/Documents` : "";
     downloads = home ? `${home}/Downloads` : "";
+    music     = home ? `${home}/Music`     : "";
+    pictures  = home ? `${home}/Pictures`  : "";
+    videos    = home ? `${home}/Videos`    : "";
   }
 
-  if (home) addSidebarPlace("Home", "🏠", home, sidebarList);
-  if (desktop) addSidebarPlace("Desktop", "🖥", desktop, sidebarList);
-  if (documents) addSidebarPlace("Documents", "📁", documents, sidebarList);
-  if (downloads) addSidebarPlace("Downloads", "⬇", downloads, sidebarList);
+  // ----- Places section: Home + non-navigable placeholders -----
+  if (home) {
+    addSidebarItem("Home", PLACES_ICONS.home, home, placesSection);
+  }
+  addSidebarPlaceholder("Recent",  PLACES_ICONS.recent,  placesSection);
+  addSidebarPlaceholder("Starred", PLACES_ICONS.starred, placesSection);
+  addSidebarPlaceholder("Network", PLACES_ICONS.network, placesSection);
+  addSidebarPlaceholder("Trash",   PLACES_ICONS.trash,   placesSection);
+
+  // ----- Bookmarks section: navigable folder shortcuts -----
+  if (documents) addSidebarItem("Documents", folderIcon("Documents"), documents, bookmarksSection);
+  if (music)     addSidebarItem("Music",     folderIcon("Music"),     music,      bookmarksSection);
+  if (pictures)  addSidebarItem("Pictures",  folderIcon("Pictures"),  pictures,   bookmarksSection);
+  if (videos)    addSidebarItem("Videos",    folderIcon("Videos"),    videos,     bookmarksSection);
+  if (downloads) addSidebarItem("Downloads", folderIcon("Downloads"), downloads,  bookmarksSection);
 
   // Render the home directory on load
   if (home) {

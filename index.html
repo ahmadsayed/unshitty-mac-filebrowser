@@ -4,41 +4,111 @@
     <meta charset="UTF-8" />
     <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>File Browser</title>
+    <title>Files</title>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
   <body>
-    <!-- ===== App Shell (Nautilus-style) ===== -->
     <div class="app-shell">
 
-      <!-- Left sidebar -->
+      <!-- ===== Sidebar ===== -->
       <aside class="sidebar">
-        <div class="sidebar-header">Places</div>
-        <nav id="sidebar-places" class="sidebar-places"></nav>
+        <!-- Sidebar headerbar row: search / "Files" title / hamburger -->
+        <div class="sidebar-titlebar">
+          <button class="ico-btn" id="btn-search" title="Search" aria-label="Search">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+              <circle cx="7" cy="7" r="4.5"/>
+              <line x1="10.5" y1="10.5" x2="14" y2="14"/>
+            </svg>
+          </button>
+          <span class="sidebar-title">Files</span>
+          <button class="ico-btn" id="btn-menu" title="Menu" aria-label="Menu">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+              <line x1="2" y1="4" x2="14" y2="4"/>
+              <line x1="2" y1="8" x2="14" y2="8"/>
+              <line x1="2" y1="12" x2="14" y2="12"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Places section -->
+        <nav id="sidebar-places" class="sidebar-section"></nav>
+
+        <!-- Divider -->
+        <div class="sidebar-divider"></div>
+
+        <!-- Bookmarks section -->
+        <nav id="sidebar-bookmarks" class="sidebar-section"></nav>
+
+        <!-- Divider -->
+        <div class="sidebar-divider"></div>
+
+        <!-- Mounts section (placeholder) -->
+        <nav id="sidebar-mounts" class="sidebar-section sidebar-mounts">
+        </nav>
       </aside>
 
-      <!-- Main content area -->
+      <!-- ===== Main area ===== -->
       <div class="main">
 
-        <!-- Toolbar -->
-        <div class="toolbar" id="toolbar">
-          <!-- Navigation buttons placeholder (Task 4) -->
-          <div class="toolbar-nav" id="toolbar-nav">
-            <button class="toolbar-btn" id="btn-back" title="Go back" disabled>&#8592;</button>
-            <button class="toolbar-btn" id="btn-forward" title="Go forward" disabled>&#8594;</button>
-            <button class="toolbar-btn" id="btn-up" title="Go up" disabled>&#8593;</button>
+        <!-- Headerbar -->
+        <div class="headerbar" id="toolbar">
+          <!-- Back / forward -->
+          <div class="hb-nav">
+            <button class="ico-btn" id="btn-back" title="Go back" aria-label="Go back" disabled>
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="10,3 5,8 10,13"/>
+              </svg>
+            </button>
+            <button class="ico-btn" id="btn-forward" title="Go forward" aria-label="Go forward" disabled>
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6,3 11,8 6,13"/>
+              </svg>
+            </button>
           </div>
 
-          <!-- Path breadcrumb -->
-          <div class="toolbar-path">
-            <span class="path-label" id="path-label"></span>
+          <!-- Centered pill breadcrumb -->
+          <div class="crumbbar" id="crumbbar">
+            <span class="crumb-home" id="crumb-home" aria-label="Home">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M2 8 L8 2 L14 8"/>
+                <path d="M4 7 v7 h8 V7"/>
+              </svg>
+            </span>
+            <span class="crumb-segments" id="crumb-segments"></span>
           </div>
 
-          <!-- View mode toggle placeholder (Task 4) -->
-          <div class="toolbar-actions" id="toolbar-actions">
-            <button class="toolbar-btn" id="btn-view-list" title="List view">&#9776;</button>
-            <button class="toolbar-btn" id="btn-view-icon" title="Icon view">&#9638;</button>
+          <!-- Right actions: overflow menu, new folder, view toggle -->
+          <div class="hb-actions">
+            <button class="ico-btn" id="btn-overflow" title="More options" aria-label="More options">
+              <svg viewBox="0 0 16 16" fill="none">
+                <circle cx="8" cy="3" r="1.4" fill="currentColor"/>
+                <circle cx="8" cy="8" r="1.4" fill="currentColor"/>
+                <circle cx="8" cy="13" r="1.4" fill="currentColor"/>
+              </svg>
+            </button>
+            <button class="ico-btn" id="btn-new-folder" title="New folder" aria-label="New folder">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                <path d="M1 4 a2 2 0 0 1 2-2 h4 l1.5 2 H13 a2 2 0 0 1 2 2 v6 a2 2 0 0 1 -2 2 H3 a2 2 0 0 1 -2 -2 z"/>
+                <line x1="8" y1="7" x2="8" y2="11"/>
+                <line x1="6" y1="9" x2="10" y2="9"/>
+              </svg>
+            </button>
+            <div class="viewtoggle">
+              <button class="ico-btn viewtoggle-btn" id="btn-view-grid" title="Grid view" aria-label="Grid view">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <rect x="2" y="2" width="5" height="5" rx="1"/>
+                  <rect x="9" y="2" width="5" height="5" rx="1"/>
+                  <rect x="2" y="9" width="5" height="5" rx="1"/>
+                  <rect x="9" y="9" width="5" height="5" rx="1"/>
+                </svg>
+              </button>
+              <button class="ico-btn viewtoggle-chevron" id="btn-view-chevron" title="View options" aria-label="View options">
+                <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="2,3.5 5,6.5 8,3.5"/>
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
 
