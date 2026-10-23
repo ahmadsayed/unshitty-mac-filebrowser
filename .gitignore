@@ -4,3 +4,4 @@ src-tauri/target/
 .superpowers/
 .DS_Store
 .superpowers/
+package-lock.json
