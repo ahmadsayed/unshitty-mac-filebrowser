@@ -20,3 +20,13 @@ export async function listDir(
 ): Promise<Entry[]> {
   return invoke<Entry[]>("list_dir", { path, showHidden });
 }
+
+/** Create a new directory at the given path. Errors if the path already exists. */
+export async function makeDir(path: string): Promise<void> {
+  return invoke<void>("make_dir", { path });
+}
+
+/** Rename/move `from` to `to`. Errors if `to` already exists. */
+export async function renameEntry(from: string, to: string): Promise<void> {
+  return invoke<void>("rename_entry", { from, to });
+}

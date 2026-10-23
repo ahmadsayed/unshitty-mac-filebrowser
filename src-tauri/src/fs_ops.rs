@@ -1,6 +1,24 @@
 use std::path::Path;
 use serde::Serialize;
 
+#[tauri::command]
+pub fn make_dir(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if p.exists() {
+        return Err(format!("Path already exists: {}", path));
+    }
+    std::fs::create_dir(p).map_err(|e| format!("Failed to create directory: {}", e))
+}
+
+#[tauri::command]
+pub fn rename_entry(from: String, to: String) -> Result<(), String> {
+    let to_path = Path::new(&to);
+    if to_path.exists() {
+        return Err(format!("Target already exists: {}", to));
+    }
+    std::fs::rename(&from, &to).map_err(|e| format!("Failed to rename: {}", e))
+}
+
 #[derive(Debug, Serialize)]
 pub struct Entry {
     pub name: String,
@@ -161,5 +179,68 @@ mod tests {
             let entry = entries.iter().find(|e| e.name == "broken_link").expect("broken_link not found");
             assert!(entry.is_symlink);
         }
+    }
+
+    // ----- make_dir tests -----
+
+    #[test]
+    fn make_dir_creates_directory() {
+        let dir = tempdir().unwrap();
+        let new_dir = dir.path().join("new_folder");
+        let path_str = new_dir.to_string_lossy().to_string();
+
+        assert!(!new_dir.exists());
+        make_dir(path_str).unwrap();
+        assert!(new_dir.exists());
+        assert!(new_dir.is_dir());
+    }
+
+    #[test]
+    fn make_dir_errors_when_already_exists() {
+        let dir = tempdir().unwrap();
+        let existing = dir.path().join("existing_folder");
+        fs::create_dir(&existing).unwrap();
+        let path_str = existing.to_string_lossy().to_string();
+
+        let result = make_dir(path_str);
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("already exists"), "unexpected error: {}", msg);
+    }
+
+    // ----- rename_entry tests -----
+
+    #[test]
+    fn rename_entry_renames_file() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("original.txt");
+        let dst = dir.path().join("renamed.txt");
+        fs::write(&src, "hello").unwrap();
+
+        rename_entry(
+            src.to_string_lossy().to_string(),
+            dst.to_string_lossy().to_string(),
+        )
+        .unwrap();
+
+        assert!(!src.exists());
+        assert!(dst.exists());
+    }
+
+    #[test]
+    fn rename_entry_errors_when_target_exists() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("source.txt");
+        let dst = dir.path().join("target.txt");
+        fs::write(&src, "hello").unwrap();
+        fs::write(&dst, "world").unwrap();
+
+        let result = rename_entry(
+            src.to_string_lossy().to_string(),
+            dst.to_string_lossy().to_string(),
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("already exists"), "unexpected error: {}", msg);
     }
 }

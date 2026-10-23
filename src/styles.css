@@ -319,11 +319,84 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0 2px;
+  transition: background 0.1s;
+}
+
+.crumb-seg:hover {
+  background: var(--hover-item);
 }
 
 .crumb-seg:last-child {
   font-weight: 600;
   color: var(--fg);
+}
+
+/* Editable path input inside crumbbar */
+.path-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--fg);
+  width: 100%;
+  min-width: 0;
+  padding: 0 2px;
+}
+
+.path-input::selection {
+  background: var(--sel-item);
+}
+
+/* =============================================================================
+   ERROR BANNER
+   ============================================================================= */
+
+.error-banner {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: rgba(192, 28, 40, 0.1);
+  border-bottom: 1px solid rgba(192, 28, 40, 0.2);
+  color: var(--error);
+  font-size: 13px;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.error-banner.visible {
+  display: flex;
+}
+
+@media (prefers-color-scheme: dark) {
+  .error-banner {
+    background: rgba(255, 123, 123, 0.1);
+    border-bottom-color: rgba(255, 123, 123, 0.2);
+  }
+}
+
+.error-banner-dismiss {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--error);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: opacity 0.1s;
+}
+
+.error-banner-dismiss:hover {
+  opacity: 1;
 }
 
 /* ----- View toggle cluster ----- */
