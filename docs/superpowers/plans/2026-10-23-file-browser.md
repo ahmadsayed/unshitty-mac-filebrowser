@@ -98,6 +98,35 @@ git init && git add -A && git commit -m "chore: scaffold Tauri app with opener p
 
 ---
 
+## Task 3b: Restyle to modern GNOME Files (GNOME 50/51) + libadwaita
+
+Added 2026-10-23 after the user clarified the visual target and approved an
+HTML mockup. The original Task 3 shipped a classic-Nautilus "Adwaita-ish"
+look; this task replaces the styling (and the icon/layout markup it depends
+on) to match modern GNOME Files. It does NOT change the data flow, the `Entry`
+contract, `currentPath`, or `render(path)` — only presentation and the DOM
+structure the CSS targets.
+
+**Reference:** the approved mockup at
+`.superpowers/brainstorm/1547-1792747183/content/02-files-mockup-v2.html` and
+the "Visual target (revised)" section of the spec. Read both before starting.
+
+**Files:**
+- Modify: `src/styles.css` (full restyle), `index.html` (headerbar + sidebar structure), `src/main.ts` (icon rendering, sidebar sections, folder-glyph selection).
+- Create: `src/icons.ts` (SVG string builders for the Adwaita folder + symbolic glyphs and file-type icons).
+
+**Interfaces:**
+- Consumes: Task 3's `render`, `currentPath`, `listDir`, `Entry`.
+- Produces: `src/icons.ts` exporting `folderIcon(name: string): string` (returns an SVG string — an Adwaita folder with a symbolic glyph chosen by well-known folder name: Downloads→arrow, Music→note, Pictures→image, Videos→video, Public→share, else plain) and `fileIcon(entry: Entry): string`. Icons are injected as SVG, and any entry-derived text (`entry.name`) continues to be escaped before insertion (preserve Task 3's `escapeHtml`).
+
+- [ ] **Step 1:** Create `src/icons.ts` with the Adwaita folder SVG (darker-blue tab + lighter-blue face) and `folderIcon`/`fileIcon` builders. Folder glyph chosen by name as above.
+- [ ] **Step 2:** Rework `index.html`: sidebar header row (search icon / "Files" / hamburger); sidebar sections split by a divider (places → bookmarks → mounts placeholder); headerbar with back/forward, centered pill breadcrumb (home glyph + segments), `⋮`, new-folder button, and the grid/list toggle with a dropdown chevron.
+- [ ] **Step 3:** Rewrite `src/styles.css` to the Adwaita palette from the spec (light + dark via `prefers-color-scheme`): accent `#3584e4`, flat rounded-rectangle sidebar selection with accent-colored active icon, grid tiles with the SVG folders, compact list rows, Cantarell→system font. No UI framework.
+- [ ] **Step 4:** Update `src/main.ts` render to use `icons.ts` for grid and list, and to populate the sidebar sections. Keep `escapeHtml` on all entry names.
+- [ ] **Step 5:** `npm run build` (tsc+vite) and `cargo build` pass. Then build the debug `.app` and launch it for a visual check against the mockup (the controller will do this with the user). Commit.
+
+---
+
 ## Task 4: Navigation, view toggle, hidden-files toggle, new folder, rename
 
 **Files:**
@@ -109,14 +138,14 @@ git init && git add -A && git commit -m "chore: scaffold Tauri app with opener p
 - Consumes: Task 2/3.
 - Produces:
   - Rust: `#[tauri::command] fn make_dir(path: String) -> Result<(), String>` (errors if exists), `#[tauri::command] fn rename_entry(from: String, to: String) -> Result<(), String>` (errors if `to` exists).
-  - Frontend: history stack (`back`/`forward`/`up`), breadcrumb from `currentPath`, a path-entry input, icon/list view toggle, hidden-files toggle wired to `listDir`'s `showHidden`.
+  - Frontend: history stack (`back`/`forward`/`up`), breadcrumb from `currentPath`, a Cmd+L/Ctrl+L editable path bar, icon/list view toggle, hidden-files toggle wired to `listDir`'s `showHidden`.
 
 - [ ] **Step 1: Write failing Rust tests:** `make_dir` creates a dir and errors when it already exists; `rename_entry` renames and errors when the target name already exists.
 - [ ] **Step 2:** `cargo test` → FAIL.
 - [ ] **Step 3:** Implement `make_dir` (error if `path.exists()`) and `rename_entry` (error if `to` exists, else `fs::rename`); register both.
 - [ ] **Step 4:** `cargo test` → PASS.
-- [ ] **Step 5:** Frontend: add back/forward/up (history stack), clickable breadcrumb, path input (Enter jumps), view-mode toggle (icon/list), hidden toggle (Cmd+Shift+.), new-folder button → `make_dir` then re-render, rename (F2/Enter on selection) → `rename_entry` then re-render. Surface errors in a small banner/dialog.
-- [ ] **Step 6:** `npm run tauri dev`; confirm each control works. Commit.
+- [ ] **Step 5:** Frontend: add back/forward/up (history stack), clickable pill breadcrumb. **Path bar:** by default show the breadcrumb; **Cmd+L AND Ctrl+L** (bind both) toggle it into a focused `<input>` pre-filled with `currentPath` and text selected — Enter calls `render(typedPath)` (error banner if the path doesn't exist), Esc reverts to the breadcrumb without navigating; clicking away also reverts. View-mode toggle (grid/list) with the dropdown chevron. Hidden toggle (Cmd+Shift+.). New-folder button → `make_dir` then re-render. Rename (F2/Enter on selection) → `rename_entry` then re-render. Surface errors in a small banner/dialog.
+- [ ] **Step 6:** `npm run tauri dev`; confirm each control works — especially that Cmd+L and Ctrl+L both toggle the editable path field and Esc reverts. Commit.
 
 ---
 

@@ -32,7 +32,10 @@ A standalone desktop application for macOS that provides:
    - Double-click a folder to enter it.
    - Back / forward / up buttons.
    - A clickable breadcrumb path bar.
-   - Ability to type a path and jump to it.
+   - **Cmd+L / Ctrl+L** toggles the breadcrumb into an editable, focused path
+     field pre-filled with the current path; Enter navigates to the typed path,
+     Esc reverts to the breadcrumb. (Added 2026-10-23 at the user's request —
+     matches GNOME Files behavior.)
 4. **File operations**
    - Copy, cut, paste, rename, delete-to-Trash, create new folder.
    - Available via right-click context menu and keyboard shortcuts.
@@ -95,8 +98,42 @@ chose:
 - **Delete-to-Trash**: use a maintained Rust crate (e.g. `trash`) rather than
   shelling out, so deletes are recoverable via macOS Trash.
 - **Open-in-default-app**: use the Tauri opener / macOS `open` mechanism.
-- **Styling**: approximate the Nautilus (GNOME Adwaita) look — light, clean,
-  flat, with the characteristic sidebar. Pixel-exact fidelity is not required.
+- **Styling**: approximate the look of **modern GNOME Files (GNOME 48–51)**
+  with **libadwaita** styling, NOT classic Nautilus. (Revised 2026-10-23 after
+  the user clarified the target and approved a mockup — see
+  "Visual target (revised)" below.) Pixel-exact fidelity is not required, but
+  the distinctive modern-Files elements are: Adwaita blue folder icons
+  (darker tab + lighter face + symbolic glyph inside), a flat rounded-rectangle
+  sidebar selection (not a pill or full-width bar), a sidebar header row
+  ("search / Files / menu"), a centered pill breadcrumb in the headerbar with a
+  home glyph, the grid/list view toggle with a dropdown chevron, and a light,
+  airy layout with generous icon spacing. Dark mode follows the Adwaita dark
+  palette.
+
+### Visual target (revised 2026-10-23)
+
+The user corrected the original "Nautilus" framing: the target is **modern
+GNOME Files (GNOME 50/51) with libadwaita**, confirmed against a real
+screenshot and an approved HTML mockup. Key specifics:
+
+- **Folder icons:** Adwaita style — a darker-blue folder tab over a lighter-blue
+  face, with a symbolic monochrome glyph centered on known folders (Downloads =
+  down-arrow, Music = note, Pictures = image, Videos = video, Public = share).
+- **Sidebar:** top header row with a search icon, the word "Files", and a
+  hamburger menu. Two sections split by a divider: places
+  (Home / Recent / Starred / Network / Trash) then bookmarks
+  (Documents / Music / Pictures / Videos / Downloads) then mounts. Active row
+  uses a flat rounded-rectangle highlight with the accent-colored icon.
+- **Headerbar:** back / forward, a centered pill breadcrumb (home glyph +
+  segments), then `⋮` menu, new-folder button, and the grid/list toggle with a
+  dropdown chevron.
+- **Palette (Adwaita, from the GNOME HIG):** accent blue `#3584e4`; light bg
+  `#ffffff`/`#f6f6f4`, borders `~#e4e4e4`/`#deddda`, text `#2e3436`/`#241f31`;
+  dark bg `~#1d1d1f`/`#242426`, dark accent `~#78aeed`.
+- **Font:** Cantarell where available, falling back to the system UI font.
+- **Path bar — Cmd+L / Ctrl+L** (new requirement, see Goals): the breadcrumb
+  toggles into a focused, pre-filled editable path field; Enter navigates, Esc
+  reverts to breadcrumb.
 - **Icons**: use a simple icon set (folder/file/known-types). Full per-file
   thumbnails are a non-goal; generic type icons are sufficient for v1.
 
