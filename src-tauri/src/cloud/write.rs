@@ -19,7 +19,7 @@ pub(crate) struct Ctx<'a> {
 }
 
 /// Run `work` with a production context.
-fn live<T>(state: &CloudState, work: impl FnOnce(&Ctx) -> T) -> T {
+pub(crate) fn live<T>(state: &CloudState, work: impl FnOnce(&Ctx) -> T) -> T {
     let refresh = service::google_refresh(state);
     work(&Ctx {
         state,
@@ -59,11 +59,11 @@ pub fn restore(state: &CloudState, path: &str) -> Result<String, String> {
     live(state, |c| restore_in(c, path))
 }
 
-fn message(error: DriveError) -> String {
+pub(crate) fn message(error: DriveError) -> String {
     error.message()
 }
 
-fn client(c: &Ctx, account: &str) -> Result<DriveClient, String> {
+pub(crate) fn client(c: &Ctx, account: &str) -> Result<DriveClient, String> {
     service::client_with(c.state, account, c.base, c.refresh)
 }
 
@@ -76,7 +76,7 @@ fn id_of(location: &DriveLocation) -> Result<String, String> {
 }
 
 /// A pending destination split into its parent and the new name.
-fn pending_target(path: &str) -> Result<(DriveLocation, String, String), String> {
+pub(crate) fn pending_target(path: &str) -> Result<(DriveLocation, String, String), String> {
     let target = service::drive_location(path)?;
     if !target.is_pending() {
         return Err("The destination must be a new name in a Google Drive folder.".into());
@@ -250,25 +250,37 @@ pub(crate) fn copy_in(c: &Ctx, from: &str, to: &str, overwrite: bool) -> Result<
     if staged_name == t.name {
         return Ok(t.target_parent.child(&staged.id, &staged.name).to_uri());
     }
-    finish_staged(&t, &staged)
+    finish_staged(
+        &t.client,
+        &t.target_parent,
+        &t.name,
+        t.replaced.as_ref(),
+        &staged,
+    )
 }
 
 /// Swap a complete staged copy into place: trash what it replaces, then give
 /// it the final name. Any failure trashes the staged copy.
-fn finish_staged(t: &Transfer, staged: &DriveFile) -> Result<String, String> {
-    if let Some(old) = &t.replaced {
-        if let Err(error) = t.client.update(&old.id, &FileChange::trash(true)) {
-            let _ = t.client.update(&staged.id, &FileChange::trash(true));
+pub(crate) fn finish_staged(
+    client: &DriveClient,
+    parent: &DriveLocation,
+    name: &str,
+    replaced: Option<&DriveFile>,
+    staged: &DriveFile,
+) -> Result<String, String> {
+    if let Some(old) = replaced {
+        if let Err(error) = client.update(&old.id, &FileChange::trash(true)) {
+            let _ = client.update(&staged.id, &FileChange::trash(true));
             return Err(format!(
                 "Could not move the existing item to the Trash: {}",
                 message(error)
             ));
         }
     }
-    match t.client.update(&staged.id, &FileChange::rename(&t.name)) {
-        Ok(done) => Ok(t.target_parent.child(&done.id, &done.name).to_uri()),
+    match client.update(&staged.id, &FileChange::rename(name)) {
+        Ok(done) => Ok(parent.child(&done.id, &done.name).to_uri()),
         Err(error) => {
-            let _ = t.client.update(&staged.id, &FileChange::trash(true));
+            let _ = client.update(&staged.id, &FileChange::trash(true));
             Err(message(error))
         }
     }
@@ -317,7 +329,7 @@ pub(crate) fn move_in(c: &Ctx, from: &str, to: &str, overwrite: bool) -> Result<
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::cloud::accounts::{Accounts, DriveAccount};
     use crate::cloud::client::ClientStore;
@@ -325,10 +337,10 @@ mod tests {
     use crate::cloud::test_server::{Log, Reply, serve_replies};
     use crate::cloud::token::{FileTokenStore, Token, TokenStore};
 
-    const ROOT: &str = "gdrive://acct/root~My%20Drive";
+    pub(crate) const ROOT: &str = "gdrive://acct/root~My%20Drive";
     const FOLDER: &str = "application/vnd.google-apps.folder";
 
-    fn state() -> (CloudState, tempfile::TempDir) {
+    pub(crate) fn state() -> (CloudState, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let mut accounts = Accounts::load(dir.path().join("accounts.json"));
         accounts
@@ -355,7 +367,7 @@ mod tests {
         Err("no refresh in tests".into())
     }
 
-    fn ctx<'a>(state: &'a CloudState, base: &'a str) -> Ctx<'a> {
+    pub(crate) fn ctx<'a>(state: &'a CloudState, base: &'a str) -> Ctx<'a> {
         Ctx {
             state,
             base,
@@ -363,23 +375,23 @@ mod tests {
         }
     }
 
-    fn file(id: &str, name: &str) -> String {
+    pub(crate) fn file(id: &str, name: &str) -> String {
         format!(r#"{{"id":"{id}","name":"{name}","mimeType":"text/plain","size":"5"}}"#)
     }
 
-    fn folder(id: &str, name: &str) -> String {
+    pub(crate) fn folder(id: &str, name: &str) -> String {
         format!(r#"{{"id":"{id}","name":"{name}","mimeType":"{FOLDER}"}}"#)
     }
 
-    fn found(items: &[String]) -> Reply {
+    pub(crate) fn found(items: &[String]) -> Reply {
         Reply::json(200, &format!(r#"{{"files":[{}]}}"#, items.join(",")))
     }
 
-    fn ok(json: String) -> Reply {
+    pub(crate) fn ok(json: String) -> Reply {
         Reply::json(200, &json)
     }
 
-    fn run<T>(replies: Vec<Reply>, work: impl FnOnce(&Ctx) -> T) -> (T, Log) {
+    pub(crate) fn run<T>(replies: Vec<Reply>, work: impl FnOnce(&Ctx) -> T) -> (T, Log) {
         let (base, log, server) = serve_replies(replies);
         let (state, _dir) = state();
         let result = work(&ctx(&state, &base));
@@ -387,7 +399,7 @@ mod tests {
         (result, log)
     }
 
-    fn heads(log: &Log) -> Vec<String> {
+    pub(crate) fn heads(log: &Log) -> Vec<String> {
         log.lock().unwrap().iter().map(|r| r.head.clone()).collect()
     }
 

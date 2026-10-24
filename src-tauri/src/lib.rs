@@ -273,8 +273,8 @@ async fn make_dir(app: tauri::AppHandle, path: String) -> Result<String, String>
     Ok(path)
 }
 
-/// Copy or move within Drive. Mixed local/Drive transfers are refused here
-/// until the cross-boundary branch handles them.
+/// Copy or move when either side is in Drive. A local source of a move goes
+/// to the Trash the way Move to Trash sends it, after the upload succeeded.
 async fn drive_transfer(
     app: tauri::AppHandle,
     from: String,
@@ -282,22 +282,20 @@ async fn drive_transfer(
     overwrite: bool,
     moving: bool,
 ) -> Result<String, String> {
-    if !(cloud::is_cloud(&from) && cloud::is_cloud(&to)) {
-        return Err(cloud::service::unsupported());
-    }
     blocking(move || {
+        let home = home_dir(&app)?;
+        let versions = app.state::<VersionsState>();
+        let trash_local = |source: &Path| {
+            versions
+                .trash(source, || trash_ops::trash_and_locate(source, &home))
+                .map(|_| ())
+        };
         let state = app.state::<CloudState>();
-        if moving {
-            cloud::write::move_item(&state, &from, &to, overwrite)
-        } else {
-            cloud::write::copy(&state, &from, &to, overwrite)
-        }
+        cloud::transfer::dispatch(&state, &from, &to, overwrite, moving, trash_local)
     })
     .await?
 }
 
-/// Whether `path` exists. For Drive this asks the API, so it runs off the
-/// command thread.
 #[tauri::command]
 async fn path_exists(app: tauri::AppHandle, path: String) -> bool {
     blocking(move || {

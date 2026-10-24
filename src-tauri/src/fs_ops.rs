@@ -236,7 +236,7 @@ pub fn copy_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn remove_any(path: &Path) -> std::io::Result<()> {
+pub(crate) fn remove_any(path: &Path) -> std::io::Result<()> {
     let meta = std::fs::symlink_metadata(path)?;
     if meta.is_dir() {
         std::fs::remove_dir_all(path)
@@ -246,7 +246,7 @@ fn remove_any(path: &Path) -> std::io::Result<()> {
 }
 
 /// A free hidden name next to `to`, used to stage a copy before it replaces `to`.
-fn staging_path(to: &Path) -> PathBuf {
+pub(crate) fn staging_path(to: &Path) -> PathBuf {
     let dir = to.parent().unwrap_or(Path::new("/"));
     let name = to
         .file_name()
@@ -291,7 +291,7 @@ fn check_transfer(from: &Path, to: &Path, overwrite: bool) -> Result<bool, Strin
 }
 
 /// Swap the staged item into place, sending whatever was at `to` to the Trash.
-fn replace_with_staged(staged: &Path, to: &Path) -> Result<(), String> {
+pub(crate) fn replace_with_staged(staged: &Path, to: &Path) -> Result<(), String> {
     if let Err(e) = trash::delete(to) {
         let _ = remove_any(staged);
         return Err(format!(

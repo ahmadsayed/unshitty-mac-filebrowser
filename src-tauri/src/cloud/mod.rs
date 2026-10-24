@@ -15,6 +15,7 @@ pub mod location;
 pub mod oauth;
 pub mod service;
 pub mod token;
+pub mod transfer;
 pub mod write;
 
 use std::collections::HashMap;

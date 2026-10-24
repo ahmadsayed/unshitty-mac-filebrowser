@@ -538,7 +538,7 @@ fn safe_component(value: &str) -> String {
     }
 }
 
-fn safe_name(name: &str) -> String {
+pub(crate) fn safe_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {
