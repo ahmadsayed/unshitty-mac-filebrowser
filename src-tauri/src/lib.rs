@@ -566,6 +566,10 @@ async fn volumes() -> Result<Vec<platform::Volume>, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    for (key, value) in platform::webview_env_to_set(|k| std::env::var_os(k).is_some()) {
+        // SAFETY: still single-threaded; Tauri and the webview start below.
+        unsafe { std::env::set_var(key, value) };
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {

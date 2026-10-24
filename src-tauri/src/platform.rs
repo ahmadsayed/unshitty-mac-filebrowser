@@ -182,10 +182,35 @@ pub fn data_home(home: &Path) -> PathBuf {
         .unwrap_or_else(|| home.join(".local/share"))
 }
 
+/// Environment defaults for the webview, set before it starts.
+///
+/// WebKitGTK's DMA-BUF renderer makes popovers and dialogs flicker on some
+/// GPU setups (seen on Intel + NVIDIA under Wayland); its shared-memory
+/// fallback is smooth and fast enough for a file browser. Linux only.
+pub const WEBVIEW_ENV: &[(&str, &str)] =
+    if cfg!(target_os = "linux") { &[("WEBKIT_DISABLE_DMABUF_RENDERER", "1")] } else { &[] };
+
+/// The `WEBVIEW_ENV` entries to set: those the user hasn't set already, so
+/// exporting `WEBKIT_DISABLE_DMABUF_RENDERER=0` turns the renderer back on.
+pub fn webview_env_to_set(is_set: impl Fn(&str) -> bool) -> Vec<(&'static str, &'static str)> {
+    WEBVIEW_ENV.iter().copied().filter(|(k, _)| !is_set(k)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn webview_env_keeps_values_the_user_set() {
+        assert_eq!(webview_env_to_set(|_| false), WEBVIEW_ENV.to_vec());
+        assert!(webview_env_to_set(|_| true).is_empty());
+        if cfg!(target_os = "linux") {
+            assert_eq!(WEBVIEW_ENV, &[("WEBKIT_DISABLE_DMABUF_RENDERER", "1")]);
+        } else {
+            assert!(WEBVIEW_ENV.is_empty());
+        }
+    }
 
     #[test]
     fn volumes_lists_only_folders_and_skips_hidden_ones() {
