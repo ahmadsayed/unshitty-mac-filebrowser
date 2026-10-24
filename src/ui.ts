@@ -13,8 +13,27 @@ export interface PopoverHandle {
 }
 
 let activePopover: PopoverHandle | null = null;
-/** When the last popover closed, to tell a replaced menu from a fresh one. */
-let lastPopoverClose = 0;
+/**
+ * True from a press that closed a popover until that press ends. A menu the
+ * same press opens (a right-click on another item) replaces the old one in
+ * place, so it opens instantly instead of replaying the fade and blinking.
+ */
+let pressClosedPopover = false;
+/** The menu button whose popover the current press closed: its click must not reopen it. */
+let pressedAnchor: HTMLElement | null = null;
+
+window.addEventListener("mousedown", () => (pressedAnchor = null), true);
+window.addEventListener("mouseup", () => setTimeout(() => (pressClosedPopover = false), 0), true);
+window.addEventListener(
+  "click",
+  (e) => {
+    if (!pressedAnchor?.contains(e.target as Node)) return;
+    pressedAnchor = null;
+    e.preventDefault();
+    e.stopPropagation();
+  },
+  true
+);
 
 export function closePopover(): void {
   activePopover?.close();
@@ -35,8 +54,9 @@ export function openPopover(
   opts: { onClose?: () => void; focus?: HTMLElement } = {}
 ): PopoverHandle {
   // A right-click on top of an open menu first dismisses it (the backdrop
-  // takes the mousedown), then opens the new one a moment later.
-  const replacing = activePopover !== null || performance.now() - lastPopoverClose < 300;
+  // takes the mousedown), then opens the new one from the contextmenu event.
+  const replacing = activePopover !== null || pressClosedPopover;
+  pressClosedPopover = false;
   closePopover();
 
   const layer = document.createElement("div");
@@ -48,12 +68,8 @@ export function openPopover(
   document.body.appendChild(layer);
 
   const isElement = anchor instanceof HTMLElement;
-  if (!isElement && replacing) {
-    // A context menu replacing one that was just dismissed would replay the
-    // fade at (nearly) the same spot and blink; open it instantly instead.
-    // A menu opened from nothing keeps the libadwaita fade.
-    pop.classList.add("no-animation");
-  }
+  // A menu opened from nothing keeps the libadwaita fade.
+  if (replacing) pop.classList.add("no-animation");
   if (isElement) anchor.classList.add("open");
 
   // Position: below the anchor when it fits, otherwise above; clamp to window.
@@ -98,7 +114,6 @@ export function openPopover(
     close() {
       if (activePopover !== handle) return;
       activePopover = null;
-      lastPopoverClose = performance.now();
       document.removeEventListener("keydown", onKey, true);
       layer.remove();
       if (isElement) anchor.classList.remove("open");
@@ -107,10 +122,13 @@ export function openPopover(
     },
   };
 
-  // A press outside the popover closes it (and is swallowed, like GTK).
+  // A press outside the popover closes it (and is swallowed, like GTK). A
+  // press on the popover's own menu button only closes it, as a toggle.
   layer.addEventListener("mousedown", (e) => {
     if (!pop.contains(e.target as Node)) {
       e.preventDefault();
+      pressClosedPopover = true;
+      if (isElement && within(anchor.getBoundingClientRect(), e)) pressedAnchor = anchor;
       handle.close();
     }
   });
@@ -125,6 +143,10 @@ export function openPopover(
   activePopover = handle;
   (opts.focus ?? pop.querySelector<HTMLElement>("button:not(:disabled), input"))?.focus({ preventScroll: true });
   return handle;
+}
+
+function within(r: DOMRect, e: MouseEvent): boolean {
+  return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
 }
 
 // ---------------------------------------------------------------------------
