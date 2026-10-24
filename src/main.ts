@@ -2825,9 +2825,12 @@ async function init(): Promise<void> {
     if (e.target === scrollEl) onViewContextMenu(e);
   });
   document.addEventListener("keydown", onGlobalKeyDown);
-  // Files opened in other apps meanwhile show up when the window comes back.
+  // Files saved or created in other apps meanwhile show up when the window
+  // comes back. Recent also changes while it is open, so refresh it too.
   window.addEventListener("focus", () => {
-    if (location === RECENT && !hasOpenOverlay()) reload();
+    if (hasOpenOverlay() || searchQuery !== null) return;
+    if (location === RECENT) void reload();
+    else if (!isPseudo(location) && location !== trashPath) void reload();
   });
   // Mouse back/forward buttons
   window.addEventListener("mouseup", (e) => {
