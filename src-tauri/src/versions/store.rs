@@ -74,7 +74,8 @@ impl Store {
     /// This always installs the object. Capture should use
     /// `write_full_unless` with a check against the `objects` table: a full
     /// frame and a delta frame of the same bytes share a name (D1), so the
-    /// row decides which encoding is authoritative.
+    /// row decides which encoding is authoritative. Only tests use it.
+    #[cfg(test)]
     pub fn write_full<R: Read>(&self, reader: R, size: u64) -> Result<StoredObject> {
         self.write_full_unless(reader, size, |_| Ok(true))?
             .ok_or(Error::Damaged)
@@ -151,6 +152,8 @@ impl Store {
     /// Compress `new` with `base` as a zstd reference prefix (D6). Callers
     /// should check `delta_is_worthwhile` before choosing a delta. This
     /// installs unconditionally; capture should use `write_delta_unless`.
+    /// Only tests use it.
+    #[cfg(test)]
     pub fn write_delta(&self, new: &[u8], base: &[u8]) -> Result<StoredObject> {
         self.write_delta_unless(new, base, |_| Ok(true))?
             .ok_or(Error::Damaged)
