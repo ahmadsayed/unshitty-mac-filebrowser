@@ -87,6 +87,23 @@ files, so the photo thumbnails are placeholders.</sub>
 
 Press ⌘? in the app for the full list of keyboard shortcuts.
 
+## Download
+
+Ready-made builds are on the
+[Releases page](https://github.com/ahmadsayed/unshitty-mac-filebrowser/releases):
+
+- **macOS:** the `.dmg` (one app for Apple Silicon and Intel). The app isn't
+  notarized, so after copying it to Applications run
+  `xattr -dr com.apple.quarantine "/Applications/File Browser.app"` once, or
+  right-click it and choose Open.
+- **Linux:** the `.deb` (Debian, Ubuntu), the `.rpm` (Fedora) or the
+  `.AppImage` (any distribution).
+
+To use Google Drive, follow [docs/google-drive.md](docs/google-drive.md).
+
+Releases are built by `.github/workflows/release.yml`: pushing a `v*` tag
+drafts a release with the packages; publishing it is a manual step.
+
 ## Build and run
 
 Requires Rust and Node.js.
