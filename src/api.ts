@@ -80,6 +80,20 @@ export async function forgetRecent(paths: string[]): Promise<void> {
   return invoke<void>("forget_recent", { paths });
 }
 
+/** Paths of starred files and folders. */
+export async function loadStarred(): Promise<string[]> {
+  return invoke<string[]>("load_starred");
+}
+
+export async function saveStarred(paths: string[]): Promise<void> {
+  return invoke<void>("save_starred", { paths });
+}
+
+/** Starred items that still exist. */
+export async function starredFiles(showHidden: boolean): Promise<Entry[]> {
+  return invoke<Entry[]>("starred_files", { showHidden });
+}
+
 /** Open a file (or an .app bundle) with its default macOS application. */
 export async function openFile(path: string): Promise<void> {
   return openPath(path);

@@ -24,6 +24,7 @@ const SYMBOLIC: Record<string, string> = {
   "folder": `<path d="M1.5 3.5a1.5 1.5 0 0 1 1.5-1.5h3.4l1.6 1.6H13a1.5 1.5 0 0 1 1.5 1.5v7.4A1.5 1.5 0 0 1 13 14H3a1.5 1.5 0 0 1-1.5-1.5z" fill="currentColor"/>`,
   "user-home": `<path d="M8 1.25.75 7.5H2.5V14a1 1 0 0 0 1 1H6.5v-4.5h3V15h3a1 1 0 0 0 1-1V7.5h1.75z" fill="currentColor"/>`,
   "document-open-recent": `<circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.25V8l2.75 1.75" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
+  "non-starred": `<path d="m8 1.25 2.06 4.3 4.69.6-3.44 3.27.87 4.66L8 11.8l-4.18 2.28.87-4.66L1.25 6.15l4.69-.6z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>`,
   "starred": `<path d="m8 1.25 2.06 4.3 4.69.6-3.44 3.27.87 4.66L8 11.8l-4.18 2.28.87-4.66L1.25 6.15l4.69-.6z" fill="currentColor"/>`,
   "network-workgroup": `<rect x="5.5" y="1" width="5" height="4" rx="1" fill="currentColor"/><rect x="1" y="11" width="5" height="4" rx="1" fill="currentColor"/><rect x="10" y="11" width="5" height="4" rx="1" fill="currentColor"/><path d="M8 5v3M3.5 11V8.5h9V11" fill="none" stroke="currentColor" stroke-width="1.5"/>`,
   "user-trash": `<path d="M6 1.5h4a1 1 0 0 1 1 1V3h3a.75.75 0 0 1 0 1.5H2A.75.75 0 0 1 2 3h3v-.5a1 1 0 0 1 1-1z" fill="currentColor"/><path d="M3 5.5h10l-.85 8.6a1.5 1.5 0 0 1-1.5 1.4H5.35a1.5 1.5 0 0 1-1.5-1.4z" fill="currentColor"/>`,

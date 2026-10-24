@@ -134,6 +134,16 @@ function recent(showHidden: boolean): (Entry & { used: number })[] {
 }
 
 let pins: string[] = ["/Users/me/Documents/Projects"];
+let starred: string[] = ["/Users/me/Documents/Quarterly report.pdf", "/Users/me/Documents/Projects", "/Users/me/Pictures/IMG_20 3.heic"];
+
+function entryAt(path: string): Entry | undefined {
+  const i = path.lastIndexOf("/");
+  try {
+    return list(path.slice(0, i) || "/", true).find((e) => e.name === path.slice(i + 1));
+  } catch {
+    return undefined;
+  }
+}
 const flags: Record<string, boolean> = {};
 
 /** A made-up picture for image/video/PDF files, so thumbnails can be previewed. */
@@ -209,6 +219,13 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
     case "forget_recent":
       for (const p of args.paths as string[]) recentUse.delete(p);
       return undefined as T;
+    case "load_starred":
+      return [...starred] as T;
+    case "save_starred":
+      starred = [...(args.paths as string[])];
+      return undefined as T;
+    case "starred_files":
+      return starred.map(entryAt).filter((e): e is Entry => !!e && (!!args.showHidden || !e.is_hidden)) as T;
     case "has_full_disk_access":
       return false as T;
     case "thumbnail":

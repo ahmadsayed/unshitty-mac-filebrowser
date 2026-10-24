@@ -56,6 +56,9 @@ files, so the photo thumbnails are placeholders.</sub>
   with "Show Package Contents" in the context menu
 - Recent: files opened lately in any app (from Spotlight) or from here, newest
   first, with their location; "Open Item Location" and "Remove from Recent"
+- Starred: star files and folders from the context menu or the star at the end
+  of each list row; Starred lists them all, and stars follow renames and moves
+  made in the app
 - Bookmarks: "Add to Bookmarks" (⌘D) pins folders to the sidebar
 - Mounted volumes in the sidebar
 - Large folders stay fast: only the visible items are rendered
@@ -96,7 +99,7 @@ exact build: after rebuilding, toggle the permission off and on again.
 
 ## Not supported yet
 
-Starred and Network are placeholders; there is no Undo after Move to
+Network is a placeholder; there is no Undo after Move to
 Trash, no dragging files out of the app into Finder or other apps, no tabs,
 and no disk-wide search.
 

@@ -590,7 +590,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 .list-header,
 .list-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 110px 140px;
+  grid-template-columns: minmax(0, 1fr) 110px 140px 28px;
   align-items: center;
   column-gap: 12px;
 }
@@ -623,15 +623,34 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 .list-header > button.sorted { opacity: 0.8; }
 .list-header .sym { width: 12px; height: 12px; }
 
-/* Recent adds a Location column; its headers are labels, not sort buttons. */
-.list-header.recent,
-.list-row.recent {
-  grid-template-columns: minmax(0, 1fr) 90px minmax(0, 0.6fr) 120px;
+/* Recent and Starred add a Location column. Recent's headers are labels,
+   not sort buttons. */
+.list-header.with-where,
+.list-row.with-where {
+  grid-template-columns: minmax(0, 1fr) 90px minmax(0, 0.6fr) 120px 28px;
 }
-.list-header.recent > span {
+.list-header > span {
   opacity: var(--dim);
   white-space: nowrap;
 }
+
+/* Star toggle at the end of each list row, as in GNOME Files. */
+.list-row .star {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  opacity: 0;
+  transition: opacity 0.1s, background-color 0.1s;
+}
+.list-row:hover .star { opacity: var(--dim); }
+.list-row .star.starred { opacity: 1; }
+.list-row .star:hover { opacity: 1; background: var(--hover); }
 
 .list-row {
   position: absolute;

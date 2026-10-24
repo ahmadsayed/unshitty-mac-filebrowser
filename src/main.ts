@@ -3,7 +3,7 @@ import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desk
 import {
   listDir, makeDir, renameEntry, itemCounts, copyEntry, moveEntry, trashEntry, pathExists,
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
-  recentFiles, addRecent, forgetRecent, type Entry,
+  recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles, type Entry,
 } from "./api";
 import { entryIcon, fileKind, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
@@ -50,15 +50,16 @@ function savePrefs(): void {
 // State
 // ---------------------------------------------------------------------------
 
-/** Sidebar places that aren't folders. Recent lists files from anywhere; the others are placeholders. */
+/** Sidebar places that aren't folders. Recent and Starred list items from anywhere; Network is a placeholder. */
 type Pseudo = "recent" | "starred" | "network";
 const PSEUDO: Record<Pseudo, { label: string; icon: string; title: string; text: string }> = {
   recent: { label: "Recent", icon: "document-open-recent", title: "No Recent Files", text: "" },
-  starred: { label: "Starred", icon: "starred", title: "No Starred Files", text: "Starring files isn't supported yet." },
+  starred: { label: "Starred", icon: "starred", title: "Starred files will appear here", text: "" },
   network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Network locations aren't supported yet." },
 };
 const PSEUDO_PREFIX = "pseudo:";
 const RECENT = `${PSEUDO_PREFIX}recent`;
+const STARRED = `${PSEUDO_PREFIX}starred`;
 
 /** Current location: an absolute path, or "pseudo:<name>". */
 let location = "";
@@ -78,6 +79,9 @@ let forwardStack: string[] = [];
 
 /** Files copied or cut, waiting to be pasted. */
 let clipboard: { paths: string[]; dirs: Set<string>; mode: "copy" | "cut" } | null = null;
+
+/** Starred files and folders. */
+let starred = new Set<string>();
 
 /** Folders the user added to the sidebar, after GNOME's default bookmarks. */
 let pins: string[] = [];
@@ -132,14 +136,20 @@ function isPseudo(loc: string): loc is `pseudo:${Pseudo}` {
   return loc.startsWith(PSEUDO_PREFIX);
 }
 
-/** Pseudo locations that list entries (only Recent so far). */
+/** Pseudo locations that list entries (Recent, Starred). */
 function hasEntries(loc: string): boolean {
-  return !isPseudo(loc) || loc === RECENT;
+  return !isPseudo(loc) || loc === RECENT || loc === STARRED;
+}
+
+/** Views of items from many folders, which get a Location column. */
+function showsWhere(): boolean {
+  return location === RECENT || location === STARRED;
 }
 
 /** The entries shown at `loc`. */
 async function listLocation(loc: string): Promise<Entry[]> {
   if (loc === RECENT) return recentFiles(prefs.showHidden);
+  if (loc === STARRED) return starredFiles(prefs.showHidden);
   return isPseudo(loc) ? [] : listDir(loc, prefs.showHidden);
 }
 
@@ -512,9 +522,10 @@ function listHeaderHtml(): string {
   };
   if (location === RECENT) {
     // Fixed order, so the headers are plain labels.
-    return `<div class="list-header recent"><span>Name</span><span>Size</span><span>Location</span><span>Recency</span></div>`;
+    return `<div class="list-header with-where"><span>Name</span><span>Size</span><span>Location</span><span>Recency</span><span></span></div>`;
   }
-  return `<div class="list-header">${col("name", "Name")}${col("size", "Size")}${col("modified", "Modified")}</div>`;
+  const where = showsWhere() ? "<span>Location</span>" : "";
+  return `<div class="list-header${where ? " with-where" : ""}">${col("name", "Name")}${col("size", "Size")}${where}${col("modified", "Modified")}<span></span></div>`;
 }
 
 function itemHtml(i: number): string {
@@ -528,13 +539,19 @@ function itemHtml(i: number): string {
       `<div class="icon">${iconHtml(e)}</div>` +
       `<div class="name">${escapeHtml(e.name)}</div></div>`;
   }
-  const recent = location === RECENT;
-  const date = recent ? e.used ?? e.modified : e.modified;
-  const where = recent ? `<span class="meta where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</span>` : "";
-  return `<div class="list-row item${cls}${recent ? " recent" : ""}" data-index="${i}" role="option" aria-selected="${sel}" ${pos}>` +
+  const date = location === RECENT ? e.used ?? e.modified : e.modified;
+  const where = showsWhere() ? `<span class="meta where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</span>` : "";
+  return `<div class="list-row item${cls}${where ? " with-where" : ""}" data-index="${i}" role="option" aria-selected="${sel}" ${pos}>` +
     `<div class="name-cell"><div class="icon">${iconHtml(e)}</div><span class="name">${escapeHtml(e.name)}</span></div>` +
     `<span class="meta size">${sizeText(e)}</span>${where}` +
-    `<span class="meta" title="${escapeHtml(formatDateDetailed(date))}">${formatDate(date)}</span></div>`;
+    `<span class="meta" title="${escapeHtml(formatDateDetailed(date))}">${formatDate(date)}</span>${starButton(e)}</div>`;
+}
+
+/** The star at the end of a list row: shown on hover, or always once starred. */
+function starButton(e: Entry): string {
+  if (inTrash()) return "<span></span>";
+  const on = starred.has(e.path);
+  return `<button class="star${on ? " starred" : ""}" tabindex="-1" title="${on ? "Unstar" : "Star"}" aria-label="${on ? "Unstar" : "Star"}">${sym(on ? "starred" : "non-starred")}</button>`;
 }
 
 /** The "Location" column: the folder holding `path`, relative to Home where possible. */
@@ -945,6 +962,10 @@ function onViewMouseDown(e: MouseEvent): void {
   if (sortBtn) return;
 
   const index = indexFromEvent(e);
+  if (index >= 0 && e.button === 0 && (e.target as HTMLElement).closest(".star")) {
+    setStarred([shown[index].path], !starred.has(shown[index].path));
+    return;
+  }
   const toggleMod = isMac ? e.metaKey : e.ctrlKey;
 
   if (index < 0) {
@@ -1068,8 +1089,25 @@ function openItemMenu(at: Anchor): void {
       { label: "Cut", action: () => setClipboard("cut") },
       { label: "Copy", action: () => setClipboard("copy") },
       { separator: true },
+      { separator: true },
+      starMenuItem(sel),
+      { separator: true },
       { label: "Move to Trash", action: trashSelection },
       { label: "Remove from Recent", action: removeFromRecent },
+    ]);
+    return;
+  }
+  if (location === STARRED) {
+    openMenu(at, [
+      { label: "Open", action: activateSelection },
+      { label: "Open Item Location", disabled: !single, action: () => single && openItemLocation(single) },
+      { separator: true },
+      { label: "Cut", action: () => setClipboard("cut") },
+      { label: "Copy", action: () => setClipboard("copy") },
+      { separator: true },
+      starMenuItem(sel),
+      { separator: true },
+      { label: "Move to Trash", action: trashSelection },
     ]);
     return;
   }
@@ -1083,13 +1121,14 @@ function openItemMenu(at: Anchor): void {
     ...(intoFolder ? [{ label: "Paste Into Folder", disabled: !clipboard, action: () => paste(intoFolder.path) }] : []),
     { separator: true },
     { label: "Rename…", disabled: !single, action: () => single && startRename(single) },
+    ...(inTrash() ? [] : [starMenuItem(sel)]),
     { separator: true },
     { label: "Move to Trash", disabled: inTrash(), action: trashSelection },
   ]);
 }
 
 function openBackgroundMenu(at: Anchor): void {
-  if (location === RECENT) {
+  if (isPseudo(location)) {
     openMenu(at, [{ label: "Select All", action: selectAll }]);
     return;
   }
@@ -1136,6 +1175,50 @@ function openMainMenu(anchor: HTMLElement): void {
     { label: "Keyboard Shortcuts", action: showShortcuts },
     { label: "About Files", action: showAbout },
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// Starred
+// ---------------------------------------------------------------------------
+
+function starMenuItem(sel: Entry[]): MenuItem {
+  const all = sel.every((e) => starred.has(e.path));
+  return { label: all ? "Unstar" : "Star", action: () => setStarred(sel.map((e) => e.path), !all) };
+}
+
+async function setStarred(paths: string[], on: boolean): Promise<void> {
+  for (const p of paths) {
+    if (on) starred.add(p);
+    else starred.delete(p);
+  }
+  await persistStarred();
+  if (location === STARRED) await reload();
+  else renderWindow(true);
+}
+
+async function persistStarred(): Promise<void> {
+  try {
+    await saveStarred([...starred]);
+  } catch (err) {
+    showToast(`Could not save starred files: ${cleanError(err)}`);
+  }
+}
+
+/** Keep stars on items renamed or moved from `from` to `to`, and on anything inside them. */
+function followMove(from: string, to: string): void {
+  let changed = false;
+  const next = new Set<string>();
+  for (const p of starred) {
+    if (p === from || p.startsWith(from + "/")) {
+      next.add(to + p.slice(from.length));
+      changed = true;
+    } else {
+      next.add(p);
+    }
+  }
+  if (!changed) return;
+  starred = next;
+  persistStarred();
 }
 
 /** Show the folder holding `entry`, with it selected. */
@@ -1284,8 +1367,12 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
       showToast(`${moving ? "Moving" : "Copying"} “${name}”…`, { timeout: 600_000 });
     }, 600);
     try {
-      if (moving) await moveEntry(from, to, overwrite);
-      else await copyEntry(from, to, overwrite);
+      if (moving) {
+        await moveEntry(from, to, overwrite);
+        followMove(from, to);
+      } else {
+        await copyEntry(from, to, overwrite);
+      }
       done.push(to);
     } catch (err) {
       errors.push(`“${name}”: ${cleanError(err)}`);
@@ -1728,7 +1815,8 @@ function showValidation(v: Validation, entry: HTMLElement, message: HTMLElement)
 // ---------------------------------------------------------------------------
 
 function startRename(entry: Entry): void {
-  if (location === RECENT) return;
+  // Recent and Starred mix folders, so the name-clash check wouldn't work there.
+  if (isPseudo(location)) return;
   const index = shown.findIndex((e) => e.path === entry.path);
   if (index < 0) return;
   scrollToIndex(index);
@@ -1766,6 +1854,7 @@ function startRename(entry: Entry): void {
       showValidation({ valid: false, message: cleanError(err), error: true }, input, message);
       return;
     }
+    followMove(entry.path, target);
     handle.close();
     await reload([target]);
   };
@@ -2051,7 +2140,7 @@ async function buildSidebar(): Promise<void> {
 
   if (home) sidebarRow(places, "Home", "user-home", home);
   sidebarRow(places, "Recent", "document-open-recent", RECENT);
-  sidebarRow(places, "Starred", "starred", `${PSEUDO_PREFIX}starred`);
+  sidebarRow(places, "Starred", "starred", STARRED);
   sidebarRow(places, "Network", "network-workgroup", `${PSEUDO_PREFIX}network`);
   if (trashPath) sidebarRow(places, "Trash", "user-trash", trashPath);
 
@@ -2085,6 +2174,7 @@ async function buildSidebar(): Promise<void> {
   $("#sidebar-mounts-separator").hidden = mounts.childElementCount === 0;
 
   pins = await loadPins().catch(() => []);
+  starred = new Set(await loadStarred().catch(() => []));
   renderPins();
 }
 
@@ -2170,6 +2260,7 @@ async function init(): Promise<void> {
   viewEl.addEventListener("mousedown", onViewMouseDown);
   viewEl.addEventListener("dblclick", (e) => {
     const i = indexFromEvent(e);
+    if ((e.target as HTMLElement).closest(".star")) return;
     if (i >= 0 && !e.shiftKey && !e.metaKey && !e.ctrlKey) activate(shown[i]);
   });
   viewEl.addEventListener("contextmenu", onViewContextMenu);

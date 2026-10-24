@@ -53,6 +53,16 @@ pub fn entry_for(path: &Path) -> Option<Entry> {
     make_entry(path, name)
 }
 
+/// Entries for a list of paths from anywhere (Starred), skipping ones that no
+/// longer exist and, unless `show_hidden`, hidden ones.
+pub fn entries_for(paths: &[String], show_hidden: bool) -> Vec<Entry> {
+    paths
+        .iter()
+        .filter_map(|p| entry_for(Path::new(p)))
+        .filter(|e| show_hidden || !e.is_hidden)
+        .collect()
+}
+
 fn make_entry(entry_path: &Path, name: String) -> Option<Entry> {
     use std::time::UNIX_EPOCH;
 
@@ -314,6 +324,21 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn entries_for_skips_missing_and_hidden_paths() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        fs::create_dir(dir.path().join("Folder")).unwrap();
+        fs::write(dir.path().join(".secret"), "x").unwrap();
+        let p = |n: &str| dir.path().join(n).to_string_lossy().to_string();
+        let paths = [p("a.txt"), p("gone.txt"), p("Folder"), p(".secret")];
+
+        let names = |list: Vec<Entry>| list.into_iter().map(|e| (e.name, e.is_dir)).collect::<Vec<_>>();
+        assert_eq!(names(entries_for(&paths, false)), [("a.txt".into(), false), ("Folder".into(), true)]);
+        assert_eq!(entries_for(&paths, true).len(), 3);
+        assert_eq!(entries_for(&paths, false)[0].size, 5);
+    }
 
     #[test]
     fn lists_file_and_subdir() {

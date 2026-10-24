@@ -26,7 +26,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src-tauri/src/fs_ops.rs` | Listing, item counts, mkdir, rename, copy/move/trash, path info |
 | `src-tauri/src/thumbnails.rs` | Quick Look (`qlmanage`) thumbnails with an `image`-crate fallback, disk cache |
 | `src-tauri/src/recent.rs` | Recent: Spotlight's last-used dates (`mdfind`) merged with `recent.json` |
-| `src-tauri/src/config_store.rs` | `pins.json` / `flags.json` in the app config dir, Full Disk Access check |
+| `src-tauri/src/config_store.rs` | `pins.json` / `starred.json` / `flags.json` in the app config dir, Full Disk Access check |
 | `src-tauri/src/lib.rs` | Command registration, commands that need `AppHandle`, startup |
 | `dev/mock-tauri/` | In-memory fake backend for browser previews |
 

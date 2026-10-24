@@ -15,7 +15,7 @@ fn config_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
 #[tauri::command]
 fn load_pins(app: tauri::AppHandle) -> Vec<String> {
     config_file(&app, "pins.json")
-        .map(|p| config_store::read_pins(&p))
+        .map(|p| config_store::read_paths(&p))
         .unwrap_or_default()
 }
 
@@ -38,6 +38,28 @@ fn set_flag(app: tauri::AppHandle, name: String, value: bool) -> Result<(), Stri
     let mut flags = config_store::read_flags(&path);
     flags.insert(name, value);
     config_store::write_json(&path, &flags)
+}
+
+/// Paths of starred files and folders, in the order they were starred.
+#[tauri::command]
+fn load_starred(app: tauri::AppHandle) -> Vec<String> {
+    config_file(&app, "starred.json")
+        .map(|p| config_store::read_paths(&p))
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn save_starred(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
+    config_store::write_json(&config_file(&app, "starred.json")?, &paths)
+}
+
+/// The "Starred" listing: starred items that still exist.
+#[tauri::command(async)]
+fn starred_files(app: tauri::AppHandle, show_hidden: bool) -> Vec<fs_ops::Entry> {
+    let paths = config_file(&app, "starred.json")
+        .map(|p| config_store::read_paths(&p))
+        .unwrap_or_default();
+    fs_ops::entries_for(&paths, show_hidden)
 }
 
 #[tauri::command]
@@ -119,6 +141,9 @@ pub fn run() {
             set_flag,
             has_full_disk_access,
             recent_files,
+            load_starred,
+            save_starred,
+            starred_files,
             add_recent,
             forget_recent,
             thumbnail,

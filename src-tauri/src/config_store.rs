@@ -6,8 +6,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Pinned folder paths stored in `path`. A missing or corrupt file means no pins.
-pub fn read_pins(path: &Path) -> Vec<String> {
+/// A list of paths stored in `path` (bookmarks, starred files). A missing or
+/// corrupt file means an empty list.
+pub fn read_paths(path: &Path) -> Vec<String> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -56,7 +57,7 @@ mod tests {
     #[test]
     fn missing_files_mean_empty_settings() {
         let dir = tempdir().unwrap();
-        assert!(read_pins(&dir.path().join("pins.json")).is_empty());
+        assert!(read_paths(&dir.path().join("pins.json")).is_empty());
         assert!(read_flags(&dir.path().join("flags.json")).is_empty());
     }
 
@@ -65,7 +66,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let pins = dir.path().join("pins.json");
         std::fs::write(&pins, "{ not json").unwrap();
-        assert!(read_pins(&pins).is_empty());
+        assert!(read_paths(&pins).is_empty());
     }
 
     #[test]
@@ -75,7 +76,7 @@ mod tests {
         let paths = vec!["/Users/me/Projects".to_string(), "/Volumes/Backup".to_string()];
 
         write_json(&pins, &paths).unwrap();
-        assert_eq!(read_pins(&pins), paths);
+        assert_eq!(read_paths(&pins), paths);
         assert!(!pins.with_extension("json.tmp").exists());
     }
 
