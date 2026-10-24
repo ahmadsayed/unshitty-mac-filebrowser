@@ -1171,8 +1171,17 @@ function onViewContextMenu(e: MouseEvent): void {
   e.preventDefault();
   if (!hasEntries(location) || listingError !== null) return;
   const at = { x: e.clientX, y: e.clientY };
-  if (indexFromEvent(e) >= 0) openItemMenu(at);
-  else openBackgroundMenu(at);
+  const index = indexFromEvent(e);
+  if (index >= 0 && shown[index]) {
+    // Closing a menu swallows the press that closed it, so the selection can
+    // still point at the item the previous menu was for. Select the item that
+    // was actually right-clicked, like GNOME Files, unless it is already part
+    // of a selection (then the menu applies to the whole selection).
+    if (!selected.has(shown[index].path)) selectOnly(index);
+    openItemMenu(at);
+  } else {
+    openBackgroundMenu(at);
+  }
 }
 
 // ---------------------------------------------------------------------------
