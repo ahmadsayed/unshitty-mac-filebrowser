@@ -559,7 +559,10 @@ mod tests {
         assert_eq!(restored, history.root.join("notes (old).txt"));
         assert_eq!(fs::read(&restored).unwrap(), b"gone\n");
         assert_eq!(fs::read(&path).unwrap(), b"newcomer");
-        assert!(fs::read_dir(&history.tmp).unwrap().next().is_none(), "staging cleaned up");
+        assert!(
+            fs::read_dir(&history.tmp).unwrap().next().is_none(),
+            "staging cleaned up"
+        );
     }
 
     #[test]
