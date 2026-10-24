@@ -60,6 +60,36 @@ function addTag(row: HTMLElement, text: string, className: string): void {
   row.appendChild(tag);
 }
 
+/** What the diff area says when there is no line diff to show. */
+const DIFF_MESSAGES: Record<Exclude<VersionDiff["kind"], "text">, string> = {
+  same: "This version is the same as the current file.",
+  binary: "No preview for this type of file.",
+  too_large: "This file is too large to compare.",
+  deleted: "The file was deleted at this point.",
+  not_on_disk: "The file is not in the folder any more.",
+};
+
+const DIFF_LINE_CLASS: Record<string, string> = { "+": "diff-line added", "-": "diff-line removed" };
+
+function renderTextDiff(diff: HTMLElement, lines: { tag: string; text: string }[], truncated: boolean): void {
+  if (!lines.length) {
+    diff.textContent = "No differences.";
+    return;
+  }
+  for (const line of lines) {
+    const div = document.createElement("div");
+    div.className = DIFF_LINE_CLASS[line.tag] ?? "diff-line";
+    div.textContent = line.tag + line.text;
+    diff.appendChild(div);
+  }
+  if (truncated) {
+    const more = document.createElement("div");
+    more.className = "diff-line truncated";
+    more.textContent = "… diff truncated";
+    diff.appendChild(more);
+  }
+}
+
 /** The Versions… dialog for one file. */
 export async function showVersions(entry: Entry, onChanged: () => void): Promise<void> {
   let rows: VersionInfo[];
@@ -100,40 +130,8 @@ export async function showVersions(entry: Entry, onChanged: () => void): Promise
   const setDiff = (value: VersionDiff) => {
     diff.className = "versions-diff";
     diff.replaceChildren();
-    switch (value.kind) {
-      case "text": {
-        for (const line of value.lines) {
-          const div = document.createElement("div");
-          div.className =
-            line.tag === "+" ? "diff-line added" : line.tag === "-" ? "diff-line removed" : "diff-line";
-          div.textContent = line.tag + line.text;
-          diff.appendChild(div);
-        }
-        if (value.truncated) {
-          const more = document.createElement("div");
-          more.className = "diff-line truncated";
-          more.textContent = "… diff truncated";
-          diff.appendChild(more);
-        }
-        if (!value.lines.length) diff.textContent = "No differences.";
-        break;
-      }
-      case "same":
-        diff.textContent = "This version is the same as the current file.";
-        break;
-      case "binary":
-        diff.textContent = "No preview for this type of file.";
-        break;
-      case "too_large":
-        diff.textContent = "This file is too large to compare.";
-        break;
-      case "deleted":
-        diff.textContent = "The file was deleted at this point.";
-        break;
-      case "not_on_disk":
-        diff.textContent = "The file is not in the folder any more.";
-        break;
-    }
+    if (value.kind === "text") renderTextDiff(diff, value.lines, value.truncated);
+    else diff.textContent = DIFF_MESSAGES[value.kind];
   };
 
   const select = async (row: VersionInfo, button: HTMLElement) => {

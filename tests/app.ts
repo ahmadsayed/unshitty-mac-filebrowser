@@ -53,7 +53,8 @@ export function prefs(): Record<string, unknown> {
 
 /** Visible dialog heading, if a dialog is open. */
 export function dialogHeading(): string | undefined {
-  return document.querySelector(".dialog-layer .dialog-heading")?.textContent ?? undefined;
+  // The topmost dialog: a confirmation opens on top of the dialog that asked.
+  return [...document.querySelectorAll(".dialog-layer .dialog-heading")].at(-1)?.textContent ?? undefined;
 }
 
 export async function closeOverlays(): Promise<void> {

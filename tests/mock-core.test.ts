@@ -138,6 +138,40 @@ test("rename_entry renames and refuses clashes and missing items", async () => {
   await expect(invoke("rename_entry", { from: `${HOME}/Nope`, to: `${HOME}/x` })).rejects.toMatch(/No such file/);
 });
 
+test("the Keep Versions commands", async () => {
+  const V = `${HOME}/Documents/Versioned`;
+  expect(await invoke("versioned_root", { path: `${V}/notes.txt` })).toBe(V);
+  expect(await invoke("versioned_root", { path: `${HOME}/Documents/VersionedNot` })).toBeNull();
+  expect(await namesIn(V, true)).not.toContain(".versions");
+  const props = await invoke<{ item_count: number }>("file_properties", { path: V });
+  expect(props.item_count).toBe(3);
+  expect(await invoke<unknown[]>("list_versions", { path: `${V}/notes.txt` })).toHaveLength(4);
+  expect(await invoke("version_count", { path: `${V}/image.png` })).toBe(1);
+  expect(await invoke("version_count", { path: `${V}/large.txt` })).toBe(2);
+  expect(await invoke("version_count", { path: `${V}/other.txt` })).toBe(0);
+  const diff = (path: string, version: number) => invoke<{ kind: string }>("version_diff", { path: `${V}/${path}`, version });
+  expect((await diff("image.png", 1)).kind).toBe("binary");
+  expect((await diff("large.txt", 1)).kind).toBe("too_large");
+  expect((await diff("notes.txt", 0)).kind).toBe("deleted");
+  expect((await diff("notes.txt", 3)).kind).toBe("same");
+  expect(await diff("notes.txt", 1)).toMatchObject({ kind: "text", truncated: false });
+  expect(await invoke("restore_version_copy", { path: `${V}/notes.txt`, version: 1, name: "n1.txt" })).toBe(`${V}/n1.txt`);
+  await expect(invoke("restore_version_copy", { path: `${V}/notes.txt`, version: 1, name: "n1.txt" })).rejects.toMatch(/already exists/);
+  await expect(invoke("restore_version_copy", { path: "/nope/x", version: 1, name: "y" })).rejects.toMatch(/missing folder/);
+  await invoke("replace_with_version", { path: `${V}/notes.txt`, version: 1 });
+  await expect(invoke("replace_with_version", { path: `${V}/gone.txt`, version: 1 })).rejects.toMatch(/not in the folder/);
+  expect(await invoke("deleted_files", { dir: V })).toEqual([expect.objectContaining({ path: `${V}/draft.md` })]);
+  expect(await invoke("restore_deleted", { path: `${V}/draft.md`, fallbackName: "" })).toBe(`${V}/draft.md`);
+  await expect(invoke("restore_deleted", { path: `${V}/draft.md`, fallbackName: "" })).rejects.toMatch(/already at that path/);
+  expect(await invoke("history_info", { root: V })).toEqual({ bytes: 12_400_000, versions: 214, files: 37 });
+  await invoke("clear_history", { root: V });
+  await invoke("make_versioned_dir", { path: `${HOME}/Kept` });
+  expect(await invoke("versioned_root", { path: `${HOME}/Kept` })).toBe(`${HOME}/Kept`);
+  await expect(invoke("make_versioned_dir", { path: `${HOME}/Kept` })).rejects.toMatch(/already exists/);
+  await invoke("stop_keeping_versions", { root: `${HOME}/Kept` });
+  expect(await invoke("versioned_root", { path: `${HOME}/Kept` })).toBeNull();
+});
+
 test("unknown commands are reported", async () => {
   await expect(invoke("nope")).rejects.toMatch(/unknown command nope/);
 });
