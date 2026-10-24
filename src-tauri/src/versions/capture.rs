@@ -123,65 +123,107 @@ fn is_regular_file(root: &Path, rel: &[u8]) -> bool {
 
 pub(crate) fn record_locked(history: &History, rel: &Path) -> Result<()> {
     let rel_bytes = path_bytes(rel);
-    if validate_rel_path(&rel_bytes).is_err() {
-        return Ok(()); // internal or malformed event; nothing to record
-    }
-    if is_ignored(rel) {
-        return Ok(());
-    }
     let abs = history.root.join(rel);
-    if !abs.starts_with(&history.root) {
+    if is_out_of_scope(history, rel, &rel_bytes, &abs) {
         return Ok(());
     }
-    if nested_owned_root(&history.root, &abs).is_some() {
-        return Ok(());
-    }
-
     let latest = {
         let reader = history.reader()?;
         index::latest_version(&reader, &rel_bytes)?
     };
-    let Some(meta) = fs::symlink_metadata(&abs).ok() else {
-        return tombstone_if_live(history, &rel_bytes, &latest);
+    let Some((mut file, size, mtime)) = open_for_capture(history, &abs, &rel_bytes, &latest)?
+    else {
+        return Ok(());
     };
-    if !same_device(&history.root, &abs) {
+    if is_unchanged(latest.as_ref(), size, mtime) {
         return Ok(());
-    }
-    if !meta.is_file() {
-        // D17: a path that becomes a folder/symlink ends the file's history.
-        return tombstone_if_live(history, &rel_bytes, &latest);
-    }
-    if meta.len() > MAX_FILE_SIZE {
-        return Ok(());
-    }
-
-    // Open once and use the handle's metadata (F4); a path swapped after the
-    // stat cannot make us hash a different file than the one we cap-checked.
-    let mut file = File::open(&abs)?;
-    let handle_meta = file.metadata()?;
-    if !handle_meta.is_file() {
-        return tombstone_if_live(history, &rel_bytes, &latest);
-    }
-    let size = handle_meta.len();
-    if size > MAX_FILE_SIZE {
-        return Ok(());
-    }
-    let mtime = mtime_nanos(&handle_meta);
-    if let Some(latest) = &latest {
-        if latest.hash.is_some() && latest.size == size && latest.mtime == mtime {
-            return Ok(());
-        }
     }
 
     let store = Store::new(history.objects.clone(), history.tmp.clone());
     let now = now_seconds();
-
     if size > MAX_DELTA_SIZE {
         return capture_full_stream(
             history, &store, &mut file, &rel_bytes, size, mtime, latest, now,
         );
     }
 
+    let bytes = read_unchanged(&mut file, size, mtime)?;
+    let hash = blake3::hash(&bytes).to_hex().to_string();
+    if touch_if_same_content(history, latest.as_ref(), &hash, mtime)? {
+        return Ok(());
+    }
+    let capture = Capture {
+        history,
+        store: &store,
+        rel: &rel_bytes,
+        bytes: &bytes,
+        hash,
+        size,
+        mtime,
+        now,
+    };
+    if capture.try_delta(latest.as_ref())? {
+        return Ok(());
+    }
+    capture.store_full()
+}
+
+/// Paths that are never recorded here: malformed or internal, ignored editor
+/// files (D12), outside the root, or inside a nested owned history (D2).
+fn is_out_of_scope(history: &History, rel: &Path, rel_bytes: &[u8], abs: &Path) -> bool {
+    validate_rel_path(rel_bytes).is_err()
+        || is_ignored(rel)
+        || !abs.starts_with(&history.root)
+        || nested_owned_root(&history.root, abs).is_some()
+}
+
+/// The file to read with its size and mtime, or `None` when there is nothing
+/// to read: it is gone or no longer a regular file (tombstoned, D17), on
+/// another filesystem (D2), or over the size limit (D5).
+fn open_for_capture(
+    history: &History,
+    abs: &Path,
+    rel_bytes: &[u8],
+    latest: &Option<VersionRow>,
+) -> Result<Option<(File, u64, i64)>> {
+    let Some(meta) = fs::symlink_metadata(abs).ok() else {
+        tombstone_if_live(history, rel_bytes, latest)?;
+        return Ok(None);
+    };
+    if !same_device(&history.root, abs) {
+        return Ok(None);
+    }
+    if !meta.is_file() {
+        // D17: a path that becomes a folder/symlink ends the file's history.
+        tombstone_if_live(history, rel_bytes, latest)?;
+        return Ok(None);
+    }
+    if meta.len() > MAX_FILE_SIZE {
+        return Ok(None);
+    }
+
+    // Open once and use the handle's metadata (F4); a path swapped after the
+    // stat cannot make us hash a different file than the one we cap-checked.
+    let file = File::open(abs)?;
+    let handle_meta = file.metadata()?;
+    if !handle_meta.is_file() {
+        tombstone_if_live(history, rel_bytes, latest)?;
+        return Ok(None);
+    }
+    let size = handle_meta.len();
+    if size > MAX_FILE_SIZE {
+        return Ok(None);
+    }
+    Ok(Some((file, size, mtime_nanos(&handle_meta))))
+}
+
+/// Same size and mtime as the latest real version: nothing to read.
+fn is_unchanged(latest: Option<&VersionRow>, size: u64, mtime: i64) -> bool {
+    latest.is_some_and(|v| v.hash.is_some() && v.size == size && v.mtime == mtime)
+}
+
+/// Read the whole file, failing with `Changed` if it was written meanwhile.
+fn read_unchanged(file: &mut File, size: u64, mtime: i64) -> Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(size as usize);
     file.read_to_end(&mut bytes)?;
     if bytes.len() as u64 != size {
@@ -191,76 +233,131 @@ pub(crate) fn record_locked(history: &History, rel: &Path) -> Result<()> {
     if after.len() != size || mtime_nanos(&after) != mtime {
         return Err(Error::Changed);
     }
-    let hash = blake3::hash(&bytes).to_hex().to_string();
-    if let Some(latest) = &latest {
-        if latest.hash.as_deref() == Some(hash.as_str()) {
-            // Content unchanged since the last capture; only the timestamp moved.
-            let writer = history.writer()?;
-            index::update_mtime(&writer, latest.id, mtime)?;
-            return Ok(());
-        }
-    }
+    Ok(bytes)
+}
 
-    // A usable base must exist, be within the memory budget, and not already
-    // be at the depth cap.
-    let base = latest.as_ref().and_then(|v| v.hash.clone());
-    let base_object = match base.as_deref() {
-        Some(hash) => {
-            let reader = history.reader()?;
-            index::get_object(&reader, hash)?
-        }
-        None => None,
+/// Content unchanged since the last capture; only the timestamp moved.
+/// Updates the latest row's mtime and returns true in that case.
+fn touch_if_same_content(
+    history: &History,
+    latest: Option<&VersionRow>,
+    hash: &str,
+    mtime: i64,
+) -> Result<bool> {
+    let Some(latest) = latest.filter(|v| v.hash.as_deref() == Some(hash)) else {
+        return Ok(false);
     };
-    if let (Some(base_hash), Some(base_object)) = (base.as_deref(), base_object.as_ref()) {
-        if base_object.depth < MAX_DELTA_DEPTH
-            && base_object.size <= MAX_DELTA_SIZE
-            && size <= MAX_DELTA_SIZE
-        {
-            let chain = {
-                let reader = history.reader()?;
-                chain_for(&reader, base_hash)?
-            };
-            let base_bytes = store.read(&chain, base_hash)?;
-            let delta = store.write_delta_unless(&bytes, &base_bytes, |hash| {
+    let writer = history.writer()?;
+    index::update_mtime(&writer, latest.id, mtime)?;
+    Ok(true)
+}
+
+/// One in-memory capture (files up to `MAX_DELTA_SIZE`), stored as a delta
+/// against the previous version when that pays off, otherwise in full.
+struct Capture<'a> {
+    history: &'a History,
+    store: &'a Store,
+    rel: &'a [u8],
+    bytes: &'a [u8],
+    hash: String,
+    size: u64,
+    mtime: i64,
+    now: i64,
+}
+
+impl Capture<'_> {
+    /// Store a delta against `latest`'s object. Returns false when no base
+    /// qualifies or the delta isn't worth it, so the caller stores in full.
+    fn try_delta(&self, latest: Option<&VersionRow>) -> Result<bool> {
+        let history = self.history;
+        // A usable base must exist, be within the memory budget, and not
+        // already be at the depth cap.
+        let Some(base_hash) = latest.and_then(|v| v.hash.clone()) else {
+            return Ok(false);
+        };
+        let base_object = {
+            let reader = history.reader()?;
+            index::get_object(&reader, &base_hash)?
+        };
+        let Some(base_object) = base_object.filter(|base| {
+            base.depth < MAX_DELTA_DEPTH
+                && base.size <= MAX_DELTA_SIZE
+                && self.size <= MAX_DELTA_SIZE
+        }) else {
+            return Ok(false);
+        };
+        let chain = {
+            let reader = history.reader()?;
+            chain_for(&reader, &base_hash)?
+        };
+        let base_bytes = self.store.read(&chain, &base_hash)?;
+        let delta = self
+            .store
+            .write_delta_unless(self.bytes, &base_bytes, |hash| {
                 Ok(object_is_new(history, hash)?)
             })?;
-            let Some(delta) = delta else {
-                return insert_version_only(history, &rel_bytes, &hash, size, mtime, now);
-            };
-            if crate::versions::delta_is_worthwhile(delta.stored_size, size) {
-                let object = ObjectMeta {
-                    hash: delta.hash.clone(),
-                    kind: ObjectKind::Delta,
-                    base: Some(base_hash.to_string()),
-                    depth: base_object.depth + 1,
-                    size,
-                    stored_size: delta.stored_size,
-                };
-                return insert_capture(history, &rel_bytes, &hash, size, mtime, now, Some(object));
-            }
-            // Not worth a delta: fall through to a full copy. The unused delta
-            // file is an orphan object and is harmless.
+        let Some(delta) = delta else {
+            insert_version_only(
+                history, self.rel, &self.hash, self.size, self.mtime, self.now,
+            )?;
+            return Ok(true);
+        };
+        if !crate::versions::delta_is_worthwhile(delta.stored_size, self.size) {
+            // Not worth a delta: the caller stores a full copy. The unused
+            // delta file is an orphan object and is harmless.
+            return Ok(false);
         }
+        let object = ObjectMeta {
+            hash: delta.hash.clone(),
+            kind: ObjectKind::Delta,
+            base: Some(base_hash),
+            depth: base_object.depth + 1,
+            size: self.size,
+            stored_size: delta.stored_size,
+        };
+        insert_capture(
+            history,
+            self.rel,
+            &self.hash,
+            self.size,
+            self.mtime,
+            self.now,
+            Some(object),
+        )?;
+        Ok(true)
     }
 
-    let mut seen = None;
-    let full = store.write_full_unless(std::io::Cursor::new(&bytes), size, |hash| {
-        seen = Some(hash.to_string());
-        Ok(object_is_new(history, hash)?)
-    })?;
-    let hash = seen.unwrap_or(hash);
-    let Some(full) = full else {
-        return insert_version_only(history, &rel_bytes, &hash, size, mtime, now);
-    };
-    let object = ObjectMeta {
-        hash: full.hash.clone(),
-        kind: ObjectKind::Full,
-        base: None,
-        depth: 0,
-        size,
-        stored_size: full.stored_size,
-    };
-    insert_capture(history, &rel_bytes, &hash, size, mtime, now, Some(object))
+    fn store_full(self) -> Result<()> {
+        let history = self.history;
+        let mut seen = None;
+        let full =
+            self.store
+                .write_full_unless(std::io::Cursor::new(self.bytes), self.size, |hash| {
+                    seen = Some(hash.to_string());
+                    Ok(object_is_new(history, hash)?)
+                })?;
+        let hash = seen.unwrap_or(self.hash);
+        let Some(full) = full else {
+            return insert_version_only(history, self.rel, &hash, self.size, self.mtime, self.now);
+        };
+        let object = ObjectMeta {
+            hash: full.hash.clone(),
+            kind: ObjectKind::Full,
+            base: None,
+            depth: 0,
+            size: self.size,
+            stored_size: full.stored_size,
+        };
+        insert_capture(
+            history,
+            self.rel,
+            &hash,
+            self.size,
+            self.mtime,
+            self.now,
+            Some(object),
+        )
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -655,8 +752,9 @@ mod tests {
         drop(reader);
 
         // The stored object rebuilds to the same bytes (hash-checked).
-        let copy = crate::versions::restore::restore_copy(&history, b"big.bin", rows[0].id, "copy.bin")
-            .unwrap();
+        let copy =
+            crate::versions::restore::restore_copy(&history, b"big.bin", rows[0].id, "copy.bin")
+                .unwrap();
         assert_eq!(fs::metadata(&copy).unwrap().len(), MAX_DELTA_SIZE + 1);
         fs::remove_file(copy).unwrap();
 
@@ -731,9 +829,15 @@ mod tests {
         fs::write(history.root.join(raw), b"x").unwrap();
         record(&history, Path::new(raw)).unwrap();
         let reader = history.reader().unwrap();
-        let row = index::latest_version(&reader, b"bad\xffname.txt").unwrap().unwrap();
+        let row = index::latest_version(&reader, b"bad\xffname.txt")
+            .unwrap()
+            .unwrap();
         assert_eq!(row.path, b"bad\xffname.txt");
-        assert!(index::latest_version(&reader, "bad\u{fffd}name.txt".as_bytes()).unwrap().is_none());
+        assert!(
+            index::latest_version(&reader, "bad\u{fffd}name.txt".as_bytes())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

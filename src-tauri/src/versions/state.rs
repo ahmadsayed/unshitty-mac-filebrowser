@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::versions::{
-    Error, HistoryInfo, Result, capture, index,
+    Error, HistoryInfo, Result, capture,
     history::{self, History},
-    read_marker, registry,
+    index, read_marker, registry,
     watch::WatcherHandle,
 };
 
@@ -92,7 +92,9 @@ impl VersionsState {
         {
             let reader = history.reader()?;
             if !index::integrity_check(&reader)? {
-                return Err(Error::IndexDamaged("the copied index is inconsistent".into()));
+                return Err(Error::IndexDamaged(
+                    "the copied index is inconsistent".into(),
+                ));
             }
         }
         history.reassign_folder_id()?;
@@ -522,7 +524,9 @@ impl VersionsState {
 
 /// Where `root` (under `from`) ends up after a transfer to `to`.
 fn transfer_dest(from: &Path, to: &Path, root: &Path) -> Option<PathBuf> {
-    root.strip_prefix(from).ok().map(|relative| to.join(relative))
+    root.strip_prefix(from)
+        .ok()
+        .map(|relative| to.join(relative))
 }
 
 /// Ownership re-check right before Clear/Stop act: the index's `meta` rows and
@@ -670,7 +674,10 @@ mod tests {
         let moved = state.open(&dest).unwrap();
         assert!(moved.writable, "the old Arc must not keep the lock");
         assert_eq!(moved.folder_id, lingering.folder_id);
-        assert_eq!(read(state.registry_path()), vec![std::fs::canonicalize(&dest).unwrap()]);
+        assert_eq!(
+            read(state.registry_path()),
+            vec![std::fs::canonicalize(&dest).unwrap()]
+        );
     }
 
     #[test]
@@ -697,7 +704,10 @@ mod tests {
             Ok(())
         });
         assert_eq!(result, Err(Error::ReadOnly.to_string()));
-        assert!(!ran, "the folder must not be moved under the other instance");
+        assert!(
+            !ran,
+            "the folder must not be moved under the other instance"
+        );
     }
 
     #[test]
@@ -705,7 +715,10 @@ mod tests {
         let (_dir, root, state) = setup();
         state.open_registered(&root).unwrap();
         let result: std::result::Result<(), String> = state.trash(&root, || {
-            assert!(read(state.registry_path()).is_empty(), "unregistered before the move");
+            assert!(
+                read(state.registry_path()).is_empty(),
+                "unregistered before the move"
+            );
             Err("no Trash".into())
         });
         assert!(result.is_err());
@@ -735,7 +748,11 @@ mod tests {
         assert!(trashed.join("index.sqlite").exists());
         let fresh = state.open(&root).unwrap();
         assert_ne!(fresh.folder_id, old_id);
-        assert_eq!(rows(&fresh, "a.txt"), 1, "the current file is the first version");
+        assert_eq!(
+            rows(&fresh, "a.txt"),
+            1,
+            "the current file is the first version"
+        );
     }
 
     #[test]
@@ -750,7 +767,11 @@ mod tests {
         });
         assert!(result.is_err());
         assert!(!trashed);
-        assert!(root.join(crate::versions::VERSIONS_DIR).join("index.sqlite").exists());
+        assert!(
+            root.join(crate::versions::VERSIONS_DIR)
+                .join("index.sqlite")
+                .exists()
+        );
         // Reopen attempts fail on the mismatched marker, but nothing was lost.
         assert!(History::open(&root).is_err());
     }
