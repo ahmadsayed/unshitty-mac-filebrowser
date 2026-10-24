@@ -203,7 +203,20 @@ export async function starredFiles(showHidden: boolean): Promise<Entry[]> {
 
 /** Open a file (or an .app bundle) with its default macOS application. */
 export async function openFile(path: string): Promise<void> {
+  if (path.startsWith("gdrive://")) {
+    const target = await invoke<DriveOpenTarget>("drive_open", { path });
+    return target.kind === "url" ? openUrl(target.url) : openPath(target.path);
+  }
   return openPath(path);
+}
+
+export type DriveOpenTarget =
+  | { kind: "file"; path: string }
+  | { kind: "url"; url: string };
+
+/** Open a URL in the default browser (used by the sign-in flow). */
+export async function openExternal(url: string): Promise<void> {
+  return openUrl(url);
 }
 
 /** Open System Settings at Privacy & Security → Full Disk Access. */

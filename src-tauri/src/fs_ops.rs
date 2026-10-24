@@ -1,7 +1,6 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-#[tauri::command]
 pub fn make_dir(path: String) -> Result<(), String> {
     let p = Path::new(&path);
     if p.exists() {

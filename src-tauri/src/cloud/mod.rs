@@ -12,6 +12,7 @@ pub mod accounts;
 pub mod drive;
 pub mod location;
 pub mod oauth;
+pub mod service;
 pub mod token;
 
 use std::collections::HashMap;

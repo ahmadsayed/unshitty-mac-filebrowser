@@ -67,6 +67,12 @@ files, so the photo thumbnails are placeholders.</sub>
 - Starred: star files and folders from the context menu or the star at the end
   of each list row; Starred lists them all, and stars follow renames and moves
   made in the app
+- **Google Drive (Experimental, read-only):** connect a Google account from the
+  sidebar and browse My Drive with the same views, breadcrumbs and thumbnails.
+  Files open as a local snapshot; Google Docs open in the browser. The refresh
+  token is kept in the OS keychain (with a private file fallback). Writes,
+  shared drives and offline editing are not supported yet, Drive items are never
+  versioned, and edits to an opened snapshot are not uploaded
 - **Keep Versions (Experimental):** tick "Keep versions" when creating a folder
   to record every saved state of its files. Such folders show a second folder
   layer behind the icon, with a small layer mark in the path bar and on sidebar
@@ -148,6 +154,11 @@ Network is a placeholder; Undo covers only the last Move to Trash; the Trash
 view shows the home Trash, not the Trash folders of other drives; there is no
 dragging files out of the app into Finder or other apps, no tabs, and no
 disk-wide search.
+
+Google Drive is read-only in this build: there is no upload, new folder,
+rename, move or delete, and no shared drives or shared-with-me. Opening a Drive
+file writes a snapshot to the app cache; edits to that snapshot are not
+uploaded. Keep Versions does not apply to Drive items.
 
 Keep Versions (Experimental) is deliberately limited: history lives on the same
 disk as the files, so it is **not a backup**; changes made and overwritten while

@@ -18,8 +18,6 @@ pub struct AboutInfo {
 struct AboutResponse {
     #[serde(default)]
     user: Option<AboutUser>,
-    #[serde(rename = "rootFolderId", default)]
-    root_folder_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,7 +46,7 @@ pub fn about(access_token: &str) -> Result<AboutInfo, String> {
         .map_err(|error| format!("Could not create the Google Drive client: {error}"))?;
     let response = client
         .get(format!("{API_BASE}/about"))
-        .query(&[("fields", "user(displayName,emailAddress),rootFolderId")])
+        .query(&[("fields", "user(displayName,emailAddress)")])
         .bearer_auth(access_token)
         .send()
         .map_err(|error| format!("Google Drive is unavailable: {error}"))?;
@@ -82,14 +80,12 @@ pub fn parse_about(json: &str) -> Result<AboutInfo, String> {
                 .unwrap_or("Google Drive")
                 .to_string()
         });
-    let root_id = about
-        .root_folder_id
-        .filter(|id| !id.is_empty())
-        .ok_or("Google did not return the Drive root folder.")?;
+    // Drive v3's `about` does not expose rootFolderId; "root" is the API's
+    // stable alias for the My Drive folder.
     Ok(AboutInfo {
         email,
         name,
-        root_id,
+        root_id: "root".into(),
     })
 }
 
@@ -122,8 +118,7 @@ mod tests {
     fn about_parses_the_user_and_root() {
         let info = parse_about(
             r#"{
-                "user": {"displayName": "Ahmed", "emailAddress": "me@example.com"},
-                "rootFolderId": "root-123"
+                "user": {"displayName": "Ahmed", "emailAddress": "me@example.com"}
             }"#,
         )
         .unwrap();
@@ -132,24 +127,21 @@ mod tests {
             AboutInfo {
                 email: "me@example.com".into(),
                 name: "Ahmed".into(),
-                root_id: "root-123".into(),
+                root_id: "root".into(),
             }
         );
     }
 
     #[test]
     fn about_falls_back_to_the_email_local_part() {
-        let info =
-            parse_about(r#"{"user": {"emailAddress": "me@example.com"}, "rootFolderId": "root"}"#)
-                .unwrap();
+        let info = parse_about(r#"{"user": {"emailAddress": "me@example.com"}}"#).unwrap();
         assert_eq!(info.name, "me");
     }
 
     #[test]
     fn about_rejects_missing_pieces() {
         assert!(parse_about("{}").is_err());
-        assert!(parse_about(r#"{"user": {}, "rootFolderId": "root"}"#).is_err());
-        assert!(parse_about(r#"{"user": {"emailAddress": "a@b"}, "rootFolderId": ""}"#).is_err());
+        assert!(parse_about(r#"{"user": {}}"#).is_err());
     }
 
     #[test]
