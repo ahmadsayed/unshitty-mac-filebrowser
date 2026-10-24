@@ -253,11 +253,11 @@ async fn delete_permanently(app: tauri::AppHandle, path: String) -> Result<(), S
 }
 
 /// The folder the Trash view lists. On Linux this is
-/// `~/.local/share/Trash/files`, not `~/.Trash`.
+/// `~/.local/share/Trash/files`, not `~/.Trash`, and is created if missing.
 #[tauri::command]
 fn trash_dir(app: tauri::AppHandle) -> String {
     home_dir(&app)
-        .map(|home| trash_ops::items_root(&home).to_string_lossy().to_string())
+        .map(|home| trash_ops::ensure_items_root(&home).to_string_lossy().to_string())
         .unwrap_or_default()
 }
 

@@ -214,7 +214,7 @@ fn parse_xbel(text: &str) -> Vec<(String, i64)> {
         // `modified` is what GTK updates; `visited` is the fallback.
         let when = attr(tag, "modified").or_else(|| attr(tag, "visited"));
         if let (Some(href), Some(when)) = (attr(tag, "href"), when) {
-            if let (Some(path), Some(time)) = (crate::platform::file_uri_to_path(href), parse_iso(when)) {
+            if let (Some(path), Some(time)) = (crate::platform::file_uri_to_path(&href), parse_iso(&when)) {
                 out.push((path.to_string_lossy().to_string(), time));
             }
         }
@@ -223,12 +223,52 @@ fn parse_xbel(text: &str) -> Vec<(String, i64)> {
     out
 }
 
-/// The value of `name="…"` inside an XML tag.
-fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+/// The value of `name="…"` inside an XML tag, with XML escapes decoded.
+fn attr(tag: &str, name: &str) -> Option<String> {
     let needle = format!("{}=\"", name);
     let start = tag.find(&needle)? + needle.len();
     let rest = &tag[start..];
-    Some(&rest[..rest.find('"')?])
+    Some(xml_unescape(&rest[..rest.find('"')?]))
+}
+
+/// Decode the five predefined XML entities and `&#…;` character references.
+/// GTK escapes `&`, `<`, `>`, `"` and `'` that are left unescaped by URI
+/// encoding, so a file named `Tom & Jerry.odt` arrives as `Tom%20&amp;%20…`.
+/// Anything unrecognised is kept as written.
+fn xml_unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let Some(end) = rest.find(';') else { break };
+        let entity = &rest[1..end];
+        let decoded = match entity {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            _ => entity
+                .strip_prefix("#x")
+                .or_else(|| entity.strip_prefix("#X"))
+                .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                .or_else(|| entity.strip_prefix('#').and_then(|dec| dec.parse().ok()))
+                .and_then(char::from_u32),
+        };
+        match decoded {
+            Some(c) => {
+                out.push(c);
+                rest = &rest[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `2026-10-23T08:12:44Z` (fractional seconds and numeric zones allowed) →
@@ -374,6 +414,16 @@ mod tests {
         assert!(parse_xbel("<xbel><bookmark href=\"file:///x\"/></xbel>").is_empty());
         assert!(parse_xbel("not xml at all").is_empty());
         assert!(parse_xbel("<bookmark").is_empty());
+    }
+
+    #[test]
+    fn xml_escapes_in_hrefs_are_decoded() {
+        let xbel = r#"<bookmark href="file:///home/me/Tom%20&amp;%20Jerry&apos;s%20&lt;1&gt;.odt" modified="2026-10-23T08:12:44Z"/>"#;
+        assert_eq!(parse_xbel(xbel), vec![("/home/me/Tom & Jerry's <1>.odt".to_string(), 1_792_743_164)]);
+        assert_eq!(xml_unescape("a&#38;b&#x27;c"), "a&b'c");
+        assert_eq!(xml_unescape("plain"), "plain");
+        // Stray or unknown ampersands are kept rather than dropped.
+        assert_eq!(xml_unescape("a & b &bogus; c&"), "a & b &bogus; c&");
     }
 
     #[test]
