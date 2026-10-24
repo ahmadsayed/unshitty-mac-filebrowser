@@ -20,35 +20,8 @@ use oauth2::{
 };
 use url::Url;
 
+use crate::cloud::client::OAuthClient;
 use crate::cloud::token::Token;
-
-/// Desktop-client credentials. Both are injected at build time from the
-/// git-ignored `.env`; an installed app cannot keep the secret confidential,
-/// and PKCE still protects the code exchange.
-pub const CLIENT_ID: &str = match option_env!("FILEBROWSER_GOOGLE_CLIENT_ID") {
-    Some(value) => value,
-    None => "",
-};
-pub const CLIENT_SECRET: &str = match option_env!("FILEBROWSER_GOOGLE_CLIENT_SECRET") {
-    Some(value) => value,
-    None => "",
-};
-
-fn client_id() -> &'static str {
-    if CLIENT_ID.is_empty() && cfg!(test) {
-        "test-client-id.apps.googleusercontent.com"
-    } else {
-        CLIENT_ID
-    }
-}
-
-fn client_secret() -> &'static str {
-    if CLIENT_SECRET.is_empty() && cfg!(test) {
-        "test-client-secret"
-    } else {
-        CLIENT_SECRET
-    }
-}
 
 pub const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -94,15 +67,9 @@ impl PendingFlow {
     }
 }
 
-/// Start a read-only sign-in. The caller stores the flow and returns the URL to
-/// the frontend, which opens it with the system browser.
-pub fn start(scopes: &[&str]) -> Result<PendingFlow, String> {
-    if client_id().is_empty() || client_secret().is_empty() {
-        return Err(
-            "Google Drive sign-in is not configured. Add the OAuth client to .env and rebuild."
-                .into(),
-        );
-    }
+/// Start a sign-in with the user's OAuth client. The caller stores the flow and
+/// returns the URL to the frontend, which opens it with the system browser.
+pub fn start(client: &OAuthClient, scopes: &[&str]) -> Result<PendingFlow, String> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| format!("Could not start the Google sign-in listener: {error}"))?;
     let port = listener
@@ -111,7 +78,7 @@ pub fn start(scopes: &[&str]) -> Result<PendingFlow, String> {
         .port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
 
-    let client = google_client(client_id(), client_secret())?
+    let client = google_client(client)?
         .set_auth_uri(AuthUrl::new(AUTH_URL.to_string()).map_err(|e| e.to_string())?)
         .set_redirect_uri(RedirectUrl::new(redirect_uri.clone()).map_err(|e| e.to_string())?);
 
@@ -204,28 +171,20 @@ pub trait TokenExchange {
 }
 
 pub struct GoogleExchange {
-    client_id: String,
-    client_secret: String,
+    client: OAuthClient,
 }
 
 impl GoogleExchange {
-    pub fn new() -> Self {
+    pub fn new(client: &OAuthClient) -> Self {
         Self {
-            client_id: client_id().to_string(),
-            client_secret: client_secret().to_string(),
+            client: client.clone(),
         }
-    }
-}
-
-impl Default for GoogleExchange {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
 impl TokenExchange for GoogleExchange {
     fn exchange(&self, code: &str, verifier: &str, redirect_uri: &str) -> Result<Token, String> {
-        let client = google_client(&self.client_id, &self.client_secret)?.set_redirect_uri(
+        let client = google_client(&self.client)?.set_redirect_uri(
             RedirectUrl::new(redirect_uri.to_string()).map_err(|e| e.to_string())?,
         );
         let http = http_client()?;
@@ -238,7 +197,7 @@ impl TokenExchange for GoogleExchange {
     }
 
     fn refresh(&self, refresh_token: &str) -> Result<Token, String> {
-        let client = google_client(&self.client_id, &self.client_secret)?;
+        let client = google_client(&self.client)?;
         let http = http_client()?;
         let response = client
             .exchange_refresh_token(&RefreshToken::new(refresh_token.to_string()))
@@ -259,14 +218,13 @@ pub fn revoke(token: &str) {
 /// The Desktop client with Google's token endpoint. Google wants the secret in
 /// the request body, not in a Basic auth header.
 fn google_client(
-    id: &str,
-    secret: &str,
+    client: &OAuthClient,
 ) -> Result<
     BasicClient<EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>,
     String,
 > {
-    Ok(BasicClient::new(ClientId::new(id.to_string()))
-        .set_client_secret(ClientSecret::new(secret.to_string()))
+    Ok(BasicClient::new(ClientId::new(client.client_id.clone()))
+        .set_client_secret(ClientSecret::new(client.client_secret.clone()))
         .set_auth_type(AuthType::RequestBody)
         .set_token_uri(TokenUrl::new(TOKEN_URL.to_string()).map_err(|e| e.to_string())?))
 }
@@ -362,6 +320,7 @@ fn respond(stream: &mut TcpStream, status: u16, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cloud::client::test_client;
     use std::sync::Mutex;
     use std::thread;
 
@@ -413,8 +372,8 @@ mod tests {
     }
 
     #[test]
-    fn the_auth_url_has_pkce_offline_and_the_shipped_client() {
-        let flow = start(&[SCOPE_READONLY]).unwrap();
+    fn the_auth_url_has_pkce_offline_and_the_users_client() {
+        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
         let url = Url::parse(&flow.auth_url).unwrap();
         let param = |name: &str| {
             url.query_pairs()
@@ -422,12 +381,14 @@ mod tests {
                 .map(|(_, value)| value.into_owned())
         };
         assert_eq!(url.host_str(), Some("accounts.google.com"));
-        assert_eq!(param("client_id").as_deref(), Some(client_id()));
+        assert_eq!(
+            param("client_id").as_deref(),
+            Some(test_client().client_id.as_str())
+        );
         assert!(
             param("client_secret").is_none(),
             "the secret never goes in the auth URL"
         );
-        assert!(!client_secret().is_empty());
         assert_eq!(param("response_type").as_deref(), Some("code"));
         assert_eq!(param("code_challenge_method").as_deref(), Some("S256"));
         assert_eq!(param("access_type").as_deref(), Some("offline"));
@@ -444,7 +405,7 @@ mod tests {
 
     #[test]
     fn a_matching_callback_is_exchanged_once() {
-        let flow = start(&[SCOPE_READONLY]).unwrap();
+        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
         let addr = flow.listener.local_addr().unwrap();
         let state = flow.csrf.clone();
         let worker = thread::spawn(move || {
@@ -466,7 +427,7 @@ mod tests {
 
     #[test]
     fn a_favicon_request_is_ignored_and_the_callback_still_arrives() {
-        let flow = start(&[SCOPE_READONLY]).unwrap();
+        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
         let addr = flow.listener.local_addr().unwrap();
         let state = flow.csrf.clone();
         let worker = thread::spawn(move || {
@@ -481,7 +442,7 @@ mod tests {
 
     #[test]
     fn a_wrong_state_is_refused_before_the_code_is_exchanged() {
-        let flow = start(&[SCOPE_READONLY]).unwrap();
+        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
         let addr = flow.listener.local_addr().unwrap();
         let worker = thread::spawn(move || call(addr, "/?code=the-code&state=wrong"));
 
@@ -494,7 +455,7 @@ mod tests {
 
     #[test]
     fn access_denied_is_a_cancellation() {
-        let flow = start(&[SCOPE_READONLY]).unwrap();
+        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
         let addr = flow.listener.local_addr().unwrap();
         let state = flow.csrf.clone();
         let worker = thread::spawn(move || {
@@ -508,14 +469,14 @@ mod tests {
 
     #[test]
     fn no_callback_times_out_cleanly() {
-        let flow = start(&[SCOPE_READONLY]).unwrap();
+        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
         let error = finish(&flow, &FakeExchange::new(), Duration::from_millis(80)).unwrap_err();
         assert!(error.contains("timed out"));
     }
 
     #[test]
     fn cancelling_stops_the_wait_immediately() {
-        let flow = start(&[SCOPE_READONLY]).unwrap();
+        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
         flow.cancel();
         let error = finish(&flow, &FakeExchange::new(), Duration::from_secs(5)).unwrap_err();
         assert_eq!(error, "Sign-in was cancelled.");
@@ -523,7 +484,7 @@ mod tests {
 
     #[test]
     fn only_one_finish_can_claim_a_flow() {
-        let flow = start(&[SCOPE_READONLY]).unwrap();
+        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
         flow.claim().unwrap();
         assert_eq!(
             flow.claim().unwrap_err(),
@@ -533,7 +494,7 @@ mod tests {
 
     #[test]
     fn a_callback_without_a_code_is_refused() {
-        let flow = start(&[SCOPE_READONLY]).unwrap();
+        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
         let addr = flow.listener.local_addr().unwrap();
         let state = flow.csrf.clone();
         let worker = thread::spawn(move || {

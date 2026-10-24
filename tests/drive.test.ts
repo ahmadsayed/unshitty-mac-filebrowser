@@ -1,7 +1,7 @@
 // The Google Drive location: connect through the mock, browse the fake Drive,
 // and keep the read-only milestone free of version markers and write actions.
 import { beforeAll, expect, test } from "vitest";
-import { $, $$, boot, key, names, settle } from "./app";
+import { $, $$, boot, key, names, respond, settle } from "./app";
 
 beforeAll(async () => {
   await boot();
@@ -13,15 +13,39 @@ test("Google Drive connects and browses the mock drive", async () => {
   expect(driveRow()).toBeTruthy();
   expect(driveRow().title).toBe("Connect to Google Drive");
 
+  // No OAuth client yet: the setup step comes first.
   driveRow().click();
   await settle(10);
-  expect($(".dialog-heading").textContent).toBe("Connect to Google Drive");
+  expect($(".dialog-heading").textContent).toBe("Add Your Google Client");
+  const links = $$(".dialog-links button").map((button) => button.textContent);
+  expect(links).toEqual(["Open Guide", "Choose File…"]);
 
-  const connect = [...document.querySelectorAll<HTMLButtonElement>(".dialog-responses button")].find(
-    (button) => button.textContent === "Open Browser",
-  )!;
-  connect.click();
-  await settle(30);
+  // A web client is refused with a hint, and the dialog stays open.
+  const paste = $<HTMLTextAreaElement>(".client-json");
+  paste.value = '{"web":{"client_id":"x.apps.googleusercontent.com"}}';
+  await respond("Add Client");
+  expect($(".dialog-error").textContent).toContain("Desktop app");
+  expect($(".dialog-heading").textContent).toBe("Add Your Google Client");
+
+  // Choosing the downloaded file adds the client and moves on.
+  const input = $<HTMLInputElement>('.dialog input[type="file"]');
+  const client = JSON.stringify({
+    installed: { client_id: "123-abc.apps.googleusercontent.com", client_secret: "GOCSPX-test" },
+  });
+  Object.defineProperty(input, "files", {
+    value: [new File([client], "client_secret.json", { type: "application/json" })],
+    configurable: true,
+  });
+  input.dispatchEvent(new Event("change"));
+  await settle(15);
+  expect($(".dialog-heading").textContent).toBe("Connect to Google Drive");
+  expect($$(".dialog-links button").map((button) => button.textContent)).toEqual([
+    "Open Guide",
+    "Change Client…",
+  ]);
+
+  await respond("Open Browser");
+  await settle(15);
 
   expect($(".crumb.current")?.textContent).toContain("My Drive");
   expect(names()).toContain("Documents");

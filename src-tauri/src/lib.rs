@@ -769,9 +769,47 @@ fn drive_disconnect(state: tauri::State<CloudState>, account: String) -> Result<
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct DriveClientStatus {
+    configured: bool,
+    client_id: Option<String>,
+}
+
+/// Whether the user has added their OAuth client. The secret never leaves the
+/// backend.
+#[tauri::command]
+fn drive_client_status(state: tauri::State<CloudState>) -> DriveClientStatus {
+    let client = state.oauth_client();
+    DriveClientStatus {
+        configured: client.is_some(),
+        client_id: client.map(|client| client.client_id),
+    }
+}
+
+/// Store the user's OAuth client from the JSON file Google lets them download.
+#[tauri::command]
+fn drive_client_set(
+    state: tauri::State<CloudState>,
+    json: String,
+) -> Result<DriveClientStatus, String> {
+    let client = state.set_oauth_client(&json)?;
+    Ok(DriveClientStatus {
+        configured: true,
+        client_id: Some(client.client_id),
+    })
+}
+
+#[tauri::command]
+fn drive_client_clear(state: tauri::State<CloudState>) -> Result<(), String> {
+    state.clear_oauth_client()
+}
+
 #[tauri::command]
 fn drive_connect_start(state: tauri::State<CloudState>) -> Result<DriveConnectStart, String> {
-    let flow = cloud::oauth::start(&[cloud::oauth::SCOPE_READONLY])?;
+    let flow = cloud::oauth::start(
+        &state.require_oauth_client()?,
+        &[cloud::oauth::SCOPE_READONLY],
+    )?;
     let start = DriveConnectStart {
         flow_id: flow.id.clone(),
         auth_url: flow.auth_url.clone(),
@@ -801,7 +839,7 @@ async fn drive_connect_finish(
         let result = (|| -> Result<cloud::accounts::DriveAccount, String> {
             let token = cloud::oauth::finish(
                 &flow,
-                &cloud::oauth::GoogleExchange::new(),
+                &cloud::oauth::GoogleExchange::new(&state.require_oauth_client()?),
                 cloud::oauth::CALLBACK_TIMEOUT,
             )?;
             if token.refresh_token.is_none() {
@@ -926,6 +964,9 @@ pub fn run() {
             volumes,
             drive_accounts,
             drive_disconnect,
+            drive_client_status,
+            drive_client_set,
+            drive_client_clear,
             drive_connect_start,
             drive_connect_finish,
             drive_connect_cancel,
