@@ -774,6 +774,88 @@ function resetZoom(): void {
   scrollToIndex(cursorIndex);
 }
 
+// ---------------------------------------------------------------------------
+// Zooming with the wheel or a trackpad pinch
+//
+// GNOME Files zooms with Ctrl + wheel, and on macOS a trackpad pinch is the
+// same gesture with a modifier. Wheel deltas arrive in three flavours (pixels,
+// lines, pages) and trackpads send dozens of tiny ones per second, so a notch
+// steps once and small deltas accumulate towards a step.
+// ---------------------------------------------------------------------------
+
+/** A `gesturechange` event, which the DOM type definitions don't declare. */
+interface GestureEventLike extends Event {
+  scale?: number;
+}
+
+/** Wheel/trackpad distance still needed before the next zoom step. */
+const ZOOM_STEP_PX = 24;
+/** A single wheel notch is at least this far, in any delta mode. */
+const ZOOM_NOTCH_PX = 50;
+
+let zoomAccumulator = 0;
+/** True between `gesturestart` and `gestureend`, so pinch and wheel can't
+ * both answer the same gesture. */
+let pinching = false;
+/** Zoom steps already taken in the current pinch. */
+let pinchSteps = 0;
+
+function onViewWheel(e: WheelEvent): void {
+  // Plain scrolling must keep scrolling; only the modifier (which is also
+  // what macOS sends for a pinch) zooms.
+  if (!(e.ctrlKey || e.metaKey) || pinching) return;
+  // Without this the webview applies its own page zoom as well.
+  e.preventDefault();
+
+  // Normalise: a line is ~16 px, a page is roughly a viewport.
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
+  const delta = -e.deltaY * unit;
+  if (delta === 0) return;
+
+  // One notch, one step — wheel hardware reports a big delta per notch and
+  // its inertia would otherwise run through the whole zoom range.
+  if (Math.abs(delta) >= ZOOM_NOTCH_PX) {
+    zoomAccumulator = 0;
+    zoom(Math.sign(delta));
+    return;
+  }
+  zoomAccumulator += delta;
+  if (Math.abs(zoomAccumulator) >= ZOOM_STEP_PX) {
+    zoom(Math.sign(zoomAccumulator));
+    zoomAccumulator = 0;
+  }
+}
+
+/** Scrolling without a zoom gesture starts a fresh accumulation. */
+function onViewScroll(): void {
+  zoomAccumulator = 0;
+}
+
+function onGestureStart(e: Event): void {
+  // Stops the webview from magnifying the whole page instead.
+  e.preventDefault();
+  pinching = true;
+  pinchSteps = 0;
+}
+
+function onGestureChange(e: Event): void {
+  if (!pinching) return;
+  e.preventDefault();
+  const scale = (e as GestureEventLike).scale ?? 1;
+  // Every 15% of pinch is one icon-size step.
+  const target = Math.round((scale - 1) / 0.15);
+  const steps = target - pinchSteps;
+  if (steps === 0) return;
+  pinchSteps = target;
+  zoom(Math.sign(steps) * Math.min(Math.abs(steps), 2));
+}
+
+function onGestureEnd(e: Event): void {
+  e.preventDefault();
+  pinching = false;
+  pinchSteps = 0;
+}
+
 function setView(view: ViewMode): void {
   if (prefs.view === view) return;
   prefs.view = view;
@@ -2094,7 +2176,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
     ["Enter location", `${MOD}L`], ["Search", `${MOD}F`], ["Reload", `${MOD}R`],
   ]],
   ["View", [
-    ["List view", `${MOD}1`], ["Grid view", `${MOD}2`], ["Zoom in / out", `${MOD}+ / ${MOD}−`],
+    ["List view", `${MOD}1`], ["Grid view", `${MOD}2`], ["Zoom in / out", `${MOD}+ / ${MOD}−, Ctrl + wheel, pinch`],
     ["Reset zoom", `${MOD}0`], ["Show hidden files", isMac ? "⇧⌘." : "Ctrl+H"],
   ]],
   ["Files", [
@@ -2422,6 +2504,11 @@ async function init(): Promise<void> {
 
   // View
   viewEl.addEventListener("mousedown", onViewMouseDown);
+  // Zoom: Ctrl/⌘ + wheel, and the trackpad pinch macOS delivers as gestures.
+  viewEl.addEventListener("wheel", onViewWheel, { passive: false });
+  viewEl.addEventListener("gesturestart", onGestureStart);
+  viewEl.addEventListener("gesturechange", onGestureChange);
+  viewEl.addEventListener("gestureend", onGestureEnd);
   viewEl.addEventListener("dblclick", (e) => {
     const i = indexFromEvent(e);
     if ((e.target as HTMLElement).closest(".star")) return;
@@ -2441,6 +2528,7 @@ async function init(): Promise<void> {
   });
   let scrollFrame = 0;
   scrollEl.addEventListener("scroll", () => {
+    onViewScroll();
     cancelAnimationFrame(scrollFrame);
     scrollFrame = requestAnimationFrame(() => renderWindow());
   });

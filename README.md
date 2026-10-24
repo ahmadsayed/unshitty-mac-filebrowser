@@ -41,8 +41,8 @@ files, so the photo thumbnails are placeholders.</sub>
 - GNOME 50 look: libadwaita colours (light and dark), Adwaita Sans, Adwaita-style
   folder and file icons, header bar with path bar, split view button, popover
   menus, dialogs, toasts and banners
-- Grid and list views, zoom, sorting (A–Z, Z–A, modified, size, type), hidden
-  files toggle
+- Grid and list views, sorting (A–Z, Z–A, modified, size, type), hidden files
+  toggle; icon size by ⌘+/⌘−, Ctrl + wheel, or a trackpad pinch
 - Path bar with breadcrumbs; ⌘L to type a location; type anywhere to filter the
   current folder
 - Copy, cut, paste with Replace / Skip / Keep Both on name clashes; replacing
