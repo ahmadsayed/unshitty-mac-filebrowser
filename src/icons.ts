@@ -191,6 +191,29 @@ export function fileTypeLabel(entry: Entry): string {
   return entry.is_dir ? "folder" : fileKind(entry.name);
 }
 
+const KIND_DESCRIPTION: Record<FileKind, string> = {
+  text: "Text document",
+  code: "Source code",
+  image: "Image",
+  audio: "Audio",
+  video: "Video",
+  archive: "Archive",
+  disk: "Disk image",
+  pdf: "PDF document",
+  document: "Document",
+  spreadsheet: "Spreadsheet",
+  presentation: "Presentation",
+  executable: "Application",
+};
+
+/** The type line under the name in the Properties dialog. */
+export function fileTypeDescription(entry: Entry): string {
+  if (entry.is_symlink) return entry.is_dir ? "Link to folder" : "Link to file";
+  if (isAppBundle(entry)) return "Application";
+  if (entry.is_dir) return "Folder";
+  return KIND_DESCRIPTION[fileKind(entry.name)];
+}
+
 // ---------------------------------------------------------------------------
 // Public builders
 // ---------------------------------------------------------------------------

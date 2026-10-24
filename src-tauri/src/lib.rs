@@ -1,6 +1,7 @@
 mod config_store;
 mod fs_ops;
 mod platform;
+mod properties;
 mod recent;
 mod thumbnails;
 mod trash_ops;
@@ -140,6 +141,18 @@ async fn item_counts(paths: Vec<String>, show_hidden: bool) -> Result<Vec<Option
 #[tauri::command]
 async fn path_info(paths: Vec<String>) -> Result<Vec<Option<fs_ops::PathInfo>>, String> {
     blocking(move || fs_ops::path_info(paths)).await
+}
+
+/// Size, dates, permissions and contents for the Properties dialog.
+#[tauri::command]
+async fn file_properties(path: String, show_hidden: bool) -> Result<properties::FileProperties, String> {
+    blocking(move || properties::file_properties(&path, show_hidden)).await?
+}
+
+/// Recursive size of a folder, shown after the Properties dialog is open.
+#[tauri::command]
+async fn folder_size(path: String) -> Result<u64, String> {
+    blocking(move || properties::folder_size(&path)).await?
 }
 
 #[tauri::command]
@@ -298,6 +311,8 @@ pub fn run() {
             fs_ops::rename_entry,
             fs_ops::path_exists,
             path_info,
+            file_properties,
+            folder_size,
             copy_entry,
             move_entry,
             trash_entry,

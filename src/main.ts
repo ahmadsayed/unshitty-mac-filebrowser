@@ -4,9 +4,10 @@ import {
   listDir, makeDir, renameEntry, itemCounts, copyEntry, moveEntry, trashEntry, pathExists,
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
-  trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, type Entry,
+  trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, fileProperties, folderSize,
+  type Entry,
 } from "./api";
-import { entryIcon, fileKind, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
+import { entryIcon, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
@@ -1196,6 +1197,8 @@ function openItemMenu(at: Anchor): void {
       { separator: true },
       { label: "Move to Trash", action: trashSelection },
       { label: "Remove from Recent", action: removeFromRecent },
+      { separator: true },
+      propertiesMenuItem(single),
     ]);
     return;
   }
@@ -1210,6 +1213,8 @@ function openItemMenu(at: Anchor): void {
       { label: "Copy", action: () => setClipboard("copy") },
       { separator: true },
       { label: "Delete Permanently…", action: () => confirmDeletePermanently(sel) },
+      { separator: true },
+      propertiesMenuItem(single),
     ]);
     return;
   }
@@ -1224,6 +1229,8 @@ function openItemMenu(at: Anchor): void {
       starMenuItem(sel),
       { separator: true },
       { label: "Move to Trash", action: trashSelection },
+      { separator: true },
+      propertiesMenuItem(single),
     ]);
     return;
   }
@@ -1240,6 +1247,8 @@ function openItemMenu(at: Anchor): void {
     starMenuItem(sel),
     { separator: true },
     { label: "Move to Trash", action: trashSelection },
+    { separator: true },
+    propertiesMenuItem(single),
   ]);
 }
 
@@ -1307,6 +1316,108 @@ function openMainMenu(anchor: HTMLElement): void {
     { label: "Keyboard Shortcuts", action: showShortcuts },
     { label: "About Files", action: showAbout },
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// Properties
+// ---------------------------------------------------------------------------
+
+function propertiesMenuItem(single: Entry | null): MenuItem {
+  return { label: "Properties", disabled: !single, action: () => single && showProperties(single) };
+}
+
+/** "12.3 MB (12,345,678 bytes)", but plain "512 bytes" so the number isn't repeated. */
+function sizeAndBytes(bytes: number): string {
+  return bytes < 1000 ? formatSize(bytes) : `${formatSize(bytes)} (${bytes.toLocaleString()} bytes)`;
+}
+
+function propertyRow(label: string, value: string, title = ""): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "prop-row";
+  const key = document.createElement("span");
+  key.className = "prop-label";
+  key.textContent = label;
+  const text = document.createElement("span");
+  text.className = "prop-value";
+  text.textContent = value;
+  if (title) text.title = title;
+  row.append(key, text);
+  return row;
+}
+
+/**
+ * The Properties dialog: type, size, dates and permissions. A folder's total
+ * size is summed in the background (like GNOME Files) while the rest of the
+ * dialog is already usable.
+ */
+async function showProperties(entry: Entry): Promise<void> {
+  let info;
+  try {
+    info = await fileProperties(entry.path, prefs.showHidden);
+  } catch (err) {
+    showToast(`Could not show properties: ${cleanError(err)}`);
+    return;
+  }
+
+  const extra = document.createElement("div");
+  extra.className = "properties";
+
+  const header = document.createElement("div");
+  header.className = "properties-header";
+  const icon = document.createElement("div");
+  icon.className = "properties-icon";
+  icon.innerHTML = entryIcon(entry, folderKind(entry));
+  const name = document.createElement("div");
+  name.className = "properties-name";
+  name.textContent = info.name;
+  const type = document.createElement("div");
+  type.className = "properties-type";
+  type.textContent = fileTypeDescription(entry);
+  header.append(icon, name, type);
+
+  const list = document.createElement("div");
+  list.className = "props-list";
+  const add = (label: string, value: string, title = "") => {
+    if (value) list.appendChild(propertyRow(label, value, title));
+  };
+
+  let sizeValue: HTMLElement | null = null;
+  if (info.is_dir) {
+    const row = propertyRow("Size", "Calculating…");
+    sizeValue = row.querySelector<HTMLElement>(".prop-value");
+    list.appendChild(row);
+    if (info.item_count !== null) add("Contents", formatItemCount(info.item_count));
+  } else {
+    add("Size", sizeAndBytes(info.size));
+  }
+  add("Parent folder", info.parent, info.parent);
+  add("Modified", formatDateDetailed(info.modified));
+  add("Accessed", formatDateDetailed(info.accessed));
+  add("Created", formatDateDetailed(info.created));
+  if (info.symlink_target) add("Link target", info.symlink_target, info.symlink_target);
+  add("Permissions", `${info.mode} (${info.octal})`);
+  add("Owner", info.owner);
+  add("Group", info.group);
+  add("Others", info.others);
+
+  extra.append(header, list);
+  openDialog({
+    heading: "Properties",
+    className: "properties-dialog",
+    extra,
+    responses: [{ id: "close", label: "Close" }],
+    defaultResponse: "close",
+    closeResponse: "close",
+  });
+
+  if (sizeValue) {
+    try {
+      const bytes = await folderSize(info.path);
+      if (sizeValue.isConnected) sizeValue.textContent = sizeAndBytes(bytes);
+    } catch {
+      if (sizeValue.isConnected) sizeValue.textContent = "Unknown";
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2182,7 +2293,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
   ["Files", [
     ["Open", "Enter"], ["Rename", "F2"], ["New folder", isMac ? "⇧⌘N" : "Shift+Ctrl+N"], ["Select all", `${MOD}A`],
     ["Copy / Cut / Paste", `${MOD}C / ${MOD}X / ${MOD}V`], ["Move to Trash", isMac ? "⌘⌫ or Delete" : "Delete"], ["Undo Move to Trash", `${MOD}Z`],
-    ["Cancel cut", "Esc"], ["Bookmark this folder", `${MOD}D`],
+    ["Properties", `${MOD}I`], ["Cancel cut", "Esc"], ["Bookmark this folder", `${MOD}D`],
   ]],
 ];
 
@@ -2343,6 +2454,12 @@ function onGlobalKeyDown(e: KeyboardEvent): void {
   if (mod && !e.shiftKey && key === "c" && selected.size) return run(() => setClipboard("copy"));
   if (mod && !e.shiftKey && key === "x" && selected.size) return run(() => setClipboard("cut"));
   if (mod && !e.shiftKey && key === "v" && clipboard && !isPseudo(location)) return run(() => paste(location));
+  if (mod && !e.shiftKey && key === "i" && selected.size === 1) {
+    return run(() => {
+      const entry = selectedEntries()[0];
+      if (entry) showProperties(entry);
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
