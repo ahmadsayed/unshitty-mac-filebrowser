@@ -8,7 +8,6 @@
     "dev/mock-tauri/core.ts::invoke": 6972,
     "dev/mock-tauri/core.ts::mockThumbnail": 56,
     "dev/mock-tauri/core.ts::recent": 72,
-    "scripts/crap-gate.mjs::analyzeRust": 56,
     "src/format.ts::formatDate": 56,
     "src/main.ts::<arrow>#2": 90,
     "src/main.ts::<arrow>": 42,
