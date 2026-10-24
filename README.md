@@ -67,13 +67,15 @@ files, so the photo thumbnails are placeholders.</sub>
 - Starred: star files and folders from the context menu or the star at the end
   of each list row; Starred lists them all, and stars follow renames and moves
   made in the app
-- **Google Drive (Experimental, read-only):** add your own Google OAuth client
-  once ([setup guide](docs/google-drive.md)), connect a Google account from the
+- **Google Drive (Experimental):** add your own Google OAuth client once
+  ([setup guide](docs/google-drive.md)), connect a Google account from the
   sidebar and browse My Drive with the same views, breadcrumbs and thumbnails.
-  Files open as a local snapshot; Google Docs open in the browser. The refresh
-  token is kept in the OS keychain (with a private file fallback). Writes,
-  shared drives and offline editing are not supported yet, Drive items are never
-  versioned, and edits to an opened snapshot are not uploaded
+  New Folder, Rename, Cut, Copy and Paste work inside Drive and between Drive
+  and local folders, with the usual Replace / Skip / Keep Both prompt. Move to
+  Trash uses Drive's Trash and can be undone; nothing is ever deleted
+  permanently. Files open as a local snapshot; Google Docs open in the browser
+  and stay in Drive. The refresh token is kept in the OS keychain (with a
+  private file fallback)
 - **Keep Versions (Experimental):** tick "Keep versions" when creating a folder
   to record every saved state of its files. Such folders show a second folder
   layer behind the icon, with a small layer mark in the path bar and on sidebar
@@ -160,10 +162,11 @@ view shows the home Trash, not the Trash folders of other drives; there is no
 dragging files out of the app into Finder or other apps, no tabs, and no
 disk-wide search.
 
-Google Drive is read-only in this build: there is no upload, new folder,
-rename, move or delete, and no shared drives or shared-with-me. Opening a Drive
-file writes a snapshot to the app cache; edits to that snapshot are not
-uploaded. Keep Versions does not apply to Drive items.
+Google Drive has no shared drives, no Shared with me, no view of Drive's
+Trash (restore there, or use Undo right after Move to Trash), and no
+Drive-wide search. Google Docs, Sheets and Slides can't be copied to a local
+folder. Opening a Drive file writes a snapshot to the app cache; edits to that
+snapshot are not uploaded. Keep Versions does not apply to Drive items.
 
 Keep Versions (Experimental) is deliberately limited: history lives on the same
 disk as the files, so it is **not a backup**; changes made and overwritten while

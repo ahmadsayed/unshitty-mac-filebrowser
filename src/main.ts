@@ -1290,7 +1290,7 @@ function openItemMenu(at: Anchor): void {
   openMenu(at, items);
 }
 
-/** Read-only actions for Drive items; writes land in the next milestone. */
+/** Drive items: no stars, versions or permanent delete (spec "Menus"). */
 function cloudItemMenu(single: Entry | null): MenuItem[] {
   const web = single?.cloud?.web_url;
   return [
@@ -1298,8 +1298,13 @@ function cloudItemMenu(single: Entry | null): MenuItem[] {
     ...(web ? [{ label: "Open in Browser", action: () => openExternal(web) }] : []),
     openLocationItem(single),
     { separator: true },
-    ...(single?.is_dir ? [bookmarkMenuItem(single.path)] : []),
+    ...cutCopyItems(),
     { separator: true },
+    { label: "Rename…", disabled: !single, action: () => single && startRename(single) },
+    { separator: true },
+    { label: "Move to Trash", action: trashSelection },
+    { separator: true },
+    ...(single?.is_dir ? [bookmarkMenuItem(single.path), { separator: true } as const] : []),
     propertiesMenuItem(single),
   ];
 }
@@ -1397,8 +1402,10 @@ function openBackgroundMenu(at: Anchor): void {
   }
   if (isCloud(location)) {
     openMenu(at, [
-      { label: "Reload", action: () => void reload() },
+      { label: "New Folder…", action: promptNewFolder },
       { separator: true },
+      { label: "Paste", disabled: !clipboard, action: () => paste(location) },
+      { label: "Reload", action: () => void reload() },
       { label: "Select All", action: selectAll },
     ]);
     return;
@@ -1426,8 +1433,10 @@ function openLocationMenu(anchor: HTMLElement): void {
   }
   if (isCloud(location)) {
     openMenu(anchor, [
-      { label: "Copy Location", action: copyLocation },
+      { label: "New Folder…", action: promptNewFolder },
       { separator: true },
+      { label: "Copy Location", action: copyLocation },
+      { label: "Paste", disabled: !clipboard, action: () => paste(location) },
       { label: "Select All", disabled: !hasEntries(location), action: selectAll },
     ]);
     return;
@@ -1679,10 +1688,6 @@ async function copyLocation(): Promise<void> {
 function setClipboard(mode: "copy" | "cut"): void {
   const sel = selectedEntries();
   if (sel.length === 0) return;
-  if (sel.some((entry) => entry.cloud)) {
-    showToast("Copy and Cut are not available for Google Drive items yet.");
-    return;
-  }
   clipboard = { paths: sel.map((e) => e.path), dirs: new Set(sel.filter((e) => e.is_dir).map((e) => e.path)), mode };
   // Paths also go to the system clipboard as text, handy for terminals.
   navigator.clipboard?.writeText(clipboard.paths.join("\n")).catch(() => {});
@@ -1825,10 +1830,6 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
 
 async function paste(destDir: string): Promise<void> {
   if (!clipboard) return;
-  if (isCloud(destDir) || clipboard.paths.some((path) => isCloud(path))) {
-    showToast("Copy and Paste are not available for Google Drive items yet.");
-    return;
-  }
   const { paths, dirs, mode } = clipboard;
   const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir);
   // A cut is only consumed once every item has been dealt with.
@@ -1843,7 +1844,7 @@ function inTrash(): boolean {
 }
 
 async function trashSelection(): Promise<void> {
-  if (inTrash() || isCloud(location)) return;
+  if (inTrash()) return;
   await trashPaths(selectedEntries().map((e) => e.path));
 }
 
@@ -2379,7 +2380,7 @@ function showValidation(v: Validation, entry: HTMLElement, message: HTMLElement)
 
 function startRename(entry: Entry): void {
   // Recent and Starred mix folders, so the name-clash check wouldn't work there.
-  if (isPseudo(location) || isCloud(entry.path)) return;
+  if (isPseudo(location)) return;
   const index = shown.findIndex((e) => e.path === entry.path);
   if (index < 0) return;
   scrollToIndex(index);
@@ -2444,19 +2445,23 @@ function startRename(entry: Entry): void {
 // ---------------------------------------------------------------------------
 
 function promptNewFolder(): void {
-  if (isPseudo(location) || isCloud(location) || listingError !== null) return;
+  if (isPseudo(location) || listingError !== null) return;
   const inside = !!versionedRootPath;
+  // Keep Versions never applies to Drive (spec D9).
+  const versionsRow = isCloud(location)
+    ? ""
+    : `<div class="check-row versions-check">
+      <label><input id="new-folder-versions" type="checkbox" ${inside ? "disabled" : ""} /> Keep versions <span class="badge experimental">Experimental</span></label>
+      <div class="check-hint">${inside ? "Already inside a folder that keeps versions" : "Keeps every saved version of the files in this folder."}</div>
+    </div>`;
   const extra = document.createElement("div");
   extra.innerHTML = `
     <div class="entry-row"><label for="new-folder-name">Folder Name</label><input id="new-folder-name" type="text" spellcheck="false" /></div>
-    <div class="check-row versions-check">
-      <label><input id="new-folder-versions" type="checkbox" ${inside ? "disabled" : ""} /> Keep versions <span class="badge experimental">Experimental</span></label>
-      <div class="check-hint">${inside ? "Already inside a folder that keeps versions" : "Keeps every saved version of the files in this folder."}</div>
-    </div>
+    ${versionsRow}
     <div class="field-message" style="margin-top:8px"></div>`;
   const row = extra.querySelector<HTMLElement>(".entry-row")!;
   const input = extra.querySelector("input#new-folder-name")! as HTMLInputElement;
-  const keep = extra.querySelector<HTMLInputElement>("#new-folder-versions")!;
+  const keep = extra.querySelector<HTMLInputElement>("#new-folder-versions");
   const message = extra.querySelector<HTMLElement>(".field-message")!;
   const dir = location;
 
@@ -2481,7 +2486,7 @@ function promptNewFolder(): void {
       const target = joinPath(dir, input.value);
       let created = target;
       try {
-        if (keep.checked) await makeVersionedDir(target);
+        if (keep?.checked) await makeVersionedDir(target);
         else created = await makeDir(target);
       } catch (err) {
         // D13: the folder may exist even when turning versions on failed.

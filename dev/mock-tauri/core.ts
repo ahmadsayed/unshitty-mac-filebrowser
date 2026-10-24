@@ -1,3 +1,4 @@
+import { encodeCloudName } from "../../src/paths";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
 // It serves a fake, in-memory home folder.
@@ -90,56 +91,220 @@ function lookup(path: string): Node | undefined {
 // ---------------------------------------------------------------------------
 
 const DRIVE_ROOT = "gdrive://mock/mock-root~My%20Drive";
-const DRIVE_DOCS = `${DRIVE_ROOT}/folder-1~Documents`;
+const DOC_MIME = "application/vnd.google-apps.document";
+const FOLDER_MIME = "application/vnd.google-apps.folder";
 
-function driveEntry(
-  parent: string,
-  name: string,
-  id: string,
-  isDir: boolean,
-  size: number,
-  doc = false,
-): Entry {
+/** One Drive item. Ids are stable; the tree is linked by `parent`. */
+interface DriveItem {
+  id: string;
+  name: string;
+  parent: string | null;
+  isDir: boolean;
+  size: number;
+  doc: boolean;
+  trashed: boolean;
+}
+
+const driveItems = new Map<string, DriveItem>();
+let driveSeq = 0;
+/** Each Drive write, in order, for tests that check what happened first. */
+export const driveLog: string[] = [];
+
+function addDriveItem(item: Omit<DriveItem, "trashed" | "doc" | "size"> & Partial<DriveItem>): DriveItem {
+  const full: DriveItem = { size: 0, doc: false, trashed: false, ...item };
+  driveItems.set(full.id, full);
+  return full;
+}
+
+addDriveItem({ id: "mock-root", name: "My Drive", parent: null, isDir: true });
+addDriveItem({ id: "folder-1", name: "Documents", parent: "mock-root", isDir: true });
+addDriveItem({ id: "file-1", name: "hello.txt", parent: "mock-root", isDir: false, size: 12 });
+addDriveItem({ id: "file-2", name: "Report.docx", parent: "mock-root", isDir: false, size: 4096 });
+addDriveItem({ id: "file-3", name: "Plan", parent: "mock-root", isDir: false, doc: true });
+addDriveItem({ id: "file-4", name: "nested.txt", parent: "folder-1", isDir: false, size: 3 });
+
+function drivePath(id: string): string {
+  const parts: string[] = [];
+  for (let item = driveItems.get(id); item; item = item.parent ? driveItems.get(item.parent) : undefined) {
+    parts.unshift(`${item.id}~${encodeCloudName(item.name)}`);
+  }
+  return `gdrive://mock/${parts.join("/")}`;
+}
+
+/** The ids along a Drive path and, for a pending `~name` tail, that name. */
+function parseDrive(path: string): { ids: string[]; pending?: string } {
+  const segments = path.slice("gdrive://mock/".length).split("/").filter(Boolean);
+  const last = segments[segments.length - 1] ?? "";
+  if (last.startsWith("~")) {
+    return { ids: segments.slice(0, -1).map((s) => s.split("~")[0]), pending: decodeURIComponent(last.slice(1)) };
+  }
+  return { ids: segments.map((s) => s.split("~")[0]) };
+}
+
+function driveItemAt(path: string): DriveItem | undefined {
+  const { ids, pending } = parseDrive(path);
+  if (pending !== undefined) return undefined;
+  const item = driveItems.get(ids[ids.length - 1]);
+  return item && !item.trashed ? item : undefined;
+}
+
+function driveChildren(parentId: string, name?: string): DriveItem[] {
+  return [...driveItems.values()].filter(
+    (item) => item.parent === parentId && !item.trashed && (name === undefined || item.name === name),
+  );
+}
+
+/** Split a pending destination into its parent folder and the new name. */
+function driveTarget(path: string): { parent: DriveItem; name: string } {
+  const { ids, pending } = parseDrive(path);
+  const parent = driveItems.get(ids[ids.length - 1]);
+  if (pending === undefined || !parent?.isDir || parent.trashed) throw "The destination must be a new name in a Google Drive folder.";
+  return { parent, name: pending };
+}
+
+function driveEntry(item: DriveItem): Entry {
   return {
-    name,
-    path: `${parent}/${id}~${encodeURIComponent(name)}`,
-    is_dir: isDir,
-    size,
+    name: item.name,
+    path: drivePath(item.id),
+    is_dir: item.isDir,
+    size: item.size,
     modified: now - day,
     is_hidden: false,
     is_symlink: false,
     cloud: {
       account: "mock",
-      id,
-      mime_type: doc ? "application/vnd.google-apps.document" : isDir ? "application/vnd.google-apps.folder" : "text/plain",
-      is_google_doc: doc,
+      id: item.id,
+      mime_type: item.doc ? DOC_MIME : item.isDir ? FOLDER_MIME : "text/plain",
+      is_google_doc: item.doc,
       is_shortcut: false,
-      web_url: doc ? "https://docs.google.com/document/d/mock" : undefined,
-      can_download: !isDir && !doc,
+      web_url: item.doc ? "https://docs.google.com/document/d/mock" : undefined,
+      can_download: !item.isDir && !item.doc,
     },
   };
 }
 
-const DRIVE_FILES: Record<string, Entry[]> = {
-  [DRIVE_ROOT]: [
-    driveEntry(DRIVE_ROOT, "Documents", "folder-1", true, 0),
-    driveEntry(DRIVE_ROOT, "hello.txt", "file-1", false, 12),
-    driveEntry(DRIVE_ROOT, "Report.docx", "file-2", false, 4096),
-    driveEntry(DRIVE_ROOT, "Plan", "file-3", false, 0, true),
-  ],
-  [DRIVE_DOCS]: [driveEntry(DRIVE_DOCS, "nested.txt", "file-4", false, 3)],
-};
-
 function listDrive(path: string): Entry[] {
-  const entries = DRIVE_FILES[path];
-  if (!entries) throw "Google Drive item no longer exists.";
-  return entries.map((entry) => ({ ...entry }));
+  const folder = driveItemAt(path);
+  if (!folder?.isDir) throw "Google Drive item no longer exists.";
+  return driveChildren(folder.id).map(driveEntry);
 }
 
 function driveNode(path: string): Entry | undefined {
-  return Object.values(DRIVE_FILES)
-    .flat()
-    .find((entry) => entry.path === path);
+  const item = driveItemAt(path);
+  return item && driveEntry(item);
+}
+
+function drivePathExists(path: string): boolean {
+  const { ids, pending } = parseDrive(path);
+  if (pending !== undefined) return driveChildren(ids[ids.length - 1], pending).length > 0;
+  return !!driveItemAt(path);
+}
+
+function driveMakeDir(path: string): string {
+  const { parent, name } = driveTarget(path);
+  if (driveChildren(parent.id, name).length) throw "A folder with that name already exists.";
+  const item = addDriveItem({ id: `drive-${++driveSeq}`, name, parent: parent.id, isDir: true });
+  driveLog.push(`create ${name}`);
+  return drivePath(item.id);
+}
+
+function driveRename(from: string, to: string): string {
+  const item = driveItemAt(from);
+  if (!item) throw `“${from}” no longer exists`;
+  const { parent, name } = driveTarget(to);
+  if (driveChildren(parent.id, name).some((other) => other.id !== item.id)) {
+    throw "A file or folder with that name already exists.";
+  }
+  item.name = name;
+  return drivePath(item.id);
+}
+
+function driveCopyTree(item: DriveItem, parent: string, name = item.name): DriveItem {
+  const copy = addDriveItem({ ...item, id: `drive-${++driveSeq}`, parent, name, trashed: false });
+  for (const child of driveChildren(item.id)) driveCopyTree(child, copy.id);
+  return copy;
+}
+
+/** The existing item a transfer would replace, after the shared refusals. */
+function driveClash(parentId: string, name: string, overwrite: boolean, sourceId?: string): DriveItem | undefined {
+  const existing = driveChildren(parentId, name).filter((other) => other.id !== sourceId);
+  if (existing.length && !overwrite) throw `Target already exists: ${name}`;
+  if (existing.length > 1) {
+    throw `Several items in this folder are named “${name}”. Rename or remove the extra ones in Google Drive first.`;
+  }
+  return existing[0];
+}
+
+function driveWithin(from: string, to: string, overwrite: boolean, move: boolean): string {
+  const item = driveItemAt(from);
+  if (!item) throw `“${from}” no longer exists`;
+  const { parent, name } = driveTarget(to);
+  if (parseDrive(to).ids.includes(item.id)) throw "Cannot copy or move a folder into itself";
+  if (move && item.parent === parent.id && item.name === name) throw "The source and destination are the same";
+  const old = driveClash(parent.id, name, overwrite, item.id);
+  if (old) old.trashed = true;
+  if (!move) return drivePath(driveCopyTree(item, parent.id, name).id);
+  item.parent = parent.id;
+  item.name = name;
+  return drivePath(item.id);
+}
+
+function driveUpload(from: string, to: string, overwrite: boolean, move: boolean): string {
+  const [fromParent, fromName] = parentAndName(from);
+  const node = fromParent?.dir ? fromParent.children[fromName] : undefined;
+  if (!node || !fromParent?.dir) throw `“${from}” no longer exists`;
+  const { parent, name } = driveTarget(to);
+  const old = driveClash(parent.id, name, overwrite);
+  if (old) old.trashed = true;
+  const add = (n: Node, parentId: string, itemName: string): DriveItem => {
+    const item = addDriveItem({ id: `drive-${++driveSeq}`, name: itemName, parent: parentId, isDir: n.dir, size: n.dir ? 0 : n.size });
+    if (n.dir) for (const [child, sub] of Object.entries(n.children)) add(sub, item.id, child);
+    return item;
+  };
+  const uploaded = add(node, parent.id, name);
+  driveLog.push(`upload ${name}`);
+  if (move) trash(fromParent, fromName, from);
+  return drivePath(uploaded.id);
+}
+
+function driveDownload(from: string, to: string, overwrite: boolean, move: boolean): string {
+  const item = driveItemAt(from);
+  if (!item) throw `“${from}” no longer exists`;
+  if (item.doc) throw `“${item.name}” is a Google Docs file and can only be copied within Google Drive.`;
+  const [toParent, toName] = parentAndName(to);
+  if (!toParent?.dir) throw "Failed to copy: No such file or directory";
+  if (toParent.children[toName]) {
+    if (!overwrite) throw `Target already exists: ${to}`;
+    trash(toParent, toName);
+  }
+  const build = (d: DriveItem): Node =>
+    d.isDir
+      ? { dir: true, modified: now, children: Object.fromEntries(driveChildren(d.id).filter((c) => !c.doc).map((c) => [c.name, build(c)])) }
+      : { dir: false, size: d.size, modified: now };
+  toParent.children[toName] = build(item);
+  driveLog.push(`download ${item.name}`);
+  if (move) {
+    item.trashed = true;
+    driveLog.push(`trash ${item.name}`);
+  }
+  return to;
+}
+
+/** copy_entry / move_entry when either side is in Drive. */
+function driveTransfer(args: Args, move: boolean): string {
+  const from = str(args, "from"), to = str(args, "to");
+  const overwrite = !!args.overwrite;
+  const [fromCloud, toCloud] = [from.startsWith("gdrive://"), to.startsWith("gdrive://")];
+  if (fromCloud && toCloud) return driveWithin(from, to, overwrite, move);
+  return fromCloud ? driveDownload(from, to, overwrite, move) : driveUpload(from, to, overwrite, move);
+}
+
+function driveTrash(path: string, trashed: boolean): string {
+  const item = driveItems.get(parseDrive(path).ids.slice(-1)[0]);
+  if (!item) throw `“${path}” no longer exists`;
+  item.trashed = trashed;
+  driveLog.push(`${trashed ? "trash" : "restore"} ${item.name}`);
+  return path;
 }
 
 function driveProperties(path: string) {
@@ -672,7 +837,12 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     const node = lookup(str(a, "path"));
     return node ? totalSize(node) : 0;
   },
-  make_dir: (a) => (makeDir(str(a, "path")), str(a, "path")),
+  make_dir: (a) => {
+    const path = str(a, "path");
+    if (path.startsWith("gdrive://")) return driveMakeDir(path);
+    makeDir(path);
+    return path;
+  },
   load_pins: () => [...pins],
   save_pins: (a) => void (pins = [...(a.paths as string[])]),
   get_flag: (a) => flags[str(a, "name")] ?? false,
@@ -703,19 +873,34 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     }),
   path_exists: (a) => {
     const path = str(a, "path");
-    return path.startsWith("gdrive://") ? !!driveNode(path) : lookup(path) !== undefined;
+    return path.startsWith("gdrive://") ? drivePathExists(path) : lookup(path) !== undefined;
   },
-  copy_entry: (a) => (transfer(a, false), str(a, "to")),
-  move_entry: (a) => (transfer(a, true), str(a, "to")),
-  trash_entry: (a) => trashEntry(str(a, "path")),
+  copy_entry: (a) => (isDriveTransfer(a) ? driveTransfer(a, false) : (transfer(a, false), str(a, "to"))),
+  move_entry: (a) => (isDriveTransfer(a) ? driveTransfer(a, true) : (transfer(a, true), str(a, "to"))),
+  trash_entry: (a) => {
+    const path = str(a, "path");
+    return path.startsWith("gdrive://") ? driveTrash(path, true) : trashEntry(path);
+  },
   trash_info: (a) => (a.paths as string[]).map(trashInfo),
-  restore_entry: (a) => restoreEntry(str(a, "path")),
+  restore_entry: (a) => {
+    const path = str(a, "path");
+    return path.startsWith("gdrive://") ? driveTrash(path, false) : restoreEntry(path);
+  },
   delete_permanently: (a) => deletePermanently(str(a, "path")),
   empty_trash: () => emptyTrash(),
-  rename_entry: (a) => (renameEntry(str(a, "from"), str(a, "to")), str(a, "to")),
+  rename_entry: (a) => {
+    const from = str(a, "from"), to = str(a, "to");
+    if (from.startsWith("gdrive://") || to.startsWith("gdrive://")) return driveRename(from, to);
+    renameEntry(from, to);
+    return to;
+  },
   ...DRIVE_COMMANDS,
   ...VERSION_COMMANDS,
 };
+
+function isDriveTransfer(a: Args): boolean {
+  return str(a, "from").startsWith("gdrive://") || str(a, "to").startsWith("gdrive://");
+}
 
 export async function invoke<T>(cmd: string, args: Args = {}): Promise<T> {
   await new Promise((r) => setTimeout(r, DELAY));

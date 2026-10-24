@@ -253,6 +253,69 @@ test("write commands return the item's final path", async () => {
   ).toBe(`${HOME}/Final4`);
 });
 
+const DRIVE = "gdrive://mock/mock-root~My%20Drive";
+const DRIVE_DOCS = `${DRIVE}/folder-1~Documents`;
+const DRIVE_HELLO = `${DRIVE}/file-1~hello.txt`;
+const names = async (path: string) =>
+  (await invoke<Array<{ name: string }>>("list_dir", { path, showHidden: false })).map((e) => e.name);
+
+test("Drive New Folder, Rename and path_exists use pending paths", async () => {
+  const made = await invoke<string>("make_dir", { path: `${DRIVE}/~New%20Folder` });
+  expect(made).toMatch(/^gdrive:\/\/mock\/mock-root~My%20Drive\/drive-\d+~New%20Folder$/);
+  expect(await invoke("path_exists", { path: `${DRIVE}/~New%20Folder` })).toBe(true);
+  expect(await invoke("path_exists", { path: `${DRIVE}/~Nope` })).toBe(false);
+  expect(await invoke("path_exists", { path: made })).toBe(true);
+  await expect(invoke("make_dir", { path: `${DRIVE}/~New%20Folder` })).rejects.toMatch(
+    "A folder with that name already exists.",
+  );
+  const renamed = await invoke<string>("rename_entry", { from: made, to: `${DRIVE}/~Renamed` });
+  expect(renamed).toBe(made.replace("~New%20Folder", "~Renamed"));
+  await expect(invoke("rename_entry", { from: renamed, to: `${DRIVE}/~hello.txt` })).rejects.toMatch(
+    "A file or folder with that name already exists.",
+  );
+  expect(await names(DRIVE)).toContain("Renamed");
+});
+
+test("Drive copy, move, trash and restore", async () => {
+  const copy = await invoke<string>("copy_entry", { from: DRIVE_HELLO, to: `${DRIVE_DOCS}/~hello.txt`, overwrite: false });
+  expect(copy).toMatch(/\/drive-\d+~hello\.txt$/);
+  await expect(
+    invoke("copy_entry", { from: DRIVE_HELLO, to: `${DRIVE_DOCS}/~hello.txt`, overwrite: false }),
+  ).rejects.toMatch("Target already exists: hello.txt");
+  await expect(
+    invoke("move_entry", { from: DRIVE_DOCS, to: `${DRIVE_DOCS}/~Documents`, overwrite: false }),
+  ).rejects.toMatch("Cannot copy or move a folder into itself");
+  const moved = await invoke<string>("move_entry", { from: copy, to: `${DRIVE}/~moved.txt`, overwrite: false });
+  expect(moved).toBe(`${DRIVE}/${copy.split("/").pop()!.split("~")[0]}~moved.txt`);
+  expect(await names(DRIVE_DOCS)).not.toContain("hello.txt");
+
+  expect(await invoke("trash_entry", { path: moved })).toBe(moved);
+  expect(await names(DRIVE)).not.toContain("moved.txt");
+  expect(await invoke("restore_entry", { path: moved })).toBe(moved);
+  expect(await names(DRIVE)).toContain("moved.txt");
+  await expect(invoke("delete_permanently", { path: moved })).rejects.toMatch(/Trash/);
+});
+
+test("copying between local folders and Drive", async () => {
+  const up = await invoke<string>("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${DRIVE}/~todo.txt`, overwrite: false });
+  expect(up).toMatch(/~todo\.txt$/);
+  expect(await names(DRIVE)).toContain("todo.txt");
+  expect(await names(`${HOME}/Desktop`)).toContain("todo.txt");
+
+  await invoke("make_dir", { path: `${HOME}/FromDrive` });
+  const down = await invoke<string>("copy_entry", { from: DRIVE_DOCS, to: `${HOME}/FromDrive/Documents`, overwrite: false });
+  expect(down).toBe(`${HOME}/FromDrive/Documents`);
+  expect(await names(down)).toContain("nested.txt");
+
+  await expect(
+    invoke("copy_entry", { from: `${DRIVE}/file-3~Plan`, to: `${HOME}/FromDrive/Plan`, overwrite: false }),
+  ).rejects.toMatch("“Plan” is a Google Docs file and can only be copied within Google Drive.");
+
+  await invoke("move_entry", { from: up, to: `${HOME}/FromDrive/todo.txt`, overwrite: false });
+  expect(await names(DRIVE)).not.toContain("todo.txt");
+  expect(await names(`${HOME}/FromDrive`)).toContain("todo.txt");
+});
+
 test("unknown commands are reported", async () => {
   await expect(invoke("nope")).rejects.toMatch(/unknown command nope/);
 });

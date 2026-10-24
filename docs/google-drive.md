@@ -1,9 +1,10 @@
 # Google Drive
 
 File Browser can show your Google Drive next to your local folders. Drive
-support is **experimental and read-only**: you can browse folders, see
-thumbnails and properties, and open files, but you can't change anything in
-Drive yet.
+support is **experimental**: you can browse folders, see thumbnails and
+properties, open files, create folders, rename, cut, copy and paste (inside
+Drive and to or from your computer) and move items to Drive's Trash. Nothing
+is ever deleted permanently.
 
 File Browser doesn't come with its own Google sign-in. Instead, you create a
 free **OAuth client** in your own Google Cloud project and give its file to
