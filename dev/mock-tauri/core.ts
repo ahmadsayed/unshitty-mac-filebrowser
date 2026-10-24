@@ -183,209 +183,231 @@ async function mockThumbnail(path: string, size: number): Promise<ArrayBuffer> {
   const [w, h] = portrait ? [Math.round(size * 0.75), size] : [size, Math.round(size * 0.66)];
   const canvas = new OffscreenCanvas(w, h);
   const ctx = canvas.getContext("2d")!;
-  let seed = [...path].reduce((a, c) => a + c.charCodeAt(0), 0);
-  const hue = (seed * 47) % 360;
-  if (portrait) {
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = "#c01c28";
-    ctx.fillRect(w * 0.1, h * 0.08, w * 0.8, h * 0.1);
-    ctx.fillStyle = "#c0bfbc";
-    for (let y = 0.25; y < 0.9; y += 0.06) ctx.fillRect(w * 0.1, h * y, w * (0.5 + ((seed = (seed * 9301 + 49297) % 233280) / 233280) * 0.3), h * 0.025);
-  } else {
-    const g = ctx.createLinearGradient(0, 0, 0, h);
-    g.addColorStop(0, `hsl(${hue} 70% 70%)`);
-    g.addColorStop(1, `hsl(${(hue + 40) % 360} 60% 45%)`);
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = `hsl(${(hue + 180) % 360} 50% 30% / .8)`;
-    ctx.beginPath();
-    ctx.moveTo(0, h);
-    ctx.lineTo(w * 0.35, h * 0.45);
-    ctx.lineTo(w * 0.6, h * 0.75);
-    ctx.lineTo(w * 0.8, h * 0.55);
-    ctx.lineTo(w, h);
-    ctx.fill();
-    ctx.fillStyle = "#f6d32d";
-    ctx.beginPath();
-    ctx.arc(w * 0.75, h * 0.25, h * 0.1, 0, Math.PI * 2);
-    ctx.fill();
-    // Photos/Camera stands in for real photos: grain makes the PNG about as
-    // large as a real photo thumbnail, for checking the cache's memory limit.
-    if (path.includes("/Camera/")) {
-      const img = ctx.getImageData(0, 0, w, h);
-      for (let i = 0; i < img.data.length; i += 4) {
-        const n = ((seed = (seed * 9301 + 49297) % 233280) / 233280 - 0.5) * 60;
-        img.data[i] += n;
-        img.data[i + 1] += n;
-        img.data[i + 2] += n;
-      }
-      ctx.putImageData(img, 0, 0);
-    }
-  }
+  const seed = [...path].reduce((a, c) => a + c.charCodeAt(0), 0);
+  if (portrait) drawDocument(ctx, w, h, seed);
+  else drawPhoto(ctx, w, h, seed);
+  // Photos/Camera stands in for real photos: grain makes the PNG about as
+  // large as a real photo thumbnail, for checking the cache's memory limit.
+  if (!portrait && path.includes("/Camera/")) addGrain(ctx, w, h, seed);
   return (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer();
 }
 
-export async function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
-  await new Promise((r) => setTimeout(r, 30));
-  switch (cmd) {
-    case "list_dir":
-      return list(args.path as string, args.showHidden as boolean) as T;
-    case "item_counts":
-      return (args.paths as string[]).map((p) => {
-        try { return list(p, args.showHidden as boolean).length; } catch { return null; }
-      }) as T;
-    case "file_properties": {
-      const path = args.path as string;
-      const node = lookup(path);
-      if (!node) throw "Could not read properties: No such file or directory (os error 2)";
-      const i = path.lastIndexOf("/");
-      const name = path.slice(i + 1) || path;
-      const isDir = node.dir;
-      return {
-        name,
-        path,
-        parent: path.slice(0, i) || "/",
-        is_dir: isDir,
-        is_symlink: !!node.link,
-        symlink_target: node.link ? "/Users/me/Documents" : null,
-        size: isDir ? 96 : node.size,
-        item_count: isDir ? Object.keys(node.children).length : null,
-        modified: node.modified,
-        accessed: node.modified,
-        created: node.modified - 100 * day,
-        mode: isDir ? "drwxr-xr-x" : node.link ? "lrwxrwxrwx" : "-rw-r--r--",
-        octal: isDir ? "755" : "644",
-        owner: isDir ? "Create and delete files" : "Read and write",
-        group: isDir ? "Access files" : "Read-only",
-        others: isDir ? "Access files" : "Read-only",
-      } as T;
-    }
-    case "new_folder_walk":
-      return ++mockWalks as T;
-    case "cancel_folder_size":
-      return undefined as T;
-    case "folder_size": {
-      const node = lookup(args.path as string);
-      return (node ? totalSize(node) : 0) as T;
-    }
-    case "make_dir": {
-      const [parent, name] = parentAndName(args.path as string);
-      if (!parent?.dir) throw "Failed to create directory: No such file or directory";
-      if (parent.children[name]) throw `Path already exists: ${args.path}`;
-      parent.children[name] = d({}, 0);
-      return undefined as T;
-    }
-    case "load_pins":
-      return [...pins] as T;
-    case "save_pins":
-      pins = [...(args.paths as string[])];
-      return undefined as T;
-    case "get_flag":
-      return (flags[args.name as string] ?? false) as T;
-    case "set_flag":
-      flags[args.name as string] = args.value as boolean;
-      return undefined as T;
-    case "recent_files":
-      return recent(args.showHidden as boolean) as T;
-    case "add_recent":
-      recentUse.set(args.path as string, Math.floor(Date.now() / 1000));
-      return undefined as T;
-    case "forget_recent":
-      for (const p of args.paths as string[]) recentUse.delete(p);
-      return undefined as T;
-    case "load_starred":
-      return [...starred] as T;
-    case "save_starred":
-      starred = [...(args.paths as string[])];
-      return undefined as T;
-    case "starred_files":
-      return starred.map(entryAt).filter((e): e is Entry => !!e && (!!args.showHidden || !e.is_hidden)) as T;
-    case "has_full_disk_access":
-      return false as T;
-    case "volumes":
-      // The preview pretends to be macOS, so it lists /Volumes the way the
-      // real backend would on a Mac.
-      return [
-        { name: "Backup Drive", path: "/Volumes/Backup Drive" },
-        { name: "Macintosh HD", path: "/Volumes/Macintosh HD" },
-      ] as T;
-    case "trash_dir":
-      return TRASH as T;
-    case "thumbnail":
-      return (await mockThumbnail(args.path as string, args.size as number)) as T;
-    case "path_info":
-      return (args.paths as string[]).map((p) => {
-        const node = lookup(p);
-        return node ? { is_dir: node.dir, device: p.startsWith("/Volumes/Backup Drive") ? 2 : 1 } : null;
-      }) as T;
-    case "path_exists":
-      return (lookup(args.path as string) !== undefined) as T;
-    case "copy_entry":
-    case "move_entry": {
-      const from = args.from as string, to = args.to as string;
-      const [fromParent, fromName] = parentAndName(from);
-      const [toParent, toName] = parentAndName(to);
-      const node = fromParent?.dir ? fromParent.children[fromName] : undefined;
-      if (!node || !fromParent?.dir) throw `“${from}” no longer exists`;
-      if (!toParent?.dir) throw "Failed to copy: No such file or directory";
-      if (from === to) throw "The source and destination are the same";
-      if (to.startsWith(from + "/")) throw "Cannot copy or move a folder into itself";
-      if (toParent.children[toName]) {
-        if (!args.overwrite) throw `Target already exists: ${to}`;
-        trash(toParent, toName);
-      }
-      toParent.children[toName] = cmd === "copy_entry" ? structuredClone(node) : node;
-      if (cmd === "move_entry") delete fromParent.children[fromName];
-      return undefined as T;
-    }
-    case "trash_entry": {
-      const [parent, name] = parentAndName(args.path as string);
-      if (!parent?.dir || !parent.children[name]) throw `“${args.path}” no longer exists`;
-      return trash(parent, name, args.path as string) as T;
-    }
-    case "trash_info":
-      return (args.paths as string[]).map((p) => {
-        const logged = trashLog.get(p);
-        return { origin: logged?.origin ?? null, trashed: logged?.time ?? now - 2 * day };
-      }) as T;
-    case "restore_entry": {
-      const path = args.path as string;
-      const logged = trashLog.get(path);
-      if (!logged) throw "The original location is unknown";
-      const [bin, name] = parentAndName(path);
-      if (!bin?.dir || !bin.children[name]) throw `“${path}” is no longer in the Trash`;
-      const [, originName] = parentAndName(logged.origin);
-      const dir = ensureDir(logged.origin.slice(0, logged.origin.lastIndexOf("/")));
-      if (dir.children[originName]) throw `An item named “${originName}” already exists in “${logged.origin.split("/").at(-2)}”`;
-      dir.children[originName] = bin.children[name];
-      delete bin.children[name];
-      trashLog.delete(path);
-      return logged.origin as T;
-    }
-    case "delete_permanently": {
-      const path = args.path as string;
-      if (!path.startsWith(TRASH + "/")) throw "Only items in the Trash can be deleted permanently";
-      const [parent, name] = parentAndName(path);
-      if (!parent?.dir || !parent.children[name]) throw `“${path}” no longer exists`;
-      delete parent.children[name];
-      return undefined as T;
-    }
-    case "empty_trash": {
-      const bin = lookup(TRASH);
-      if (bin?.dir) bin.children = {};
-      trashLog.clear();
-      return undefined as T;
-    }
-    case "rename_entry": {
-      const [fromParent, fromName] = parentAndName(args.from as string);
-      const [toParent, toName] = parentAndName(args.to as string);
-      if (!fromParent?.dir || !toParent?.dir || !fromParent.children[fromName]) throw "Failed to rename: No such file or directory";
-      if (toParent.children[toName]) throw `Target already exists: ${args.to}`;
-      toParent.children[toName] = fromParent.children[fromName];
-      delete fromParent.children[fromName];
-      return undefined as T;
-    }
+/** A tiny pseudo-random sequence, so each file always gets the same picture. */
+const nextSeed = (seed: number) => (seed * 9301 + 49297) % 233280;
+
+function drawDocument(ctx: OffscreenCanvasRenderingContext2D, w: number, h: number, seed: number): void {
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = "#c01c28";
+  ctx.fillRect(w * 0.1, h * 0.08, w * 0.8, h * 0.1);
+  ctx.fillStyle = "#c0bfbc";
+  for (let y = 0.25; y < 0.9; y += 0.06) {
+    seed = nextSeed(seed);
+    ctx.fillRect(w * 0.1, h * y, w * (0.5 + (seed / 233280) * 0.3), h * 0.025);
   }
-  throw `mock: unknown command ${cmd}`;
+}
+
+function drawPhoto(ctx: OffscreenCanvasRenderingContext2D, w: number, h: number, seed: number): void {
+  const hue = (seed * 47) % 360;
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, `hsl(${hue} 70% 70%)`);
+  g.addColorStop(1, `hsl(${(hue + 40) % 360} 60% 45%)`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = `hsl(${(hue + 180) % 360} 50% 30% / .8)`;
+  ctx.beginPath();
+  ctx.moveTo(0, h);
+  ctx.lineTo(w * 0.35, h * 0.45);
+  ctx.lineTo(w * 0.6, h * 0.75);
+  ctx.lineTo(w * 0.8, h * 0.55);
+  ctx.lineTo(w, h);
+  ctx.fill();
+  ctx.fillStyle = "#f6d32d";
+  ctx.beginPath();
+  ctx.arc(w * 0.75, h * 0.25, h * 0.1, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function addGrain(ctx: OffscreenCanvasRenderingContext2D, w: number, h: number, seed: number): void {
+  const img = ctx.getImageData(0, 0, w, h);
+  for (let i = 0; i < img.data.length; i += 4) {
+    seed = nextSeed(seed);
+    const n = (seed / 233280 - 0.5) * 60;
+    img.data[i] += n;
+    img.data[i + 1] += n;
+    img.data[i + 2] += n;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/** Delay per call so the preview feels like a real backend; tests set 0. */
+const DELAY = ((globalThis as Record<string, unknown>).__MOCK_DELAY as number | undefined) ?? 30;
+
+type Args = Record<string, unknown>;
+const str = (args: Args, key: string) => args[key] as string;
+
+function fileProperties(path: string) {
+  const node = lookup(path);
+  if (!node) throw "Could not read properties: No such file or directory (os error 2)";
+  const i = path.lastIndexOf("/");
+  const isDir = node.dir;
+  return {
+    name: path.slice(i + 1) || path,
+    path,
+    parent: path.slice(0, i) || "/",
+    is_dir: isDir,
+    is_symlink: !!node.link,
+    symlink_target: node.link ? "/Users/me/Documents" : null,
+    size: isDir ? 96 : node.size,
+    item_count: isDir ? Object.keys(node.children).length : null,
+    modified: node.modified,
+    accessed: node.modified,
+    created: node.modified - 100 * day,
+    mode: isDir ? "drwxr-xr-x" : node.link ? "lrwxrwxrwx" : "-rw-r--r--",
+    octal: isDir ? "755" : "644",
+    owner: isDir ? "Create and delete files" : "Read and write",
+    group: isDir ? "Access files" : "Read-only",
+    others: isDir ? "Access files" : "Read-only",
+  };
+}
+
+function makeDir(path: string): void {
+  const [parent, name] = parentAndName(path);
+  if (!parent?.dir) throw "Failed to create directory: No such file or directory";
+  if (parent.children[name]) throw `Path already exists: ${path}`;
+  parent.children[name] = d({}, 0);
+}
+
+/** The same refusals as the backend's copy/move, in the same order. */
+function checkTransfer(from: string, to: string): { node: Node; fromParent: Node & { dir: true }; toParent: Node & { dir: true } } {
+  const [fromParent, fromName] = parentAndName(from);
+  const [toParent] = parentAndName(to);
+  const node = fromParent?.dir ? fromParent.children[fromName] : undefined;
+  if (!node || !fromParent?.dir) throw `“${from}” no longer exists`;
+  if (!toParent?.dir) throw "Failed to copy: No such file or directory";
+  if (from === to) throw "The source and destination are the same";
+  if (to.startsWith(from + "/")) throw "Cannot copy or move a folder into itself";
+  return { node, fromParent, toParent };
+}
+
+function transfer(args: Args, move: boolean): void {
+  const from = str(args, "from"), to = str(args, "to");
+  const { node, fromParent, toParent } = checkTransfer(from, to);
+  const toName = to.slice(to.lastIndexOf("/") + 1);
+  if (toParent.children[toName]) {
+    if (!args.overwrite) throw `Target already exists: ${to}`;
+    trash(toParent, toName);
+  }
+  toParent.children[toName] = move ? node : structuredClone(node);
+  if (move) delete fromParent.children[from.slice(from.lastIndexOf("/") + 1)];
+}
+
+function trashEntry(path: string): string {
+  const [parent, name] = parentAndName(path);
+  if (!parent?.dir || !parent.children[name]) throw `“${path}” no longer exists`;
+  return trash(parent, name, path);
+}
+
+function restoreEntry(path: string): string {
+  const logged = trashLog.get(path);
+  if (!logged) throw "The original location is unknown";
+  const [bin, name] = parentAndName(path);
+  if (!bin?.dir || !bin.children[name]) throw `“${path}” is no longer in the Trash`;
+  const [, originName] = parentAndName(logged.origin);
+  const dir = ensureDir(logged.origin.slice(0, logged.origin.lastIndexOf("/")));
+  if (dir.children[originName]) throw `An item named “${originName}” already exists in “${logged.origin.split("/").at(-2)}”`;
+  dir.children[originName] = bin.children[name];
+  delete bin.children[name];
+  trashLog.delete(path);
+  return logged.origin;
+}
+
+function deletePermanently(path: string): void {
+  if (!path.startsWith(TRASH + "/")) throw "Only items in the Trash can be deleted permanently";
+  const [parent, name] = parentAndName(path);
+  if (!parent?.dir || !parent.children[name]) throw `“${path}” no longer exists`;
+  delete parent.children[name];
+}
+
+function emptyTrash(): void {
+  const bin = lookup(TRASH);
+  if (bin?.dir) bin.children = {};
+  trashLog.clear();
+}
+
+function renameEntry(from: string, to: string): void {
+  const [fromParent, fromName] = parentAndName(from);
+  const [toParent, toName] = parentAndName(to);
+  if (!fromParent?.dir || !toParent?.dir || !fromParent.children[fromName]) throw "Failed to rename: No such file or directory";
+  if (toParent.children[toName]) throw `Target already exists: ${to}`;
+  toParent.children[toName] = fromParent.children[fromName];
+  delete fromParent.children[fromName];
+}
+
+function itemCount(path: string, showHidden: boolean): number | null {
+  try {
+    return list(path, showHidden).length;
+  } catch {
+    return null;
+  }
+}
+
+function pathInfo(path: string) {
+  const node = lookup(path);
+  return node ? { is_dir: node.dir, device: path.startsWith("/Volumes/Backup Drive") ? 2 : 1 } : null;
+}
+
+function trashInfo(path: string) {
+  const logged = trashLog.get(path);
+  return { origin: logged?.origin ?? null, trashed: logged?.time ?? now - 2 * day };
+}
+
+/** Every command the app calls, by name. */
+const COMMANDS: Record<string, (args: Args) => unknown> = {
+  list_dir: (a) => list(str(a, "path"), a.showHidden as boolean),
+  item_counts: (a) => (a.paths as string[]).map((p) => itemCount(p, a.showHidden as boolean)),
+  file_properties: (a) => fileProperties(str(a, "path")),
+  new_folder_walk: () => ++mockWalks,
+  cancel_folder_size: () => undefined,
+  folder_size: (a) => {
+    const node = lookup(str(a, "path"));
+    return node ? totalSize(node) : 0;
+  },
+  make_dir: (a) => makeDir(str(a, "path")),
+  load_pins: () => [...pins],
+  save_pins: (a) => void (pins = [...(a.paths as string[])]),
+  get_flag: (a) => flags[str(a, "name")] ?? false,
+  set_flag: (a) => void (flags[str(a, "name")] = a.value as boolean),
+  recent_files: (a) => recent(a.showHidden as boolean),
+  add_recent: (a) => void recentUse.set(str(a, "path"), Math.floor(Date.now() / 1000)),
+  forget_recent: (a) => void (a.paths as string[]).forEach((p) => recentUse.delete(p)),
+  load_starred: () => [...starred],
+  save_starred: (a) => void (starred = [...(a.paths as string[])]),
+  starred_files: (a) => starred.map(entryAt).filter((e): e is Entry => !!e && (!!a.showHidden || !e.is_hidden)),
+  has_full_disk_access: () => false,
+  // The preview pretends to be macOS, so it lists /Volumes the way the real
+  // backend would on a Mac.
+  volumes: () => [
+    { name: "Backup Drive", path: "/Volumes/Backup Drive" },
+    { name: "Macintosh HD", path: "/Volumes/Macintosh HD" },
+  ],
+  trash_dir: () => TRASH,
+  thumbnail: (a) => mockThumbnail(str(a, "path"), a.size as number),
+  path_info: (a) => (a.paths as string[]).map(pathInfo),
+  path_exists: (a) => lookup(str(a, "path")) !== undefined,
+  copy_entry: (a) => transfer(a, false),
+  move_entry: (a) => transfer(a, true),
+  trash_entry: (a) => trashEntry(str(a, "path")),
+  trash_info: (a) => (a.paths as string[]).map(trashInfo),
+  restore_entry: (a) => restoreEntry(str(a, "path")),
+  delete_permanently: (a) => deletePermanently(str(a, "path")),
+  empty_trash: () => emptyTrash(),
+  rename_entry: (a) => renameEntry(str(a, "from"), str(a, "to")),
+};
+
+export async function invoke<T>(cmd: string, args: Args = {}): Promise<T> {
+  await new Promise((r) => setTimeout(r, DELAY));
+  const command = COMMANDS[cmd];
+  if (!command) throw `mock: unknown command ${cmd}`;
+  return (await command(args)) as T;
 }

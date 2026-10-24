@@ -152,52 +152,55 @@ export function openMenu(anchor: Anchor, items: MenuItem[]): PopoverHandle {
 
   const hasIndicators = items.some((i) => "label" in i && (i.check !== undefined || i.radio !== undefined));
   let handle: PopoverHandle | null = null;
-
-  for (const item of items) {
-    if ("separator" in item) {
-      const sep = document.createElement("div");
-      sep.className = "menu-separator";
-      menu.appendChild(sep);
-      continue;
-    }
-    if ("heading" in item) {
-      const h = document.createElement("div");
-      h.className = "menu-heading";
-      h.textContent = item.heading;
-      menu.appendChild(h);
-      continue;
-    }
-    const btn = document.createElement("button");
-    btn.className = "menu-item";
-    btn.setAttribute("role", item.radio !== undefined ? "menuitemradio" : item.check !== undefined ? "menuitemcheckbox" : "menuitem");
-    btn.disabled = !!item.disabled;
-    let indicator = "";
-    if (hasIndicators) {
-      const mark = item.check ? sym("object-select") : item.radio ? `<span class="radio-dot"></span>` : "";
-      indicator = `<span class="indicator">${mark}</span>`;
-    }
-    btn.innerHTML = `${indicator}<span class="label"></span>${item.accel ? `<span class="accel"></span>` : ""}`;
-    btn.querySelector(".label")!.textContent = item.label;
-    if (item.accel) btn.querySelector(".accel")!.textContent = item.accel;
-    btn.addEventListener("click", () => {
-      handle?.close();
-      item.action?.();
-    });
-    menu.appendChild(btn);
-  }
-
-  // Arrow-key navigation between enabled items.
-  menu.addEventListener("keydown", (e) => {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    e.preventDefault();
-    const buttons = [...menu.querySelectorAll<HTMLButtonElement>(".menu-item:not(:disabled)")];
-    const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    const next = e.key === "ArrowDown" ? (i + 1) % buttons.length : (i - 1 + buttons.length) % buttons.length;
-    buttons[next]?.focus();
-  });
+  const close = () => handle?.close();
+  for (const item of items) menu.appendChild(menuElement(item, hasIndicators, close));
+  menu.addEventListener("keydown", (e) => moveMenuFocus(menu, e));
 
   handle = openPopover(anchor, menu, { focus: menu });
   return handle;
+}
+
+/** One menu row: a separator, a heading, or a button that closes the menu and runs its action. */
+function menuElement(item: MenuItem, hasIndicators: boolean, close: () => void): HTMLElement {
+  if ("separator" in item) {
+    const sep = document.createElement("div");
+    sep.className = "menu-separator";
+    return sep;
+  }
+  if ("heading" in item) {
+    const h = document.createElement("div");
+    h.className = "menu-heading";
+    h.textContent = item.heading;
+    return h;
+  }
+  const btn = document.createElement("button");
+  btn.className = "menu-item";
+  btn.setAttribute("role", item.radio !== undefined ? "menuitemradio" : item.check !== undefined ? "menuitemcheckbox" : "menuitem");
+  btn.disabled = !!item.disabled;
+  const indicator = hasIndicators ? `<span class="indicator">${indicatorMark(item)}</span>` : "";
+  btn.innerHTML = `${indicator}<span class="label"></span>${item.accel ? `<span class="accel"></span>` : ""}`;
+  btn.querySelector(".label")!.textContent = item.label;
+  if (item.accel) btn.querySelector(".accel")!.textContent = item.accel;
+  btn.addEventListener("click", () => {
+    close();
+    item.action?.();
+  });
+  return btn;
+}
+
+function indicatorMark(item: { check?: boolean; radio?: boolean }): string {
+  if (item.check) return sym("object-select");
+  return item.radio ? `<span class="radio-dot"></span>` : "";
+}
+
+/** Arrow-key navigation between enabled items, wrapping at the ends. */
+function moveMenuFocus(menu: HTMLElement, e: KeyboardEvent): void {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  e.preventDefault();
+  const buttons = [...menu.querySelectorAll<HTMLButtonElement>(".menu-item:not(:disabled)")];
+  const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+  const next = e.key === "ArrowDown" ? (i + 1) % buttons.length : (i - 1 + buttons.length) % buttons.length;
+  buttons[next]?.focus();
 }
 
 // ---------------------------------------------------------------------------

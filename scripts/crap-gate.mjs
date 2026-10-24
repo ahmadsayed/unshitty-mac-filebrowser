@@ -7,9 +7,9 @@
 //   node scripts/crap-gate.mjs --staged    check only languages with staged changes (pre-commit)
 //   node scripts/crap-gate.mjs --update    rewrite the baseline from the current tree
 //
-// Rust is scored with real coverage (cargo llvm-cov + cargo-crap), so the Rust
-// tests must pass. TypeScript has no tests yet, so fallow scores it from
-// complexity alone (a function with cyclomatic complexity 6 already scores 42).
+// Both languages are scored with real coverage, so their tests must pass:
+// Rust through cargo llvm-cov + cargo-crap, TypeScript through Vitest's
+// coverage handed to fallow.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -117,9 +117,19 @@ function analyzeRust() {
   );
 }
 
+/** Run the frontend tests with coverage; failing tests fail the gate. */
+function tsCoverage() {
+  console.log("crap-gate: frontend tests with coverage…");
+  const tests = run("npx", ["vitest", "run", "--coverage"]);
+  if (tests.status === 0) return join(ROOT, "coverage", "coverage-final.json");
+  console.error((tests.stdout + tests.stderr).split("\n").filter((l) => /FAIL|×|Error/.test(l)).join("\n"));
+  fail("the frontend tests failed, so there is no coverage to score");
+}
+
 function analyzeTs() {
-  console.log("crap-gate: TypeScript complexity…");
-  const result = run("npx", ["-y", FALLOW, "health", "--complexity", "--report-only", "--max-crap", String(THRESHOLD), "--format", "json"]);
+  const coverage = tsCoverage();
+  console.log("crap-gate: TypeScript scores…");
+  const result = run("npx", ["-y", FALLOW, "health", "--complexity", "--report-only", "--coverage", coverage, "--max-crap", String(THRESHOLD), "--format", "json"]);
   let report;
   try {
     report = JSON.parse(result.stdout);
@@ -142,7 +152,7 @@ if (staged) {
   const files = stagedFiles();
   langs = [];
   if (files.some((f) => f.startsWith("src-tauri/") && /\.(rs|toml|lock)$/.test(f))) langs.push("rust");
-  if (files.some((f) => /^(src|dev)\/.*\.ts$|^scripts\/.*\.m?js$/.test(f) || f === "package.json")) langs.push("ts");
+  if (files.some((f) => /^(src|dev|tests)\/.*\.ts$|^scripts\/.*\.m?js$/.test(f) || ["package.json", "vitest.config.ts"].includes(f))) langs.push("ts");
   if (!langs.length) process.exit(0);
 }
 
