@@ -1197,65 +1197,80 @@ function openItemMenu(at: Anchor): void {
   const sel = selectedEntries();
   if (sel.length === 0) return;
   const single = sel.length === 1 ? sel[0] : null;
+  const items =
+    location === RECENT ? recentItemMenu(sel, single)
+    : inTrash() ? trashItemMenu(sel, single)
+    : location === STARRED ? starredItemMenu(sel, single)
+    : folderItemMenu(sel, single);
+  openMenu(at, items);
+}
+
+const cutCopyItems = (): MenuItem[] => [
+  { label: "Cut", action: () => setClipboard("cut") },
+  { label: "Copy", action: () => setClipboard("copy") },
+];
+
+function openLocationItem(single: Entry | null): MenuItem {
+  return { label: "Open Item Location", disabled: !single, action: () => single && openItemLocation(single) };
+}
+
+function recentItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
+  return [
+    { label: "Open", action: activateSelection },
+    openLocationItem(single),
+    { separator: true },
+    ...cutCopyItems(),
+    { separator: true },
+    { separator: true },
+    starMenuItem(sel),
+    { separator: true },
+    { label: "Move to Trash", action: trashSelection },
+    { label: "Remove from Recent", action: removeFromRecent },
+    { separator: true },
+    propertiesMenuItem(single),
+  ];
+}
+
+function trashItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
+  // Only items at the top of the Trash know where they came from.
+  const top = location === trashPath;
+  const restorable = top && sel.some((e) => e.origin);
+  return [
+    { label: "Open", action: activateSelection },
+    ...(top ? [{ label: "Restore From Trash", disabled: !restorable, action: restoreSelection }] : []),
+    { separator: true },
+    ...cutCopyItems(),
+    { separator: true },
+    { label: "Delete Permanently…", action: () => confirmDeletePermanently(sel) },
+    { separator: true },
+    propertiesMenuItem(single),
+  ];
+}
+
+function starredItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
+  return [
+    { label: "Open", action: activateSelection },
+    openLocationItem(single),
+    { separator: true },
+    ...cutCopyItems(),
+    { separator: true },
+    starMenuItem(sel),
+    { separator: true },
+    { label: "Move to Trash", action: trashSelection },
+    { separator: true },
+    propertiesMenuItem(single),
+  ];
+}
+
+function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
   const intoFolder = single?.is_dir && !isAppBundle(single) ? single : null;
   const app = single && isAppBundle(single) ? single : null;
-  if (location === RECENT) {
-    openMenu(at, [
-      { label: "Open", action: activateSelection },
-      { label: "Open Item Location", disabled: !single, action: () => single && openItemLocation(single) },
-      { separator: true },
-      { label: "Cut", action: () => setClipboard("cut") },
-      { label: "Copy", action: () => setClipboard("copy") },
-      { separator: true },
-      { separator: true },
-      starMenuItem(sel),
-      { separator: true },
-      { label: "Move to Trash", action: trashSelection },
-      { label: "Remove from Recent", action: removeFromRecent },
-      { separator: true },
-      propertiesMenuItem(single),
-    ]);
-    return;
-  }
-  if (inTrash()) {
-    // Only items at the top of the Trash know where they came from.
-    const restorable = location === trashPath && sel.some((e) => e.origin);
-    openMenu(at, [
-      { label: "Open", action: activateSelection },
-      ...(location === trashPath ? [{ label: "Restore From Trash", disabled: !restorable, action: restoreSelection }] : []),
-      { separator: true },
-      { label: "Cut", action: () => setClipboard("cut") },
-      { label: "Copy", action: () => setClipboard("copy") },
-      { separator: true },
-      { label: "Delete Permanently…", action: () => confirmDeletePermanently(sel) },
-      { separator: true },
-      propertiesMenuItem(single),
-    ]);
-    return;
-  }
-  if (location === STARRED) {
-    openMenu(at, [
-      { label: "Open", action: activateSelection },
-      { label: "Open Item Location", disabled: !single, action: () => single && openItemLocation(single) },
-      { separator: true },
-      { label: "Cut", action: () => setClipboard("cut") },
-      { label: "Copy", action: () => setClipboard("copy") },
-      { separator: true },
-      starMenuItem(sel),
-      { separator: true },
-      { label: "Move to Trash", action: trashSelection },
-      { separator: true },
-      propertiesMenuItem(single),
-    ]);
-    return;
-  }
-  openMenu(at, [
+  return [
     { label: "Open", action: activateSelection },
     ...(app ? [{ label: "Show Package Contents", action: () => navigate(app.path) }] : []),
     ...(intoFolder ? [bookmarkMenuItem(intoFolder.path)] : []),
     { separator: true },
-    { label: "Cut", action: () => setClipboard("cut") },
-    { label: "Copy", action: () => setClipboard("copy") },
+    ...cutCopyItems(),
     ...(intoFolder ? [{ label: "Paste Into Folder", disabled: !clipboard, action: () => paste(intoFolder.path) }] : []),
     { separator: true },
     { label: "Rename…", disabled: !single, action: () => single && startRename(single) },
@@ -1264,7 +1279,7 @@ function openItemMenu(at: Anchor): void {
     { label: "Move to Trash", action: trashSelection },
     { separator: true },
     propertiesMenuItem(single),
-  ]);
+  ];
 }
 
 function openBackgroundMenu(at: Anchor): void {
@@ -2367,122 +2382,175 @@ function moveCursor(to: number, extend: boolean): void {
   scrollToIndex(to);
 }
 
+/** A key press in the view, with what the key handlers need to know. */
+interface ViewKey {
+  e: KeyboardEvent;
+  mod: boolean;
+  /** The cursor, or -1 when there is none. */
+  cur: number;
+  cols: number;
+  /** Items per page, for Page Up/Down. */
+  page: number;
+}
+
+/** Move the cursor to `index`, or to the first item when there is no cursor yet. */
+const stepFrom = (k: ViewKey, delta: number) => moveCursor(k.cur < 0 ? 0 : k.cur + delta, k.e.shiftKey);
+
+/** Left/right move by one item, in grid view only. */
+function gridStep(k: ViewKey, delta: number): boolean {
+  if (k.e.altKey || k.mod) return false;
+  if (prefs.view === "grid") stepFrom(k, delta);
+  return true;
+}
+
+function toggleCursorItem(k: ViewKey): void {
+  if (k.cur < 0 || !k.mod) return;
+  const p = shown[k.cur].path;
+  if (selected.has(p)) selected.delete(p);
+  else selected.add(p);
+  updateSelection();
+}
+
+/**
+ * View keys. A handler returns false to leave the key alone (no
+ * preventDefault), so Alt and ⌘ combinations reach the global shortcuts.
+ */
+const VIEW_KEYS: Record<string, (k: ViewKey) => boolean> = {
+  ArrowRight: (k) => gridStep(k, 1),
+  ArrowLeft: (k) => gridStep(k, -1),
+  ArrowDown: (k) => {
+    if (k.e.altKey) return false;
+    if (k.mod) activateSelection();
+    else stepFrom(k, k.cols);
+    return true;
+  },
+  ArrowUp: (k) => {
+    if (k.e.altKey || k.mod) return false;
+    stepFrom(k, -k.cols);
+    return true;
+  },
+  Home: (k) => {
+    if (k.e.altKey) return false;
+    moveCursor(0, k.e.shiftKey);
+    return true;
+  },
+  End: (k) => (moveCursor(shown.length - 1, k.e.shiftKey), true),
+  PageDown: (k) => (moveCursor(k.cur + k.page, k.e.shiftKey), true),
+  PageUp: (k) => (moveCursor(k.cur - k.page, k.e.shiftKey), true),
+  Enter: () => (activateSelection(), true),
+  F2: () => {
+    const sel = selectedEntries();
+    if (sel.length === 1) startRename(sel[0]);
+    return true;
+  },
+  Escape: () => {
+    if (searchQuery !== null) closeSearch();
+    else if (!cancelCut()) clearSelection();
+    return true;
+  },
+  Delete: () => (trashOrDelete(), true),
+  Backspace: (k) => {
+    if (k.mod) trashOrDelete();
+    else goBack();
+    return true;
+  },
+  " ": (k) => (toggleCursorItem(k), true),
+};
+
 function onViewKeyDown(e: KeyboardEvent): void {
   const mod = isMac ? e.metaKey : e.ctrlKey;
-  const cols = layout.cols;
-  const cur = cursorIndex;
-  const page = Math.max(Math.floor(scrollEl.clientHeight / (layout.itemH + layout.gap)), 1) * cols;
-
-  switch (e.key) {
-    case "ArrowRight":
-      if (e.altKey || mod) return;
-      if (prefs.view === "grid") moveCursor(cur < 0 ? 0 : cur + 1, e.shiftKey);
-      break;
-    case "ArrowLeft":
-      if (e.altKey || mod) return;
-      if (prefs.view === "grid") moveCursor(cur < 0 ? 0 : cur - 1, e.shiftKey);
-      break;
-    case "ArrowDown":
-      if (e.altKey) return;
-      if (mod) activateSelection();
-      else moveCursor(cur < 0 ? 0 : cur + cols, e.shiftKey);
-      break;
-    case "ArrowUp":
-      if (e.altKey || mod) return;
-      moveCursor(cur < 0 ? 0 : cur - cols, e.shiftKey);
-      break;
-    case "Home":
-      if (e.altKey) return;
-      moveCursor(0, e.shiftKey);
-      break;
-    case "End":
-      moveCursor(shown.length - 1, e.shiftKey);
-      break;
-    case "PageDown":
-      moveCursor(cur + page, e.shiftKey);
-      break;
-    case "PageUp":
-      moveCursor(cur - page, e.shiftKey);
-      break;
-    case "Enter":
-      activateSelection();
-      break;
-    case "F2": {
-      const sel = selectedEntries();
-      if (sel.length === 1) startRename(sel[0]);
-      break;
-    }
-    case "Escape":
-      if (searchQuery !== null) closeSearch();
-      else if (!cancelCut()) clearSelection();
-      break;
-    case "Delete":
-      trashOrDelete();
-      break;
-    case "Backspace":
-      if (mod) trashOrDelete();
-      else goBack();
-      break;
-    case " ":
-      if (cur >= 0 && mod) {
-        const p = shown[cur].path;
-        if (selected.has(p)) selected.delete(p);
-        else selected.add(p);
-        updateSelection();
-      }
-      break;
-    default:
-      // Type-ahead: printable keys start a search, like GNOME Files.
-      if (e.key.length === 1 && !mod && !e.altKey && !e.ctrlKey && !e.metaKey && e.key !== " ") {
-        e.preventDefault();
-        openSearch(e.key);
-      }
-      return;
+  const handler = VIEW_KEYS[e.key];
+  if (!handler) {
+    typeAhead(e, mod);
+    return;
   }
+  const cols = layout.cols;
+  const page = Math.max(Math.floor(scrollEl.clientHeight / (layout.itemH + layout.gap)), 1) * cols;
+  if (handler({ e, mod, cur: cursorIndex, cols, page })) e.preventDefault();
+}
+
+/** Printable keys start a search, like GNOME Files. */
+function typeAhead(e: KeyboardEvent, mod: boolean): void {
+  if (e.key.length !== 1 || mod || e.altKey || e.ctrlKey || e.metaKey || e.key === " ") return;
   e.preventDefault();
+  openSearch(e.key);
+}
+
+/** The modifier state of a key press, with ⌘ (macOS) or Ctrl (elsewhere) as `mod`. */
+interface Keys {
+  mod: boolean;
+  shift: boolean;
+  alt: boolean;
+  ctrl: boolean;
+  meta: boolean;
+  /** `e.key` as typed. */
+  raw: string;
+  /** `e.key` lower-cased, for letter shortcuts. */
+  key: string;
+}
+
+type Shortcut = [when: (k: Keys) => boolean, action: () => void];
+
+const plainMod = (k: Keys, key: string) => k.mod && !k.shift && k.key === key;
+
+/** Shortcuts that work everywhere, even while typing in a field. First match wins. */
+const ANYWHERE_SHORTCUTS: Shortcut[] = [
+  [(k) => plainMod(k, "l"), () => openPathEntry()],
+  [(k) => plainMod(k, "f"), () => openSearch()],
+  [(k) => k.mod && k.shift && k.key === "n", promptNewFolder],
+  [(k) => plainMod(k, "d") && !isPseudo(location), () => setBookmarked(location, !pins.includes(location))],
+  [(k) => (k.mod && k.shift && (k.raw === "." || k.raw === ">")) || (k.ctrl && !k.shift && k.key === "h"), toggleHidden],
+  [(k) => plainMod(k, "r") || k.raw === "F5", () => reload()],
+  [(k) => k.mod && (k.raw === "?" || (k.shift && k.raw === "/")), showShortcuts],
+  [(k) => k.mod && k.key === "1", () => setView("list")],
+  [(k) => k.mod && k.key === "2", () => setView("grid")],
+  [(k) => k.mod && (k.raw === "=" || k.raw === "+"), () => zoom(1)],
+  [(k) => k.mod && k.raw === "-", () => zoom(-1)],
+  [(k) => k.mod && k.key === "0", resetZoom],
+  [(k) => k.alt && k.raw === "ArrowLeft", goBack],
+  [(k) => k.alt && k.raw === "ArrowRight", goForward],
+  [(k) => k.alt && k.raw === "ArrowUp", goUp],
+  [(k) => k.alt && k.raw === "Home", () => navigate(home)],
+  [(k) => isMac && k.meta && k.raw === "[", goBack],
+  [(k) => isMac && k.meta && k.raw === "]", goForward],
+  [(k) => isMac && k.meta && k.raw === "ArrowUp", goUp],
+];
+
+/** Shortcuts for the files themselves; ignored while typing in a field. */
+const VIEW_SHORTCUTS: Shortcut[] = [
+  [(k) => plainMod(k, "z") && lastTrashed.length > 0, undoTrash],
+  [(k) => k.mod && k.key === "a", selectAll],
+  [(k) => plainMod(k, "c") && selected.size > 0, () => setClipboard("copy")],
+  [(k) => plainMod(k, "x") && selected.size > 0, () => setClipboard("cut")],
+  [(k) => plainMod(k, "v") && !!clipboard && !isPseudo(location), () => paste(location)],
+  [(k) => plainMod(k, "i") && selected.size === 1, showSelectedProperties],
+];
+
+function showSelectedProperties(): void {
+  const entry = selectedEntries()[0];
+  if (entry) showProperties(entry);
 }
 
 function onGlobalKeyDown(e: KeyboardEvent): void {
   if (hasOpenOverlay()) return;
-  const mod = isMac ? e.metaKey : e.ctrlKey;
-  const key = e.key.toLowerCase();
-  const inInput = (e.target as HTMLElement).tagName === "INPUT";
-
-  const run = (fn: () => void) => {
-    e.preventDefault();
-    fn();
+  const k: Keys = {
+    mod: isMac ? e.metaKey : e.ctrlKey,
+    shift: e.shiftKey,
+    alt: e.altKey,
+    ctrl: e.ctrlKey,
+    meta: e.metaKey,
+    raw: e.key,
+    key: e.key.toLowerCase(),
   };
-
-  if (mod && !e.shiftKey && key === "l") return run(() => openPathEntry());
-  if (mod && !e.shiftKey && key === "f") return run(() => openSearch());
-  if (mod && e.shiftKey && key === "n") return run(promptNewFolder);
-  if (mod && !e.shiftKey && key === "d" && !isPseudo(location)) return run(() => setBookmarked(location, !pins.includes(location)));
-  if ((mod && e.shiftKey && (e.key === "." || e.key === ">")) || (e.ctrlKey && !e.shiftKey && key === "h")) return run(toggleHidden);
-  if ((mod && !e.shiftKey && key === "r") || e.key === "F5") return run(() => reload());
-  if (mod && (e.key === "?" || (e.shiftKey && e.key === "/"))) return run(showShortcuts);
-  if (mod && key === "1") return run(() => setView("list"));
-  if (mod && key === "2") return run(() => setView("grid"));
-  if (mod && (e.key === "=" || e.key === "+")) return run(() => zoom(1));
-  if (mod && e.key === "-") return run(() => zoom(-1));
-  if (mod && key === "0") return run(resetZoom);
-  if (e.altKey && e.key === "ArrowLeft") return run(goBack);
-  if (e.altKey && e.key === "ArrowRight") return run(goForward);
-  if (e.altKey && e.key === "ArrowUp") return run(goUp);
-  if (e.altKey && e.key === "Home") return run(() => navigate(home));
-  if (isMac && e.metaKey && e.key === "[") return run(goBack);
-  if (isMac && e.metaKey && e.key === "]") return run(goForward);
-  if (isMac && e.metaKey && e.key === "ArrowUp") return run(goUp);
-  if (inInput) return;
-  if (mod && !e.shiftKey && key === "z" && lastTrashed.length) return run(undoTrash);
-  if (mod && key === "a") return run(selectAll);
-  if (mod && !e.shiftKey && key === "c" && selected.size) return run(() => setClipboard("copy"));
-  if (mod && !e.shiftKey && key === "x" && selected.size) return run(() => setClipboard("cut"));
-  if (mod && !e.shiftKey && key === "v" && clipboard && !isPseudo(location)) return run(() => paste(location));
-  if (mod && !e.shiftKey && key === "i" && selected.size === 1) {
-    return run(() => {
-      const entry = selectedEntries()[0];
-      if (entry) showProperties(entry);
-    });
+  const inInput = (e.target as HTMLElement).tagName === "INPUT";
+  const tables = inInput ? [ANYWHERE_SHORTCUTS] : [ANYWHERE_SHORTCUTS, VIEW_SHORTCUTS];
+  for (const table of tables) {
+    const hit = table.find(([when]) => when(k));
+    if (hit) {
+      e.preventDefault();
+      hit[1]();
+      return;
+    }
   }
 }
 

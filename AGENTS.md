@@ -37,7 +37,9 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src-tauri/src/recent.rs` | Recent: Spotlight (`mdfind`) on macOS, `recently-used.xbel` on Linux, merged with `recent.json` |
 | `src-tauri/src/config_store.rs` | `pins.json` / `starred.json` / `flags.json` in the app config dir, Full Disk Access check |
 | `src-tauri/src/lib.rs` | Command registration, commands that need `AppHandle`, startup |
-| `dev/mock-tauri/` | In-memory fake backend for browser previews |
+| `dev/mock-tauri/` | In-memory fake backend for browser previews and the frontend tests |
+| `tests/` | Vitest frontend tests: the real app in jsdom against `dev/mock-tauri/` (`tests/app.ts` boots and drives it) |
+| `scripts/crap-gate.mjs` | CRAP gate run by `.githooks/pre-commit` |
 
 ## Commands
 
@@ -49,25 +51,37 @@ npx tsc --noEmit            # type-check the frontend
 npm run build               # tsc + vite build
 npm run dev:mock            # UI in a normal browser with a fake filesystem (port 1420)
 cd src-tauri && cargo test  # backend tests
+npm test                    # frontend tests (Vitest + jsdom)
 npm run crap                # CRAP gate (also runs as the pre-commit hook)
 npm run crap:baseline       # accept the current scores into .crap-baseline.json
 ```
 
-Before finishing a change: `npx tsc --noEmit`, `npm run build` and
-`cargo test` must pass. For UI changes, also look at the result in
+Before finishing a change: `npx tsc --noEmit`, `npm run build`,
+`npm test` and `cargo test` must pass. For UI changes, also look at the result in
 `npm run dev:mock`.
 
 **CRAP gate.** `npm install` sets `core.hooksPath` to `.githooks`, whose
 `pre-commit` runs `scripts/crap-gate.mjs` for the languages a commit touches.
 It fails when a function's CRAP score is above 30 and is new or worse than in
-`.crap-baseline.json`. Rust is scored with real coverage, which needs
+`.crap-baseline.json` (currently empty: nothing is above 30). Both languages
+are scored with real coverage, so their tests must pass: Rust through
+`cargo llvm-cov` + `cargo-crap` (install with
 `cargo install --locked cargo-llvm-cov cargo-crap` and
-`rustup component add llvm-tools-preview`, and the Rust tests must pass.
-TypeScript has no tests, so its score is complexity alone: keep new frontend
-functions small (cyclomatic complexity 5 or less). Fix a failure by
-simplifying or testing the function; update the baseline only when a score is
-accepted on purpose, and say so in the commit message. Don't bypass the hook
-with `--no-verify`.
+`rustup component add llvm-tools-preview`), TypeScript through Vitest's
+coverage handed to `fallow`. CRAP can never be below a function's cyclomatic
+complexity, so a function over 30 needs splitting (lookup tables work well for
+key and command dispatch), not just tests. Fix a failure by testing or
+simplifying the function; update the baseline only when a score is accepted
+on purpose, and say so in the commit message. Don't bypass the hook with
+`--no-verify`.
+
+**Frontend tests** boot the real app (`tests/app.ts`) in jsdom with
+`dev/mock-tauri/` as the backend; each test file gets a fresh app and fake
+filesystem. `tests/setup.ts` stubs what jsdom lacks (layout sizes,
+`ResizeObserver`, `elementFromPoint`, the clipboard, a Mac user agent).
+Drive the UI with events (`key`, `mouse`, `goTo`, `respond`) and assert on
+the DOM. Code that adds a mock command needs a case in
+`tests/mock-core.test.ts`.
 
 ## Environment gotchas
 

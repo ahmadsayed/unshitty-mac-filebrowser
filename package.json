@@ -10,6 +10,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "test": "vitest run",
     "crap": "node scripts/crap-gate.mjs",
     "crap:baseline": "node scripts/crap-gate.mjs --update",
     "prepare": "git config core.hooksPath .githooks || true"
@@ -20,7 +21,10 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
-		"vite": "^8.0.16",
-    "typescript": "~6.0.3"
+    "@vitest/coverage-v8": "^5.0.5",
+    "jsdom": "^30.1.3",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^5.0.5"
   }
 }

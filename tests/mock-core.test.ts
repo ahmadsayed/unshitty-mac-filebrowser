@@ -1,0 +1,143 @@
+// Characterization tests for the in-memory backend in dev/mock-tauri/core.ts:
+// every command it serves, including its errors.
+import { expect, test } from "vitest";
+import { invoke } from "../dev/mock-tauri/core";
+
+const HOME = "/Users/me";
+type Entry = { name: string; path: string; is_dir: boolean; size: number; is_hidden: boolean };
+const ls = (path: string, showHidden = false) => invoke<Entry[]>("list_dir", { path, showHidden });
+const namesIn = async (path: string, showHidden = false) => (await ls(path, showHidden)).map((e) => e.name).sort();
+
+test("list_dir lists, hides dotfiles, and reports errors like the backend", async () => {
+  expect(await namesIn(`${HOME}/Desktop`)).toEqual(["todo.txt"]);
+  expect(await namesIn(HOME)).not.toContain(".zshrc");
+  expect(await namesIn(HOME, true)).toContain(".zshrc");
+  const docs = await ls(`${HOME}/Documents`);
+  expect(docs.find((e) => e.name === "Projects")).toMatchObject({ is_dir: true, size: 96, path: `${HOME}/Documents/Projects` });
+  await expect(ls("/nope")).rejects.toMatch(/No such file/);
+  await expect(ls(`${HOME}/main.rs`)).rejects.toMatch(/Not a directory/);
+  await expect(ls("/System")).rejects.toMatch(/Operation not permitted/);
+});
+
+test("item_counts counts children and gives null for unreadable paths", async () => {
+  expect(await invoke("item_counts", { paths: [`${HOME}/Desktop`, "/nope"], showHidden: false })).toEqual([1, null]);
+});
+
+test("file_properties describes files, folders and links", async () => {
+  const file = await invoke<Record<string, unknown>>("file_properties", { path: `${HOME}/main.rs` });
+  expect(file).toMatchObject({ name: "main.rs", parent: HOME, is_dir: false, size: 18_400, mode: "-rw-r--r--", item_count: null });
+  const dir = await invoke<Record<string, unknown>>("file_properties", { path: `${HOME}/Desktop` });
+  expect(dir).toMatchObject({ is_dir: true, item_count: 1, mode: "drwxr-xr-x", octal: "755" });
+  const link = await invoke<Record<string, unknown>>("file_properties", { path: `${HOME}/link-to-docs` });
+  expect(link).toMatchObject({ is_symlink: true, symlink_target: `${HOME}/Documents` });
+  await expect(invoke("file_properties", { path: "/nope" })).rejects.toMatch(/No such file/);
+});
+
+test("folder size walks and their ids", async () => {
+  const a = await invoke<number>("new_folder_walk");
+  expect(await invoke<number>("new_folder_walk")).toBe(a + 1);
+  expect(await invoke("cancel_folder_size", { walk: a })).toBeUndefined();
+  expect(await invoke("folder_size", { path: `${HOME}/Desktop`, walk: a })).toBe(312);
+  expect(await invoke("folder_size", { path: "/nope", walk: a })).toBe(0);
+});
+
+test("make_dir creates and refuses clashes and missing parents", async () => {
+  await invoke("make_dir", { path: `${HOME}/Fresh` });
+  expect(await namesIn(HOME)).toContain("Fresh");
+  await expect(invoke("make_dir", { path: `${HOME}/Fresh` })).rejects.toMatch(/already exists/);
+  await expect(invoke("make_dir", { path: "/nope/x" })).rejects.toMatch(/No such file/);
+});
+
+test("pins, flags and starred round-trip", async () => {
+  expect(await invoke("load_pins")).toEqual([`${HOME}/Documents/Projects`]);
+  await invoke("save_pins", { paths: [`${HOME}/Music`] });
+  expect(await invoke("load_pins")).toEqual([`${HOME}/Music`]);
+  expect(await invoke("get_flag", { name: "x" })).toBe(false);
+  await invoke("set_flag", { name: "x", value: true });
+  expect(await invoke("get_flag", { name: "x" })).toBe(true);
+  await invoke("save_starred", { paths: [`${HOME}/main.rs`, `${HOME}/.zshrc`, "/nope"] });
+  expect(await invoke("load_starred")).toEqual([`${HOME}/main.rs`, `${HOME}/.zshrc`, "/nope"]);
+  const starred = (show: boolean) => invoke<Entry[]>("starred_files", { showHidden: show }).then((l) => l.map((e) => e.name));
+  expect(await starred(false)).toEqual(["main.rs"]);
+  expect(await starred(true)).toEqual(["main.rs", ".zshrc"]);
+});
+
+test("recent files are newest first, skip hidden and missing ones, and can be added and forgotten", async () => {
+  const recent = (show = false) => invoke<(Entry & { used: number })[]>("recent_files", { showHidden: show });
+  const first = await recent();
+  expect(first[0].name).toBe("Quarterly report.pdf");
+  expect(first.map((e) => e.name)).not.toContain("settings.json");
+  expect((await recent(true)).map((e) => e.name)).toContain("settings.json");
+  await invoke("add_recent", { path: `${HOME}/song.mp3` });
+  expect((await recent())[0].name).toBe("song.mp3");
+  await invoke("forget_recent", { paths: [`${HOME}/song.mp3`] });
+  expect((await recent()).map((e) => e.name)).not.toContain("song.mp3");
+});
+
+test("platform answers: Full Disk Access, volumes, Trash, path info and existence", async () => {
+  expect(await invoke("has_full_disk_access")).toBe(false);
+  expect(await invoke("volumes")).toHaveLength(2);
+  expect(await invoke("trash_dir")).toBe(`${HOME}/.Trash`);
+  expect(await invoke("path_info", { paths: [`${HOME}/Desktop`, "/Volumes/Backup Drive/x", "/nope"] })).toEqual([
+    { is_dir: true, device: 1 },
+    null,
+    null,
+  ]);
+  expect(await invoke("path_exists", { path: HOME })).toBe(true);
+  expect(await invoke("path_exists", { path: "/nope" })).toBe(false);
+});
+
+test("thumbnails are empty for files without a preview", async () => {
+  const buf = await invoke<ArrayBuffer>("thumbnail", { path: `${HOME}/main.rs`, size: 64 });
+  expect(buf.byteLength).toBe(0);
+});
+
+test("copy_entry and move_entry copy, move, replace and refuse", async () => {
+  await invoke("make_dir", { path: `${HOME}/Box` });
+  await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/Box/todo.txt`, overwrite: false });
+  expect(await namesIn(`${HOME}/Box`)).toEqual(["todo.txt"]);
+  expect(await namesIn(`${HOME}/Desktop`)).toEqual(["todo.txt"]);
+  await expect(invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/Box/todo.txt`, overwrite: false })).rejects.toMatch(/already exists/);
+  // Replacing sends the old item to the Trash.
+  await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/Box/todo.txt`, overwrite: true });
+  expect(await namesIn(`${HOME}/.Trash`, true)).toContain("todo.txt");
+  await invoke("move_entry", { from: `${HOME}/Box/todo.txt`, to: `${HOME}/Box/moved.txt`, overwrite: false });
+  expect(await namesIn(`${HOME}/Box`)).toEqual(["moved.txt"]);
+  await expect(invoke("move_entry", { from: `${HOME}/Box/gone`, to: `${HOME}/x`, overwrite: false })).rejects.toMatch(/no longer exists/);
+  await expect(invoke("copy_entry", { from: `${HOME}/Box/moved.txt`, to: "/nope/x", overwrite: false })).rejects.toMatch(/No such file/);
+  await expect(invoke("copy_entry", { from: `${HOME}/Box/moved.txt`, to: `${HOME}/Box/moved.txt`, overwrite: false })).rejects.toMatch(/same/);
+  await expect(invoke("copy_entry", { from: `${HOME}/Box`, to: `${HOME}/Box/inner`, overwrite: false })).rejects.toMatch(/into itself/);
+});
+
+test("trash, trash info, restore, delete permanently and empty", async () => {
+  await invoke("make_dir", { path: `${HOME}/Doomed` });
+  const trashed = await invoke<string>("trash_entry", { path: `${HOME}/Doomed` });
+  expect(trashed).toBe(`${HOME}/.Trash/Doomed`);
+  await expect(invoke("trash_entry", { path: `${HOME}/Doomed` })).rejects.toMatch(/no longer exists/);
+  const [info, unknown] = await invoke<{ origin: string | null }[]>("trash_info", { paths: [trashed, `${HOME}/.Trash/unknown origin.zip`] });
+  expect(info.origin).toBe(`${HOME}/Doomed`);
+  expect(unknown.origin).toBeNull();
+  expect(await invoke("restore_entry", { path: trashed })).toBe(`${HOME}/Doomed`);
+  await expect(invoke("restore_entry", { path: `${HOME}/.Trash/unknown origin.zip` })).rejects.toMatch(/unknown/);
+  // Restoring onto an existing item is refused.
+  const again = await invoke<string>("trash_entry", { path: `${HOME}/Doomed` });
+  await invoke("make_dir", { path: `${HOME}/Doomed` });
+  await expect(invoke("restore_entry", { path: again })).rejects.toMatch(/already exists/);
+  await expect(invoke("delete_permanently", { path: `${HOME}/main.rs` })).rejects.toMatch(/Only items in the Trash/);
+  await invoke("delete_permanently", { path: again });
+  await expect(invoke("delete_permanently", { path: again })).rejects.toMatch(/no longer exists/);
+  await invoke("empty_trash");
+  expect(await namesIn(`${HOME}/.Trash`, true)).toEqual([]);
+});
+
+test("rename_entry renames and refuses clashes and missing items", async () => {
+  await invoke("make_dir", { path: `${HOME}/Old Name` });
+  await invoke("rename_entry", { from: `${HOME}/Old Name`, to: `${HOME}/New Name` });
+  expect(await namesIn(HOME)).toContain("New Name");
+  await expect(invoke("rename_entry", { from: `${HOME}/New Name`, to: `${HOME}/Desktop` })).rejects.toMatch(/already exists/);
+  await expect(invoke("rename_entry", { from: `${HOME}/Nope`, to: `${HOME}/x` })).rejects.toMatch(/No such file/);
+});
+
+test("unknown commands are reported", async () => {
+  await expect(invoke("nope")).rejects.toMatch(/unknown command nope/);
+});
