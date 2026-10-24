@@ -140,8 +140,8 @@ fn trash_info(app: tauri::AppHandle, paths: Vec<String>) -> Vec<trash_ops::Trash
     let log = config_file(&app, "trash_log.json")
         .map(|p| trash_ops::read_log(&p))
         .unwrap_or_default();
-    let records = home_dir(&app).map(|h| put_back(&h)).unwrap_or_default();
-    trash_ops::info(&paths, &log, &records)
+    let Ok(home) = home_dir(&app) else { return Vec::new() };
+    trash_ops::info(&paths, &home, &log, &put_back(&home))
 }
 
 /// "Restore From Trash" and Undo: move an item back where it came from.
@@ -151,10 +151,12 @@ fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, String> 
     let log_path = config_file(&app, "trash_log.json")?;
     let _guard = TRASH_LOG.lock().unwrap_or_else(|e| e.into_inner());
     let mut log = trash_ops::read_log(&log_path);
+    let home = home_dir(&app)?;
     let trashed = PathBuf::from(&path);
-    let origin = trash_ops::origin_of(&trashed, &log, &put_back(&home_dir(&app)?))
+    let trash_dir = trash_ops::trash_dir_for(&trashed, &home);
+    let origin = trash_ops::origin_of(&trashed, &trash_dir, &log, &put_back(&home))
         .ok_or_else(|| "The original location is unknown".to_string())?;
-    trash_ops::restore(&trashed, &origin)?;
+    trash_ops::restore(&trashed, &origin, &trash_dir)?;
     log.items.remove(&path);
     let _ = config_store::write_json(&log_path, &log);
     Ok(origin.to_string_lossy().to_string())

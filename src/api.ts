@@ -42,7 +42,8 @@ export async function listVolumes(): Promise<Volume[]> {
   return invoke<Volume[]>("volumes");
 }
 
-/** Item counts for several folders; `null` where a folder can't be read. */export async function itemCounts(
+/** Item counts for several folders; `null` where a folder can't be read. */
+export async function itemCounts(
   paths: string[],
   showHidden: boolean
 ): Promise<(number | null)[]> {

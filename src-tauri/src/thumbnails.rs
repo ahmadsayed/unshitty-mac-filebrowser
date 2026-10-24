@@ -231,7 +231,7 @@ mod tests {
         assert!(!worth_decoding(9000, 9000));
         assert!(!worth_decoding(u32::MAX, u32::MAX), "must not overflow");
 
-        // A refused image still gets a `.none` marker, so it isn't retried.
+        // The size check doesn't get in the way of ordinary images.
         let dir = tempdir().unwrap();
         let src = dir.path().join("scan.png");
         write_png(&src, 400, 400);
