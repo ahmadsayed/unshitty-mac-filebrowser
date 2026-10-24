@@ -342,7 +342,8 @@ pub fn validate_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// The last non-tombstone version size for a tombstone path (for tests/UI).
+/// The last non-tombstone version size for a tombstone path (tests only).
+#[cfg(test)]
 pub fn last_size(history: &History, rel: &[u8]) -> Result<u64> {
     let reader = history.reader()?;
     Ok(index::last_live_version(&reader, rel)?

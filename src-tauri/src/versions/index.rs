@@ -563,6 +563,9 @@ pub fn history_info(conn: &Connection) -> Result<HistoryInfo> {
 
 /// A consistent snapshot for a copy (transfer). Objects are immutable and
 /// copied separately; only the index needs SQLite's backup API (R2/R3).
+/// Copies currently close the history instead (spec revision 4), so only
+/// tests use this; it stays ready for an online-copy path.
+#[cfg(test)]
 pub fn backup_to(conn: &Connection, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
