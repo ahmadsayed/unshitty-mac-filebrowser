@@ -96,11 +96,12 @@ pub(crate) fn upload_in(c: &Ctx, from: &Path, to: &str, overwrite: bool) -> Resu
     } else {
         name.clone()
     };
+    let mut skipped = Vec::new();
     let staged = if meta.is_dir() {
         let folder = client
             .create_folder(&parent_id, &staged_name)
             .map_err(message)?;
-        if let Err(error) = upload_children(&client, from, &folder.id) {
+        if let Err(error) = upload_children(&client, from, &folder.id, &mut skipped) {
             let _ = client.update(&folder.id, &FileChange::trash(true));
             return Err(error);
         }
@@ -108,10 +109,19 @@ pub(crate) fn upload_in(c: &Ctx, from: &Path, to: &str, overwrite: bool) -> Resu
     } else {
         upload_verified(&client, &parent_id, &staged_name, from)?
     };
-    if staged_name == name {
-        return Ok(parent.child(&staged.id, &staged.name).to_uri());
+    let uploaded = if staged_name == name {
+        parent.child(&staged.id, &staged.name).to_uri()
+    } else {
+        write::finish_staged(&client, &parent, &name, replaced.as_ref(), &staged)?
+    };
+    match skipped.first() {
+        // The rest was uploaded; the error names what was left out, so a
+        // move keeps its source.
+        Some(name) => Err(format!(
+            "“{name}” was not copied to Google Drive: only files and folders can be."
+        )),
+        None => Ok(uploaded),
     }
-    write::finish_staged(&client, &parent, &name, replaced.as_ref(), &staged)
 }
 
 /// Upload one file and check Drive kept every byte; a short file is trashed.
@@ -132,24 +142,37 @@ fn upload_verified(
     Ok(uploaded)
 }
 
-/// Upload a folder's contents. Symlinks are skipped, as local copies do.
-fn upload_children(client: &DriveClient, dir: &Path, parent_id: &str) -> Result<(), String> {
-    let mut children: Vec<_> = std::fs::read_dir(dir)
-        .map_err(|error| error.to_string())?
-        .filter_map(Result::ok)
-        .collect();
+/// Upload a folder's contents. Anything that is not a plain file or folder
+/// (symlinks, FIFOs, sockets, devices) and anything unreadable is skipped
+/// and named in `skipped`.
+fn upload_children(
+    client: &DriveClient,
+    dir: &Path,
+    parent_id: &str,
+    skipped: &mut Vec<String>,
+) -> Result<(), String> {
+    let mut children = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|error| error.to_string())? {
+        match entry {
+            Ok(entry) => children.push(entry),
+            Err(_) => skipped.push(format!("{} (an unreadable item)", dir.display())),
+        }
+    }
     children.sort_by_key(|entry| entry.file_name());
     for entry in children {
         let path = entry.path();
-        let meta = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if meta.file_type().is_symlink() {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            skipped.push(name);
             continue;
-        } else if meta.is_dir() {
+        };
+        if meta.is_dir() {
             let folder = client.create_folder(parent_id, &name).map_err(message)?;
-            upload_children(client, &path, &folder.id)?;
-        } else {
+            upload_children(client, &path, &folder.id, skipped)?;
+        } else if meta.is_file() {
             upload_verified(client, parent_id, &name, &path)?;
+        } else {
+            skipped.push(name);
         }
     }
     Ok(())
@@ -636,6 +659,36 @@ mod tests {
             upload_in(c, &source, &format!("{ROOT}/~a.txt"), false)
         });
         assert_eq!(result.unwrap_err(), "Target already exists: a.txt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_with_items_that_cannot_be_uploaded_keeps_its_source_on_a_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("Docs");
+        std::fs::create_dir(&tree).unwrap();
+        std::fs::write(tree.join("x.txt"), b"hi").unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", tree.join("link")).unwrap();
+        let mut trashed = Vec::new();
+        let (result, _) = run(
+            vec![
+                found(&[]),
+                ok(folder("s1", ".Docs.filebrowser-upload")),
+                session(),
+                ok(sized("x1", "x.txt", 2)),
+                ok(folder("s1", "Docs")),
+            ],
+            |c| {
+                move_up_in(c, &tree, &format!("{ROOT}/~Docs"), false, |p| {
+                    trashed.push(p.to_path_buf());
+                    Ok(())
+                })
+            },
+        );
+        let error = result.unwrap_err();
+        assert!(error.contains("“link”"), "{error}");
+        assert!(trashed.is_empty());
+        assert!(tree.join("x.txt").exists());
     }
 
     #[test]
