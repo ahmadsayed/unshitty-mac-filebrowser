@@ -295,14 +295,28 @@ fn parse_callback(request: &str) -> Result<Option<Callback>, String> {
     Ok(Some(callback))
 }
 
+/// Read the request head. TCP may deliver it in several pieces, so keep
+/// reading until the blank line that ends the headers, the peer closes, or
+/// 16 KB arrived.
 fn read_request(stream: &mut TcpStream) -> Result<String, String> {
+    const LIMIT: usize = 16 * 1024;
     stream.set_nonblocking(false).ok();
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    let mut buffer = [0u8; 16 * 1024];
-    let read = stream
-        .read(&mut buffer)
-        .map_err(|error| format!("Google sign-in callback failed: {error}"))?;
-    Ok(String::from_utf8_lossy(&buffer[..read]).into_owned())
+    let mut request = Vec::new();
+    let mut buffer = [0u8; 4096];
+    while request.len() < LIMIT && !request.windows(4).any(|w| w == b"\r\n\r\n") {
+        let read = match stream.read(&mut buffer) {
+            Ok(read) => read,
+            // A signal arrived mid-read; nothing was lost.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("Google sign-in callback failed: {error}")),
+        };
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+    }
+    Ok(String::from_utf8_lossy(&request).into_owned())
 }
 
 fn respond(stream: &mut TcpStream, status: u16, message: &str) {
@@ -423,6 +437,33 @@ mod tests {
         assert_eq!(seen[0].0, "the-code");
         assert!(!seen[0].1.is_empty());
         assert!(seen[0].2.starts_with("http://127.0.0.1:"));
+    }
+
+    #[test]
+    fn a_callback_split_across_packets_is_read_whole() {
+        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
+        let addr = flow.listener.local_addr().unwrap();
+        let state = flow.csrf.clone();
+        let worker = thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.set_nodelay(true).unwrap();
+            stream.write_all(b"GET /?code=the-").unwrap();
+            stream.flush().unwrap();
+            thread::sleep(Duration::from_millis(50));
+            write!(
+                stream,
+                "code&state={state} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+            )
+            .unwrap();
+            let mut buffer = [0u8; 256];
+            let _ = stream.read(&mut buffer);
+        });
+
+        let exchange = FakeExchange::new();
+        let token = finish(&flow, &exchange, Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+        assert_eq!(token.access_token, "access");
+        assert_eq!(exchange.seen.lock().unwrap()[0].0, "the-code");
     }
 
     #[test]

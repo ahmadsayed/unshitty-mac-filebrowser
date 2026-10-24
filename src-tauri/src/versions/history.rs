@@ -123,11 +123,7 @@ impl History {
             .open(&lock_path)?;
         #[cfg(unix)]
         set_mode(&lock_path, 0o600)?;
-        let writable = match lock.try_lock() {
-            Ok(()) => true,
-            Err(std::fs::TryLockError::WouldBlock) => false,
-            Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io(e.to_string())),
-        };
+        let writable = try_lock_patiently(&lock)?;
         // The owner opens read-write first so SQLite can recover a WAL left by
         // a crash; a second instance opens read-only.
         let writer = if writable {
@@ -343,6 +339,27 @@ fn new_folder_id(root: &Path) -> String {
     blake3::hash(seed.as_bytes()).to_hex().to_string()[..32].to_string()
 }
 
+/// How long `open` waits for a held lock before opening read-only.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Take the history's lock, waiting up to `LOCK_WAIT`. A child process forked
+/// by any thread of this app holds a copy of the lock file's handle until it
+/// execs, so a lock that looks held may be free a few milliseconds later.
+/// Another app instance holds it for good, and then we open read-only.
+fn try_lock_patiently(lock: &File) -> Result<bool> {
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(true),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => return Ok(false),
+            Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io(e.to_string())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,6 +396,36 @@ mod tests {
         let (dir, _history) = new_history();
         let err = History::create(dir.path()).unwrap_err();
         assert!(matches!(err, Error::NotOurs(_)));
+    }
+
+    /// A child process forked by another thread holds a copy of the lock
+    /// file's handle until it execs. A history closed and reopened in that
+    /// window must still come back writable once the child lets go.
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_held_only_by_a_forking_child_is_waited_for() {
+        use std::os::unix::process::CommandExt;
+        let (_dir, history) = new_history();
+        let root = history.root.clone();
+        let mut command = std::process::Command::new("true");
+        // SAFETY: only async-signal-safe work (a sleep) between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                Ok(())
+            });
+        }
+        // spawn() returns only after the child execs, so fork on another
+        // thread and reopen while that child is still between fork and exec.
+        let forking = std::thread::spawn(move || command.spawn().unwrap().wait().unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(history);
+        let reopened = History::open(&root).unwrap();
+        forking.join().unwrap();
+        assert!(
+            reopened.writable,
+            "reopened read-only while a child held the lock"
+        );
     }
 
     #[test]

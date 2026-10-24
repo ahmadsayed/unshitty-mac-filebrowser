@@ -88,7 +88,8 @@ fn quick_look_with(program: &Path, path: &Path, size: u32, out: &Path, timeout: 
     if fs::create_dir_all(&work).is_err() {
         return false;
     }
-    let child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .arg("-t")
         .arg("-s")
         .arg(size.to_string())
@@ -96,8 +97,8 @@ fn quick_look_with(program: &Path, path: &Path, size: u32, out: &Path, timeout: 
         .arg(&work)
         .arg(path)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+        .stderr(Stdio::null());
+    let child = crate::platform::spawn_helper(&mut command);
     let ok = child.is_ok_and(|mut child| crate::platform::wait_or_kill(&mut child, timeout));
     // qlmanage writes "<file name>.png" into the output folder.
     let mut produced = name.to_os_string();
