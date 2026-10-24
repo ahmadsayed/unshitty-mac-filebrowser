@@ -36,7 +36,8 @@ M1 is in the tree:
   PNG normalization, and Open/Open in Browser.
 - Sidebar row, connect/cancel/disconnect dialog, breadcrumbs, up/back/forward,
   focus refresh and the read-only menus.
-- A shipped Desktop client ID (`drive.readonly`); no client secret.
+- A shipped Desktop client ID and its non-confidential client secret
+  (`drive.readonly`), compiled from the git-ignored `.env`.
 - Durable tests: 263 Rust, 98 frontend, plus the mock preview.
 
 Not started: M2 writes (new folder, rename, copy, move, upload, Drive Trash,
@@ -191,6 +192,10 @@ be added later without a migration.
 - Scopes: `drive.readonly` for the read-only milestone; `drive` for the
   write milestone. An unverified OAuth app shows Google's "Google hasn't
   verified this app" warning; this is documented, not worked around.
+- The Desktop client's `client_secret` is required by Google's token endpoint
+  and is sent in the request body, never in the auth URL. It is built in from
+  the git-ignored `.env`; for an installed app Google treats it as
+  non-confidential, and PKCE still protects the exchange.
 
 **D5. Tokens live in the OS keychain, never in the config file or logs.**
 The `keyring` crate gives one API on macOS (Keychain) and Linux (Secret
@@ -207,11 +212,10 @@ timeout, a small concurrency limit (4) and retry with exponential backoff and
 jitter for 429/5xx; `Retry-After` is honoured. A `401` triggers one token
 refresh and one retry.
 
-**D7. A `DriveApi` trait keeps tests offline.**
-The client is a trait (`about`, `list`, `get`, `download`, `export`, `create`,
-`update`, `copy`, `trash`, `restore`) with a `reqwest` implementation and a
-fixture-based fake. Unit tests never open a socket. A small number of opt-in
-live tests sit behind an ignored test / environment flag.
+**D7. The Drive client is tested without Google.**
+`DriveClient` is a concrete blocking client with a configurable base URL. Unit
+tests point it at a local loopback server serving fixtures; the token exchange
+is behind a fake `TokenExchange`. No test opens a connection to Google.
 
 **D8. Read-only is the first shippable milestone.**
 Connect, browse, breadcrumbs, open, thumbnails, properties, refresh, sign out.
@@ -632,8 +636,9 @@ clashes always prompt.
 Answer these before M1 implementation starts; the defaults above are
 recommendations, not blockers.
 
-1. **OAuth client.** Decided: one client ID is shipped with the app. The
-   client secret is not used; PKCE protects the exchange.
+1. **OAuth client.** Decided: one Desktop client ID and its non-confidential
+   secret are built in from the git-ignored `.env`. PKCE still protects the
+   exchange.
 2. **Scope for M1.** Decided: `drive.readonly`. Writes request `drive` when M2
    starts.
 3. **Multiple accounts.** Confirm one account is enough for v1.

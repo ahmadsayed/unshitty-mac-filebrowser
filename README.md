@@ -97,6 +97,17 @@ npm run tauri build    # macOS: bundle/macos/File Browser.app
                        # Linux: bundle/deb, bundle/rpm and bundle/appimage
 ```
 
+Google Drive needs the Desktop OAuth client JSON in `.env`:
+
+```sh
+cp .env.example .env   # then paste the downloaded client JSON
+```
+
+`.env` is git-ignored. The client ID and secret are compiled into the binary at
+build time; re-run the build after changing it. Without `.env`, the app builds
+but Drive sign-in reports that it is not configured. For an installed app
+Google treats the secret as non-confidential; PKCE is still used.
+
 ### Linux
 
 Tauri has no bundled browser engine: on Linux it uses WebKitGTK 4.1, which is
