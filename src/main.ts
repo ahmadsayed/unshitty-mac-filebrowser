@@ -2867,7 +2867,7 @@ function openConnectDialog(): void {
   const status = document.createElement("p");
   status.className = "dialog-text";
   status.textContent =
-    "File Browser asks Google for read-only access to your Drive. The token is kept in your system keychain. " +
+    "File Browser asks Google for access to see, edit, create and delete your Drive files. The token is kept in your system keychain. " +
     "Google warns that your client is unverified: choose Advanced, then continue.";
   extra.append(
     status,

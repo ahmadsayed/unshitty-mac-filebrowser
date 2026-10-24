@@ -827,10 +827,7 @@ fn drive_client_clear(state: tauri::State<CloudState>) -> Result<(), String> {
 
 #[tauri::command]
 fn drive_connect_start(state: tauri::State<CloudState>) -> Result<DriveConnectStart, String> {
-    let flow = cloud::oauth::start(
-        &state.require_oauth_client()?,
-        &[cloud::oauth::SCOPE_READONLY],
-    )?;
+    let flow = cloud::oauth::start(&state.require_oauth_client()?, &[cloud::oauth::SCOPE_FULL])?;
     let start = DriveConnectStart {
         flow_id: flow.id.clone(),
         auth_url: flow.auth_url.clone(),
@@ -868,7 +865,7 @@ async fn drive_connect_finish(
             }
             let about = cloud::service::about(&state, &token.access_token)?;
             let scopes = if token.scopes.is_empty() {
-                vec![cloud::oauth::SCOPE_READONLY.to_string()]
+                vec![cloud::oauth::SCOPE_FULL.to_string()]
             } else {
                 token.scopes.clone()
             };

@@ -561,7 +561,7 @@ const VERSION_COMMANDS: Record<string, (args: Args) => unknown> = {
 };
 
 /** Offline stand-in for the Google Drive account commands. */
-const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 interface MockDriveAccount {
   id: string;
   email: string;

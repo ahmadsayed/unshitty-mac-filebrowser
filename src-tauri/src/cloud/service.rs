@@ -145,6 +145,30 @@ pub fn about(
         .map_err(|error| error.message())
 }
 
+pub const READONLY: &str =
+    "Google Drive is connected read-only. Disconnect and connect again to allow changes.";
+
+/// The location and account for a write, refused before any request when
+/// the connection was made without write access.
+pub fn writable(state: &CloudState, path: &str) -> Result<(DriveLocation, DriveAccount), String> {
+    let drive = drive_location(path)?;
+    let account = state
+        .accounts
+        .lock()
+        .map_err(|_| "Google Drive state is unavailable.".to_string())?
+        .get(&drive.account)
+        .cloned()
+        .ok_or_else(|| "Google Drive is not connected.".to_string())?;
+    if !account
+        .scopes
+        .iter()
+        .any(|scope| scope == crate::cloud::oauth::SCOPE_FULL)
+    {
+        return Err(READONLY.into());
+    }
+    Ok((drive, account))
+}
+
 pub fn drive_location(path: &str) -> Result<DriveLocation, String> {
     match crate::cloud::parse(path)? {
         Location::Drive(drive) => Ok(drive),
@@ -874,6 +898,21 @@ mod tests {
         server.join().unwrap();
         let request = log.lock().unwrap()[0].clone();
         assert!(request.contains(r"name = 'it\'s'"), "{request}");
+    }
+
+    #[test]
+    fn readonly_accounts_cannot_write() {
+        let (state, _dir) = test_state(valid_token());
+        let path = "gdrive://acct/root~My%20Drive/~New";
+        assert_eq!(writable(&state, path).err().as_deref(), Some(READONLY));
+
+        let mut account = test_account();
+        account.scopes = vec![crate::cloud::oauth::SCOPE_FULL.into()];
+        state.accounts.lock().unwrap().upsert(account).unwrap();
+        let (location, account) = writable(&state, path).unwrap();
+        assert!(location.is_pending());
+        assert_eq!(account.id, "acct");
+        assert!(writable(&state, "/Users/me").is_err());
     }
 
     #[test]

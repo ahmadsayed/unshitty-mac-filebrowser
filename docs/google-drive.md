@@ -87,7 +87,8 @@ the JSON again.
 5. Google says **"Google hasn't verified this app"**. This is expected: the
    app it means is the client you just created in your own project. Click
    **Advanced**, then **Go to *your app name* (unsafe)**.
-6. Allow File Browser to **see and download your Google Drive files**.
+6. Allow File Browser to **see, edit, create and delete all of your Google
+   Drive files**.
 7. When the browser says you can close the window, go back to File Browser.
    Your Drive opens.
 
@@ -108,8 +109,10 @@ The "unverified app" warning still appears when you sign in. That's normal.
 
 - File Browser talks only to Google, and only from your computer. Nothing is
   sent anywhere else.
-- It asks for **read-only** access (`drive.readonly`). It can't change,
-  share or delete anything in your Drive.
+- It changes files in your Drive only when you ask it to: New Folder,
+  Rename, Paste, drag and drop and Move to Trash. It never deletes anything
+  permanently: Move to Trash uses Drive's Trash, which keeps items for 30
+  days. It doesn't share anything.
 - Your sign-in token is kept in the system keychain: Keychain on macOS, the
   Secret Service (GNOME Keyring or KWallet) on Linux. If there's no keychain,
   it falls back to a file only your user can read.
@@ -139,4 +142,5 @@ the Connect dialog.
 | **invalid_client** or "The OAuth client was not found" | The client was deleted, or its secret was reset. Download the JSON again, then use **Change Client…**. |
 | "Disconnect Google Drive first." | You tried to change the client while connected. Disconnect, then change it. |
 | You're asked to sign in again every week | Your project is in Testing mode; see [Signing in every 7 days](#signing-in-every-7-days). |
+| "Google Drive is connected read-only" | Your connection was made before File Browser could change files. Disconnect Google Drive and connect again. |
 | "Sign-in timed out" | The browser didn't come back within 3 minutes. Click **Open Browser** again. |

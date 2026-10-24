@@ -28,7 +28,8 @@ pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 pub const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
 
 pub const SCOPE_READONLY: &str = "https://www.googleapis.com/auth/drive.readonly";
-/// Requested only by the write milestone, after a new consent.
+/// Requested at sign-in; connections made with only `SCOPE_READONLY` can't
+/// write until they reconnect.
 pub const SCOPE_FULL: &str = "https://www.googleapis.com/auth/drive";
 
 pub const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
