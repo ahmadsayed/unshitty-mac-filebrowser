@@ -139,7 +139,7 @@ async fn list_dir(path: String, show_hidden: bool) -> Result<Vec<fs_ops::Entry>,
 }
 
 #[tauri::command]
-async fn item_counts(paths: Vec<String>, show_hidden: bool) -> Result<Vec<Option<u32>>, String> {
+async fn item_counts(paths: Vec<String>, show_hidden: bool) -> Result<Vec<Option<fs_ops::FolderSummary>>, String> {
     blocking(move || fs_ops::item_counts(paths, show_hidden)).await
 }
 

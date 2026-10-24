@@ -351,9 +351,11 @@ function renameEntry(from: string, to: string): void {
   delete fromParent.children[fromName];
 }
 
-function itemCount(path: string, showHidden: boolean): number | null {
+function folderSummary(path: string, showHidden: boolean): { count: number; versioned: boolean } | null {
   try {
-    return list(path, showHidden).length;
+    const node = lookup(path);
+    const versioned = !!(node?.dir && node.children[".versions"]) && versionedRoots.has(path);
+    return { count: list(path, showHidden).length, versioned };
   } catch {
     return null;
   }
@@ -468,7 +470,7 @@ const VERSION_COMMANDS: Record<string, (args: Args) => unknown> = {
 /** Every command the app calls, by name. */
 const COMMANDS: Record<string, (args: Args) => unknown> = {
   list_dir: (a) => list(str(a, "path"), a.showHidden as boolean),
-  item_counts: (a) => (a.paths as string[]).map((p) => itemCount(p, a.showHidden as boolean)),
+  item_counts: (a) => (a.paths as string[]).map((p) => folderSummary(p, a.showHidden as boolean)),
   file_properties: (a) => fileProperties(str(a, "path")),
   new_folder_walk: () => ++mockWalks,
   cancel_folder_size: () => undefined,

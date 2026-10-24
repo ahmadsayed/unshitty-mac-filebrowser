@@ -19,8 +19,10 @@ test("list_dir lists, hides dotfiles, and reports errors like the backend", asyn
   await expect(ls("/System")).rejects.toMatch(/Operation not permitted/);
 });
 
-test("item_counts counts children and gives null for unreadable paths", async () => {
-  expect(await invoke("item_counts", { paths: [`${HOME}/Desktop`, "/nope"], showHidden: false })).toEqual([1, null]);
+test("item_counts summarises folders: count, versioned, null when unreadable", async () => {
+  expect(
+    await invoke("item_counts", { paths: [`${HOME}/Desktop`, `${HOME}/Documents/Versioned`, "/nope"], showHidden: false }),
+  ).toEqual([{ count: 1, versioned: false }, { count: 3, versioned: true }, null]);
 });
 
 test("file_properties describes files, folders and links", async () => {

@@ -1,14 +1,14 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
-  listDir, makeDir, renameEntry, itemCounts, copyEntry, moveEntry, trashEntry, pathExists,
+  listDir, makeDir, renameEntry, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntry, pathExists,
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
   trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, fileProperties, folderSize,
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
   type Entry,
 } from "./api";
-import { entryIcon, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
+import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
@@ -80,6 +80,8 @@ let cursorIndex = -1;
 let searchQuery: string | null = null;
 
 const counts = new Map<string, number | null>();
+/** Folders whose summary said they keep versions; drives the version badge. */
+const versionedFolders = new Set<string>();
 let backStack: string[] = [];
 let forwardStack: string[] = [];
 
@@ -258,6 +260,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   listingError = error;
   counts.clear();
   countsInFlight.clear();
+  versionedFolders.clear();
   selected.clear();
   anchorIndex = cursorIndex = -1;
   if (opts.select) selected.add(opts.select);
@@ -394,9 +397,10 @@ function buildPathbar(): void {
       const cls = i === crumbs.length - 1 ? "crumb current" : "crumb";
       const icon = c.icon ? sym(c.icon) : "";
       const label = c.label ? `<span>${escapeHtml(c.label)}</span>` : "";
+      const badge = c.path === versionedRootPath ? versionsBadge("crumb-badge") : "";
       const title = c.label || "Computer";
       const sep = i > 0 ? `<span class="crumb-sep">/</span>` : "";
-      return `${sep}<button class="${cls}" data-path="${escapeHtml(c.path)}" title="${escapeHtml(title)}">${icon}${label}</button>`;
+      return `${sep}<button class="${cls}" data-path="${escapeHtml(c.path)}" title="${escapeHtml(title)}">${icon}${label}${badge}</button>`;
     })
     .join("");
   requestAnimationFrame(() => {
@@ -627,7 +631,7 @@ function iconHtml(e: Entry): string {
       return `<img class="thumb" src="${url}" alt="" draggable="false">${link}`;
     }
   }
-  return entryIcon(e, folderKind(e));
+  return entryIcon(e, folderKind(e), versionedFolders.has(e.path));
 }
 
 /** Request thumbnails for the rendered items; queued ones scrolled away are dropped. */
@@ -742,11 +746,11 @@ function renderWindow(force = false): void {
   for (let i = start; i <= end; i++) html.push(itemHtml(i));
   itemsLayer.innerHTML = html.join("");
   loadThumbs(start, end);
-  if (prefs.view === "list") {
-    const dirs: string[] = [];
-    for (let i = start; i <= end; i++) if (shown[i].is_dir) dirs.push(shown[i].path);
-    requestCounts(dirs, false);
-  }
+  // Both views: list view shows the counts, and either view shows the
+  // version badge that comes with them. Only rendered folders are asked.
+  const dirs: string[] = [];
+  for (let i = start; i <= end; i++) if (shown[i].is_dir) dirs.push(shown[i].path);
+  requestCounts(dirs, false);
 }
 
 /** Scroll just enough to show item `i`, then render it. */
@@ -916,7 +920,7 @@ async function requestCounts(paths: string[], resortWhenDone: boolean): Promise<
   pending.forEach((p) => countsInFlight.add(p));
   for (let i = 0; i < pending.length; i += 400) {
     const batch = pending.slice(i, i + 400);
-    let result: (number | null)[] = [];
+    let result: (FolderSummary | null)[] = [];
     try {
       result = await itemCounts(batch, prefs.showHidden);
     } catch {
@@ -924,10 +928,20 @@ async function requestCounts(paths: string[], resortWhenDone: boolean): Promise<
     }
     batch.forEach((p) => countsInFlight.delete(p));
     if (loc !== location) return;
-    batch.forEach((p, j) => counts.set(p, result[j] ?? null));
+    batch.forEach((p, j) => rememberSummary(p, result[j] ?? null));
     patchCounts();
   }
   if (resortWhenDone && prefs.sortKey === "size") renderViewKeepingScroll();
+}
+
+/** Store a folder's count, and redraw its icon if its version badge changed. */
+function rememberSummary(path: string, summary: FolderSummary | null): void {
+  counts.set(path, summary?.count ?? null);
+  const versioned = !!summary?.versioned;
+  if (versioned === versionedFolders.has(path)) return;
+  if (versioned) versionedFolders.add(path);
+  else versionedFolders.delete(path);
+  patchIcon(path);
 }
 
 function patchCounts(): void {
@@ -1033,8 +1047,8 @@ function updateFloatingBar(): void {
 
 function fetchCount(path: string): void {
   counts.set(path, null);
-  itemCounts([path], prefs.showHidden).then(([n]) => {
-    counts.set(path, n);
+  itemCounts([path], prefs.showHidden).then(([summary]) => {
+    rememberSummary(path, summary);
     updateFloatingBar();
   }).catch(() => {});
 }
@@ -2175,6 +2189,18 @@ function renderPins(): void {
   section.querySelectorAll(".sidebar-row.pin").forEach((r) => r.remove());
   for (const path of pins) sidebarRow(section, basename(path), "folder", path, false).classList.add("pin");
   updateSidebarSelection();
+  badgeVersionedPins(section);
+}
+
+/** Mark bookmarked folders that keep versions (one batched call for all pins). */
+async function badgeVersionedPins(section: HTMLElement): Promise<void> {
+  const shownPins = [...pins];
+  const summaries = await itemCounts(shownPins, false).catch(() => []);
+  shownPins.forEach((path, i) => {
+    const row = [...section.querySelectorAll<HTMLElement>(".sidebar-row.pin")].find((r) => r.dataset.location === path);
+    if (!summaries[i]?.versioned || !row || row.querySelector(".sidebar-badge")) return;
+    row.querySelector(".sidebar-row-label")!.insertAdjacentHTML("afterend", versionsBadge("sidebar-badge"));
+  });
 }
 
 function onSidebarContextMenu(e: MouseEvent): void {
