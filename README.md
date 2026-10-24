@@ -1,7 +1,9 @@
 # File Browser
 
-A file browser for macOS that looks and works like **GNOME Files 50** (Nautilus
-with libadwaita), for people who find Finder hard to live with.
+A file browser for **macOS and Linux** that looks and works like **GNOME Files 50**
+(Nautilus with libadwaita), for people who find Finder hard to live with. The
+interface is HTML, CSS and TypeScript in a system webview; every filesystem
+operation goes through Rust.
 
 > [!NOTE]
 > **Independent hobby project.** This is a personal, non-commercial project
@@ -75,8 +77,35 @@ Requires Rust and Node.js.
 ```sh
 npm install
 npm run tauri dev      # run in development
-npm run tauri build    # produces src-tauri/target/release/bundle/macos/File Browser.app
+npm run tauri build    # macOS: bundle/macos/File Browser.app
+                       # Linux: bundle/deb, bundle/rpm and bundle/appimage
 ```
+
+### Linux
+
+Tauri has no bundled browser engine: on Linux it uses WebKitGTK 4.1, which is
+the GTK3 generation of WebKit. Install the development headers first:
+
+```sh
+# Fedora
+sudo dnf install gtk3-devel webkit2gtk4.1-devel javascriptcoregtk4.1-devel \
+                 libsoup3-devel openssl-devel libxdo-devel librsvg2-devel
+
+# Debian / Ubuntu
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+                 libssl-dev libxdo-dev librsvg2-dev
+```
+
+What differs from macOS is handled in `src-tauri/src/platform.rs` and
+`src-tauri/src/trash_ops.rs`:
+
+| | macOS | Linux |
+| --- | --- | --- |
+| Trash | `~/.Trash` | `~/.local/share/Trash` (`files/` + `info/`) |
+| Put Back / restore records | Finder's `.DS_Store` | `.trashinfo` sidecars |
+| Recent | Spotlight (`mdfind`) | `recently-used.xbel` |
+| Mounted volumes | `/Volumes` | `/run/media`, `/media`, `/mnt` |
+| Full Disk Access | checked | not applicable |
 
 ### Full Disk Access
 
@@ -95,9 +124,12 @@ exact build: after rebuilding, toggle the permission off and on again.
   the Rust side. Type `/big` in the path bar for a 10,000-item folder; add `?demo`
   to the URL to hide the test-only folders.
 - `cd src-tauri && cargo test` runs the backend tests (listing, copy/move/trash
-  safety checks, settings files, thumbnails, Recent, Trash).
-- Thumbnails are cached in `~/Library/Caches/io.github.ahmadsayed.filebrowser/thumbnails`;
-  entries unused for 60 days are removed at startup.
+  safety checks, settings files, thumbnails, Recent, Trash, volumes). On a host
+  without the GTK/WebKit headers, run the same command through the rootless
+  container in `dev/tauri-linux.Containerfile`.
+- Thumbnails are cached in the app cache directory (`~/Library/Caches/…` on
+  macOS, `~/.cache/…` on Linux); entries unused for 60 days are removed at
+  startup.
 - Design notes and the implementation plan live in `docs/superpowers/`.
 
 ## Not supported yet
@@ -107,10 +139,18 @@ view shows the home Trash, not the Trash folders of other drives; there is no
 dragging files out of the app into Finder or other apps, no tabs, and no
 disk-wide search.
 
+On Linux, everything except the shell works the same way, but:
+
+- Thumbnails cover image formats only — there is no Quick Look equivalent, so
+  videos, PDFs and office documents get their file-kind icon instead.
+- "Recent" reads GTK's `recently-used.xbel`, so it only knows about files opened
+  by apps that maintain that list.
+- The window uses the desktop's own title bar rather than a libadwaita header bar.
+
 ## Credits and thanks
 
 All credit for the design goes to the people behind GNOME. This project only
-tries to bring their work to the Mac.
+tries to bring their work to other desktops.
 
 - **The GNOME Files (Nautilus) team and contributors.** The layout, behaviour
   and wording of this app (the sidebar, path bar, views, menus, dialogs and

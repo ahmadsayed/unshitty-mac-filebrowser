@@ -28,8 +28,21 @@ export async function listDir(
   return invoke<Entry[]>("list_dir", { path, showHidden });
 }
 
-/** Item counts for several folders; `null` where a folder can't be read. */
-export async function itemCounts(
+/** A mounted volume, as the sidebar lists it. */
+export interface Volume {
+  name: string;
+  path: string;
+}
+
+/**
+ * Mounted volumes. `/Volumes` on macOS, the udisks2 mount folders and `/mnt`
+ * on Linux — the backend knows where to look.
+ */
+export async function listVolumes(): Promise<Volume[]> {
+  return invoke<Volume[]>("volumes");
+}
+
+/** Item counts for several folders; `null` where a folder can't be read. */export async function itemCounts(
   paths: string[],
   showHidden: boolean
 ): Promise<(number | null)[]> {
@@ -92,6 +105,14 @@ export async function deletePermanently(path: string): Promise<void> {
 /** Delete everything in the Trash. */
 export async function emptyTrash(): Promise<void> {
   return invoke<void>("empty_trash");
+}
+
+/**
+ * The folder the Trash view lists. macOS uses `~/.Trash`; Linux uses
+ * `~/.local/share/Trash/files`.
+ */
+export async function trashDir(): Promise<string> {
+  return invoke<string>("trash_dir");
 }
 
 /** Files used lately, here or in other apps, newest first. */

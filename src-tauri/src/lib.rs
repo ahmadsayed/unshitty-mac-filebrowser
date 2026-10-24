@@ -1,5 +1,6 @@
 mod config_store;
 mod fs_ops;
+mod platform;
 mod recent;
 mod thumbnails;
 mod trash_ops;
@@ -79,8 +80,8 @@ fn recent_files(app: tauri::AppHandle, show_hidden: bool) -> Vec<recent::RecentE
     let store = config_file(&app, "recent.json")
         .map(|p| recent::read_store(&p))
         .unwrap_or_default();
-    let spotlight = recent::spotlight(&home, recent::MAX_AGE_DAYS);
-    recent::collect(&store, spotlight, &home, show_hidden, recent::now())
+    let system = recent::system_recent(&home, recent::MAX_AGE_DAYS);
+    recent::collect(&store, system, &home, show_hidden, recent::now())
 }
 
 /// Note that the user opened `path` from this app.
@@ -124,9 +125,13 @@ fn trash_entry(app: tauri::AppHandle, path: String) -> Result<Option<String>, St
     Ok(trashed.map(|p| p.to_string_lossy().to_string()))
 }
 
-/// Finder's "Put Back" records for the home Trash.
+/// Finder's "Put Back" records for the home Trash. macOS keeps them in the
+/// Trash's `.DS_Store`; other platforms have no such file.
 fn put_back(home: &Path) -> std::collections::HashMap<String, PathBuf> {
-    trash_ops::read_put_back(&home.join(".Trash/.DS_Store"), Path::new("/"))
+    if cfg!(target_os = "macos") {
+        return trash_ops::read_put_back(&home.join(".Trash/.DS_Store"), Path::new("/"));
+    }
+    std::collections::HashMap::new()
 }
 
 /// Original location and trash date of items in the Trash.
@@ -163,11 +168,20 @@ fn delete_permanently(app: tauri::AppHandle, path: String) -> Result<(), String>
     trash_ops::delete_permanently(&path, &trash_dir)
 }
 
+/// The folder the Trash view lists. On Linux this is
+/// `~/.local/share/Trash/files`, not `~/.Trash`.
+#[tauri::command]
+fn trash_dir(app: tauri::AppHandle) -> String {
+    home_dir(&app)
+        .map(|home| trash_ops::items_root(&home).to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
 /// Delete everything in the home Trash.
 #[tauri::command(async)]
 fn empty_trash(app: tauri::AppHandle) -> Result<(), String> {
     let home = home_dir(&app)?;
-    trash_ops::empty(&home.join(".Trash"))
+    trash_ops::empty(&trash_ops::home_trash(&home))
 }
 
 fn thumbnail_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -183,6 +197,13 @@ fn thumbnail(app: tauri::AppHandle, path: String, size: u32) -> tauri::ipc::Resp
         .and_then(|p| std::fs::read(p).ok())
         .unwrap_or_default();
     tauri::ipc::Response::new(png)
+}
+
+/// Mounted volumes for the sidebar: `/Volumes` on macOS, the udisks2 mount
+/// folders and `/mnt` on Linux.
+#[tauri::command(async)]
+fn volumes() -> Vec<platform::Volume> {
+    platform::volumes(&platform::volume_roots())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -210,6 +231,7 @@ pub fn run() {
             restore_entry,
             delete_permanently,
             empty_trash,
+            trash_dir,
             load_pins,
             save_pins,
             get_flag,
@@ -222,6 +244,7 @@ pub fn run() {
             add_recent,
             forget_recent,
             thumbnail,
+            volumes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

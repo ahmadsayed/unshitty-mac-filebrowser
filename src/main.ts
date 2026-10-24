@@ -4,7 +4,7 @@ import {
   listDir, makeDir, renameEntry, itemCounts, copyEntry, moveEntry, trashEntry, pathExists,
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
-  trashInfo, restoreEntry, deletePermanently, emptyTrash, type Entry,
+  trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, type Entry,
 } from "./api";
 import { entryIcon, fileKind, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
@@ -91,6 +91,9 @@ const fixedSidebarPaths = new Set<string>();
 
 let home = "";
 let trashPath = "";
+/** Mounted volumes, as the backend reported them; used for breadcrumbs and
+ * for guessing whether a drag crosses filesystems. */
+let mountedVolumes: { name: string; path: string }[] = [];
 const folderKinds = new Map<string, FolderKind>();
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -355,9 +358,11 @@ function crumbsFor(loc: string): Crumb[] {
   if (home && (loc === home || loc.startsWith(home + "/"))) {
     return [{ label: "Home", path: home, icon: "user-home" }, ...segments(home, loc)];
   }
-  const volume = loc.match(/^\/Volumes\/[^/]+/);
+  const volume = mountedVolumes
+    .filter((v) => loc === v.path || loc.startsWith(v.path + "/"))
+    .sort((a, b) => b.path.length - a.path.length)[0];
   if (volume) {
-    return [{ label: basename(volume[0]), path: volume[0], icon: "drive-harddisk" }, ...segments(volume[0], loc)];
+    return [{ label: volume.name, path: volume.path, icon: "drive-harddisk" }, ...segments(volume.path, loc)];
   }
   return [{ label: "", path: "/", icon: "drive-harddisk" }, ...segments("/", loc)];
 }
@@ -1624,7 +1629,9 @@ function dropTargetAt(x: number, y: number, sources: string[]): DropTarget | nul
 
 /** The volume a path is on, for a quick guess before device ids arrive. */
 function volumeRoot(path: string): string {
-  return path.match(/^\/Volumes\/[^/]+/)?.[0] ?? "/";
+  return mountedVolumes
+    .filter((v) => path === v.path || path.startsWith(v.path + "/"))
+    .sort((a, b) => b.path.length - a.path.length)[0]?.path ?? "/";
 }
 
 /** The operation a drop would do, or null if it would do nothing useful. */
@@ -2320,12 +2327,13 @@ async function buildSidebar(): Promise<void> {
   const pub = await tryDir(publicDir);
   if (pub) folderKinds.set(pub, "publicshare");
 
-  // Mounted volumes (macOS lists them in /Volumes).
+  // Mounted volumes. The backend knows where the platform keeps them
+  // (`/Volumes` on macOS, udisks2's mount folders and `/mnt` on Linux).
   try {
-    const volumes = (await listDir("/Volumes", false)).sort((a, b) => collator.compare(a.name, b.name));
-    for (const v of volumes) sidebarRow(mounts, v.name, "drive-harddisk", v.path);
+    mountedVolumes = await listVolumes();
+    for (const v of mountedVolumes) sidebarRow(mounts, v.name, "drive-harddisk", v.path);
   } catch {
-    /* no /Volumes on this system */
+    /* no volume listing on this system */
   }
   $("#sidebar-mounts-separator").hidden = mounts.childElementCount === 0;
 
@@ -2454,7 +2462,9 @@ async function init(): Promise<void> {
   $(".sidebar").addEventListener("contextmenu", onSidebarContextMenu);
 
   home = await homeDir().catch(() => "");
-  trashPath = home ? joinPath(home, ".Trash") : "";
+  // The backend knows the platform's Trash folder; the fallback only matters
+  // if the command fails.
+  trashPath = await trashDir().catch(() => (home ? joinPath(home, ".Trash") : ""));
   await buildSidebar();
   await navigate(home || "/", { history: "none" });
   initExternalDrops();

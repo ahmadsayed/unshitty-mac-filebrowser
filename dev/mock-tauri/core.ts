@@ -250,6 +250,15 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
       return starred.map(entryAt).filter((e): e is Entry => !!e && (!!args.showHidden || !e.is_hidden)) as T;
     case "has_full_disk_access":
       return false as T;
+    case "volumes":
+      // The preview pretends to be macOS, so it lists /Volumes the way the
+      // real backend would on a Mac.
+      return [
+        { name: "Backup Drive", path: "/Volumes/Backup Drive" },
+        { name: "Macintosh HD", path: "/Volumes/Macintosh HD" },
+      ] as T;
+    case "trash_dir":
+      return TRASH as T;
     case "thumbnail":
       return (await mockThumbnail(args.path as string, args.size as number)) as T;
     case "path_info":

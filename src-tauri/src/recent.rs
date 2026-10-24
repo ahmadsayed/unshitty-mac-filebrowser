@@ -168,6 +168,111 @@ pub fn spotlight(home: &Path, days: i64) -> Vec<(String, i64)> {
     out.lines().filter_map(parse_mdfind_line).collect()
 }
 
+/// Files that were used recently in any app, newest first, as
+/// `(path, unix seconds)`. macOS asks Spotlight; Linux reads the GTK
+/// recently-used list.
+pub fn system_recent(home: &Path, days: i64) -> Vec<(String, i64)> {
+    if cfg!(target_os = "macos") {
+        return spotlight(home, days);
+    }
+    if cfg!(target_os = "linux") {
+        return recently_used(home, days);
+    }
+    Vec::new()
+}
+
+/// Linux's answer to Spotlight: `~/.local/share/recently-used.xbel`, the list
+/// GTK apps add to when they open a file. Returns only files used within the
+/// last `days` days, newest first.
+pub fn recently_used(home: &Path, days: i64) -> Vec<(String, i64)> {
+    let list = crate::platform::data_home(home).join("recently-used.xbel");
+    read_recently_used(&list, days)
+}
+
+/// `recently_used` with the file named directly, so it can be tested without
+/// touching the environment.
+pub fn read_recently_used(list: &Path, days: i64) -> Vec<(String, i64)> {
+    let Some(text) = crate::platform::read_text(list) else { return Vec::new() };
+    let cutoff = now() - days * 86_400;
+    let mut found: Vec<(String, i64)> =
+        parse_xbel(&text).into_iter().filter(|(_, t)| *t >= cutoff).collect();
+    found.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    found
+}
+
+/// One `<bookmark href="file:///…" modified="…">` element per remembered file.
+/// Parsed by hand: the format is flat enough that an XML dependency would cost
+/// more than it saves.
+fn parse_xbel(text: &str) -> Vec<(String, i64)> {
+    const OPEN: &str = "<bookmark ";
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        let after = &rest[start + OPEN.len()..];
+        let Some(end) = after.find('>') else { break };
+        let tag = &after[..end];
+        // `modified` is what GTK updates; `visited` is the fallback.
+        let when = attr(tag, "modified").or_else(|| attr(tag, "visited"));
+        if let (Some(href), Some(when)) = (attr(tag, "href"), when) {
+            if let (Some(path), Some(time)) = (crate::platform::file_uri_to_path(href), parse_iso(when)) {
+                out.push((path.to_string_lossy().to_string(), time));
+            }
+        }
+        rest = &after[end..];
+    }
+    out
+}
+
+/// The value of `name="…"` inside an XML tag.
+fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("{}=\"", name);
+    let start = tag.find(&needle)? + needle.len();
+    let rest = &tag[start..];
+    Some(&rest[..rest.find('"')?])
+}
+
+/// `2026-10-23T08:12:44Z` (fractional seconds and numeric zones allowed) →
+/// unix seconds. No zone is read as UTC.
+fn parse_iso(s: &str) -> Option<i64> {
+    let (date, time) = s.split_once('T')?;
+    let ymd: Vec<i64> = date.split('-').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    let [y, m, d] = ymd[..] else { return None };
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+
+    let (clock, offset) = match time.strip_suffix('Z') {
+        Some(clock) => (clock, 0),
+        None => match time.rfind(['+', '-']) {
+            Some(at) => (&time[..at], parse_offset(&time[at..])?),
+            None => (time, 0),
+        },
+    };
+    let hms: Vec<i64> = clock
+        .split(':')
+        .take(3)
+        .map(|p| p.chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok())
+        .collect::<Option<_>>()?;
+    let [hh, mm, ss] = hms[..] else { return None };
+    Some(days_from_civil(y, m, d) * 86_400 + hh * 3600 + mm * 60 + ss - offset)
+}
+
+/// `+02:00` or `-0130` → seconds east of UTC.
+fn parse_offset(s: &str) -> Option<i64> {
+    let sign = match s.chars().next()? {
+        '+' => 1,
+        '-' => -1,
+        _ => return None,
+    };
+    let digits: String = s[1..].chars().filter(char::is_ascii_digit).collect();
+    let (h, m): (i64, i64) = match digits.len() {
+        2 => (digits.parse().ok()?, 0),
+        4 => (digits[..2].parse().ok()?, digits[2..].parse().ok()?),
+        _ => return None,
+    };
+    Some(sign * (h * 3600 + m * 60))
+}
+
 /// One line of `mdfind -attr kMDItemLastUsedDate`:
 /// `/path/to/file   kMDItemLastUsedDate = 2026-10-23 08:12:44 +0000`.
 fn parse_mdfind_line(line: &str) -> Option<(String, i64)> {
@@ -238,6 +343,71 @@ mod tests {
         assert_eq!(parse_mdfind_line(line), Some(("/Users/me/My Notes.txt".into(), 1_792_743_164)));
         assert_eq!(parse_mdfind_line("/Users/me/x   kMDItemLastUsedDate = (null)"), None);
         assert_eq!(parse_mdfind_line("garbage"), None);
+    }
+
+    // --- recently-used.xbel (Linux) --------------------------------------
+
+    /// A trickle of what GTK writes: two bookmarks and the surrounding noise.
+    const XBEL: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xbel version="1.0" xmlns:bookmark="http://www.freedesktop.org/standards/desktop-bookmarks">
+  <bookmark href="file:///home/me/My%20Notes.txt" added="2026-10-20T08:00:00Z" modified="2026-10-23T08:12:44Z" visited="2026-10-23T08:12:44Z">
+    <info><metadata owner="http://freedesktop.org">
+      <mime:mime-type type="text/plain"/>
+    </metadata></info>
+  </bookmark>
+  <bookmark href="file:///home/me/Music/song.mp3" added="2026-01-01T00:00:00Z" modified="2026-01-02T00:00:00Z"/>
+</xbel>
+"#;
+
+    #[test]
+    fn parses_the_recently_used_list() {
+        let mut found = parse_xbel(XBEL);
+        found.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        assert_eq!(
+            found,
+            vec![
+                ("/home/me/My Notes.txt".to_string(), 1_792_743_164),
+                ("/home/me/Music/song.mp3".to_string(), 1_767_312_000),
+            ]
+        );
+        // Comments, unknown elements and missing attributes are skipped.
+        assert!(parse_xbel("<xbel><bookmark href=\"file:///x\"/></xbel>").is_empty());
+        assert!(parse_xbel("not xml at all").is_empty());
+        assert!(parse_xbel("<bookmark").is_empty());
+    }
+
+    #[test]
+    fn iso_dates_ignore_fractions_and_offsets() {
+        assert_eq!(parse_iso("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_iso("2026-10-23T08:12:44Z"), Some(1_792_743_164));
+        assert_eq!(parse_iso("2026-10-23T08:12:44.123456Z"), Some(1_792_743_164));
+        assert_eq!(parse_iso("2026-10-23T10:12:44+02:00"), Some(1_792_743_164));
+        assert_eq!(parse_iso("2026-13-01T00:00:00Z"), None);
+        assert_eq!(parse_iso("yesterday"), None);
+    }
+
+    #[test]
+    fn recently_used_reads_the_xbel_file_and_honours_the_cutoff() {
+        let dir = tempdir().unwrap();
+        let list = dir.path().join("recently-used.xbel");
+        fs::write(
+            &list,
+            r#"<xbel>
+              <bookmark href="file:///home/me/recent.txt" modified="2026-10-23T08:12:44Z"/>
+              <bookmark href="file:///home/me/ancient.txt" modified="2000-01-01T00:00:00Z"/>
+            </xbel>"#,
+        )
+        .unwrap();
+
+        let all = read_recently_used(&list, 100_000);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].0, "/home/me/recent.txt", "newest first");
+
+        // The 2000 entry falls outside a 30-day window.
+        let recent = read_recently_used(&list, 30);
+        assert_eq!(recent, vec![("/home/me/recent.txt".to_string(), 1_792_743_164)]);
+
+        assert!(read_recently_used(&dir.path().join("missing.xbel"), 30).is_empty());
     }
 
     #[test]
