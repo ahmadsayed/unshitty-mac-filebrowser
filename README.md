@@ -68,12 +68,12 @@ files, so the photo thumbnails are placeholders.</sub>
   of each list row; Starred lists them all, and stars follow renames and moves
   made in the app
 - **Keep Versions (Experimental):** tick "Keep versions" when creating a folder
-  to record every saved state of its files. Such folders carry a small history
-  badge on their icon, in the path bar and on sidebar bookmarks. The context
-  menu gains **Versions…** (text diff, Open Copy, Restore Copy, Replace…) and
-  **Deleted Files…** (open or restore a deleted file). History is stored in
-  `.versions/` inside the folder, compressed with zstd deltas; it is local only
-  and is **not a backup**
+  to record every saved state of its files. Such folders show a second folder
+  layer behind the icon, with a small layer mark in the path bar and on sidebar
+  bookmarks. The context menu gains **Versions…** (text diff, Open Copy,
+  Restore Copy, Replace…) and **Deleted Files…** (open or restore a deleted
+  file). History is stored in `.versions/` inside the folder, compressed with
+  zstd deltas; it is local only and is **not a backup**
 - Bookmarks: "Add to Bookmarks" (⌘D) pins folders to the sidebar
 - Mounted volumes in the sidebar
 - Large folders stay fast: only the visible items are rendered
