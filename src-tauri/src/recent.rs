@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -134,7 +134,13 @@ pub fn spotlight(home: &Path, days: i64) -> Vec<(String, i64)> {
     if !cfg!(target_os = "macos") {
         return Vec::new();
     }
-    let child = Command::new("/usr/bin/mdfind")
+    spotlight_with(Path::new("/usr/bin/mdfind"), home, days, Duration::from_secs(5))
+}
+
+/// `spotlight` with the program and timeout passed in, so it can be tested
+/// with a stand-in for mdfind on any platform.
+fn spotlight_with(program: &Path, home: &Path, days: i64, timeout: Duration) -> Vec<(String, i64)> {
+    let child = Command::new(program)
         .arg("-onlyin")
         .arg(home)
         .arg("-attr")
@@ -152,18 +158,7 @@ pub fn spotlight(home: &Path, days: i64) -> Vec<(String, i64)> {
         let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
         out
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break;
-            }
-        }
-    }
+    crate::platform::wait_or_kill(&mut child, timeout);
     let out = reader.join().unwrap_or_default();
     out.lines().filter_map(parse_mdfind_line).collect()
 }
@@ -363,6 +358,33 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn fake_mdfind(dir: &Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("mdfind");
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spotlight_parses_what_mdfind_prints_and_gives_up_on_a_stuck_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mdfind = fake_mdfind(
+            dir.path(),
+            r#"echo "/Users/me/a.txt   kMDItemLastUsedDate = 2026-10-23 08:12:44 +0000"
+echo "not a result line""#,
+        );
+        let found = spotlight_with(&mdfind, Path::new("/Users/me"), 30, Duration::from_secs(5));
+        assert_eq!(found, vec![("/Users/me/a.txt".to_string(), 1_792_743_164)]);
+
+        let stuck = fake_mdfind(dir.path(), "exec sleep 10");
+        assert!(spotlight_with(&stuck, Path::new("/"), 30, Duration::from_millis(100)).is_empty());
+        let missing = dir.path().join("nope");
+        assert!(spotlight_with(&missing, Path::new("/"), 30, Duration::from_secs(1)).is_empty());
+    }
     use tempfile::tempdir;
 
     const NOW: i64 = 1_800_000_000;

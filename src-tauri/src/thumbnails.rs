@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 /// Stable 64-bit FNV-1a, so cache names survive Rust upgrades.
 fn fnv1a(bytes: &[u8]) -> u64 {
@@ -66,13 +66,19 @@ pub fn thumbnail(path: &Path, size: u32, cache_dir: &Path) -> Result<Option<Path
 /// Ask Quick Look for a thumbnail. Gives up after a timeout: qlmanage can
 /// hang on unusual files, and a thumbnail is never worth a stuck worker.
 fn quick_look(path: &Path, size: u32, out: &Path) -> bool {
+    quick_look_with(Path::new("/usr/bin/qlmanage"), path, size, out, Duration::from_secs(15))
+}
+
+/// `quick_look` with the program and timeout passed in, so it can be tested
+/// with a stand-in for qlmanage on any platform.
+fn quick_look_with(program: &Path, path: &Path, size: u32, out: &Path, timeout: Duration) -> bool {
     let Some(name) = path.file_name() else { return false };
     let work = out.with_extension("ql");
     let _ = fs::remove_dir_all(&work);
     if fs::create_dir_all(&work).is_err() {
         return false;
     }
-    let child = Command::new("/usr/bin/qlmanage")
+    let child = Command::new(program)
         .arg("-t")
         .arg("-s")
         .arg(size.to_string())
@@ -82,23 +88,7 @@ fn quick_look(path: &Path, size: u32, out: &Path) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
-    let ok = match child {
-        Ok(mut child) => {
-            let deadline = Instant::now() + Duration::from_secs(15);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => break true,
-                    Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-                    _ => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break false;
-                    }
-                }
-            }
-        }
-        Err(_) => false,
-    };
+    let ok = child.is_ok_and(|mut child| crate::platform::wait_or_kill(&mut child, timeout));
     // qlmanage writes "<file name>.png" into the output folder.
     let mut produced = name.to_os_string();
     produced.push(".png");
@@ -216,6 +206,47 @@ pub fn prune(cache_dir: &Path, max_age: Duration) {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// A stand-in program: a shell script with `body`, made executable.
+    #[cfg(unix)]
+    fn fake_program(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("fake");
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quick_look_takes_the_png_qlmanage_writes() {
+        let dir = tempdir().unwrap();
+        // Like qlmanage: -t -s SIZE -o DIR FILE writes DIR/<file name>.png.
+        let ql = fake_program(dir.path(), r#"echo png > "$5/$(basename "$6").png""#);
+        let src = dir.path().join("photo.heic");
+        fs::write(&src, b"x").unwrap();
+        let out = dir.path().join("thumb.png");
+        assert!(quick_look_with(&ql, &src, 256, &out, Duration::from_secs(5)));
+        assert_eq!(fs::read_to_string(&out).unwrap(), "png\n");
+        assert!(!dir.path().join("thumb.ql").exists(), "the work folder is cleaned up");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quick_look_fails_cleanly_when_qlmanage_fails_hangs_or_is_missing() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("doc.pages");
+        fs::write(&src, b"x").unwrap();
+        let out = dir.path().join("thumb.png");
+        let silent = fake_program(dir.path(), "exit 0"); // writes nothing
+        assert!(!quick_look_with(&silent, &src, 256, &out, Duration::from_secs(5)));
+        let stuck = fake_program(dir.path(), "exec sleep 10");
+        assert!(!quick_look_with(&stuck, &src, 256, &out, Duration::from_millis(100)));
+        assert!(!quick_look_with(&dir.path().join("missing"), &src, 256, &out, Duration::from_secs(1)));
+        assert!(!quick_look_with(&silent, Path::new("/"), 256, &out, Duration::from_secs(1)), "no file name");
+        assert!(!out.exists());
+        assert!(!dir.path().join("thumb.ql").exists());
+    }
 
     fn write_png(path: &Path, w: u32, h: u32) {
         let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]));
