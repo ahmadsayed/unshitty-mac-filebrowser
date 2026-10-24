@@ -1474,6 +1474,7 @@ async function showProperties(entry: Entry): Promise<void> {
   add("Owner", info.owner);
   add("Group", info.group);
   add("Others", info.others);
+  extra.append(header, list);
   try {
     const root = await versionedRoot(entry.path).catch(() => null);
     historyBytes =
@@ -1483,7 +1484,6 @@ async function showProperties(entry: Entry): Promise<void> {
     /* Properties still works without the history rows */
   }
 
-  extra.append(header, list);
   // Closing the dialog stops the size walk, which can take minutes on Home.
   const walk = sizeValue ? await newFolderWalk().catch(() => 0) : 0;
   const propertiesDialog = openDialog({

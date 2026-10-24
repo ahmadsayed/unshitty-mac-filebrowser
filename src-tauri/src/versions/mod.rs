@@ -247,6 +247,7 @@ pub struct DiffLine {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeletedFile {
+    /// Absolute path of the deleted file.
     pub path: String,
     pub deleted_at: i64,
     pub size: u64,
@@ -475,13 +476,22 @@ mod tests {
     fn every_error_has_a_user_facing_message() {
         let cases = [
             (Error::Changed, "The file changed while it was being read"),
-            (Error::Damaged, "This version is damaged and can't be restored."),
-            (Error::IndexDamaged(String::new()), "This folder's version history is damaged."),
+            (
+                Error::Damaged,
+                "This version is damaged and can't be restored.",
+            ),
+            (
+                Error::IndexDamaged(String::new()),
+                "This folder's version history is damaged.",
+            ),
             (
                 Error::IndexDamaged("bad row".into()),
                 "This folder's version history is damaged: bad row",
             ),
-            (Error::NotOurs("x".into()), "Not a version history this app owns: x"),
+            (
+                Error::NotOurs("x".into()),
+                "Not a version history this app owns: x",
+            ),
             (
                 Error::ReadOnly,
                 "The version history of this folder is in use by another window.",
@@ -490,10 +500,22 @@ mod tests {
                 Error::Closed,
                 "The version history of this folder was closed while it was in use.",
             ),
-            (Error::NotLocal, "Version history needs a folder on a local disk."),
-            (Error::TooLarge, "The file is too large to keep versions of."),
-            (Error::Io("disk".into()), "Could not read or write version history: disk"),
-            (Error::Db("locked".into()), "Could not read or write the version index: locked"),
+            (
+                Error::NotLocal,
+                "Version history needs a folder on a local disk.",
+            ),
+            (
+                Error::TooLarge,
+                "The file is too large to keep versions of.",
+            ),
+            (
+                Error::Io("disk".into()),
+                "Could not read or write version history: disk",
+            ),
+            (
+                Error::Db("locked".into()),
+                "Could not read or write the version index: locked",
+            ),
         ];
         for (error, message) in cases {
             assert_eq!(error.to_string(), message);

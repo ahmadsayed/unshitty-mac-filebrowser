@@ -14,7 +14,11 @@ pub const IS_MACOS: bool = cfg!(target_os = "macos");
 /// Properties label for a folder others can put files into but not look
 /// inside (`-wx`). GNOME Files calls it "Write-only"; macOS has a name for
 /// exactly this, the Drop Box in every user's Public folder, so say so there.
-pub const WRITE_ONLY_FOLDER: &str = if IS_MACOS { "Write-only (Drop Box)" } else { "Write-only" };
+pub const WRITE_ONLY_FOLDER: &str = if IS_MACOS {
+    "Write-only (Drop Box)"
+} else {
+    "Write-only"
+};
 
 /// Wait for `child` to exit, killing it once `timeout` has passed. True when it
 /// exited on its own. External helpers (qlmanage, mdfind) can hang on unusual
@@ -71,7 +75,9 @@ fn with_containers(bases: &[PathBuf]) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     for base in bases {
         roots.push(base.clone());
-        let Ok(entries) = fs::read_dir(base) else { continue };
+        let Ok(entries) = fs::read_dir(base) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if fs::metadata(&path).is_ok_and(|m| m.is_dir()) && !is_mount_point(&path) {
@@ -86,7 +92,9 @@ fn with_containers(bases: &[PathBuf]) -> Vec<PathBuf> {
 #[cfg(unix)]
 fn is_mount_point(path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    let Some(parent) = path.parent() else { return true };
+    let Some(parent) = path.parent() else {
+        return true;
+    };
     match (fs::metadata(path), fs::metadata(parent)) {
         (Ok(a), Ok(b)) => a.dev() != b.dev(),
         _ => false,
@@ -106,7 +114,9 @@ pub fn volumes(roots: &[PathBuf]) -> Vec<Volume> {
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut found = Vec::new();
     for root in roots {
-        let Ok(entries) = fs::read_dir(root) else { continue };
+        let Ok(entries) = fs::read_dir(root) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
@@ -127,7 +137,10 @@ pub fn volumes(roots: &[PathBuf]) -> Vec<Volume> {
             if !seen.insert(key) {
                 continue;
             }
-            found.push(Volume { name, path: path.to_string_lossy().to_string() });
+            found.push(Volume {
+                name,
+                path: path.to_string_lossy().to_string(),
+            });
         }
     }
     found.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -187,13 +200,20 @@ pub fn data_home(home: &Path) -> PathBuf {
 /// WebKitGTK's DMA-BUF renderer makes popovers and dialogs flicker on some
 /// GPU setups (seen on Intel + NVIDIA under Wayland); its shared-memory
 /// fallback is smooth and fast enough for a file browser. Linux only.
-pub const WEBVIEW_ENV: &[(&str, &str)] =
-    if cfg!(target_os = "linux") { &[("WEBKIT_DISABLE_DMABUF_RENDERER", "1")] } else { &[] };
+pub const WEBVIEW_ENV: &[(&str, &str)] = if cfg!(target_os = "linux") {
+    &[("WEBKIT_DISABLE_DMABUF_RENDERER", "1")]
+} else {
+    &[]
+};
 
 /// The `WEBVIEW_ENV` entries to set: those the user hasn't set already, so
 /// exporting `WEBKIT_DISABLE_DMABUF_RENDERER=0` turns the renderer back on.
 pub fn webview_env_to_set(is_set: impl Fn(&str) -> bool) -> Vec<(&'static str, &'static str)> {
-    WEBVIEW_ENV.iter().copied().filter(|(k, _)| !is_set(k)).collect()
+    WEBVIEW_ENV
+        .iter()
+        .copied()
+        .filter(|(k, _)| !is_set(k))
+        .collect()
 }
 
 #[cfg(test)]
@@ -279,8 +299,14 @@ mod tests {
         let mut stuck = Command::new("sleep").arg("10").spawn().unwrap();
         let start = Instant::now();
         assert!(!wait_or_kill(&mut stuck, Duration::from_millis(100)));
-        assert!(start.elapsed() < Duration::from_secs(5), "killed, not waited out");
-        assert!(stuck.try_wait().unwrap().is_some(), "the stuck process was reaped");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "killed, not waited out"
+        );
+        assert!(
+            stuck.try_wait().unwrap().is_some(),
+            "the stuck process was reaped"
+        );
     }
 
     #[test]
@@ -297,7 +323,10 @@ mod tests {
     #[test]
     fn percent_decoding_round_trips() {
         assert_eq!(percent_decode("/home/me/notes.txt"), "/home/me/notes.txt");
-        assert_eq!(percent_decode("/home/me/My%20Notes.txt"), "/home/me/My Notes.txt");
+        assert_eq!(
+            percent_decode("/home/me/My%20Notes.txt"),
+            "/home/me/My Notes.txt"
+        );
         assert_eq!(percent_decode("/home/me/100%25.txt"), "/home/me/100%.txt");
         // A stray '%' is left alone rather than eating the next bytes.
         assert_eq!(percent_decode("/home/me/50%off"), "/home/me/50%off");

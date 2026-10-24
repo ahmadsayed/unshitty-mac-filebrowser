@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::fs_ops::{entry_for, Entry};
+use crate::fs_ops::{Entry, entry_for};
 
 /// Files used longer ago than this drop out of Recent (GNOME's default too).
 pub const MAX_AGE_DAYS: i64 = 30;
@@ -97,9 +97,13 @@ fn excluded(path: &str, home: &Path, show_hidden: bool) -> bool {
     if path.starts_with(&library) {
         return true;
     }
-    let below_home = path.strip_prefix(&format!("{}/", home.display())).unwrap_or(path);
+    let below_home = path
+        .strip_prefix(&format!("{}/", home.display()))
+        .unwrap_or(path);
     let parts: Vec<&str> = below_home.split('/').filter(|p| !p.is_empty()).collect();
-    let Some((last, parents)) = parts.split_last() else { return true };
+    let Some((last, parents)) = parts.split_last() else {
+        return true;
+    };
     if parents.iter().any(|p| p.ends_with(".app")) || last.ends_with(".app") {
         return true;
     }
@@ -108,10 +112,20 @@ fn excluded(path: &str, home: &Path, show_hidden: bool) -> bool {
 
 /// Merge the app's list with Spotlight's `(path, last used)` pairs into the
 /// Recent listing: existing files only, newest first.
-pub fn collect(store: &RecentStore, spotlight: Vec<(String, i64)>, home: &Path, show_hidden: bool, now: i64) -> Vec<RecentEntry> {
+pub fn collect(
+    store: &RecentStore,
+    spotlight: Vec<(String, i64)>,
+    home: &Path,
+    show_hidden: bool,
+    now: i64,
+) -> Vec<RecentEntry> {
     let cutoff = oldest_kept(now);
     let mut used: HashMap<String, i64> = HashMap::new();
-    let sources = store.opened.iter().map(|(p, t)| (p.clone(), *t)).chain(spotlight);
+    let sources = store
+        .opened
+        .iter()
+        .map(|(p, t)| (p.clone(), *t))
+        .chain(spotlight);
     for (path, t) in sources {
         let slot = used.entry(path).or_insert(t);
         *slot = (*slot).max(t);
@@ -137,7 +151,12 @@ pub fn spotlight(home: &Path, days: i64) -> Vec<(String, i64)> {
     if !cfg!(target_os = "macos") {
         return Vec::new();
     }
-    spotlight_with(Path::new("/usr/bin/mdfind"), home, days, Duration::from_secs(5))
+    spotlight_with(
+        Path::new("/usr/bin/mdfind"),
+        home,
+        days,
+        Duration::from_secs(5),
+    )
 }
 
 /// `spotlight` with the program and timeout passed in, so it can be tested
@@ -152,7 +171,9 @@ fn spotlight_with(program: &Path, home: &Path, days: i64, timeout: Duration) -> 
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn();
-    let Ok(mut child) = child else { return Vec::new() };
+    let Ok(mut child) = child else {
+        return Vec::new();
+    };
 
     // Read on a thread so a stuck mdfind can be killed after a deadline.
     let mut stdout = child.stdout.take().expect("piped stdout");
@@ -190,10 +211,14 @@ pub fn recently_used(home: &Path, days: i64) -> Vec<(String, i64)> {
 /// `recently_used` with the file named directly, so it can be tested without
 /// touching the environment.
 pub fn read_recently_used(list: &Path, days: i64) -> Vec<(String, i64)> {
-    let Some(text) = crate::platform::read_text(list) else { return Vec::new() };
+    let Some(text) = crate::platform::read_text(list) else {
+        return Vec::new();
+    };
     let cutoff = now() - days * 86_400;
-    let mut found: Vec<(String, i64)> =
-        parse_xbel(&text).into_iter().filter(|(_, t)| *t >= cutoff).collect();
+    let mut found: Vec<(String, i64)> = parse_xbel(&text)
+        .into_iter()
+        .filter(|(_, t)| *t >= cutoff)
+        .collect();
     found.sort_unstable_by(|a, b| b.1.cmp(&a.1));
     found
 }
@@ -212,7 +237,9 @@ fn parse_xbel(text: &str) -> Vec<(String, i64)> {
         // `modified` is what GTK updates; `visited` is the fallback.
         let when = attr(tag, "modified").or_else(|| attr(tag, "visited"));
         if let (Some(href), Some(when)) = (attr(tag, "href"), when) {
-            if let (Some(path), Some(time)) = (crate::platform::file_uri_to_path(&href), parse_iso(&when)) {
+            if let (Some(path), Some(time)) =
+                (crate::platform::file_uri_to_path(&href), parse_iso(&when))
+            {
                 out.push((path.to_string_lossy().to_string(), time));
             }
         }
@@ -273,7 +300,10 @@ fn xml_unescape(s: &str) -> String {
 /// unix seconds. No zone is read as UTC.
 fn parse_iso(s: &str) -> Option<i64> {
     let (date, time) = s.split_once('T')?;
-    let ymd: Vec<i64> = date.split('-').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    let ymd: Vec<i64> = date
+        .split('-')
+        .map(|p| p.parse().ok())
+        .collect::<Option<_>>()?;
     let [y, m, d] = ymd[..] else { return None };
     if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
         return None;
@@ -289,7 +319,13 @@ fn parse_iso(s: &str) -> Option<i64> {
     let hms: Vec<i64> = clock
         .split(':')
         .take(3)
-        .map(|p| p.chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok())
+        .map(|p| {
+            p.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .ok()
+        })
         .collect::<Option<_>>()?;
     let [hh, mm, ss] = hms[..] else { return None };
     Some(days_from_civil(y, m, d) * 86_400 + hh * 3600 + mm * 60 + ss - offset)
@@ -329,8 +365,14 @@ fn parse_date(s: &str) -> Option<i64> {
     let time = parts.next()?;
     let zone = parts.next().unwrap_or("+0000");
 
-    let ymd: Vec<i64> = date.split('-').map(|p| p.parse().ok()).collect::<Option<_>>()?;
-    let hms: Vec<i64> = time.split(':').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    let ymd: Vec<i64> = date
+        .split('-')
+        .map(|p| p.parse().ok())
+        .collect::<Option<_>>()?;
+    let hms: Vec<i64> = time
+        .split(':')
+        .map(|p| p.parse().ok())
+        .collect::<Option<_>>()?;
     let [y, m, d] = ymd[..] else { return None };
     let [hh, mm, ss] = hms[..] else { return None };
     if !(1..=12).contains(&m) || !(1..=31).contains(&d) || zone.len() != 5 {
@@ -405,8 +447,14 @@ echo "not a result line""#,
         assert_eq!(parse_date("yesterday"), None);
 
         let line = "/Users/me/My Notes.txt   kMDItemLastUsedDate = 2026-10-23 08:12:44 +0000";
-        assert_eq!(parse_mdfind_line(line), Some(("/Users/me/My Notes.txt".into(), 1_792_743_164)));
-        assert_eq!(parse_mdfind_line("/Users/me/x   kMDItemLastUsedDate = (null)"), None);
+        assert_eq!(
+            parse_mdfind_line(line),
+            Some(("/Users/me/My Notes.txt".into(), 1_792_743_164))
+        );
+        assert_eq!(
+            parse_mdfind_line("/Users/me/x   kMDItemLastUsedDate = (null)"),
+            None
+        );
         assert_eq!(parse_mdfind_line("garbage"), None);
     }
 
@@ -444,7 +492,10 @@ echo "not a result line""#,
     #[test]
     fn xml_escapes_in_hrefs_are_decoded() {
         let xbel = r#"<bookmark href="file:///home/me/Tom%20&amp;%20Jerry&apos;s%20&lt;1&gt;.odt" modified="2026-10-23T08:12:44Z"/>"#;
-        assert_eq!(parse_xbel(xbel), vec![("/home/me/Tom & Jerry's <1>.odt".to_string(), 1_792_743_164)]);
+        assert_eq!(
+            parse_xbel(xbel),
+            vec![("/home/me/Tom & Jerry's <1>.odt".to_string(), 1_792_743_164)]
+        );
         assert_eq!(xml_unescape("a&#38;b&#x27;c"), "a&b'c");
         assert_eq!(xml_unescape("plain"), "plain");
         // Stray or unknown ampersands are kept rather than dropped.
@@ -455,7 +506,10 @@ echo "not a result line""#,
     fn iso_dates_ignore_fractions_and_offsets() {
         assert_eq!(parse_iso("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(parse_iso("2026-10-23T08:12:44Z"), Some(1_792_743_164));
-        assert_eq!(parse_iso("2026-10-23T08:12:44.123456Z"), Some(1_792_743_164));
+        assert_eq!(
+            parse_iso("2026-10-23T08:12:44.123456Z"),
+            Some(1_792_743_164)
+        );
         assert_eq!(parse_iso("2026-10-23T10:12:44+02:00"), Some(1_792_743_164));
         assert_eq!(parse_iso("2026-13-01T00:00:00Z"), None);
         assert_eq!(parse_iso("yesterday"), None);
@@ -480,7 +534,10 @@ echo "not a result line""#,
 
         // The 2000 entry falls outside a 30-day window.
         let recent = read_recently_used(&list, 30);
-        assert_eq!(recent, vec![("/home/me/recent.txt".to_string(), 1_792_743_164)]);
+        assert_eq!(
+            recent,
+            vec![("/home/me/recent.txt".to_string(), 1_792_743_164)]
+        );
 
         assert!(read_recently_used(&dir.path().join("missing.xbel"), 30).is_empty());
     }
@@ -497,7 +554,11 @@ echo "not a result line""#,
         let mut store = RecentStore::default();
         record_open(&mut store, &p("a.txt"), NOW - 50);
         record_open(&mut store, &p("gone.txt"), NOW - 10);
-        let spotlight = vec![(p("b.txt"), NOW - 100), (p("c.txt"), NOW - 20), (p("a.txt"), NOW - 500)];
+        let spotlight = vec![
+            (p("b.txt"), NOW - 100),
+            (p("c.txt"), NOW - 20),
+            (p("a.txt"), NOW - 500),
+        ];
 
         let list = collect(&store, spotlight, home, false, NOW);
         assert_eq!(names(&list), ["c.txt", "a.txt", "b.txt"]);
@@ -512,7 +573,14 @@ echo "not a result line""#,
         fs::create_dir_all(home.join("Library/Prefs")).unwrap();
         fs::create_dir_all(home.join(".config")).unwrap();
         fs::create_dir_all(home.join("Tool.app/Contents")).unwrap();
-        for f in ["old.txt", "new.txt", ".zshrc", ".config/x.json", "Library/Prefs/p.plist", "Tool.app/Contents/Info.plist"] {
+        for f in [
+            "old.txt",
+            "new.txt",
+            ".zshrc",
+            ".config/x.json",
+            "Library/Prefs/p.plist",
+            "Tool.app/Contents/Info.plist",
+        ] {
             fs::write(home.join(f), "x").unwrap();
         }
         let p = |n: &str| home.join(n).to_string_lossy().to_string();
@@ -527,8 +595,14 @@ echo "not a result line""#,
         ];
         let store = RecentStore::default();
 
-        assert_eq!(names(&collect(&store, spotlight.clone(), home, false, NOW)), ["new.txt"]);
-        let mut with_hidden = names(&collect(&store, spotlight, home, true, NOW)).into_iter().map(String::from).collect::<Vec<_>>();
+        assert_eq!(
+            names(&collect(&store, spotlight.clone(), home, false, NOW)),
+            ["new.txt"]
+        );
+        let mut with_hidden = names(&collect(&store, spotlight, home, true, NOW))
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
         with_hidden.sort();
         assert_eq!(with_hidden, [".zshrc", "new.txt", "x.json"]);
     }
@@ -567,7 +641,11 @@ echo "not a result line""#,
         assert_eq!(store.opened.len(), MAX_REMEMBERED);
         assert!(!store.opened.contains_key("/ancient"));
         assert!(!store.opened.contains_key("/f0"));
-        assert!(store.opened.contains_key(&format!("/f{}", MAX_REMEMBERED + 19)));
+        assert!(
+            store
+                .opened
+                .contains_key(&format!("/f{}", MAX_REMEMBERED + 19))
+        );
     }
 
     #[test]

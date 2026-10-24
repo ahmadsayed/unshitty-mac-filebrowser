@@ -107,6 +107,8 @@ function parentAndName(path: string): [Node | undefined, string] {
 }
 
 const TRASH = "/Users/me/.Trash";
+/** Where the mock reports opened read-only copies. */
+const OPENED = "/Users/me/.cache/opened-versions";
 /** Path in the Trash → original path and when it was trashed (the real app's trash_log.json). */
 const trashLog = new Map<string, { origin: string; time: number }>([
   [`${TRASH}/old.txt`, { origin: "/Users/me/Documents/old.txt", time: now - 9 * day }],
@@ -456,12 +458,14 @@ const VERSION_COMMANDS: Record<string, (args: Args) => unknown> = {
   version_diff: (a) => versionDiff(str(a, "path"), a.version as number),
   restore_version_copy: (a) =>
     placeRestored(str(a, "path"), str(a, "name"), 1_700, `An item named “${str(a, "name")}” already exists`),
+  open_version: (a) => `${OPENED}/${str(a, "name")}`,
   replace_with_version: (a) => replaceWithVersion(str(a, "path")),
   deleted_files: (a) => [{ path: `${str(a, "dir")}/draft.md`, deleted_at: now - 3 * 3600, size: 320 }],
   restore_deleted: (a) => {
     const path = str(a, "path");
     return placeRestored(path, path.slice(path.lastIndexOf("/") + 1), 320, "Something is already at that path");
   },
+  open_deleted: (a) => `${OPENED}/${str(a, "name")}`,
   history_info: () => ({ bytes: 12_400_000, versions: 214, files: 37 }),
   clear_history: (a) => clearHistory(str(a, "root")),
   stop_keeping_versions: (a) => stopKeepingVersions(str(a, "root")),

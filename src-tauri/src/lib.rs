@@ -13,7 +13,7 @@ use tauri::Manager;
 
 use versions::history::History;
 use versions::state::{Transfer, VersionsState};
-use versions::{restore, VersionDiff, VersionInfo};
+use versions::{VersionDiff, VersionInfo, restore};
 
 fn config_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -37,7 +37,12 @@ fn save_pins(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
 #[tauri::command]
 fn get_flag(app: tauri::AppHandle, name: String) -> bool {
     config_file(&app, "flags.json")
-        .map(|p| config_store::read_flags(&p).get(&name).copied().unwrap_or(false))
+        .map(|p| {
+            config_store::read_flags(&p)
+                .get(&name)
+                .copied()
+                .unwrap_or(false)
+        })
         .unwrap_or(false)
 }
 
@@ -64,7 +69,10 @@ fn save_starred(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String>
 
 /// The "Starred" listing: starred items that still exist.
 #[tauri::command]
-async fn starred_files(app: tauri::AppHandle, show_hidden: bool) -> Result<Vec<fs_ops::Entry>, String> {
+async fn starred_files(
+    app: tauri::AppHandle,
+    show_hidden: bool,
+) -> Result<Vec<fs_ops::Entry>, String> {
     blocking(move || {
         let paths = config_file(&app, "starred.json")
             .map(|p| config_store::read_paths(&p))
@@ -84,9 +92,14 @@ fn has_full_disk_access(app: tauri::AppHandle) -> bool {
 
 /// The "Recent" listing: files opened lately, here or in other apps.
 #[tauri::command]
-async fn recent_files(app: tauri::AppHandle, show_hidden: bool) -> Result<Vec<recent::RecentEntry>, String> {
+async fn recent_files(
+    app: tauri::AppHandle,
+    show_hidden: bool,
+) -> Result<Vec<recent::RecentEntry>, String> {
     blocking(move || {
-        let Ok(home) = app.path().home_dir() else { return Vec::new() };
+        let Ok(home) = app.path().home_dir() else {
+            return Vec::new();
+        };
         let store = config_file(&app, "recent.json")
             .map(|p| recent::read_store(&p))
             .unwrap_or_default();
@@ -127,7 +140,9 @@ fn forget_recent(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String
 
 /// Run `work` on the blocking-thread pool and wait for it without holding an
 /// async worker.
-async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(work)
         .await
         .map_err(|e| format!("Background task failed: {}", e))
@@ -139,7 +154,10 @@ async fn list_dir(path: String, show_hidden: bool) -> Result<Vec<fs_ops::Entry>,
 }
 
 #[tauri::command]
-async fn item_counts(paths: Vec<String>, show_hidden: bool) -> Result<Vec<Option<fs_ops::FolderSummary>>, String> {
+async fn item_counts(
+    paths: Vec<String>,
+    show_hidden: bool,
+) -> Result<Vec<Option<fs_ops::FolderSummary>>, String> {
     blocking(move || fs_ops::item_counts(paths, show_hidden)).await
 }
 
@@ -150,7 +168,10 @@ async fn path_info(paths: Vec<String>) -> Result<Vec<Option<fs_ops::PathInfo>>, 
 
 /// Size, dates, permissions and contents for the Properties dialog.
 #[tauri::command]
-async fn file_properties(path: String, show_hidden: bool) -> Result<properties::FileProperties, String> {
+async fn file_properties(
+    path: String,
+    show_hidden: bool,
+) -> Result<properties::FileProperties, String> {
     blocking(move || properties::file_properties(&path, show_hidden)).await?
 }
 
@@ -208,11 +229,7 @@ async fn move_entry(
 }
 
 #[tauri::command]
-async fn rename_entry(
-    app: tauri::AppHandle,
-    from: String,
-    to: String,
-) -> Result<(), String> {
+async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result<(), String> {
     blocking(move || {
         let state = app.state::<VersionsState>();
         let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
@@ -261,12 +278,17 @@ fn put_back(home: &Path) -> std::collections::HashMap<String, PathBuf> {
 
 /// Original location and trash date of items in the Trash.
 #[tauri::command]
-async fn trash_info(app: tauri::AppHandle, paths: Vec<String>) -> Result<Vec<trash_ops::TrashInfo>, String> {
+async fn trash_info(
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+) -> Result<Vec<trash_ops::TrashInfo>, String> {
     blocking(move || {
         let log = config_file(&app, "trash_log.json")
             .map(|p| trash_ops::read_log(&p))
             .unwrap_or_default();
-        let Ok(home) = home_dir(&app) else { return Vec::new() };
+        let Ok(home) = home_dir(&app) else {
+            return Vec::new();
+        };
         trash_ops::info(&paths, &home, &log, &put_back(&home))
     })
     .await
@@ -309,7 +331,11 @@ async fn delete_permanently(app: tauri::AppHandle, path: String) -> Result<(), S
 #[tauri::command]
 fn trash_dir(app: tauri::AppHandle) -> String {
     home_dir(&app)
-        .map(|home| trash_ops::ensure_items_root(&home).to_string_lossy().to_string())
+        .map(|home| {
+            trash_ops::ensure_items_root(&home)
+                .to_string_lossy()
+                .to_string()
+        })
         .unwrap_or_default()
 }
 
@@ -446,6 +472,25 @@ async fn restore_version_copy(
     .await?
 }
 
+/// Materialize a version as a read-only cache copy for the default app.
+#[tauri::command]
+async fn open_version(
+    app: tauri::AppHandle,
+    path: String,
+    version: i64,
+    name: String,
+) -> Result<String, String> {
+    blocking(move || {
+        let (history, rel) = history_and_rel(&app, &path)?;
+        let rel = versions::path_bytes(&rel);
+        let base = opened_versions_dir(&app)?;
+        restore::open_copy(&history, &rel, version, &name, &base)
+            .map(|path| path.to_string_lossy().to_string())
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
 #[tauri::command]
 async fn replace_with_version(
     app: tauri::AppHandle,
@@ -468,7 +513,11 @@ async fn deleted_files(
     blocking(move || {
         let (history, rel) = history_and_rel(&app, &dir)?;
         let rel = versions::path_bytes(&rel);
-        let filter = if rel.is_empty() { None } else { Some(rel.as_slice()) };
+        let filter = if rel.is_empty() {
+            None
+        } else {
+            Some(rel.as_slice())
+        };
         restore::deleted_files(&history, filter).map_err(|e| e.to_string())
     })
     .await?
@@ -484,6 +533,20 @@ async fn restore_deleted(
         let (history, rel) = history_and_rel(&app, &path)?;
         let rel = versions::path_bytes(&rel);
         restore::restore_deleted(&history, &rel, &fallback_name)
+            .map(|path| path.to_string_lossy().to_string())
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+/// Materialize a deleted file's last real version as a read-only cache copy.
+#[tauri::command]
+async fn open_deleted(app: tauri::AppHandle, path: String, name: String) -> Result<String, String> {
+    blocking(move || {
+        let (history, rel) = history_and_rel(&app, &path)?;
+        let rel = versions::path_bytes(&rel);
+        let base = opened_versions_dir(&app)?;
+        restore::open_deleted(&history, &rel, &name, &base)
             .map(|path| path.to_string_lossy().to_string())
             .map_err(|e| e.to_string())
     })
@@ -536,7 +599,18 @@ async fn empty_trash(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn thumbnail_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app.path().app_cache_dir().ok().map(|d| d.join("thumbnails"))
+    app.path()
+        .app_cache_dir()
+        .ok()
+        .map(|d| d.join("thumbnails"))
+}
+
+/// Where opened versions are materialized as read-only copies.
+fn opened_versions_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_cache_dir()
+        .map(|dir| dir.join("opened-versions"))
+        .map_err(|e| e.to_string())
 }
 
 /// PNG bytes of a thumbnail for `path`, at most `size` pixels square; empty
@@ -545,7 +619,11 @@ fn thumbnail_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
 async fn thumbnail(app: tauri::AppHandle, path: String, size: u32) -> tauri::ipc::Response {
     let png = blocking(move || {
         thumbnail_dir(&app)
-            .and_then(|dir| thumbnails::thumbnail(Path::new(&path), size.clamp(32, 1024), &dir).ok().flatten())
+            .and_then(|dir| {
+                thumbnails::thumbnail(Path::new(&path), size.clamp(32, 1024), &dir)
+                    .ok()
+                    .flatten()
+            })
             .and_then(|p| std::fs::read(p).ok())
             .unwrap_or_default()
     })
@@ -558,10 +636,7 @@ async fn thumbnail(app: tauri::AppHandle, path: String, size: u32) -> tauri::ipc
 /// folders and `/mnt` on Linux.
 #[tauri::command]
 async fn volumes() -> Result<Vec<platform::Volume>, String> {
-    blocking(move || {
-        platform::volumes(&platform::volume_roots())
-    })
-    .await
+    blocking(move || platform::volumes(&platform::volume_roots())).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -584,7 +659,15 @@ pub fn run() {
             });
             // Drop thumbnails nobody has needed for two months.
             if let Some(dir) = thumbnail_dir(app.handle()) {
-                std::thread::spawn(move || thumbnails::prune(&dir, std::time::Duration::from_secs(60 * 86_400)));
+                std::thread::spawn(move || {
+                    thumbnails::prune(&dir, std::time::Duration::from_secs(60 * 86_400))
+                });
+            }
+            // Drop read-only copies opened from Versions… after a week.
+            if let Ok(dir) = opened_versions_dir(app.handle()) {
+                std::thread::spawn(move || {
+                    restore::prune_opened(&dir, versions::now_seconds(), 7 * 86_400);
+                });
             }
             Ok(())
         })
@@ -626,9 +709,11 @@ pub fn run() {
             version_count,
             version_diff,
             restore_version_copy,
+            open_version,
             replace_with_version,
             deleted_files,
             restore_deleted,
+            open_deleted,
             history_info,
             clear_history,
             stop_keeping_versions,

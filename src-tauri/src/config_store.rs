@@ -27,7 +27,8 @@ pub fn read_flags(path: &Path) -> HashMap<String, bool> {
 /// leave a half-written file behind.
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create config directory: {}", e))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("Failed to create config directory: {}", e))?;
     }
     let json = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
@@ -73,7 +74,10 @@ mod tests {
     fn pins_round_trip_and_create_the_directory() {
         let dir = tempdir().unwrap();
         let pins = dir.path().join("nested/config/pins.json");
-        let paths = vec!["/Users/me/Projects".to_string(), "/Volumes/Backup".to_string()];
+        let paths = vec![
+            "/Users/me/Projects".to_string(),
+            "/Volumes/Backup".to_string(),
+        ];
 
         write_json(&pins, &paths).unwrap();
         assert_eq!(read_paths(&pins), paths);

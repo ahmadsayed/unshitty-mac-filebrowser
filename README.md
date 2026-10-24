@@ -70,10 +70,10 @@ files, so the photo thumbnails are placeholders.</sub>
 - **Keep Versions (Experimental):** tick "Keep versions" when creating a folder
   to record every saved state of its files. Such folders carry a small history
   badge on their icon, in the path bar and on sidebar bookmarks. The context
-  menu gains **Versions…**
-  (text diff, Restore Copy, Replace…) and **Deleted Files…** (restore a deleted
-  file). History is stored in `.versions/` inside the folder, compressed with
-  zstd deltas; it is local only and is **not a backup**
+  menu gains **Versions…** (text diff, Open Copy, Restore Copy, Replace…) and
+  **Deleted Files…** (open or restore a deleted file). History is stored in
+  `.versions/` inside the folder, compressed with zstd deltas; it is local only
+  and is **not a backup**
 - Bookmarks: "Add to Bookmarks" (⌘D) pins folders to the sidebar
 - Mounted volumes in the sidebar
 - Large folders stay fast: only the visible items are rendered
@@ -154,7 +154,9 @@ disk as the files, so it is **not a backup**; changes made and overwritten while
 the app is closed are only noticed by the launch scan; versioned folders must be
 on a local disk; one app instance records a folder at a time (a second instance
 sees it read-only); retention is forever until **Clear History…** or **Stop
-Keeping Versions…**, which move `.versions/` to the Trash. Splitting container
+Keeping Versions…**, which move `.versions/` to the Trash. **Open Copy** writes
+a read-only temporary copy to the app cache so an old version can be viewed in
+its default app; edits to that copy are not recorded. Splitting container
 formats, a "folder at time T" slider and previews of old images/documents are
 not implemented.
 

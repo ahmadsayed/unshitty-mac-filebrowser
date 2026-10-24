@@ -71,12 +71,14 @@ test("the Versions… dialog lists versions and shows each diff state", async ()
   expect(rows()[3].textContent).toContain("Deleted");
   // The newest is selected first and is the current file.
   expect(diffText()).toBe("This version is the same as the current file.");
+  expect(button("Open Copy").disabled).toBe(false);
   expect(button("Restore Copy").disabled).toBe(true);
   // An older version: a line diff, and both actions are available.
   await click(rows()[1]);
   await settle(10);
   expect($$(".versions-diff .diff-line.removed").map((l) => l.textContent)).toEqual(["-old line"]);
   expect($$(".versions-diff .diff-line.added").map((l) => l.textContent)).toEqual(["+new line"]);
+  expect(button("Open Copy").disabled).toBe(false);
   expect(button("Restore Copy").disabled).toBe(false);
   expect(button("Replace…").disabled).toBe(false);
   await click(rows()[2]);
@@ -86,6 +88,7 @@ test("the Versions… dialog lists versions and shows each diff state", async ()
   await click(rows()[3]);
   await settle(10);
   expect(diffText()).toBe("The file was deleted at this point.");
+  expect(button("Open Copy").disabled).toBe(true);
   expect(button("Restore Copy").disabled).toBe(true);
   expect(button("Replace…").disabled).toBe(true);
   await closeOverlays();
@@ -148,20 +151,39 @@ test("Replace… asks first, with Cancel as the default", async () => {
   expect(toasts().join(" ")).toMatch(/Replaced “notes.txt”/);
 });
 
+test("Open Copy opens a read-only temporary copy without restoring", async () => {
+  const before = names();
+  await openVersions("notes.txt");
+  await click(rows()[1]);
+  await settle(10);
+  await respond("Open Copy");
+  await settle(10);
+  expect(toasts().join(" ")).toMatch(/Opened a read-only copy/);
+  expect(dialogHeading()).toBeUndefined();
+  expect(names()).toEqual(before);
+});
+
 test("Deleted Files… restores, then reports a clash", async () => {
   await goTo(VERSIONED);
   await rightClick($("#view"));
   await chooseMenu("Deleted Files…");
   expect(dialogHeading()).toBe("Deleted Files");
   expect($(".deleted-dialog .deleted-name").textContent).toBe("draft.md");
-  await click($(".deleted-dialog .deleted-row button"));
+  const deletedButton = (label: string) =>
+    $$(".deleted-dialog .deleted-row button").find((b) => b.textContent === label)!;
+  // Opening leaves the deleted file and its row in place.
+  await click(deletedButton("Open"));
+  await settle(10);
+  expect(toasts().join(" ")).toMatch(/Opened a read-only copy/);
+  expect($$(".deleted-dialog .deleted-row").length).toBe(1);
+  await click(deletedButton("Restore"));
   await settle(10);
   expect(toasts().join(" ")).toMatch(/Restored “draft.md”/);
   expect($$(".deleted-dialog .deleted-row").length).toBe(0);
   await closeOverlays();
   await rightClick($("#view"));
   await chooseMenu("Deleted Files…");
-  await click($(".deleted-dialog .deleted-row button"));
+  await click(deletedButton("Restore"));
   await settle(10);
   expect(toasts().join(" ")).toMatch(/Could not restore/);
   await closeOverlays();
@@ -180,6 +202,9 @@ test("Properties shows a file's version count and the root's history", async () 
   await chooseMenu("Properties");
   await settle(15);
   expect(rowText().join(" ")).toMatch(/Version History12\.4 MB, 214 versions of 37 files/);
+  // Destructive actions sit in their own group, not in the facts card.
+  expect($(".dialog-layer .props-actions")).not.toBeNull();
+  expect(document.querySelector(".props-list .props-actions")).toBeNull();
   await click($$(".dialog-layer button").find((b) => b.textContent === "Clear History…")!);
   expect(dialogHeading()).toBe("Clear Version History?");
   await respond("Clear History");

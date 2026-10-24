@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 
 #[tauri::command]
 pub fn make_dir(path: String) -> Result<(), String> {
@@ -30,8 +30,8 @@ pub struct Entry {
 }
 
 pub fn read_entries(path: &Path, show_hidden: bool) -> Result<Vec<Entry>, String> {
-    let read_dir = std::fs::read_dir(path)
-        .map_err(|e| format!("Failed to read directory: {}", e))?;
+    let read_dir =
+        std::fs::read_dir(path).map_err(|e| format!("Failed to read directory: {}", e))?;
 
     let mut entries = Vec::new();
     for dir_entry in read_dir.flatten() {
@@ -245,10 +245,18 @@ fn remove_any(path: &Path) -> std::io::Result<()> {
 /// A free hidden name next to `to`, used to stage a copy before it replaces `to`.
 fn staging_path(to: &Path) -> PathBuf {
     let dir = to.parent().unwrap_or(Path::new("/"));
-    let name = to.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let name = to
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     let mut n = 0u32;
     loop {
-        let candidate = dir.join(format!(".{}.filebrowser-{}-{}", name, std::process::id(), n));
+        let candidate = dir.join(format!(
+            ".{}.filebrowser-{}-{}",
+            name,
+            std::process::id(),
+            n
+        ));
         if std::fs::symlink_metadata(&candidate).is_err() {
             return candidate;
         }
@@ -283,7 +291,10 @@ fn check_transfer(from: &Path, to: &Path, overwrite: bool) -> Result<bool, Strin
 fn replace_with_staged(staged: &Path, to: &Path) -> Result<(), String> {
     if let Err(e) = trash::delete(to) {
         let _ = remove_any(staged);
-        return Err(format!("Could not move the existing item to the Trash: {}", e));
+        return Err(format!(
+            "Could not move the existing item to the Trash: {}",
+            e
+        ));
     }
     std::fs::rename(staged, to).map_err(|e| format!("Failed to replace: {}", e))
 }
@@ -296,7 +307,11 @@ fn is_cross_device(e: &std::io::Error) -> bool {
 pub fn copy_entry(from: String, to: String, overwrite: bool) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let replacing = check_transfer(from, to, overwrite)?;
-    let dest = if replacing { staging_path(to) } else { to.to_path_buf() };
+    let dest = if replacing {
+        staging_path(to)
+    } else {
+        to.to_path_buf()
+    };
     if let Err(e) = copy_recursive(from, &dest) {
         let _ = remove_any(&dest);
         return Err(format!("Failed to copy: {}", e));
@@ -311,7 +326,11 @@ pub fn copy_entry(from: String, to: String, overwrite: bool) -> Result<(), Strin
 pub fn move_entry(from: String, to: String, overwrite: bool) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let replacing = check_transfer(from, to, overwrite)?;
-    let dest = if replacing { staging_path(to) } else { to.to_path_buf() };
+    let dest = if replacing {
+        staging_path(to)
+    } else {
+        to.to_path_buf()
+    };
     match std::fs::rename(from, &dest) {
         Ok(()) => {}
         Err(e) if is_cross_device(&e) => {
@@ -323,7 +342,8 @@ pub fn move_entry(from: String, to: String, overwrite: bool) -> Result<(), Strin
                 replace_with_staged(&dest, to)?;
             }
             // Only now, with the copy complete, is the source removed.
-            return remove_any(from).map_err(|e| format!("Moved, but could not remove the original: {}", e));
+            return remove_any(from)
+                .map_err(|e| format!("Moved, but could not remove the original: {}", e));
         }
         Err(e) => return Err(format!("Failed to move: {}", e)),
     }
@@ -332,8 +352,6 @@ pub fn move_entry(from: String, to: String, overwrite: bool) -> Result<(), Strin
     }
     Ok(())
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -350,8 +368,15 @@ mod tests {
         let p = |n: &str| dir.path().join(n).to_string_lossy().to_string();
         let paths = [p("a.txt"), p("gone.txt"), p("Folder"), p(".secret")];
 
-        let names = |list: Vec<Entry>| list.into_iter().map(|e| (e.name, e.is_dir)).collect::<Vec<_>>();
-        assert_eq!(names(entries_for(&paths, false)), [("a.txt".into(), false), ("Folder".into(), true)]);
+        let names = |list: Vec<Entry>| {
+            list.into_iter()
+                .map(|e| (e.name, e.is_dir))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(entries_for(&paths, false)),
+            [("a.txt".into(), false), ("Folder".into(), true)]
+        );
         assert_eq!(entries_for(&paths, true).len(), 3);
         assert_eq!(entries_for(&paths, false)[0].size, 5);
     }
@@ -382,11 +407,17 @@ mod tests {
 
         let entries = read_entries(dir.path(), true).unwrap();
 
-        let file_entry = entries.iter().find(|e| e.name == "hello.txt").expect("hello.txt not found");
+        let file_entry = entries
+            .iter()
+            .find(|e| e.name == "hello.txt")
+            .expect("hello.txt not found");
         assert!(!file_entry.is_dir);
         assert_eq!(file_entry.size, 5);
 
-        let dir_entry = entries.iter().find(|e| e.name == "subdir").expect("subdir not found");
+        let dir_entry = entries
+            .iter()
+            .find(|e| e.name == "subdir")
+            .expect("subdir not found");
         assert!(dir_entry.is_dir);
     }
 
@@ -407,7 +438,10 @@ mod tests {
         fs::write(&dotfile, "secret").unwrap();
 
         let entries = read_entries(dir.path(), true).unwrap();
-        let entry = entries.iter().find(|e| e.name == ".hidden").expect(".hidden not found");
+        let entry = entries
+            .iter()
+            .find(|e| e.name == ".hidden")
+            .expect(".hidden not found");
         assert!(entry.is_hidden);
     }
 
@@ -429,7 +463,10 @@ mod tests {
         #[cfg(unix)]
         {
             let entries = read_entries(dir.path(), true).unwrap();
-            let entry = entries.iter().find(|e| e.name == "broken_link").expect("broken_link not found");
+            let entry = entries
+                .iter()
+                .find(|e| e.name == "broken_link")
+                .expect("broken_link not found");
             assert!(entry.is_symlink);
         }
     }
@@ -457,7 +494,16 @@ mod tests {
             ],
             false,
         );
-        assert_eq!(counts, vec![Some(FolderSummary { count: 0, versioned: false }), None]);
+        assert_eq!(
+            counts,
+            vec![
+                Some(FolderSummary {
+                    count: 0,
+                    versioned: false
+                }),
+                None
+            ]
+        );
     }
 
     #[test]
@@ -475,9 +521,27 @@ mod tests {
         fs::create_dir(&plain).unwrap();
 
         let summary = |p: &Path, hidden| folder_summary(p, hidden).unwrap();
-        assert_eq!(summary(&owned, true), FolderSummary { count: 1, versioned: true });
-        assert_eq!(summary(&foreign, true), FolderSummary { count: 0, versioned: false });
-        assert_eq!(summary(&plain, false), FolderSummary { count: 0, versioned: false });
+        assert_eq!(
+            summary(&owned, true),
+            FolderSummary {
+                count: 1,
+                versioned: true
+            }
+        );
+        assert_eq!(
+            summary(&foreign, true),
+            FolderSummary {
+                count: 0,
+                versioned: false
+            }
+        );
+        assert_eq!(
+            summary(&plain, false),
+            FolderSummary {
+                count: 0,
+                versioned: false
+            }
+        );
     }
 
     // ----- make_dir tests -----
@@ -572,7 +636,10 @@ mod tests {
 
         copy_entry(s(&src), s(&dst), false).unwrap();
         assert_eq!(fs::read_to_string(dst.join("top.txt")).unwrap(), "1");
-        assert_eq!(fs::read_to_string(dst.join("sub/deeper/leaf.txt")).unwrap(), "2");
+        assert_eq!(
+            fs::read_to_string(dst.join("sub/deeper/leaf.txt")).unwrap(),
+            "2"
+        );
     }
 
     #[cfg(unix)]
@@ -614,7 +681,10 @@ mod tests {
         copy_entry(s(&src), s(&dst), true).unwrap();
         assert_eq!(fs::read_to_string(&dst).unwrap(), "new");
         // No staging leftovers in the folder.
-        let names: Vec<_> = fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(names.len(), 2, "unexpected entries: {:?}", names);
     }
 

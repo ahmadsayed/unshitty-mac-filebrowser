@@ -13,8 +13,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 /// Stable 64-bit FNV-1a, so cache names survive Rust upgrades.
@@ -41,7 +41,8 @@ fn cache_key(path: &Path, meta: &fs::Metadata, size: u32) -> String {
 /// Path of a PNG thumbnail no larger than `size`×`size` for `path`, creating
 /// it in `cache_dir` if needed. `Ok(None)` means this file has no thumbnail.
 pub fn thumbnail(path: &Path, size: u32, cache_dir: &Path) -> Result<Option<PathBuf>, String> {
-    let meta = fs::metadata(path).map_err(|e| format!("Cannot read “{}”: {}", path.display(), e))?;
+    let meta =
+        fs::metadata(path).map_err(|e| format!("Cannot read “{}”: {}", path.display(), e))?;
     if !meta.is_file() {
         return Ok(None);
     }
@@ -56,7 +57,8 @@ pub fn thumbnail(path: &Path, size: u32, cache_dir: &Path) -> Result<Option<Path
     }
     fs::create_dir_all(cache_dir).map_err(|e| format!("Cannot create thumbnail cache: {}", e))?;
 
-    if (cfg!(target_os = "macos") && quick_look(path, size, &out)) || decode_image(path, size, &out) {
+    if (cfg!(target_os = "macos") && quick_look(path, size, &out)) || decode_image(path, size, &out)
+    {
         return Ok(Some(out));
     }
     let _ = fs::write(&none, b"");
@@ -66,13 +68,21 @@ pub fn thumbnail(path: &Path, size: u32, cache_dir: &Path) -> Result<Option<Path
 /// Ask Quick Look for a thumbnail. Gives up after a timeout: qlmanage can
 /// hang on unusual files, and a thumbnail is never worth a stuck worker.
 fn quick_look(path: &Path, size: u32, out: &Path) -> bool {
-    quick_look_with(Path::new("/usr/bin/qlmanage"), path, size, out, Duration::from_secs(15))
+    quick_look_with(
+        Path::new("/usr/bin/qlmanage"),
+        path,
+        size,
+        out,
+        Duration::from_secs(15),
+    )
 }
 
 /// `quick_look` with the program and timeout passed in, so it can be tested
 /// with a stand-in for qlmanage on any platform.
 fn quick_look_with(program: &Path, path: &Path, size: u32, out: &Path, timeout: Duration) -> bool {
-    let Some(name) = path.file_name() else { return false };
+    let Some(name) = path.file_name() else {
+        return false;
+    };
     let work = out.with_extension("ql");
     let _ = fs::remove_dir_all(&work);
     if fs::create_dir_all(&work).is_err() {
@@ -131,11 +141,15 @@ fn decode_image(path: &Path, size: u32, out: &Path) -> bool {
 fn decode_image_now(path: &Path, size: u32, out: &Path) -> bool {
     use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 
-    let Ok(reader) = ImageReader::open(path).and_then(|r| r.with_guessed_format()) else { return false };
+    let Ok(reader) = ImageReader::open(path).and_then(|r| r.with_guessed_format()) else {
+        return false;
+    };
     if reader.format().is_none() {
         return false;
     }
-    let Ok(mut decoder) = reader.into_decoder() else { return false };
+    let Ok(mut decoder) = reader.into_decoder() else {
+        return false;
+    };
     // Read the header size first: a huge scan would allocate hundreds of
     // megabytes just to be thrown away.
     let (width, height) = decoder.dimensions();
@@ -143,7 +157,9 @@ fn decode_image_now(path: &Path, size: u32, out: &Path) -> bool {
         return false;
     }
     let orientation = decoder.orientation().ok();
-    let Ok(mut img) = DynamicImage::from_decoder(decoder) else { return false };
+    let Ok(mut img) = DynamicImage::from_decoder(decoder) else {
+        return false;
+    };
     if let Some(o) = orientation {
         img.apply_orientation(o);
     }
@@ -186,7 +202,9 @@ fn release_free_memory() {}
 
 /// Delete cache entries older than `max_age`; run once at startup.
 pub fn prune(cache_dir: &Path, max_age: Duration) {
-    let Ok(entries) = fs::read_dir(cache_dir) else { return };
+    let Ok(entries) = fs::read_dir(cache_dir) else {
+        return;
+    };
     let now = SystemTime::now();
     for entry in entries.flatten() {
         let old = entry
@@ -197,7 +215,11 @@ pub fn prune(cache_dir: &Path, max_age: Duration) {
             .is_some_and(|age| age > max_age);
         if old {
             let p = entry.path();
-            let _ = if p.is_dir() { fs::remove_dir_all(&p) } else { fs::remove_file(&p) };
+            let _ = if p.is_dir() {
+                fs::remove_dir_all(&p)
+            } else {
+                fs::remove_file(&p)
+            };
         }
     }
 }
@@ -226,9 +248,18 @@ mod tests {
         let src = dir.path().join("photo.heic");
         fs::write(&src, b"x").unwrap();
         let out = dir.path().join("thumb.png");
-        assert!(quick_look_with(&ql, &src, 256, &out, Duration::from_secs(5)));
+        assert!(quick_look_with(
+            &ql,
+            &src,
+            256,
+            &out,
+            Duration::from_secs(5)
+        ));
         assert_eq!(fs::read_to_string(&out).unwrap(), "png\n");
-        assert!(!dir.path().join("thumb.ql").exists(), "the work folder is cleaned up");
+        assert!(
+            !dir.path().join("thumb.ql").exists(),
+            "the work folder is cleaned up"
+        );
     }
 
     #[cfg(unix)]
@@ -239,17 +270,40 @@ mod tests {
         fs::write(&src, b"x").unwrap();
         let out = dir.path().join("thumb.png");
         let silent = fake_program(dir.path(), "exit 0"); // writes nothing
-        assert!(!quick_look_with(&silent, &src, 256, &out, Duration::from_secs(5)));
+        assert!(!quick_look_with(
+            &silent,
+            &src,
+            256,
+            &out,
+            Duration::from_secs(5)
+        ));
         let stuck = fake_program(dir.path(), "exec sleep 10");
-        assert!(!quick_look_with(&stuck, &src, 256, &out, Duration::from_millis(100)));
-        assert!(!quick_look_with(&dir.path().join("missing"), &src, 256, &out, Duration::from_secs(1)));
-        assert!(!quick_look_with(&silent, Path::new("/"), 256, &out, Duration::from_secs(1)), "no file name");
+        assert!(!quick_look_with(
+            &stuck,
+            &src,
+            256,
+            &out,
+            Duration::from_millis(100)
+        ));
+        assert!(!quick_look_with(
+            &dir.path().join("missing"),
+            &src,
+            256,
+            &out,
+            Duration::from_secs(1)
+        ));
+        assert!(
+            !quick_look_with(&silent, Path::new("/"), 256, &out, Duration::from_secs(1)),
+            "no file name"
+        );
         assert!(!out.exists());
         assert!(!dir.path().join("thumb.ql").exists());
     }
 
     fn write_png(path: &Path, w: u32, h: u32) {
-        let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]));
+        let img = image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
         img.save(path).unwrap();
     }
 
@@ -279,7 +333,9 @@ mod tests {
         let src = dir.path().join("scan.png");
         write_png(&src, 400, 400);
         let cache = dir.path().join("cache");
-        let thumb = thumbnail(&src, 64, &cache).unwrap().expect("small image still works");
+        let thumb = thumbnail(&src, 64, &cache)
+            .unwrap()
+            .expect("small image still works");
         assert!(thumb.exists());
     }
 
@@ -321,7 +377,9 @@ mod tests {
         let src = dir.path().join("icon.png");
         write_png(&src, 40, 30);
 
-        let thumb = thumbnail(&src, 256, &dir.path().join("cache")).unwrap().unwrap();
+        let thumb = thumbnail(&src, 256, &dir.path().join("cache"))
+            .unwrap()
+            .unwrap();
         assert_eq!(image::image_dimensions(&thumb).unwrap(), (40, 30));
     }
 
@@ -365,7 +423,16 @@ mod tests {
         let cache = dir.path().join("cache");
 
         assert!(thumbnail(&src, 128, &cache).unwrap().is_none());
-        let markers = fs::read_dir(&cache).unwrap().filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "none")).count();
+        let markers = fs::read_dir(&cache)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "none")
+            })
+            .count();
         assert_eq!(markers, 1);
         assert!(thumbnail(&src, 128, &cache).unwrap().is_none());
     }
@@ -373,7 +440,11 @@ mod tests {
     #[test]
     fn folders_and_missing_files() {
         let dir = tempdir().unwrap();
-        assert!(thumbnail(dir.path(), 128, &dir.path().join("cache")).unwrap().is_none());
+        assert!(
+            thumbnail(dir.path(), 128, &dir.path().join("cache"))
+                .unwrap()
+                .is_none()
+        );
         assert!(thumbnail(&dir.path().join("gone.png"), 128, &dir.path().join("cache")).is_err());
     }
 

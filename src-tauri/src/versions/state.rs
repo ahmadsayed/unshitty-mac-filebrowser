@@ -612,6 +612,18 @@ mod tests {
     }
 
     #[test]
+    fn history_for_resolves_an_absolute_deleted_path() {
+        let (_dir, root, state) = setup();
+        let history = state.open_registered(&root).unwrap();
+        record(&history, "a.txt", b"a");
+        std::fs::remove_file(root.join("a.txt")).unwrap();
+        capture::record(&history, Path::new("a.txt")).unwrap();
+        let (found, rel) = state.history_for(&root.join("a.txt")).unwrap().unwrap();
+        assert_eq!(found.root, root);
+        assert_eq!(rel, PathBuf::from("a.txt"));
+    }
+
+    #[test]
     fn concurrent_opens_share_one_writable_history() {
         let (_dir, root, state) = setup();
         let state = Arc::new(state);
