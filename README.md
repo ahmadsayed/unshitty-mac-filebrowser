@@ -54,6 +54,9 @@ files, so the photo thumbnails are placeholders.</sub>
 - Thumbnails for images (HEIC too), videos, PDFs and office documents, made by
   macOS Quick Look and cached on disk; toggle with "Show Thumbnails" in the menu
 - Rename, new folder, Move to Trash with an **Undo** button in the toast (or ⌘Z)
+- Properties (right-click or ⌘I): type, size (folders are summed in the
+  background), location, modified/accessed/created dates, permissions, symlink
+  target and folder contents
 - Trash: Original Location and Trashed On columns, **Restore From Trash** (also
   for items trashed in Finder, from its "Put Back" records), **Delete
   Permanently…** and **Empty Trash…**, both after a confirmation

@@ -189,6 +189,41 @@ export async function pathInfo(paths: string[]): Promise<(PathInfo | null)[]> {
   return invoke<(PathInfo | null)[]>("path_info", { paths });
 }
 
+/** Everything the Properties dialog shows for one path. */
+export interface FileProperties {
+  name: string;
+  path: string;
+  /** The containing folder, or empty for a filesystem root. */
+  parent: string;
+  is_dir: boolean;
+  is_symlink: boolean;
+  symlink_target: string | null;
+  size: number;
+  /** Direct children for folders; `null` for files. */
+  item_count: number | null;
+  modified: number;
+  accessed: number;
+  /** Birth time; 0 when the filesystem doesn't report one. */
+  created: number;
+  /** `ls -l`-style permissions, e.g. "drwxr-xr-x". */
+  mode: string;
+  /** The same bits in octal, e.g. "755". */
+  octal: string;
+  owner: string;
+  group: string;
+  others: string;
+}
+
+/** Metadata for the Properties dialog. */
+export async function fileProperties(path: string, showHidden: boolean): Promise<FileProperties> {
+  return invoke<FileProperties>("file_properties", { path, showHidden });
+}
+
+/** Total size of every file inside a folder, recursively. */
+export async function folderSize(path: string): Promise<number> {
+  return invoke<number>("folder_size", { path });
+}
+
 /** PNG bytes of a thumbnail no larger than `size` px; empty when there is none. */
 export async function thumbnail(path: string, size: number): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("thumbnail", { path, size });

@@ -166,6 +166,12 @@ function entryAt(path: string): Entry | undefined {
     return undefined;
   }
 }
+
+/** Bytes of every file below a node, for the Properties dialog. */
+function totalSize(node: Node): number {
+  return node.dir ? Object.values(node.children).reduce((sum, child) => sum + totalSize(child), 0) : node.size;
+}
+
 const flags: Record<string, boolean> = {};
 
 /** A made-up picture for image/video/PDF files, so thumbnails can be previewed. */
@@ -228,6 +234,36 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
       return (args.paths as string[]).map((p) => {
         try { return list(p, args.showHidden as boolean).length; } catch { return null; }
       }) as T;
+    case "file_properties": {
+      const path = args.path as string;
+      const node = lookup(path);
+      if (!node) throw "Could not read properties: No such file or directory (os error 2)";
+      const i = path.lastIndexOf("/");
+      const name = path.slice(i + 1) || path;
+      const isDir = node.dir;
+      return {
+        name,
+        path,
+        parent: path.slice(0, i) || "/",
+        is_dir: isDir,
+        is_symlink: !!node.link,
+        symlink_target: node.link ? "/Users/me/Documents" : null,
+        size: isDir ? 96 : node.size,
+        item_count: isDir ? Object.keys(node.children).length : null,
+        modified: node.modified,
+        accessed: node.modified,
+        created: node.modified - 100 * day,
+        mode: isDir ? "drwxr-xr-x" : node.link ? "lrwxrwxrwx" : "-rw-r--r--",
+        octal: isDir ? "755" : "644",
+        owner: "Read and write",
+        group: "Read-only",
+        others: "Read-only",
+      } as T;
+    }
+    case "folder_size": {
+      const node = lookup(args.path as string);
+      return (node ? totalSize(node) : 0) as T;
+    }
     case "make_dir": {
       const [parent, name] = parentAndName(args.path as string);
       if (!parent?.dir) throw "Failed to create directory: No such file or directory";

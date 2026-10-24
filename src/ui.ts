@@ -207,6 +207,8 @@ export function openDialog(opts: {
   heading: string;
   body?: string;
   extra?: HTMLElement;
+  /** Extra class on `.dialog`, for wider or differently laid-out dialogs. */
+  className?: string;
   responses: DialogResponse[];
   defaultResponse?: string;
   closeResponse?: string;
@@ -218,6 +220,7 @@ export function openDialog(opts: {
   layer.className = "dialog-layer";
   const dialog = document.createElement("div");
   dialog.className = "dialog";
+  if (opts.className) dialog.classList.add(opts.className);
   dialog.setAttribute("role", "dialog");
   dialog.setAttribute("aria-modal", "true");
 

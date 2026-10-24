@@ -30,6 +30,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/api.ts` | Typed wrappers for every Tauri command |
 | `src/styles.css` | All styling; libadwaita colour tokens at the top, light + dark |
 | `src-tauri/src/fs_ops.rs` | Listing, item counts, mkdir, rename, copy/move/trash, path info |
+| `src-tauri/src/properties.rs` | Properties dialog data: size, dates, permissions, symlink targets, recursive folder size |
 | `src-tauri/src/platform.rs` | Platform differences: volume roots per OS, `%XX` decoding, `file://` URIs, XDG data dir |
 | `src-tauri/src/thumbnails.rs` | Quick Look (`qlmanage`) thumbnails on macOS with an `image`-crate fallback everywhere, disk cache |
 | `src-tauri/src/trash_ops.rs` | Trash + locate (for Undo), restore, delete permanently, empty; macOS `~/.Trash` + Finder "Put Back" in `.DS_Store`, Linux `Trash/{files,info}` + `.trashinfo`, `trash_log.json` |
@@ -66,7 +67,7 @@ Before finishing a change: `npx tsc --noEmit`, `npm run build` and
   ```
   `npm run build` must run first, because `generate_context!` reads `../dist`.
 - **Backend modules must still be testable without Tauri.** Copy `fs_ops.rs`,
-  `config_store.rs`, `platform.rs`, `thumbnails.rs`, `recent.rs` and
+  `config_store.rs`, `platform.rs`, `properties.rs`, `thumbnails.rs`, `recent.rs` and
   `trash_ops.rs` into a scratch crate depending on `serde`, `serde_json`, `trash`,
   `image` (same features as `src-tauri/Cargo.toml`) plus dev-dependency
   `tempfile`, strip the `#[tauri::command]` lines,
