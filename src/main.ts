@@ -5,7 +5,7 @@ import {
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
   trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, fileProperties, folderSize,
-  cancelFolderSize,
+  cancelFolderSize, newFolderWalk,
   type Entry,
 } from "./api";
 import { entryIcon, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
@@ -848,8 +848,11 @@ function onGestureChange(e: Event): void {
   const target = Math.round((scale - 1) / 0.15);
   const steps = target - pinchSteps;
   if (steps === 0) return;
-  pinchSteps = target;
-  zoom(Math.sign(steps) * Math.min(Math.abs(steps), 2));
+  // At most two steps per event so a jumpy pinch doesn't skip sizes; the
+  // rest follow on the next event, so pinching back lands where it began.
+  const taken = Math.sign(steps) * Math.min(Math.abs(steps), 2);
+  pinchSteps += taken;
+  zoom(taken);
 }
 
 function onGestureEnd(e: Event): void {
@@ -1080,10 +1083,8 @@ function onViewMouseDown(e: MouseEvent): void {
     return;
   }
 
-  if (e.button === 2) {
-    if (!selected.has(shown[index].path)) selectOnly(index);
-    return;
-  }
+  // Right-clicks select in `onViewContextMenu`, which also sees the ones
+  // whose press went to a menu backdrop.
   if (e.button !== 0) return;
 
   if (e.shiftKey && anchorIndex >= 0) {
@@ -1177,10 +1178,10 @@ function onViewContextMenu(e: MouseEvent): void {
   const at = { x: e.clientX, y: e.clientY };
   const index = indexFromEvent(e);
   if (index >= 0 && shown[index]) {
-    // Closing a menu swallows the press that closed it, so the selection can
-    // still point at the item the previous menu was for. Select the item that
-    // was actually right-clicked, like GNOME Files, unless it is already part
-    // of a selection (then the menu applies to the whole selection).
+    // The one place a right-click selects: select the item that was
+    // right-clicked, like GNOME Files, unless it is already part of a
+    // selection (then the menu applies to the whole selection). Doing it here
+    // rather than on mousedown also covers a press that closed another menu.
     if (!selected.has(shown[index].path)) selectOnly(index);
     openItemMenu(at);
   } else {
@@ -1359,18 +1360,6 @@ function propertyRow(label: string, value: string, title = ""): HTMLElement {
   return row;
 }
 
-let lastWalk = 0;
-
-/**
- * Id for a folder-size walk. The backend cancels "this walk and every earlier
- * one", so ids must only grow; starting from the clock keeps them growing
- * after a reload too.
- */
-function nextWalkId(): number {
-  lastWalk = Math.max(lastWalk + 1, Date.now());
-  return lastWalk;
-}
-
 /**
  * The Properties dialog: type, size, dates and permissions. A folder's total
  * size is summed in the background (like GNOME Files) while the rest of the
@@ -1428,7 +1417,7 @@ async function showProperties(entry: Entry): Promise<void> {
 
   extra.append(header, list);
   // Closing the dialog stops the size walk, which can take minutes on Home.
-  const walk = sizeValue ? nextWalkId() : 0;
+  const walk = sizeValue ? await newFolderWalk().catch(() => 0) : 0;
   openDialog({
     heading: "Properties",
     className: "properties-dialog",

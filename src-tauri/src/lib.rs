@@ -156,6 +156,12 @@ async fn folder_size(path: String, walk: u64) -> Result<u64, String> {
     blocking(move || properties::folder_size(&path, || properties::walk_cancelled(walk))).await?
 }
 
+/// A fresh id for `folder_size`.
+#[tauri::command]
+fn new_folder_walk() -> u64 {
+    properties::new_walk_id()
+}
+
 /// Stop folder-size walk `walk` and every earlier one.
 #[tauri::command]
 fn cancel_folder_size(walk: u64) {
@@ -320,6 +326,7 @@ pub fn run() {
             path_info,
             file_properties,
             folder_size,
+            new_folder_walk,
             cancel_folder_size,
             copy_entry,
             move_entry,

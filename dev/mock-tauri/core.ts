@@ -173,6 +173,7 @@ function totalSize(node: Node): number {
 }
 
 const flags: Record<string, boolean> = {};
+let mockWalks = 0;
 
 /** A made-up picture for image/video/PDF files, so thumbnails can be previewed. */
 async function mockThumbnail(path: string, size: number): Promise<ArrayBuffer> {
@@ -260,6 +261,8 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
         others: isDir ? "Access files" : "Read-only",
       } as T;
     }
+    case "new_folder_walk":
+      return ++mockWalks as T;
     case "cancel_folder_size":
       return undefined as T;
     case "folder_size": {

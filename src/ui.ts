@@ -13,6 +13,8 @@ export interface PopoverHandle {
 }
 
 let activePopover: PopoverHandle | null = null;
+/** When the last popover closed, to tell a replaced menu from a fresh one. */
+let lastPopoverClose = 0;
 
 export function closePopover(): void {
   activePopover?.close();
@@ -32,6 +34,9 @@ export function openPopover(
   content: HTMLElement,
   opts: { onClose?: () => void; focus?: HTMLElement } = {}
 ): PopoverHandle {
+  // A right-click on top of an open menu first dismisses it (the backdrop
+  // takes the mousedown), then opens the new one a moment later.
+  const replacing = activePopover !== null || performance.now() - lastPopoverClose < 300;
   closePopover();
 
   const layer = document.createElement("div");
@@ -43,10 +48,10 @@ export function openPopover(
   document.body.appendChild(layer);
 
   const isElement = anchor instanceof HTMLElement;
-  if (!isElement) {
-    // Point anchors are context menus. They often replace a menu that has
-    // just been dismissed, so replaying the fade makes the menu blink at
-    // (nearly) the same spot; open them instantly like a native menu.
+  if (!isElement && replacing) {
+    // A context menu replacing one that was just dismissed would replay the
+    // fade at (nearly) the same spot and blink; open it instantly instead.
+    // A menu opened from nothing keeps the libadwaita fade.
     pop.classList.add("no-animation");
   }
   if (isElement) anchor.classList.add("open");
@@ -93,6 +98,7 @@ export function openPopover(
     close() {
       if (activePopover !== handle) return;
       activePopover = null;
+      lastPopoverClose = performance.now();
       document.removeEventListener("keydown", onKey, true);
       layer.remove();
       if (isElement) anchor.classList.remove("open");
