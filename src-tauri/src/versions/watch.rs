@@ -111,7 +111,7 @@ pub fn start_fallback(history: Arc<History>) -> WatcherHandle {
         .name("versions-scan".into())
         .spawn(move || {
             let mut last = Instant::now();
-            while !thread_stop.load(Ordering::Relaxed) {
+            while !thread_stop.load(Ordering::Relaxed) && !history.is_closed() {
                 thread::sleep(Duration::from_secs(1));
                 if last.elapsed() >= FALLBACK_SCAN {
                     last = Instant::now();
@@ -126,38 +126,77 @@ pub fn start_fallback(history: Arc<History>) -> WatcherHandle {
     }
 }
 
+/// What the watcher does with one path from one event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    /// Outside the root, or inside `.versions/` (the app's own writes).
+    Ignore,
+    /// A file was written: record it once it has been quiet.
+    File(PathBuf),
+    /// A folder appeared or changed: scan just that folder once it is quiet.
+    Folder(PathBuf),
+    /// Something was removed or renamed away. It may have been a file or a
+    /// folder, so record the path (tombstones a file) and tombstone anything
+    /// that was under it.
+    Vanished(PathBuf),
+}
+
+/// Classify one event path. Pure, so it can be tested without a watcher;
+/// `is_dir`/`exists` are what the filesystem says about `path` now.
+pub fn classify(root: &Path, path: &Path, kind: &EventKind, is_dir: bool, exists: bool) -> Action {
+    let Some(rel) = rel_to(root, path) else {
+        return Action::Ignore;
+    };
+    // The capture itself writes into `.versions/` (tmp files renamed into
+    // objects/, the WAL). Those must never trigger more work.
+    if crate::versions::is_internal_path(&rel) {
+        return Action::Ignore;
+    }
+    let removed_or_renamed = matches!(
+        kind,
+        EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+    );
+    if removed_or_renamed && !exists {
+        if rel.as_os_str().is_empty() {
+            return Action::Ignore; // the root itself; the state map handles it
+        }
+        return Action::Vanished(rel);
+    }
+    if is_dir {
+        return Action::Folder(rel);
+    }
+    Action::File(rel)
+}
+
 fn run(
     history: Arc<History>,
     rx: mpsc::Receiver<notify::Result<Event>>,
     _watcher: RecommendedWatcher,
     stop: Arc<AtomicBool>,
 ) {
-    let mut coalescer = Coalescer::new(QUIET);
-    let mut directory_event = false;
+    let mut files = Coalescer::new(QUIET);
+    let mut folders = Coalescer::new(QUIET);
+    let mut rescan = false;
     let mut fallback = false;
     let mut last_fallback = Instant::now();
 
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::Relaxed) && !history.is_closed() {
         match rx.recv_timeout(TICK) {
             Ok(Ok(event)) => {
                 if event.need_rescan() {
-                    directory_event = true;
+                    rescan = true;
                 }
-                for path in event.paths {
-                    let is_directory = path.is_dir();
-                    let removed_or_renamed = matches!(
-                        event.kind,
-                        EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
-                    );
-                    if is_directory || (removed_or_renamed && !path.exists()) {
-                        if let Ok(rel) = path.strip_prefix(&history.root) {
-                            if !rel.as_os_str().is_empty() {
-                                let _ = capture::tombstone_prefix(&history, rel);
-                            }
+                for path in &event.paths {
+                    let action =
+                        classify(&history.root, path, &event.kind, path.is_dir(), path.exists());
+                    match action {
+                        Action::Ignore => {}
+                        Action::File(rel) => files.push(rel, Instant::now()),
+                        Action::Folder(rel) => folders.push(rel, Instant::now()),
+                        Action::Vanished(rel) => {
+                            let _ = capture::tombstone_prefix(&history, &rel);
+                            files.push(rel, Instant::now());
                         }
-                        directory_event = true;
-                    } else {
-                        coalescer.push(path, Instant::now());
                     }
                 }
             }
@@ -169,21 +208,24 @@ fn run(
             Err(RecvTimeoutError::Disconnected) => break,
         }
 
-        for path in coalescer.due(Instant::now()) {
-            if let Ok(rel) = path.strip_prefix(&history.root) {
-                match capture::record(&history, rel) {
-                    Err(crate::versions::Error::Changed) => {
-                        // Still being written: wait for another quiet period.
-                        coalescer.push(path, Instant::now());
-                    }
-                    Err(error) => eprintln!("versions: could not capture a file: {error}"),
-                    Ok(()) => {}
+        for rel in files.due(Instant::now()) {
+            match capture::record(&history, &rel) {
+                Err(crate::versions::Error::Changed) => {
+                    // Still being written: wait for another quiet period.
+                    files.push(rel, Instant::now());
                 }
+                Err(crate::versions::Error::Closed) => return,
+                Err(error) => eprintln!("versions: could not capture a file: {error}"),
+                Ok(()) => {}
             }
         }
-        if directory_event {
-            directory_event = false;
+        if rescan {
+            rescan = false;
             let _ = capture::scan(&history);
+        } else {
+            for rel in folders.due(Instant::now()) {
+                let _ = capture::scan_dir(&history, &rel);
+            }
         }
         if fallback && last_fallback.elapsed() >= FALLBACK_SCAN {
             last_fallback = Instant::now();
@@ -226,6 +268,53 @@ mod tests {
             c.due(t0 + Duration::from_secs(3)),
             vec![PathBuf::from("/r/a")]
         );
+    }
+
+    fn create() -> EventKind {
+        EventKind::Create(notify::event::CreateKind::Any)
+    }
+
+    fn renamed() -> EventKind {
+        EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::Any))
+    }
+
+    #[test]
+    fn the_apps_own_writes_never_cause_work() {
+        let root = Path::new("/r");
+        // Every capture renames tmp/obj-… into objects/xx/: the old path is gone.
+        let tmp = Path::new("/r/.versions/tmp/obj-1-2");
+        assert_eq!(classify(root, tmp, &renamed(), false, false), Action::Ignore);
+        let objects = Path::new("/r/.versions/objects/3f");
+        assert_eq!(classify(root, objects, &create(), true, true), Action::Ignore);
+        let wal = Path::new("/r/.versions/index.sqlite-wal");
+        assert_eq!(classify(root, wal, &create(), false, true), Action::Ignore);
+        let nested = Path::new("/r/sub/.versions/tmp/x");
+        assert_eq!(classify(root, nested, &renamed(), false, false), Action::Ignore);
+        assert_eq!(classify(root, Path::new("/elsewhere/a"), &create(), false, true), Action::Ignore);
+    }
+
+    #[test]
+    fn files_folders_and_vanished_paths_are_told_apart() {
+        let root = Path::new("/r");
+        assert_eq!(
+            classify(root, Path::new("/r/a.txt"), &create(), false, true),
+            Action::File(PathBuf::from("a.txt"))
+        );
+        // A deleted file is not a folder event: no whole-root scan.
+        let removed = EventKind::Remove(notify::event::RemoveKind::Any);
+        assert_eq!(
+            classify(root, Path::new("/r/a.txt"), &removed, false, false),
+            Action::Vanished(PathBuf::from("a.txt"))
+        );
+        assert_eq!(
+            classify(root, Path::new("/r/old"), &renamed(), false, false),
+            Action::Vanished(PathBuf::from("old"))
+        );
+        assert_eq!(
+            classify(root, Path::new("/r/new"), &renamed(), true, true),
+            Action::Folder(PathBuf::from("new"))
+        );
+        assert_eq!(classify(root, Path::new("/r"), &removed, false, false), Action::Ignore);
     }
 
     #[test]

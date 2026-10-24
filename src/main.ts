@@ -231,6 +231,8 @@ function computeShown(): void {
 async function navigate(loc: string, opts: { history?: "push" | "none"; select?: string } = {}): Promise<boolean> {
   if (searchQuery !== null) closeSearch(false);
 
+  // Started now so it runs alongside the listing instead of after it.
+  const rootLookup = lookupVersionedRoot(loc);
   let next: Entry[] = [];
   let error: string | null = null;
   if (hasEntries(loc)) {
@@ -251,10 +253,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   }
 
   location = loc;
-  versionedRootPath =
-    isPseudo(loc) || (!!trashPath && loc === trashPath)
-      ? null
-      : await versionedRoot(loc).catch(() => null);
+  versionedRootPath = await rootLookup;
   entries = next;
   listingError = error;
   counts.clear();
@@ -292,10 +291,13 @@ async function reload(select?: string[]): Promise<void> {
   renderView();
   scrollEl.scrollTop = top;
   if (select?.[0]) revealPath(select[0]);
-  versionedRootPath =
-    isPseudo(location) || (!!trashPath && location === trashPath)
-      ? null
-      : await versionedRoot(location).catch(() => null);
+  versionedRootPath = await lookupVersionedRoot(location);
+}
+
+/** The folder that keeps versions for `loc`, if any (never for Trash or Recent). */
+function lookupVersionedRoot(loc: string): Promise<string | null> {
+  if (isPseudo(loc) || (!!trashPath && loc === trashPath)) return Promise.resolve(null);
+  return versionedRoot(loc).catch(() => null);
 }
 
 /** A failed folder open; macOS privacy blocks get a shortcut to the setting. */

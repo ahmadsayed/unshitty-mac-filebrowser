@@ -12,8 +12,8 @@ use std::sync::Mutex;
 use tauri::Manager;
 
 use versions::history::History;
-use versions::state::VersionsState;
-use versions::{capture, index, restore, VersionDiff, VersionInfo};
+use versions::state::{Transfer, VersionsState};
+use versions::{restore, VersionDiff, VersionInfo};
 
 fn config_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -173,40 +173,6 @@ fn cancel_folder_size(walk: u64) {
     properties::cancel_walks_up_to(walk);
 }
 
-fn transfer_dest(from: &Path, to: &Path, root: &Path) -> Option<PathBuf> {
-    root.strip_prefix(from)
-        .ok()
-        .map(|relative| to.join(relative))
-}
-
-fn suspend_roots(state: &VersionsState, roots: &[PathBuf]) -> Result<(), String> {
-    let mut suspended: Vec<PathBuf> = Vec::new();
-    for root in roots {
-        // Open first so a history owned by another instance is detected; a
-        // live read-only index must never be copied or moved under them (D16).
-        if let Ok(history) = state.open(root) {
-            if !history.writable {
-                let _ = state.resume(root);
-                for root in &suspended {
-                    let _ = state.resume(root);
-                }
-                return Err(versions::Error::ReadOnly.to_string());
-            }
-        }
-        state.take(root);
-        suspended.push(root.clone());
-    }
-    Ok(())
-}
-
-fn resume_roots(state: &VersionsState, roots: &[PathBuf]) {
-    for root in roots {
-        if root.exists() {
-            let _ = state.resume(root);
-        }
-    }
-}
-
 #[tauri::command]
 async fn copy_entry(
     app: tauri::AppHandle,
@@ -216,39 +182,10 @@ async fn copy_entry(
 ) -> Result<(), String> {
     blocking(move || {
         let state = app.state::<VersionsState>();
-        let from_path = PathBuf::from(&from);
-        let to_path = PathBuf::from(&to);
-        let source_roots = state.discover_under(&from_path);
-        let target_roots = state.discover_under(&to_path);
-        suspend_roots(&state, &source_roots)?;
-        if let Err(error) = suspend_roots(&state, &target_roots) {
-            resume_roots(&state, &source_roots);
-            return Err(error);
-        }
-
-        let result = fs_ops::copy_entry(from, to, overwrite);
-        if result.is_ok() {
-            for root in &source_roots {
-                if let Some(dest) = transfer_dest(&from_path, &to_path, root) {
-                    if dest.join(versions::VERSIONS_DIR).is_dir() {
-                        if let Err(e) = state.register_copy(&dest) {
-                            eprintln!("versions: could not register copy {}: {e}", dest.display());
-                        }
-                    }
-                }
-            }
-            for root in &target_roots {
-                if root.join(versions::VERSIONS_DIR).is_dir() {
-                    let _ = state.resume(root);
-                } else {
-                    state.unregister(root);
-                }
-            }
-        } else {
-            resume_roots(&state, &source_roots);
-            resume_roots(&state, &target_roots);
-        }
-        result
+        let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
+        state.transfer(&from_path, &to_path, Transfer::Copy, || {
+            fs_ops::copy_entry(from, to, overwrite)
+        })
     })
     .await?
 }
@@ -262,37 +199,10 @@ async fn move_entry(
 ) -> Result<(), String> {
     blocking(move || {
         let state = app.state::<VersionsState>();
-        let from_path = PathBuf::from(&from);
-        let to_path = PathBuf::from(&to);
-        let source_roots = state.discover_under(&from_path);
-        let target_roots = state.discover_under(&to_path);
-        suspend_roots(&state, &source_roots)?;
-        if let Err(error) = suspend_roots(&state, &target_roots) {
-            resume_roots(&state, &source_roots);
-            return Err(error);
-        }
-
-        let result = fs_ops::move_entry(from, to, overwrite);
-        if result.is_ok() {
-            for root in &source_roots {
-                if let Some(dest) = transfer_dest(&from_path, &to_path, root) {
-                    if let Err(e) = state.move_registered(root, &dest) {
-                        eprintln!("versions: could not reopen {}: {e}", dest.display());
-                    }
-                }
-            }
-            for root in &target_roots {
-                if root.join(versions::VERSIONS_DIR).is_dir() {
-                    let _ = state.resume(root);
-                } else {
-                    state.unregister(root);
-                }
-            }
-        } else {
-            resume_roots(&state, &source_roots);
-            resume_roots(&state, &target_roots);
-        }
-        result
+        let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
+        state.transfer(&from_path, &to_path, Transfer::Move, || {
+            fs_ops::move_entry(from, to, overwrite)
+        })
     })
     .await?
 }
@@ -305,24 +215,10 @@ async fn rename_entry(
 ) -> Result<(), String> {
     blocking(move || {
         let state = app.state::<VersionsState>();
-        let from_path = PathBuf::from(&from);
-        let to_path = PathBuf::from(&to);
-        let source_roots = state.discover_under(&from_path);
-        suspend_roots(&state, &source_roots)?;
-
-        let result = fs_ops::rename_entry(from, to);
-        if result.is_ok() {
-            for root in &source_roots {
-                if let Some(dest) = transfer_dest(&from_path, &to_path, root) {
-                    if let Err(e) = state.move_registered(root, &dest) {
-                        eprintln!("versions: could not reopen {}: {e}", dest.display());
-                    }
-                }
-            }
-        } else {
-            resume_roots(&state, &source_roots);
-        }
-        result
+        let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
+        state.transfer(&from_path, &to_path, Transfer::Move, || {
+            fs_ops::rename_entry(from, to)
+        })
     })
     .await?
 }
@@ -342,20 +238,7 @@ async fn trash_entry(app: tauri::AppHandle, path: String) -> Result<Option<Strin
         let home = home_dir(&app)?;
         let origin = PathBuf::from(&path);
         let state = app.state::<VersionsState>();
-        let roots = state.discover_under(&origin);
-        suspend_roots(&state, &roots)?;
-        for root in &roots {
-            state.unregister(root);
-        }
-        let trashed = match trash_ops::trash_and_locate(&origin, &home) {
-            Ok(trashed) => trashed,
-            Err(error) => {
-                for root in &roots {
-                    let _ = state.open_registered(root);
-                }
-                return Err(error);
-            }
-        };
+        let trashed = state.trash(&origin, || trash_ops::trash_and_locate(&origin, &home))?;
         if let (Some(trashed), Ok(log_path)) = (&trashed, config_file(&app, "trash_log.json")) {
             let _guard = TRASH_LOG.lock().unwrap_or_else(|e| e.into_inner());
             let mut log = trash_ops::read_log(&log_path);
@@ -470,11 +353,20 @@ async fn versioned_root(app: tauri::AppHandle, path: String) -> Option<String> {
         if in_trash(&app, &path) || versions::is_internal_path(&path) {
             return None;
         }
-        app.state::<VersionsState>()
-            .root_for(&path)
-            .ok()
-            .flatten()
-            .map(|root| root.to_string_lossy().to_string())
+        let state = app.state::<VersionsState>();
+        let root = state.root_quick(&path)?;
+        if !state.is_open(&root) {
+            // Opening checks the index against meta.json and starts the
+            // watcher; navigation shouldn't wait for it (spec: background).
+            let handle = app.clone();
+            let opening = root.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = handle.state::<VersionsState>().open_registered(&opening) {
+                    eprintln!("versions: could not open {}: {e}", opening.display());
+                }
+            });
+        }
+        Some(root.to_string_lossy().to_string())
     })
     .await
     .ok()
@@ -604,20 +496,9 @@ async fn history_info(
     root: String,
 ) -> Result<versions::HistoryInfo, String> {
     blocking(move || {
-        let state = app.state::<VersionsState>();
-        let root_path = PathBuf::from(&root);
-        state.open(&root_path).map_err(|e| e.to_string())?;
-        let mut total = versions::HistoryInfo::default();
-        for nested in state.discover_under(&root_path) {
-            if let Ok(history) = state.open(&nested) {
-                if let Ok(info) = history.info() {
-                    total.bytes = total.bytes.saturating_add(info.bytes);
-                    total.versions = total.versions.saturating_add(info.versions);
-                    total.files = total.files.saturating_add(info.files);
-                }
-            }
-        }
-        Ok(total)
+        app.state::<VersionsState>()
+            .info_under(Path::new(&root))
+            .map_err(|e| e.to_string())
     })
     .await?
 }
@@ -625,31 +506,8 @@ async fn history_info(
 #[tauri::command]
 async fn clear_history(app: tauri::AppHandle, root: String) -> Result<(), String> {
     blocking(move || {
-        let state = app.state::<VersionsState>();
-        let root_path = PathBuf::from(&root);
-        let Some(history) = state.take(&root_path) else {
-            return Err("This folder does not keep versions.".to_string());
-        };
-        if !history.writable {
-            let _ = state.resume(&root_path);
-            return Err(versions::Error::ReadOnly.to_string());
-        }
-        {
-            let reader = history.reader().map_err(|e| e.to_string())?;
-            index::verify_owner(&reader).map_err(|e| e.to_string())?;
-        }
-        // Fold the WAL in before the directory moves; captures are stopped.
-        let _ = history.checkpoint();
-        // The History stays alive here, so its lock is held through the move.
-        if let Err(error) = trash::delete(&history.dir) {
-            let _ = state.resume(&root_path);
-            return Err(format!("Could not move the version history to the Trash: {error}"));
-        }
-        drop(history);
-        let fresh = History::create(&root_path).map_err(|e| e.to_string())?;
-        let history = state.adopt(fresh);
-        let _ = capture::scan(&history);
-        Ok(())
+        app.state::<VersionsState>()
+            .clear(Path::new(&root), trash_history_dir)
     })
     .await?
 }
@@ -657,29 +515,15 @@ async fn clear_history(app: tauri::AppHandle, root: String) -> Result<(), String
 #[tauri::command]
 async fn stop_keeping_versions(app: tauri::AppHandle, root: String) -> Result<(), String> {
     blocking(move || {
-        let state = app.state::<VersionsState>();
-        let root_path = PathBuf::from(&root);
-        let Some(history) = state.take(&root_path) else {
-            return Err("This folder does not keep versions.".to_string());
-        };
-        if !history.writable {
-            let _ = state.resume(&root_path);
-            return Err(versions::Error::ReadOnly.to_string());
-        }
-        {
-            let reader = history.reader().map_err(|e| e.to_string())?;
-            index::verify_owner(&reader).map_err(|e| e.to_string())?;
-        }
-        let _ = history.checkpoint();
-        if let Err(error) = trash::delete(&history.dir) {
-            let _ = state.resume(&root_path);
-            return Err(format!("Could not move the version history to the Trash: {error}"));
-        }
-        drop(history);
-        state.forget(&root_path);
-        Ok(())
+        app.state::<VersionsState>()
+            .stop_keeping(Path::new(&root), trash_history_dir)
     })
     .await?
+}
+
+/// Clear History and Stop Keeping Versions move `.versions/` to the Trash (D7).
+fn trash_history_dir(dir: &Path) -> Result<(), String> {
+    trash::delete(dir).map_err(|e| format!("Could not move the version history to the Trash: {e}"))
 }
 
 #[tauri::command]

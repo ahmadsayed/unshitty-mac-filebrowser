@@ -34,15 +34,45 @@ pub fn scan(history: &History) -> Result<()> {
         .capture_lock
         .lock()
         .map_err(|_| Error::Io("capture lock poisoned".into()))?;
+    scan_locked(history, &history.root)?;
+    tombstone_missing(history, None)?;
+    history.checkpoint()?;
+    Ok(())
+}
+
+/// Scan one folder inside the root (a watcher folder event): capture what
+/// changed below it and tombstone what disappeared from it. Cheaper than a
+/// whole-root scan for a folder created, renamed or deleted deep in a tree.
+pub fn scan_dir(history: &History, rel_dir: &Path) -> Result<()> {
+    let rel = path_bytes(rel_dir);
+    if rel.is_empty() {
+        return scan(history);
+    }
+    validate_rel_path(&rel)?;
+    let _guard = history
+        .capture_lock
+        .lock()
+        .map_err(|_| Error::Io("capture lock poisoned".into()))?;
+    let dir = history.root.join(rel_dir);
+    if dir.is_dir() && same_device(&history.root, &dir) {
+        scan_locked(history, &dir)?;
+    }
+    tombstone_missing(history, Some(&rel))
+}
+
+fn scan_locked(history: &History, dir: &Path) -> Result<()> {
     let mut files = Vec::new();
-    walk(history, &history.root, &mut files);
+    walk(history, dir, &mut files);
     for rel in files {
+        // Stop at once when the history is closed for a copy, move or trash;
+        // the scan after it reopens picks up the rest.
+        if history.is_closed() {
+            return Err(Error::Closed);
+        }
         // A file that changes again while we read it is picked up by the next
         // event or scan; one failure must not stop the whole walk.
         let _ = record_locked(history, &rel);
     }
-    tombstone_missing(history, None)?;
-    history.checkpoint()?;
     Ok(())
 }
 
@@ -356,6 +386,11 @@ fn is_ignored_name(name: &str) -> bool {
         || (name.starts_with('.') && name.contains(".filebrowser-"))
 }
 
+/// `read_marker` accepts only a `meta.json` that names this app.
+fn is_owned_root(dir: &Path) -> bool {
+    crate::versions::read_marker(dir).is_ok()
+}
+
 fn same_device(root: &Path, path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -373,6 +408,9 @@ fn same_device(root: &Path, path: &Path) -> bool {
 }
 
 fn walk(history: &History, dir: &Path, out: &mut Vec<PathBuf>) {
+    if history.is_closed() {
+        return;
+    }
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -391,9 +429,10 @@ fn walk(history: &History, dir: &Path, out: &mut Vec<PathBuf>) {
             {
                 continue;
             }
+            // Only an owned marker makes a nested history (D2); a foreign
+            // `meta.json` must not hide a subtree from this one.
             if path != history.root
-                && (crate::versions::meta_path(&path).is_file()
-                    || nested_owned_root(&history.root, &path).is_some())
+                && (is_owned_root(&path) || nested_owned_root(&history.root, &path).is_some())
             {
                 continue;
             }
@@ -593,6 +632,108 @@ mod tests {
         drop(file);
         record(&history, Path::new("huge.bin")).unwrap();
         assert!(versions(&history, "huge.bin").is_empty());
+    }
+
+    #[test]
+    fn a_file_over_the_delta_limit_is_streamed_as_a_full_copy() {
+        // Sparse, so the test doesn't need 128 MiB of real disk.
+        let (_dir, history) = new_history();
+        let path = history.root.join("big.bin");
+        let file = File::create(&path).unwrap();
+        file.set_len(MAX_DELTA_SIZE + 1).unwrap();
+        drop(file);
+        record(&history, Path::new("big.bin")).unwrap();
+
+        let rows = versions(&history, "big.bin");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].size, MAX_DELTA_SIZE + 1);
+        let hash = rows[0].hash.clone().unwrap();
+        let reader = history.reader().unwrap();
+        let object = index::get_object(&reader, &hash).unwrap().unwrap();
+        assert_eq!(object.kind, ObjectKind::Full);
+        assert!(object.stored_size < 1 << 20, "zeros compress well");
+        drop(reader);
+
+        // The stored object rebuilds to the same bytes (hash-checked).
+        let copy = crate::versions::restore::restore_copy(&history, b"big.bin", rows[0].id, "copy.bin")
+            .unwrap();
+        assert_eq!(fs::metadata(&copy).unwrap().len(), MAX_DELTA_SIZE + 1);
+        fs::remove_file(copy).unwrap();
+
+        // Unchanged size and mtime: a second record stores nothing new.
+        record(&history, Path::new("big.bin")).unwrap();
+        assert_eq!(versions(&history, "big.bin").len(), 1);
+    }
+
+    #[test]
+    fn a_foreign_marker_does_not_hide_a_subtree_from_the_scan() {
+        let (_dir, history) = new_history();
+        let other = history.root.join("other");
+        fs::create_dir_all(other.join(VERSIONS_DIR)).unwrap();
+        fs::write(
+            other.join(VERSIONS_DIR).join("meta.json"),
+            r#"{"app":"someone-else","folder_id":"00","schema_version":1}"#,
+        )
+        .unwrap();
+        write(&history.root, "other/notes.txt", b"mine");
+        scan(&history).unwrap();
+        assert_eq!(versions(&history, "other/notes.txt").len(), 1);
+    }
+
+    #[test]
+    fn a_closed_history_records_nothing_and_its_scan_stops() {
+        let (_dir, history) = new_history();
+        write(&history.root, "a.txt", b"a");
+        history.quiesce();
+        assert_eq!(record(&history, Path::new("a.txt")), Err(Error::Closed));
+        assert_eq!(scan(&history), Err(Error::Closed));
+        assert!(versions(&history, "a.txt").is_empty());
+    }
+
+    #[test]
+    fn scan_dir_records_a_new_folder_and_tombstones_a_vanished_one() {
+        let (_dir, history) = new_history();
+        write(&history.root, "old/a.txt", b"a");
+        write(&history.root, "old/b.txt", b"b");
+        scan(&history).unwrap();
+        fs::rename(history.root.join("old"), history.root.join("new")).unwrap();
+        // What the watcher does for a renamed folder: tombstone the old path,
+        // scan the new one.
+        tombstone_prefix(&history, Path::new("old")).unwrap();
+        scan_dir(&history, Path::new("new")).unwrap();
+        for rel in ["old/a.txt", "old/b.txt"] {
+            assert!(versions(&history, rel)[0].is_tombstone(), "{rel}");
+        }
+        for rel in ["new/a.txt", "new/b.txt"] {
+            assert!(!versions(&history, rel)[0].is_tombstone(), "{rel}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn names_keep_their_exact_bytes() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let (_dir, history) = new_history();
+        // "é" precomposed (NFC) and decomposed (NFD) look the same but are
+        // different names on Linux; each keeps its own history (D15).
+        let nfc = "caf\u{e9}.txt";
+        let nfd = "cafe\u{301}.txt";
+        write(&history.root, nfc, b"nfc");
+        write(&history.root, nfd, b"nfd!");
+        record(&history, Path::new(nfc)).unwrap();
+        record(&history, Path::new(nfd)).unwrap();
+        assert_eq!(versions(&history, nfc)[0].size, 3);
+        assert_eq!(versions(&history, nfd)[0].size, 4);
+
+        // A name that isn't UTF-8 is stored as its bytes, not a lossy string.
+        let raw = OsStr::from_bytes(b"bad\xffname.txt");
+        fs::write(history.root.join(raw), b"x").unwrap();
+        record(&history, Path::new(raw)).unwrap();
+        let reader = history.reader().unwrap();
+        let row = index::latest_version(&reader, b"bad\xffname.txt").unwrap().unwrap();
+        assert_eq!(row.path, b"bad\xffname.txt");
+        assert!(index::latest_version(&reader, "bad\u{fffd}name.txt".as_bytes()).unwrap().is_none());
     }
 
     #[test]

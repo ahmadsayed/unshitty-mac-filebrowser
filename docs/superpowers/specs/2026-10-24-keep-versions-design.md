@@ -1,12 +1,37 @@
 # Keep Versions — Design
 
 **Date:** 2026-10-24
-**Revision:** 4 (all delivery steps implemented)
+**Revision:** 5 (fixes from the PR #5 review)
 **Status:** Implemented. The storage layer, capture/watch/restore, commands,
 frontend dialogs and documentation are in the tree; see the status addendum in
 `2026-10-24-keep-versions-design-review-2.md`.
 **Related:** `2026-10-23-file-browser-design.md` (the app's overall design),
 `AGENTS.md` (rules every change must keep)
+
+## Changes in revision 5 (PR #5 review fixes)
+
+- **Closing a history is explicit.** `History::quiesce` stops new writes
+  (`Error::Closed`), makes running scans stop at their next file and waits for
+  the capture in progress; `release_lock` frees the folder lock at once. A scan
+  thread that still holds an `Arc` can no longer keep a moved history locked.
+  Opens of one root are serialized, so a process never locks itself out.
+- **Copy, move, rename, trash, Clear and Stop live in `state.rs`** with the
+  filesystem step passed in, so they are unit-tested. The source of a copy is
+  reopened afterwards. Clear/Stop re-check both the index `meta` rows and
+  `meta.json`, and every refusal reopens the history.
+- **No tree walk around file operations.** The histories to close are the ones
+  open in this process plus the registered ones under the path (the shared
+  `versioned.json` covers other instances). A history in neither list has never
+  been opened and is copied or moved as plain files.
+- **Watcher events are classified first** (`watch::classify`): paths inside
+  `.versions/` are ignored, a vanished path tombstones itself and anything under
+  it, and a folder event scans only that folder (`capture::scan_dir`). Only a
+  `Rescan`/overflow event scans the whole root.
+- **Replace** refuses if the current file can't be recorded first (D8), and the
+  replacement keeps the current file's permissions.
+- `versioned_root` answers from `meta.json` and opens a newly found history on
+  a background thread; navigation starts it alongside the folder listing.
+- The launch scan skips a nested subtree only for a marker that names this app.
 
 ## Changes in revision 4 (implementation)
 
