@@ -69,7 +69,7 @@ Before finishing a change: `npx tsc --noEmit`, `npm run build` and
   `config_store.rs`, `platform.rs`, `thumbnails.rs`, `recent.rs` and
   `trash_ops.rs` into a scratch crate depending on `serde`, `serde_json`, `trash`,
   `image` (same features as `src-tauri/Cargo.toml`) plus dev-dependency
-  `tempfile`, strip the `#[tauri::command]` / `#[tauri::command(async)]` lines,
+  `tempfile`, strip the `#[tauri::command]` lines,
   and run `cargo test`. Keep new backend logic in plain functions; only `lib.rs`
   may use `AppHandle` and other Tauri types.
 - **macOS-only behaviour can't be verified from Linux**: window chrome, traffic
@@ -127,8 +127,13 @@ Before finishing a change: `npx tsc --noEmit`, `npm run build` and
   for hit-testing (rubber band and drop targets use layout maths), and use
   `scrollToIndex` instead of `scrollIntoView`.
 - Folder item counts and thumbnails are fetched only for rendered rows.
-- Commands that touch many files are `#[tauri::command(async)]` so they run off
-  the main thread.
+- Commands that touch many files or wait on other programs are `async fn`
+  commands in `lib.rs` that run their work through `blocking(…)` (Tauri's
+  blocking-thread pool). Don't use `#[tauri::command(async)]` on a plain
+  function: that runs it on the few shared async workers, and a slow copy or a
+  queue of thumbnails then stalls every other command.
+- The thumbnail cache in `src/thumbnails.ts` is capped by bytes (64 MB), not
+  just by count: photo thumbnails are ~120 KB at 256 px and ~450 KB at 512 px.
 
 **Look and behave like GNOME Files 50.**
 - Use the libadwaita tokens in `styles.css` (`--accent-bg`, `--view-bg`,

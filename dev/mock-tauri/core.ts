@@ -41,7 +41,7 @@ const tree: Record<string, Node> = {
       }, 2 * 3600),
       Movies: d({ "Holiday.mov": f(1_220_448_301, 90 * day) }),
       Music: d({ ...files("Track", 4, "flac") }),
-      Pictures: d({ ...files("IMG_20", 6, "heic"), Screenshots: d(files("Screenshot", 3, "png")) }),
+      Pictures: d({ ...files("IMG_20", 6, "heic"), Screenshots: d(files("Screenshot", 3, "png")), Camera: d(files("DSC", 400, "jpg")) }),
       Public: d(),
       "Empty folder": d({}, 30 * day),
       "a-very-long-folder-name-that-needs-to-wrap-onto-two-lines": d(),
@@ -72,7 +72,7 @@ function lookup(path: string): Node | undefined {
 
 // `?demo` hides the entries that only exist for testing (used for README screenshots).
 const DEMO = new URLSearchParams(location.search).has("demo");
-const TEST_ONLY = new Set(["/Users/me/a-very-long-folder-name-that-needs-to-wrap-onto-two-lines", "/big"]);
+const TEST_ONLY = new Set(["/Users/me/a-very-long-folder-name-that-needs-to-wrap-onto-two-lines", "/big", "/Users/me/Pictures/Camera"]);
 
 function list(path: string, showHidden: boolean): Entry[] {
   const node = lookup(path);
@@ -203,6 +203,18 @@ async function mockThumbnail(path: string, size: number): Promise<ArrayBuffer> {
     ctx.beginPath();
     ctx.arc(w * 0.75, h * 0.25, h * 0.1, 0, Math.PI * 2);
     ctx.fill();
+    // Photos/Camera stands in for real photos: grain makes the PNG about as
+    // large as a real photo thumbnail, for checking the cache's memory limit.
+    if (path.includes("/Camera/")) {
+      const img = ctx.getImageData(0, 0, w, h);
+      for (let i = 0; i < img.data.length; i += 4) {
+        const n = ((seed = (seed * 9301 + 49297) % 233280) / 233280 - 0.5) * 60;
+        img.data[i] += n;
+        img.data[i + 1] += n;
+        img.data[i + 2] += n;
+      }
+      ctx.putImageData(img, 0, 0);
+    }
   }
   return (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer();
 }

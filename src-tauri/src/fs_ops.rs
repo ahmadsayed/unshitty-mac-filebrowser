@@ -96,9 +96,9 @@ fn make_entry(entry_path: &Path, name: String) -> Option<Entry> {
     })
 }
 
-// Commands that touch many files are `async` so Tauri runs them off the main
-// thread and the window stays responsive during big listings or copies.
-#[tauri::command(async)]
+// Functions that touch many files are exposed by `lib.rs` as commands that
+// run on Tauri's blocking-thread pool, so big listings or copies never stall
+// the window or other commands.
 pub fn list_dir(path: String, show_hidden: bool) -> Result<Vec<Entry>, String> {
     read_entries(Path::new(&path), show_hidden)
 }
@@ -114,7 +114,6 @@ pub fn count_items(path: &Path, show_hidden: bool) -> Option<u32> {
 }
 
 /// Item counts for several folders at once (the "12 items" size column).
-#[tauri::command(async)]
 pub fn item_counts(paths: Vec<String>, show_hidden: bool) -> Vec<Option<u32>> {
     paths
         .iter()
@@ -156,7 +155,6 @@ fn device_id(_: &std::fs::Metadata) -> u64 {
 
 /// Kind and filesystem of each path (following symlinks); `None` if it's gone.
 /// Used for drag and drop: files dropped from Finder arrive as bare paths.
-#[tauri::command(async)]
 pub fn path_info(paths: Vec<String>) -> Vec<Option<PathInfo>> {
     paths
         .iter()
@@ -267,7 +265,6 @@ fn is_cross_device(e: &std::io::Error) -> bool {
 }
 
 /// Copy `from` to `to` (recursively for folders).
-#[tauri::command(async)]
 pub fn copy_entry(from: String, to: String, overwrite: bool) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let replacing = check_transfer(from, to, overwrite)?;
@@ -283,7 +280,6 @@ pub fn copy_entry(from: String, to: String, overwrite: bool) -> Result<(), Strin
 }
 
 /// Move `from` to `to`: a rename on the same volume, copy-then-delete across volumes.
-#[tauri::command(async)]
 pub fn move_entry(from: String, to: String, overwrite: bool) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let replacing = check_transfer(from, to, overwrite)?;
