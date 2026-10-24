@@ -75,27 +75,40 @@ function keyed(rows) {
 // Analyses
 // ---------------------------------------------------------------------------
 
+const RUST_TOOLS = [
+  ["llvm-cov", "cargo install --locked cargo-llvm-cov && rustup component add llvm-tools-preview"],
+  ["crap", "cargo install --locked cargo-crap"],
+];
+
+function requireRustTools() {
+  for (const [sub, install] of RUST_TOOLS) {
+    if (!have("cargo", [sub, "--version"])) fail(`cargo-${sub} is missing. Install it with:\n  ${install}`);
+  }
+}
+
+/** tauri's generate_context! reads ../dist, so the backend can't build without it. */
+function requireDist() {
+  if (existsSync(join(ROOT, "dist", "index.html"))) return;
+  console.log("crap-gate: building the frontend first (dist/ is missing)…");
+  if (run("npm", ["run", "build"], { stdio: "inherit" }).status !== 0) fail("npm run build failed");
+}
+
+/** Run the Rust tests with coverage into `lcov`; failing tests fail the gate. */
+function rustCoverage(lcov) {
+  console.log("crap-gate: Rust tests with coverage…");
+  const cov = run("cargo", ["llvm-cov", "--lcov", "--output-path", lcov], { cwd: join(ROOT, "src-tauri") });
+  if (cov.status === 0) return;
+  console.error(cov.stdout.split("\n").filter((l) => /FAILED|panicked|error/.test(l)).join("\n"));
+  fail("the Rust tests failed, so there is no coverage to score");
+}
+
 function analyzeRust() {
-  for (const [cmd, install] of [
-    ["cargo-llvm-cov", "cargo install --locked cargo-llvm-cov && rustup component add llvm-tools-preview"],
-    ["cargo-crap", "cargo install --locked cargo-crap"],
-  ]) {
-    if (!have("cargo", [cmd.replace("cargo-", ""), "--version"])) fail(`${cmd} is missing. Install it with:\n  ${install}`);
-  }
-  // tauri's generate_context! reads ../dist.
-  if (!existsSync(join(ROOT, "dist", "index.html"))) {
-    console.log("crap-gate: building the frontend first (dist/ is missing)…");
-    if (run("npm", ["run", "build"], { stdio: "inherit" }).status !== 0) fail("npm run build failed");
-  }
+  requireRustTools();
+  requireDist();
   mkdirSync(OUT, { recursive: true });
   const lcov = join(OUT, "lcov.info");
   const json = join(OUT, "rust.json");
-  console.log("crap-gate: Rust tests with coverage…");
-  const cov = run("cargo", ["llvm-cov", "--lcov", "--output-path", lcov], { cwd: join(ROOT, "src-tauri") });
-  if (cov.status !== 0) {
-    console.error(cov.stdout.split("\n").filter((l) => /FAILED|panicked|error/.test(l)).join("\n"));
-    fail("the Rust tests failed, so there is no coverage to score");
-  }
+  rustCoverage(lcov);
   const crap = run("cargo", ["crap", "--lcov", lcov, "--format", "json", "--output", json], { cwd: join(ROOT, "src-tauri") });
   if (!existsSync(json)) fail(`cargo crap failed:\n${crap.stderr}`);
   const entries = JSON.parse(readFileSync(json, "utf8")).entries;
@@ -129,7 +142,7 @@ if (staged) {
   const files = stagedFiles();
   langs = [];
   if (files.some((f) => f.startsWith("src-tauri/") && /\.(rs|toml|lock)$/.test(f))) langs.push("rust");
-  if (files.some((f) => /^(src|dev)\/.*\.ts$/.test(f) || f === "package.json")) langs.push("ts");
+  if (files.some((f) => /^(src|dev)\/.*\.ts$|^scripts\/.*\.m?js$/.test(f) || f === "package.json")) langs.push("ts");
   if (!langs.length) process.exit(0);
 }
 
