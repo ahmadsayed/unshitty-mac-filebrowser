@@ -25,6 +25,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/styles.css` | All styling; libadwaita colour tokens at the top, light + dark |
 | `src-tauri/src/fs_ops.rs` | Listing, item counts, mkdir, rename, copy/move/trash, path info |
 | `src-tauri/src/thumbnails.rs` | Quick Look (`qlmanage`) thumbnails with an `image`-crate fallback, disk cache |
+| `src-tauri/src/recent.rs` | Recent: Spotlight's last-used dates (`mdfind`) merged with `recent.json` |
 | `src-tauri/src/config_store.rs` | `pins.json` / `flags.json` in the app config dir, Full Disk Access check |
 | `src-tauri/src/lib.rs` | Command registration, commands that need `AppHandle`, startup |
 | `dev/mock-tauri/` | In-memory fake backend for browser previews |
@@ -49,14 +50,15 @@ Before finishing a change: `npx tsc --noEmit`, `npm run build` and
 
 - **Linux / CI containers can't build the Tauri crate** (it needs WebKitGTK).
   The backend modules are written so they can be tested without Tauri: copy
-  `fs_ops.rs`, `config_store.rs` and `thumbnails.rs` into a scratch crate that
+  `fs_ops.rs`, `config_store.rs`, `thumbnails.rs` and `recent.rs` into a scratch crate that
   depends on `serde`, `serde_json`, `trash`, `image` (same features as
   `src-tauri/Cargo.toml`) and dev-depends on `tempfile`, strip the
   `#[tauri::command]` / `#[tauri::command(async)]` lines, and run `cargo test`.
   Keep new backend logic in plain functions so this keeps working; only
   `lib.rs` may use `AppHandle` and other Tauri types.
 - **Nothing here can be verified on macOS from Linux**: window chrome, traffic
-  lights, Quick Look thumbnails, Full Disk Access, opening files. Say so
+  lights, Quick Look thumbnails, Spotlight results in Recent, Full Disk Access,
+  opening files. Say so
   explicitly when reporting work that touches them.
 - **npm registry**: `package-lock.json` is git-ignored on purpose. An earlier
   lockfile pinned every package to a private corporate registry. Never commit a

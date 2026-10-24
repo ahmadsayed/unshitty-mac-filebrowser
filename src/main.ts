@@ -3,7 +3,7 @@ import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desk
 import {
   listDir, makeDir, renameEntry, itemCounts, copyEntry, moveEntry, trashEntry, pathExists,
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
-  type Entry,
+  recentFiles, addRecent, forgetRecent, type Entry,
 } from "./api";
 import { entryIcon, fileKind, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
@@ -50,14 +50,15 @@ function savePrefs(): void {
 // State
 // ---------------------------------------------------------------------------
 
-/** Sidebar places that aren't real folders yet. */
+/** Sidebar places that aren't folders. Recent lists files from anywhere; the others are placeholders. */
 type Pseudo = "recent" | "starred" | "network";
 const PSEUDO: Record<Pseudo, { label: string; icon: string; title: string; text: string }> = {
-  recent: { label: "Recent", icon: "document-open-recent", title: "No Recent Files", text: "Recently used files aren't tracked yet." },
+  recent: { label: "Recent", icon: "document-open-recent", title: "No Recent Files", text: "" },
   starred: { label: "Starred", icon: "starred", title: "No Starred Files", text: "Starring files isn't supported yet." },
   network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Network locations aren't supported yet." },
 };
 const PSEUDO_PREFIX = "pseudo:";
+const RECENT = `${PSEUDO_PREFIX}recent`;
 
 /** Current location: an absolute path, or "pseudo:<name>". */
 let location = "";
@@ -131,6 +132,17 @@ function isPseudo(loc: string): loc is `pseudo:${Pseudo}` {
   return loc.startsWith(PSEUDO_PREFIX);
 }
 
+/** Pseudo locations that list entries (only Recent so far). */
+function hasEntries(loc: string): boolean {
+  return !isPseudo(loc) || loc === RECENT;
+}
+
+/** The entries shown at `loc`. */
+async function listLocation(loc: string): Promise<Entry[]> {
+  if (loc === RECENT) return recentFiles(prefs.showHidden);
+  return isPseudo(loc) ? [] : listDir(loc, prefs.showHidden);
+}
+
 function locationName(loc: string): string {
   if (isPseudo(loc)) return PSEUDO[loc.slice(PSEUDO_PREFIX.length) as Pseudo].label;
   if (loc === home) return "Home";
@@ -151,6 +163,8 @@ function sortValue(e: Entry): number {
 }
 
 function compareEntries(a: Entry, b: Entry): number {
+  // Recent is always newest first, files and folders mixed, as in GNOME Files.
+  if (location === RECENT) return (b.used ?? 0) - (a.used ?? 0) || collator.compare(a.name, b.name);
   // Folders always come first, as in GNOME Files' default.
   if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
   let r = 0;
@@ -193,9 +207,9 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
 
   let next: Entry[] = [];
   let error: string | null = null;
-  if (!isPseudo(loc)) {
+  if (hasEntries(loc)) {
     try {
-      next = await listDir(loc, prefs.showHidden);
+      next = await listLocation(loc);
     } catch (err) {
       if (location) {
         showAccessError(basename(loc), cleanError(err));
@@ -232,9 +246,9 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
 
 /** Re-list the current folder, keeping the selection where possible. */
 async function reload(select?: string[]): Promise<void> {
-  if (isPseudo(location)) return;
+  if (!hasEntries(location)) return;
   try {
-    entries = await listDir(location, prefs.showHidden);
+    entries = await listLocation(location);
     listingError = null;
   } catch (err) {
     entries = [];
@@ -395,7 +409,7 @@ async function submitPathEntry(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function openSearch(initial = ""): void {
-  if (isPseudo(location)) return;
+  if (!hasEntries(location)) return;
   closePathEntry();
   if (searchQuery === null) {
     searchQuery = "";
@@ -456,7 +470,7 @@ function renderView(): void {
   windowRange = { start: 0, end: -1 };
   const pseudo = isPseudo(location) ? PSEUDO[location.slice(PSEUDO_PREFIX.length) as Pseudo] : null;
 
-  if (pseudo) {
+  if (pseudo && (!hasEntries(location) || (shown.length === 0 && !searchQuery))) {
     viewEl.innerHTML = statusPage(pseudo.icon, pseudo.title, pseudo.text);
   } else if (listingError !== null) {
     viewEl.innerHTML = statusPage("dialog-error", "Unable to Access Location", listingError);
@@ -496,6 +510,10 @@ function listHeaderHtml(): string {
     const arrow = active ? sym(descending ? "sort-descending" : "sort-ascending") : "";
     return `<button data-sort="${key}" class="${active ? "sorted" : ""}">${label}${arrow}</button>`;
   };
+  if (location === RECENT) {
+    // Fixed order, so the headers are plain labels.
+    return `<div class="list-header recent"><span>Name</span><span>Size</span><span>Location</span><span>Recency</span></div>`;
+  }
   return `<div class="list-header">${col("name", "Name")}${col("size", "Size")}${col("modified", "Modified")}</div>`;
 }
 
@@ -510,10 +528,21 @@ function itemHtml(i: number): string {
       `<div class="icon">${iconHtml(e)}</div>` +
       `<div class="name">${escapeHtml(e.name)}</div></div>`;
   }
-  return `<div class="list-row item${cls}" data-index="${i}" role="option" aria-selected="${sel}" ${pos}>` +
+  const recent = location === RECENT;
+  const date = recent ? e.used ?? e.modified : e.modified;
+  const where = recent ? `<span class="meta where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</span>` : "";
+  return `<div class="list-row item${cls}${recent ? " recent" : ""}" data-index="${i}" role="option" aria-selected="${sel}" ${pos}>` +
     `<div class="name-cell"><div class="icon">${iconHtml(e)}</div><span class="name">${escapeHtml(e.name)}</span></div>` +
-    `<span class="meta size">${sizeText(e)}</span>` +
-    `<span class="meta" title="${escapeHtml(formatDateDetailed(e.modified))}">${formatDate(e.modified)}</span></div>`;
+    `<span class="meta size">${sizeText(e)}</span>${where}` +
+    `<span class="meta" title="${escapeHtml(formatDateDetailed(date))}">${formatDate(date)}</span></div>`;
+}
+
+/** The "Location" column: the folder holding `path`, relative to Home where possible. */
+function whereText(path: string): string {
+  const dir = parentOf(path);
+  if (dir === home) return "Home";
+  if (home && dir.startsWith(home + "/")) return dir.slice(home.length + 1);
+  return dir;
 }
 
 // ---------------------------------------------------------------------------
@@ -887,7 +916,9 @@ async function openEntry(entry: Entry): Promise<void> {
     await openFile(entry.path);
   } catch (err) {
     showToast(`Could not open “${entry.name}”: ${cleanError(err)}`);
+    return;
   }
+  if (!isAppBundle(entry)) addRecent(entry.path).catch(() => {});
 }
 
 /** Enter / Open: one item activates; several open every file (folders can't all be shown). */
@@ -1013,7 +1044,7 @@ function startRubberband(start: MouseEvent, additive: boolean): void {
 
 function onViewContextMenu(e: MouseEvent): void {
   e.preventDefault();
-  if (isPseudo(location) || listingError !== null) return;
+  if (!hasEntries(location) || listingError !== null) return;
   const at = { x: e.clientX, y: e.clientY };
   if (indexFromEvent(e) >= 0) openItemMenu(at);
   else openBackgroundMenu(at);
@@ -1029,6 +1060,19 @@ function openItemMenu(at: Anchor): void {
   const single = sel.length === 1 ? sel[0] : null;
   const intoFolder = single?.is_dir && !isAppBundle(single) ? single : null;
   const app = single && isAppBundle(single) ? single : null;
+  if (location === RECENT) {
+    openMenu(at, [
+      { label: "Open", action: activateSelection },
+      { label: "Open Item Location", disabled: !single, action: () => single && openItemLocation(single) },
+      { separator: true },
+      { label: "Cut", action: () => setClipboard("cut") },
+      { label: "Copy", action: () => setClipboard("copy") },
+      { separator: true },
+      { label: "Move to Trash", action: trashSelection },
+      { label: "Remove from Recent", action: removeFromRecent },
+    ]);
+    return;
+  }
   openMenu(at, [
     { label: "Open", action: activateSelection },
     ...(app ? [{ label: "Show Package Contents", action: () => navigate(app.path) }] : []),
@@ -1045,6 +1089,10 @@ function openItemMenu(at: Anchor): void {
 }
 
 function openBackgroundMenu(at: Anchor): void {
+  if (location === RECENT) {
+    openMenu(at, [{ label: "Select All", action: selectAll }]);
+    return;
+  }
   openMenu(at, [
     { label: "New Folder…", action: promptNewFolder },
     { separator: true },
@@ -1061,20 +1109,22 @@ function openLocationMenu(anchor: HTMLElement): void {
     { separator: true },
     { label: "Copy Location", disabled: !real, action: copyLocation },
     { label: "Paste", disabled: !real || !clipboard, action: () => paste(location) },
-    { label: "Select All", disabled: !real, action: selectAll },
+    { label: "Select All", disabled: !hasEntries(location), action: selectAll },
   ]);
 }
 
 function openViewMenu(anchor: HTMLElement): void {
-  const is = (k: SortKey, rev: boolean) => prefs.sortKey === k && prefs.sortReversed === rev;
+  // Recent has a fixed order: newest first.
+  const fixed = location === RECENT;
+  const is = (k: SortKey, rev: boolean) => !fixed && prefs.sortKey === k && prefs.sortReversed === rev;
   openMenu(anchor, [
     { heading: "Sort" },
-    { label: "A–Z", radio: is("name", false), action: () => setSort("name", false) },
-    { label: "Z–A", radio: is("name", true), action: () => setSort("name", true) },
-    { label: "Last Modified", radio: is("modified", false), action: () => setSort("modified", false) },
-    { label: "First Modified", radio: is("modified", true), action: () => setSort("modified", true) },
-    { label: "Size", radio: is("size", false), action: () => setSort("size", false) },
-    { label: "Type", radio: is("type", false), action: () => setSort("type", false) },
+    { label: "A–Z", radio: is("name", false), disabled: fixed, action: () => setSort("name", false) },
+    { label: "Z–A", radio: is("name", true), disabled: fixed, action: () => setSort("name", true) },
+    { label: "Last Modified", radio: is("modified", false), disabled: fixed, action: () => setSort("modified", false) },
+    { label: "First Modified", radio: is("modified", true), disabled: fixed, action: () => setSort("modified", true) },
+    { label: "Size", radio: is("size", false), disabled: fixed, action: () => setSort("size", false) },
+    { label: "Type", radio: is("type", false), disabled: fixed, action: () => setSort("type", false) },
   ]);
 }
 
@@ -1086,6 +1136,22 @@ function openMainMenu(anchor: HTMLElement): void {
     { label: "Keyboard Shortcuts", action: showShortcuts },
     { label: "About Files", action: showAbout },
   ]);
+}
+
+/** Show the folder holding `entry`, with it selected. */
+function openItemLocation(entry: Entry): void {
+  navigate(parentOf(entry.path), { select: entry.path });
+}
+
+async function removeFromRecent(): Promise<void> {
+  const paths = selectedEntries().map((e) => e.path);
+  if (paths.length === 0) return;
+  try {
+    await forgetRecent(paths);
+  } catch (err) {
+    showToast(`Could not remove from Recent: ${cleanError(err)}`);
+  }
+  await reload([]);
 }
 
 async function copyLocation(): Promise<void> {
@@ -1662,6 +1728,7 @@ function showValidation(v: Validation, entry: HTMLElement, message: HTMLElement)
 // ---------------------------------------------------------------------------
 
 function startRename(entry: Entry): void {
+  if (location === RECENT) return;
   const index = shown.findIndex((e) => e.path === entry.path);
   if (index < 0) return;
   scrollToIndex(index);
@@ -1983,7 +2050,7 @@ async function buildSidebar(): Promise<void> {
   };
 
   if (home) sidebarRow(places, "Home", "user-home", home);
-  sidebarRow(places, "Recent", "document-open-recent", `${PSEUDO_PREFIX}recent`);
+  sidebarRow(places, "Recent", "document-open-recent", RECENT);
   sidebarRow(places, "Starred", "starred", `${PSEUDO_PREFIX}starred`);
   sidebarRow(places, "Network", "network-workgroup", `${PSEUDO_PREFIX}network`);
   if (trashPath) sidebarRow(places, "Trash", "user-trash", trashPath);
@@ -2127,6 +2194,10 @@ async function init(): Promise<void> {
     if (e.target === scrollEl) onViewContextMenu(e);
   });
   document.addEventListener("keydown", onGlobalKeyDown);
+  // Files opened in other apps meanwhile show up when the window comes back.
+  window.addEventListener("focus", () => {
+    if (location === RECENT && !hasOpenOverlay()) reload();
+  });
   // Mouse back/forward buttons
   window.addEventListener("mouseup", (e) => {
     if (e.button === 3) goBack();

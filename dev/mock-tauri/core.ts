@@ -108,6 +108,31 @@ function trash(parent: Node & { dir: true }, name: string): void {
   delete parent.children[name];
 }
 
+/** Path → last used time, standing in for Spotlight plus the app's own list. */
+const recentUse = new Map<string, number>([
+  ["/Users/me/Documents/Quarterly report.pdf", now - 20 * 60],
+  ["/Users/me/Downloads/invoice-0423.pdf", now - 2 * 3600],
+  ["/Users/me/Documents/Notes.md", now - 5 * 3600],
+  ["/Users/me/Pictures/IMG_20 2.heic", now - day - 3 * 3600],
+  ["/Users/me/Pictures/Screenshots/Screenshot 1.png", now - 2 * day],
+  ["/Users/me/main.rs", now - 3 * day],
+  ["/Users/me/Documents/Budget 2026.xlsx", now - 6 * day],
+  ["/Users/me/Music/Track 3.flac", now - 12 * day],
+  ["/Users/me/.config/settings.json", now - 4 * day],
+]);
+
+function recent(showHidden: boolean): (Entry & { used: number })[] {
+  const out: (Entry & { used: number })[] = [];
+  for (const [path, used] of recentUse) {
+    const [parent, name] = parentAndName(path);
+    if (!parent?.dir || !parent.children[name]) continue;
+    if (!showHidden && path.slice("/Users/me/".length).split("/").some((p) => p.startsWith("."))) continue;
+    const entry = list(path.slice(0, path.lastIndexOf("/")), true).find((e) => e.name === name);
+    if (entry) out.push({ ...entry, used });
+  }
+  return out.sort((a, b) => b.used - a.used);
+}
+
 let pins: string[] = ["/Users/me/Documents/Projects"];
 const flags: Record<string, boolean> = {};
 
@@ -175,6 +200,14 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
       return (flags[args.name as string] ?? false) as T;
     case "set_flag":
       flags[args.name as string] = args.value as boolean;
+      return undefined as T;
+    case "recent_files":
+      return recent(args.showHidden as boolean) as T;
+    case "add_recent":
+      recentUse.set(args.path as string, Math.floor(Date.now() / 1000));
+      return undefined as T;
+    case "forget_recent":
+      for (const p of args.paths as string[]) recentUse.delete(p);
       return undefined as T;
     case "has_full_disk_access":
       return false as T;

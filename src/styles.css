@@ -623,6 +623,16 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 .list-header > button.sorted { opacity: 0.8; }
 .list-header .sym { width: 12px; height: 12px; }
 
+/* Recent adds a Location column; its headers are labels, not sort buttons. */
+.list-header.recent,
+.list-row.recent {
+  grid-template-columns: minmax(0, 1fr) 90px minmax(0, 0.6fr) 120px;
+}
+.list-header.recent > span {
+  opacity: var(--dim);
+  white-space: nowrap;
+}
+
 .list-row {
   position: absolute;
   width: var(--cell-w);

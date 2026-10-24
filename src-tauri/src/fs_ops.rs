@@ -31,81 +31,59 @@ pub struct Entry {
 }
 
 pub fn read_entries(path: &Path, show_hidden: bool) -> Result<Vec<Entry>, String> {
-    use std::time::UNIX_EPOCH;
-
     let read_dir = std::fs::read_dir(path)
         .map_err(|e| format!("Failed to read directory: {}", e))?;
 
     let mut entries = Vec::new();
-
-    for dir_entry_result in read_dir {
-        let dir_entry = match dir_entry_result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
+    for dir_entry in read_dir.flatten() {
         let name = dir_entry.file_name().to_string_lossy().to_string();
-
-        let is_hidden = name.starts_with('.');
-
-        if is_hidden && !show_hidden {
+        if name.starts_with('.') && !show_hidden {
             continue;
         }
-
-        let entry_path = dir_entry.path();
-        let path_str = entry_path.to_string_lossy().to_string();
-
-        // Use symlink_metadata so broken symlinks don't error the whole listing
-        let symlink_meta = match std::fs::symlink_metadata(&entry_path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
-        let is_symlink = symlink_meta.file_type().is_symlink();
-
-        // For is_dir and size, follow the link if it's a symlink (use regular metadata)
-        let (is_dir, size, modified) = if is_symlink {
-            // Try to follow the link for metadata; if broken, use defaults
-            match std::fs::metadata(&entry_path) {
-                Ok(meta) => {
-                    let modified = meta.modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    (meta.is_dir(), meta.len(), modified)
-                }
-                Err(_) => {
-                    // Broken symlink: use symlink_meta for what we can
-                    let modified = symlink_meta.modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    (false, symlink_meta.len(), modified)
-                }
-            }
-        } else {
-            let modified = symlink_meta.modified()
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            (symlink_meta.is_dir(), symlink_meta.len(), modified)
-        };
-
-        entries.push(Entry {
-            name,
-            path: path_str,
-            is_dir,
-            size,
-            modified,
-            is_hidden,
-            is_symlink,
-        });
+        if let Some(entry) = make_entry(&dir_entry.path(), name) {
+            entries.push(entry);
+        }
     }
-
     Ok(entries)
+}
+
+/// The entry for a single path, or `None` if nothing is there.
+pub fn entry_for(path: &Path) -> Option<Entry> {
+    let name = path.file_name()?.to_string_lossy().to_string();
+    make_entry(path, name)
+}
+
+fn make_entry(entry_path: &Path, name: String) -> Option<Entry> {
+    use std::time::UNIX_EPOCH;
+
+    let secs = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    };
+
+    // Use symlink_metadata so broken symlinks don't error the whole listing
+    let symlink_meta = std::fs::symlink_metadata(entry_path).ok()?;
+    let is_symlink = symlink_meta.file_type().is_symlink();
+
+    // For is_dir and size, follow the link if it's a symlink; a broken link
+    // keeps what the link itself reports.
+    let meta = if is_symlink {
+        std::fs::metadata(entry_path).unwrap_or(symlink_meta)
+    } else {
+        symlink_meta
+    };
+
+    Some(Entry {
+        is_hidden: name.starts_with('.'),
+        name,
+        path: entry_path.to_string_lossy().to_string(),
+        is_dir: meta.is_dir(),
+        size: meta.len(),
+        modified: secs(meta.modified()),
+        is_symlink,
+    })
 }
 
 // Commands that touch many files are `async` so Tauri runs them off the main

@@ -1,5 +1,6 @@
 mod config_store;
 mod fs_ops;
+mod recent;
 mod thumbnails;
 
 use std::path::{Path, PathBuf};
@@ -47,6 +48,35 @@ fn has_full_disk_access(app: tauri::AppHandle) -> bool {
         .unwrap_or(true)
 }
 
+/// The "Recent" listing: files opened lately, here or in other apps.
+#[tauri::command(async)]
+fn recent_files(app: tauri::AppHandle, show_hidden: bool) -> Vec<recent::RecentEntry> {
+    let Ok(home) = app.path().home_dir() else { return Vec::new() };
+    let store = config_file(&app, "recent.json")
+        .map(|p| recent::read_store(&p))
+        .unwrap_or_default();
+    let spotlight = recent::spotlight(&home, recent::MAX_AGE_DAYS);
+    recent::collect(&store, spotlight, &home, show_hidden, recent::now())
+}
+
+/// Note that the user opened `path` from this app.
+#[tauri::command]
+fn add_recent(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let file = config_file(&app, "recent.json")?;
+    let mut store = recent::read_store(&file);
+    recent::record_open(&mut store, &path, recent::now());
+    config_store::write_json(&file, &store)
+}
+
+/// "Remove from Recent".
+#[tauri::command]
+fn forget_recent(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
+    let file = config_file(&app, "recent.json")?;
+    let mut store = recent::read_store(&file);
+    recent::forget(&mut store, &paths, recent::now());
+    config_store::write_json(&file, &store)
+}
+
 fn thumbnail_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path().app_cache_dir().ok().map(|d| d.join("thumbnails"))
 }
@@ -88,6 +118,9 @@ pub fn run() {
             get_flag,
             set_flag,
             has_full_disk_access,
+            recent_files,
+            add_recent,
+            forget_recent,
             thumbnail,
         ])
         .run(tauri::generate_context!())

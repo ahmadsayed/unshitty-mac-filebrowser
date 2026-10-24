@@ -54,6 +54,8 @@ files, so the photo thumbnails are placeholders.</sub>
 - Rename, new folder, Move to Trash
 - Open files in their default app (double-click or Enter); `.app` bundles launch,
   with "Show Package Contents" in the context menu
+- Recent: files opened lately in any app (from Spotlight) or from here, newest
+  first, with their location; "Open Item Location" and "Remove from Recent"
 - Bookmarks: "Add to Bookmarks" (⌘D) pins folders to the sidebar
 - Mounted volumes in the sidebar
 - Large folders stay fast: only the visible items are rendered
@@ -87,14 +89,14 @@ exact build: after rebuilding, toggle the permission off and on again.
   the Rust side. Type `/big` in the path bar for a 10,000-item folder; add `?demo`
   to the URL to hide the test-only folders.
 - `cd src-tauri && cargo test` runs the backend tests (listing, copy/move/trash
-  safety checks, settings files, thumbnails).
+  safety checks, settings files, thumbnails, Recent).
 - Thumbnails are cached in `~/Library/Caches/io.github.ahmadsayed.filebrowser/thumbnails`;
   entries unused for 60 days are removed at startup.
 - Design notes and the implementation plan live in `docs/superpowers/`.
 
 ## Not supported yet
 
-Recent, Starred and Network are placeholders; there is no Undo after Move to
+Starred and Network are placeholders; there is no Undo after Move to
 Trash, no dragging files out of the app into Finder or other apps, no tabs,
 and no disk-wide search.
 

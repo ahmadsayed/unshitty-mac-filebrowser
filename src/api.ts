@@ -9,6 +9,8 @@ export interface Entry {
   modified: number; // unix seconds
   is_hidden: boolean;
   is_symlink: boolean;
+  /** Only in Recent: when the file was last used (unix seconds). */
+  used?: number;
 }
 
 /**
@@ -61,6 +63,21 @@ export async function moveEntry(from: string, to: string, overwrite: boolean): P
 /** Move `path` to the Trash. */
 export async function trashEntry(path: string): Promise<void> {
   return invoke<void>("trash_entry", { path });
+}
+
+/** Files used lately, here or in other apps, newest first. */
+export async function recentFiles(showHidden: boolean): Promise<Entry[]> {
+  return invoke<Entry[]>("recent_files", { showHidden });
+}
+
+/** Note that a file was opened from this app, so Recent lists it. */
+export async function addRecent(path: string): Promise<void> {
+  return invoke<void>("add_recent", { path });
+}
+
+/** "Remove from Recent": hide files until they're next opened. */
+export async function forgetRecent(paths: string[]): Promise<void> {
+  return invoke<void>("forget_recent", { paths });
 }
 
 /** Open a file (or an .app bundle) with its default macOS application. */
