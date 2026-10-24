@@ -34,25 +34,55 @@ pub fn volume_roots() -> Vec<PathBuf> {
         return vec![PathBuf::from("/Volumes")];
     }
     if cfg!(target_os = "linux") {
-        let user = std::env::var("USER").unwrap_or_default();
-        let mut roots = Vec::new();
-        for base in ["/run/media", "/media"] {
-            if !user.is_empty() {
-                roots.push(PathBuf::from(format!("{base}/{user}")));
-            }
-            roots.push(PathBuf::from(base));
-        }
+        let mut roots = with_containers(&[PathBuf::from("/run/media"), PathBuf::from("/media")]);
         roots.push(PathBuf::from("/mnt"));
         return roots;
     }
     Vec::new()
 }
 
+/// `bases` plus every subfolder of them that is not a mount point. Those are
+/// the per-user folders udisks2 mounts drives into (`/run/media/<user>`):
+/// containers, not volumes. Working this out from the file system instead of
+/// `$USER` keeps it right when `$USER` is unset or stale, and keeps other
+/// users' folders out of the sidebar (they are usually unreadable, so they
+/// add nothing).
+fn with_containers(bases: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for base in bases {
+        roots.push(base.clone());
+        let Ok(entries) = fs::read_dir(base) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if fs::metadata(&path).is_ok_and(|m| m.is_dir()) && !is_mount_point(&path) {
+                roots.push(path);
+            }
+        }
+    }
+    roots
+}
+
+/// Whether `path` is on a different device than its parent folder.
+#[cfg(unix)]
+fn is_mount_point(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Some(parent) = path.parent() else { return true };
+    match (fs::metadata(path), fs::metadata(parent)) {
+        (Ok(a), Ok(b)) => a.dev() != b.dev(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn is_mount_point(_: &Path) -> bool {
+    false
+}
+
 /// The volumes visible under `roots`: their subfolders, without hidden ones,
-/// without files, and without duplicates (a drive can be reachable from more
-/// than one root).
+/// without files, without folders that are roots themselves (containers like
+/// `/run/media/<user>`), and without duplicates (a drive can be reachable from
+/// more than one root).
 pub fn volumes(roots: &[PathBuf]) -> Vec<Volume> {
-    let user = std::env::var("USER").unwrap_or_default();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut found = Vec::new();
     for root in roots {
@@ -64,11 +94,8 @@ pub fn volumes(roots: &[PathBuf]) -> Vec<Volume> {
                 continue;
             }
             // `/media/<user>` and `/run/media/<user>` are containers for
-            // volumes, not volumes themselves; both are also in `roots`.
-            let user_container = ["/media", "/run/media"]
-                .iter()
-                .any(|base| !user.is_empty() && path == Path::new(base).join(&user));
-            if user_container {
+            // volumes, not volumes themselves; they are also in `roots`.
+            if roots.contains(&path) {
                 continue;
             }
             if !fs::metadata(&path).is_ok_and(|m| m.is_dir()) {
@@ -171,6 +198,30 @@ mod tests {
         assert_eq!(listed.len(), 1, "the same mount seen twice counts once");
 
         assert!(volumes(&[dir.path().join("nope")]).is_empty());
+    }
+
+    #[test]
+    fn user_folders_are_containers_whatever_the_user_is_called() {
+        let dir = tempdir().unwrap();
+        let media = dir.path().join("run-media");
+        // Two users' udisks2 folders; none is a mount point in a temp dir.
+        fs::create_dir_all(media.join("ahmed/USB")).unwrap();
+        fs::create_dir_all(media.join("someone-else")).unwrap();
+
+        let roots = with_containers(&[media.clone(), dir.path().join("nope")]);
+        assert!(roots.contains(&media.join("ahmed")));
+        assert!(roots.contains(&media.join("someone-else")));
+        let names: Vec<String> = volumes(&roots).into_iter().map(|v| v.name).collect();
+        assert_eq!(names, ["USB"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_root_folder_counts_as_a_mount_point() {
+        assert!(is_mount_point(Path::new("/")));
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("plain")).unwrap();
+        assert!(!is_mount_point(&dir.path().join("plain")));
     }
 
     #[test]

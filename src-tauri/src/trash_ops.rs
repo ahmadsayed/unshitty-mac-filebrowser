@@ -151,6 +151,24 @@ pub fn items_root(home: &Path) -> PathBuf {
     }
 }
 
+/// `items_root`, created first on Linux: a fresh account has no
+/// `Trash/files` until something is trashed, and the Trash view must show
+/// "Trash is Empty" rather than an error. Creating `files/` and `info/` is
+/// what any freedesktop implementation does on first use. `~/.Trash` is left
+/// to macOS.
+pub fn ensure_items_root(home: &Path) -> PathBuf {
+    if !cfg!(target_os = "macos") {
+        create_freedesktop_trash(&home_trash(home));
+    }
+    items_root(home)
+}
+
+/// Create `files/` and `info/` under a freedesktop Trash root if missing.
+fn create_freedesktop_trash(trash_root: &Path) {
+    let _ = fs::create_dir_all(trash_root.join("files"));
+    let _ = fs::create_dir_all(trash_root.join("info"));
+}
+
 // ---------------------------------------------------------------------------
 // freedesktop `.trashinfo` sidecars
 //
@@ -268,15 +286,18 @@ pub fn trash_and_locate(path: &Path, home: &Path) -> Result<Option<PathBuf>, Str
     Ok(find_new(&dir, &before, &name, meta.is_dir() && !meta.file_type().is_symlink()))
 }
 
-/// Where a trashed item came from: this app's log first, then the platform's
-/// own record (a `.trashinfo` sidecar, or Finder's "Put Back" entry).
+/// Where a trashed item came from: its `.trashinfo` sidecar first, then this
+/// app's log, then Finder's "Put Back" entry. The sidecar is written together
+/// with the item by whoever trashed it, so it is always about *this* item;
+/// a log entry can outlive its item (restored by another app) and then
+/// describe a later one that reused the name.
 /// `trash_dir` is the Trash folder `trashed` sits in (see `trash_dir_for`).
 pub fn origin_of(trashed: &Path, trash_dir: &Path, log: &TrashLog, put_back: &HashMap<String, PathBuf>) -> Option<PathBuf> {
-    if let Some(item) = log.items.get(&*trashed.to_string_lossy()) {
-        return Some(PathBuf::from(&item.origin));
-    }
     if let Some(origin) = sidecar_origin(trashed, trash_dir) {
         return Some(origin);
+    }
+    if let Some(item) = log.items.get(&*trashed.to_string_lossy()) {
+        return Some(PathBuf::from(&item.origin));
     }
     let name = trashed.file_name()?.to_string_lossy();
     put_back.get(&*name).cloned()
@@ -288,9 +309,14 @@ pub fn info(paths: &[String], home: &Path, log: &TrashLog, put_back: &HashMap<St
         .iter()
         .map(|p| {
             let path = Path::new(p);
-            let logged = log.items.get(p).map(|i| i.time);
+            let trash_dir = trash_dir_for(path, home);
+            // Like the origin, the log's date only counts without a sidecar.
+            let logged = match sidecar_origin(path, &trash_dir) {
+                Some(_) => None,
+                None => log.items.get(p).map(|i| i.time),
+            };
             TrashInfo {
-                origin: origin_of(path, &trash_dir_for(path, home), log, put_back).map(|o| o.to_string_lossy().to_string()),
+                origin: origin_of(path, &trash_dir, log, put_back).map(|o| o.to_string_lossy().to_string()),
                 trashed: logged.unwrap_or_else(|| changed_time(path)),
             }
         })
@@ -804,7 +830,7 @@ mod tests {
 
     #[cfg(not(target_os = "macos"))]
     #[test]
-    fn origin_falls_back_to_the_sidecar() {
+    fn origin_prefers_the_sidecar_over_the_log() {
         let dir = tempdir().unwrap();
         let info = dir.path().join("info");
         let files = dir.path().join("files");
@@ -813,20 +839,22 @@ mod tests {
         let trashed = files.join("a.txt");
         fs::write(info.join("a.txt.trashinfo"), "[Trash Info]\nPath=/home/me/a.txt\n").unwrap();
 
-        // Our own log wins, because it is the most recent record.
+        // A stale log entry, left behind when another app restored an earlier
+        // `a.txt`, must not send this one to the wrong folder.
         let mut log = TrashLog::default();
         log.items.insert(
             trashed.to_string_lossy().to_string(),
-            LoggedItem { origin: "/home/me/from-log.txt".into(), time: 5 },
+            LoggedItem { origin: "/home/me/stale/a.txt".into(), time: 5 },
         );
         assert_eq!(
             origin_of(&trashed, &files, &log, &HashMap::new()),
-            Some(PathBuf::from("/home/me/from-log.txt"))
-        );
-        // Without a log entry the sidecar answers.
-        assert_eq!(
-            origin_of(&trashed, &files, &TrashLog::default(), &HashMap::new()),
             Some(PathBuf::from("/home/me/a.txt"))
+        );
+        // Without a sidecar the log answers.
+        fs::remove_file(info.join("a.txt.trashinfo")).unwrap();
+        assert_eq!(
+            origin_of(&trashed, &files, &log, &HashMap::new()),
+            Some(PathBuf::from("/home/me/stale/a.txt"))
         );
     }
 
@@ -928,6 +956,20 @@ mod tests {
         assert!(info.is_dir(), "info/ survives too");
         assert_eq!(fs::read_dir(&files).unwrap().count(), 0);
         assert_eq!(fs::read_dir(&info).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_missing_freedesktop_trash_is_created_without_touching_contents() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("Trash");
+        create_freedesktop_trash(&root);
+        assert!(root.join("files").is_dir());
+        assert!(root.join("info").is_dir());
+        fs::write(root.join("files/keep.txt"), "x").unwrap();
+        fs::write(root.join("info/keep.txt.trashinfo"), "x").unwrap();
+        create_freedesktop_trash(&root);
+        assert!(root.join("files/keep.txt").exists());
+        assert!(root.join("info/keep.txt.trashinfo").exists());
     }
 
     #[test]
