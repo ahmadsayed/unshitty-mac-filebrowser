@@ -11,6 +11,11 @@ use serde::Serialize;
 
 pub const IS_MACOS: bool = cfg!(target_os = "macos");
 
+/// Properties label for a folder others can put files into but not look
+/// inside (`-wx`). GNOME Files calls it "Write-only"; macOS has a name for
+/// exactly this, the Drop Box in every user's Public folder, so say so there.
+pub const WRITE_ONLY_FOLDER: &str = if IS_MACOS { "Write-only (Drop Box)" } else { "Write-only" };
+
 /// A mounted volume as the sidebar shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Volume {

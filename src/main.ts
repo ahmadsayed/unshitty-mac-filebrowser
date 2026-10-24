@@ -5,6 +5,7 @@ import {
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
   trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, fileProperties, folderSize,
+  cancelFolderSize,
   type Entry,
 } from "./api";
 import { entryIcon, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
@@ -1345,6 +1346,18 @@ function propertyRow(label: string, value: string, title = ""): HTMLElement {
   return row;
 }
 
+let lastWalk = 0;
+
+/**
+ * Id for a folder-size walk. The backend cancels "this walk and every earlier
+ * one", so ids must only grow; starting from the clock keeps them growing
+ * after a reload too.
+ */
+function nextWalkId(): number {
+  lastWalk = Math.max(lastWalk + 1, Date.now());
+  return lastWalk;
+}
+
 /**
  * The Properties dialog: type, size, dates and permissions. A folder's total
  * size is summed in the background (like GNOME Files) while the rest of the
@@ -1401,6 +1414,8 @@ async function showProperties(entry: Entry): Promise<void> {
   add("Others", info.others);
 
   extra.append(header, list);
+  // Closing the dialog stops the size walk, which can take minutes on Home.
+  const walk = sizeValue ? nextWalkId() : 0;
   openDialog({
     heading: "Properties",
     className: "properties-dialog",
@@ -1408,11 +1423,14 @@ async function showProperties(entry: Entry): Promise<void> {
     responses: [{ id: "close", label: "Close" }],
     defaultResponse: "close",
     closeResponse: "close",
+    onResponse: () => {
+      if (walk) cancelFolderSize(walk).catch(() => {});
+    },
   });
 
   if (sizeValue) {
     try {
-      const bytes = await folderSize(info.path);
+      const bytes = await folderSize(info.path, walk);
       if (sizeValue.isConnected) sizeValue.textContent = sizeAndBytes(bytes);
     } catch {
       if (sizeValue.isConnected) sizeValue.textContent = "Unknown";

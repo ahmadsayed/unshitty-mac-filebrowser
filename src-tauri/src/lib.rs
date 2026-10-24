@@ -150,9 +150,16 @@ async fn file_properties(path: String, show_hidden: bool) -> Result<properties::
 }
 
 /// Recursive size of a folder, shown after the Properties dialog is open.
+/// `walk` lets `cancel_folder_size` stop it when the dialog closes.
 #[tauri::command]
-async fn folder_size(path: String) -> Result<u64, String> {
-    blocking(move || properties::folder_size(&path)).await?
+async fn folder_size(path: String, walk: u64) -> Result<u64, String> {
+    blocking(move || properties::folder_size(&path, || properties::walk_cancelled(walk))).await?
+}
+
+/// Stop folder-size walk `walk` and every earlier one.
+#[tauri::command]
+fn cancel_folder_size(walk: u64) {
+    properties::cancel_walks_up_to(walk);
 }
 
 #[tauri::command]
@@ -313,6 +320,7 @@ pub fn run() {
             path_info,
             file_properties,
             folder_size,
+            cancel_folder_size,
             copy_entry,
             move_entry,
             trash_entry,

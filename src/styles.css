@@ -1087,6 +1087,7 @@ kbd {
 .properties-icon {
   width: 64px;
   height: 64px;
+  position: relative; /* anchors the symlink emblem */
 }
 
 .properties-name {
