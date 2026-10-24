@@ -259,3 +259,20 @@ test("Drive names that aren't valid local names are made safe when pasted locall
   expect(await invoke("path_exists", { path: "/Users/me/Safe" })).toBe(true);
   expect(await invoke("path_exists", { path: "/Users/me/a" })).toBe(false);
 });
+
+test("Copy and Paste in the same Drive folder makes a copy without asking", async () => {
+  await goTo(DRIVE);
+  await select("greeting.txt");
+  await key("c", { mod: true });
+  await key("v", { mod: true });
+  await settle(15);
+  expect(document.querySelector(".dialog-layer")).toBeNull();
+  expect(names()).toContain("greeting (copy).txt");
+
+  await select("greeting.txt");
+  await key("x", { mod: true });
+  await key("v", { mod: true });
+  await settle(15);
+  expect(document.querySelector(".dialog-layer")).toBeNull();
+  expect(names().filter((n) => n === "greeting.txt")).toHaveLength(1);
+});

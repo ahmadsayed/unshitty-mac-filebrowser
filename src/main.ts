@@ -1777,7 +1777,9 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
     let to = joinPath(destDir, name);
     let overwrite = false;
 
-    if (from === to) {
+    // Same folder: in Drive `from` is an id path and `to` a pending name,
+    // so compare folders, not paths.
+    if (parentOf(from) === destDir.replace(/\/+$/, "") && basename(from) === name) {
       // A copy into its own folder makes a duplicate, as in GNOME Files;
       // moving into the same folder does nothing.
       if (moving) continue;
