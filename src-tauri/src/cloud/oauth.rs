@@ -14,17 +14,40 @@ use std::time::{Duration, Instant};
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::blocking::{Client as HttpClient, ClientBuilder};
 use oauth2::{
-    AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, PkceCodeVerifier,
-    RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
+    AuthType, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
+    PkceCodeVerifier, RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
 };
 use url::Url;
 
 use crate::cloud::token::Token;
 
-/// The public client id of a *Desktop app* OAuth client. It is not a secret;
-/// PKCE protects the code exchange.
-pub const CLIENT_ID: &str =
-    "801817345285-d1tjam6ftntkq95f24nkq1qui81tel6i.apps.googleusercontent.com";
+/// Desktop-client credentials. Both are injected at build time from the
+/// git-ignored `.env`; an installed app cannot keep the secret confidential,
+/// and PKCE still protects the code exchange.
+pub const CLIENT_ID: &str = match option_env!("FILEBROWSER_GOOGLE_CLIENT_ID") {
+    Some(value) => value,
+    None => "",
+};
+pub const CLIENT_SECRET: &str = match option_env!("FILEBROWSER_GOOGLE_CLIENT_SECRET") {
+    Some(value) => value,
+    None => "",
+};
+
+fn client_id() -> &'static str {
+    if CLIENT_ID.is_empty() && cfg!(test) {
+        "test-client-id.apps.googleusercontent.com"
+    } else {
+        CLIENT_ID
+    }
+}
+
+fn client_secret() -> &'static str {
+    if CLIENT_SECRET.is_empty() && cfg!(test) {
+        "test-client-secret"
+    } else {
+        CLIENT_SECRET
+    }
+}
 
 pub const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -73,6 +96,12 @@ impl PendingFlow {
 /// Start a read-only sign-in. The caller stores the flow and returns the URL to
 /// the frontend, which opens it with the system browser.
 pub fn start(scopes: &[&str]) -> Result<PendingFlow, String> {
+    if client_id().is_empty() || client_secret().is_empty() {
+        return Err(
+            "Google Drive sign-in is not configured. Add the OAuth client to .env and rebuild."
+                .into(),
+        );
+    }
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| format!("Could not start the Google sign-in listener: {error}"))?;
     let port = listener
@@ -81,7 +110,9 @@ pub fn start(scopes: &[&str]) -> Result<PendingFlow, String> {
         .port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
 
-    let client = BasicClient::new(ClientId::new(CLIENT_ID.to_string()))
+    let client = BasicClient::new(ClientId::new(client_id().to_string()))
+        .set_client_secret(ClientSecret::new(client_secret().to_string()))
+        .set_auth_type(AuthType::RequestBody)
         .set_auth_uri(AuthUrl::new(AUTH_URL.to_string()).map_err(|e| e.to_string())?)
         .set_token_uri(TokenUrl::new(TOKEN_URL.to_string()).map_err(|e| e.to_string())?)
         .set_redirect_uri(RedirectUrl::new(redirect_uri.clone()).map_err(|e| e.to_string())?);
@@ -176,12 +207,14 @@ pub trait TokenExchange {
 
 pub struct GoogleExchange {
     client_id: String,
+    client_secret: String,
 }
 
 impl GoogleExchange {
     pub fn new() -> Self {
         Self {
-            client_id: CLIENT_ID.to_string(),
+            client_id: client_id().to_string(),
+            client_secret: client_secret().to_string(),
         }
     }
 }
@@ -195,6 +228,8 @@ impl Default for GoogleExchange {
 impl TokenExchange for GoogleExchange {
     fn exchange(&self, code: &str, verifier: &str, redirect_uri: &str) -> Result<Token, String> {
         let client = BasicClient::new(ClientId::new(self.client_id.clone()))
+            .set_client_secret(ClientSecret::new(self.client_secret.clone()))
+            .set_auth_type(AuthType::RequestBody)
             .set_token_uri(TokenUrl::new(TOKEN_URL.to_string()).map_err(|e| e.to_string())?)
             .set_redirect_uri(
                 RedirectUrl::new(redirect_uri.to_string()).map_err(|e| e.to_string())?,
@@ -210,6 +245,8 @@ impl TokenExchange for GoogleExchange {
 
     fn refresh(&self, refresh_token: &str) -> Result<Token, String> {
         let client = BasicClient::new(ClientId::new(self.client_id.clone()))
+            .set_client_secret(ClientSecret::new(self.client_secret.clone()))
+            .set_auth_type(AuthType::RequestBody)
             .set_token_uri(TokenUrl::new(TOKEN_URL.to_string()).map_err(|e| e.to_string())?);
         let http = http_client()?;
         let response = client
@@ -379,7 +416,12 @@ mod tests {
                 .map(|(_, value)| value.into_owned())
         };
         assert_eq!(url.host_str(), Some("accounts.google.com"));
-        assert_eq!(param("client_id").as_deref(), Some(CLIENT_ID));
+        assert_eq!(param("client_id").as_deref(), Some(client_id()));
+        assert!(
+            param("client_secret").is_none(),
+            "the secret never goes in the auth URL"
+        );
+        assert!(!client_secret().is_empty());
         assert_eq!(param("response_type").as_deref(), Some("code"));
         assert_eq!(param("code_challenge_method").as_deref(), Some("S256"));
         assert_eq!(param("access_type").as_deref(), Some("offline"));

@@ -6,3 +6,8 @@ src-tauri/target/
 .superpowers/
 package-lock.json
 coverage/
+
+# Google OAuth desktop client (never commit)
+.env
+.env.*
+!.env.example
