@@ -10,6 +10,15 @@ interface Entry {
   modified: number;
   is_hidden: boolean;
   is_symlink: boolean;
+  cloud?: {
+    account: string;
+    id: string;
+    mime_type: string;
+    is_google_doc: boolean;
+    is_shortcut: boolean;
+    web_url?: string;
+    can_download: boolean;
+  };
 }
 
 type Node = { dir: true; children: Record<string, Node>; modified: number; link?: boolean } | { dir: false; size: number; modified: number; link?: boolean };
@@ -74,6 +83,86 @@ function lookup(path: string): Node | undefined {
     if (!node) return undefined;
   }
   return node;
+}
+
+// ---------------------------------------------------------------------------
+// A small fake Google Drive, used by the sign-in and browsing preview.
+// ---------------------------------------------------------------------------
+
+const DRIVE_ROOT = "gdrive://mock/mock-root~My%20Drive";
+const DRIVE_DOCS = `${DRIVE_ROOT}/folder-1~Documents`;
+
+function driveEntry(
+  parent: string,
+  name: string,
+  id: string,
+  isDir: boolean,
+  size: number,
+  doc = false,
+): Entry {
+  return {
+    name,
+    path: `${parent}/${id}~${encodeURIComponent(name)}`,
+    is_dir: isDir,
+    size,
+    modified: now - day,
+    is_hidden: false,
+    is_symlink: false,
+    cloud: {
+      account: "mock",
+      id,
+      mime_type: doc ? "application/vnd.google-apps.document" : isDir ? "application/vnd.google-apps.folder" : "text/plain",
+      is_google_doc: doc,
+      is_shortcut: false,
+      web_url: doc ? "https://docs.google.com/document/d/mock" : undefined,
+      can_download: !isDir && !doc,
+    },
+  };
+}
+
+const DRIVE_FILES: Record<string, Entry[]> = {
+  [DRIVE_ROOT]: [
+    driveEntry(DRIVE_ROOT, "Documents", "folder-1", true, 0),
+    driveEntry(DRIVE_ROOT, "hello.txt", "file-1", false, 12),
+    driveEntry(DRIVE_ROOT, "Report.docx", "file-2", false, 4096),
+    driveEntry(DRIVE_ROOT, "Plan", "file-3", false, 0, true),
+  ],
+  [DRIVE_DOCS]: [driveEntry(DRIVE_DOCS, "nested.txt", "file-4", false, 3)],
+};
+
+function listDrive(path: string): Entry[] {
+  const entries = DRIVE_FILES[path];
+  if (!entries) throw "Google Drive item no longer exists.";
+  return entries.map((entry) => ({ ...entry }));
+}
+
+function driveNode(path: string): Entry | undefined {
+  return Object.values(DRIVE_FILES)
+    .flat()
+    .find((entry) => entry.path === path);
+}
+
+function driveProperties(path: string) {
+  const entry = driveNode(path);
+  if (!entry) throw "Could not read properties: Google Drive item no longer exists.";
+  return {
+    name: entry.name,
+    path,
+    parent: path.replace(/\/[^/]*$/, ""),
+    is_dir: entry.is_dir,
+    is_symlink: false,
+    symlink_target: null,
+    size: entry.size,
+    item_count: null,
+    modified: entry.modified,
+    accessed: entry.modified,
+    created: 0,
+    mode: "",
+    octal: "",
+    owner: "me@example.com",
+    group: "",
+    others: "",
+  };
 }
 
 // `?demo` hides the entries that only exist for testing (used for README screenshots).
@@ -471,11 +560,73 @@ const VERSION_COMMANDS: Record<string, (args: Args) => unknown> = {
   stop_keeping_versions: (a) => stopKeepingVersions(str(a, "root")),
 };
 
+/** Offline stand-in for the Google Drive account commands. */
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+interface MockDriveAccount {
+  id: string;
+  email: string;
+  name: string;
+  root_id: string;
+  root_name: string;
+  root_path: string;
+  scopes: string[];
+  connected_at: number;
+}
+let driveAccount: MockDriveAccount | null = null;
+const driveFlows = new Set<string>();
+let driveFlowSeq = 0;
+
+const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
+  drive_accounts: () => (driveAccount ? [{ ...driveAccount }] : []),
+  drive_connect_start: () => {
+    const flow_id = `flow-${++driveFlowSeq}`;
+    driveFlows.add(flow_id);
+    return {
+      flow_id,
+      auth_url: "https://accounts.google.com/o/oauth2/v2/auth?mock=1",
+    };
+  },
+  drive_connect_finish: (a) => {
+    if (!driveFlows.delete(str(a, "flowId"))) {
+      throw "This sign-in attempt is no longer active.";
+    }
+    driveAccount = {
+      id: "mock-account",
+      email: "me@example.com",
+      name: "Me",
+      root_id: "mock-root",
+      root_name: "My Drive",
+      root_path: DRIVE_ROOT,
+      scopes: [DRIVE_SCOPE],
+      connected_at: now,
+    };
+    return { ...driveAccount };
+  },
+  drive_connect_cancel: (a) => void driveFlows.delete(str(a, "flowId")),
+  drive_disconnect: () => {
+    driveAccount = null;
+  },
+  drive_open: (a) => {
+    const entry = driveNode(str(a, "path"));
+    if (entry?.cloud?.web_url) return { kind: "url", url: entry.cloud.web_url };
+    return { kind: "file", path: `/tmp/opencode/mock-drive/${entry?.name ?? "file"}` };
+  },
+};
+
 /** Every command the app calls, by name. */
 const COMMANDS: Record<string, (args: Args) => unknown> = {
-  list_dir: (a) => list(str(a, "path"), a.showHidden as boolean),
-  item_counts: (a) => (a.paths as string[]).map((p) => folderSummary(p, a.showHidden as boolean)),
-  file_properties: (a) => fileProperties(str(a, "path")),
+  list_dir: (a) => {
+    const path = str(a, "path");
+    return path.startsWith("gdrive://") ? listDrive(path) : list(path, a.showHidden as boolean);
+  },
+  item_counts: (a) =>
+    (a.paths as string[]).map((path) =>
+      path.startsWith("gdrive://") ? null : folderSummary(path, a.showHidden as boolean),
+    ),
+  file_properties: (a) => {
+    const path = str(a, "path");
+    return path.startsWith("gdrive://") ? driveProperties(path) : fileProperties(path);
+  },
   new_folder_walk: () => ++mockWalks,
   cancel_folder_size: () => undefined,
   folder_size: (a) => {
@@ -501,9 +652,20 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     { name: "Macintosh HD", path: "/Volumes/Macintosh HD" },
   ],
   trash_dir: () => TRASH,
-  thumbnail: (a) => mockThumbnail(str(a, "path"), a.size as number),
-  path_info: (a) => (a.paths as string[]).map(pathInfo),
-  path_exists: (a) => lookup(str(a, "path")) !== undefined,
+  thumbnail: (a) => {
+    const path = str(a, "path");
+    return path.startsWith("gdrive://") ? Promise.resolve(new ArrayBuffer(0)) : mockThumbnail(path, a.size as number);
+  },
+  path_info: (a) =>
+    (a.paths as string[]).map((path) => {
+      if (!path.startsWith("gdrive://")) return pathInfo(path);
+      const entry = driveNode(path);
+      return entry ? { is_dir: entry.is_dir, device: 0 } : null;
+    }),
+  path_exists: (a) => {
+    const path = str(a, "path");
+    return path.startsWith("gdrive://") ? !!driveNode(path) : lookup(path) !== undefined;
+  },
   copy_entry: (a) => transfer(a, false),
   move_entry: (a) => transfer(a, true),
   trash_entry: (a) => trashEntry(str(a, "path")),
@@ -512,6 +674,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   delete_permanently: (a) => deletePermanently(str(a, "path")),
   empty_trash: () => emptyTrash(),
   rename_entry: (a) => renameEntry(str(a, "from"), str(a, "to")),
+  ...DRIVE_COMMANDS,
   ...VERSION_COMMANDS,
 };
 

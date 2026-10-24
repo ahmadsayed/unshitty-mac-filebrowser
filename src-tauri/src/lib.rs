@@ -1,3 +1,4 @@
+mod cloud;
 mod config_store;
 mod fs_ops;
 mod platform;
@@ -11,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::Manager;
 
+use cloud::CloudState;
 use versions::history::History;
 use versions::state::{Transfer, VersionsState};
 use versions::{VersionDiff, VersionInfo, restore};
@@ -18,6 +20,12 @@ use versions::{VersionDiff, VersionInfo, restore};
 fn config_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     Ok(dir.join(name))
+}
+
+fn lock_state<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String> {
+    mutex
+        .lock()
+        .map_err(|_| "Google Drive state is unavailable.".to_string())
 }
 
 /// Folders the user pinned to the sidebar ("Add to Bookmarks").
@@ -149,7 +157,18 @@ async fn blocking<T: Send + 'static>(
 }
 
 #[tauri::command]
-async fn list_dir(path: String, show_hidden: bool) -> Result<Vec<fs_ops::Entry>, String> {
+async fn list_dir(
+    app: tauri::AppHandle,
+    path: String,
+    show_hidden: bool,
+) -> Result<Vec<fs_ops::Entry>, String> {
+    if cloud::is_cloud(&path) {
+        return blocking(move || {
+            let state = app.state::<CloudState>();
+            cloud::service::list_dir(&state, &path, show_hidden)
+        })
+        .await?;
+    }
     blocking(move || fs_ops::list_dir(path, show_hidden)).await?
 }
 
@@ -158,20 +177,66 @@ async fn item_counts(
     paths: Vec<String>,
     show_hidden: bool,
 ) -> Result<Vec<Option<fs_ops::FolderSummary>>, String> {
-    blocking(move || fs_ops::item_counts(paths, show_hidden)).await
+    blocking(move || {
+        let mut out: Vec<Option<fs_ops::FolderSummary>> = (0..paths.len()).map(|_| None).collect();
+        let mut local = Vec::new();
+        let mut positions = Vec::new();
+        for (index, path) in paths.iter().enumerate() {
+            if !cloud::is_cloud(path) {
+                local.push(path.clone());
+                positions.push(index);
+            }
+        }
+        for (position, summary) in positions
+            .into_iter()
+            .zip(fs_ops::item_counts(local, show_hidden))
+        {
+            out[position] = summary;
+        }
+        Ok(out)
+    })
+    .await?
 }
 
 #[tauri::command]
-async fn path_info(paths: Vec<String>) -> Result<Vec<Option<fs_ops::PathInfo>>, String> {
-    blocking(move || fs_ops::path_info(paths)).await
+async fn path_info(
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+) -> Result<Vec<Option<fs_ops::PathInfo>>, String> {
+    blocking(move || {
+        let state = app.state::<CloudState>();
+        let mut out = Vec::with_capacity(paths.len());
+        for path in &paths {
+            if cloud::is_cloud(path) {
+                out.push(cloud::service::path_info(&state, path).ok());
+            } else {
+                out.push(
+                    fs_ops::path_info(vec![path.clone()])
+                        .into_iter()
+                        .next()
+                        .flatten(),
+                );
+            }
+        }
+        Ok(out)
+    })
+    .await?
 }
 
 /// Size, dates, permissions and contents for the Properties dialog.
 #[tauri::command]
 async fn file_properties(
+    app: tauri::AppHandle,
     path: String,
     show_hidden: bool,
 ) -> Result<properties::FileProperties, String> {
+    if cloud::is_cloud(&path) {
+        return blocking(move || {
+            let state = app.state::<CloudState>();
+            cloud::service::file_properties(&state, &path, show_hidden)
+        })
+        .await?;
+    }
     blocking(move || properties::file_properties(&path, show_hidden)).await?
 }
 
@@ -179,6 +244,9 @@ async fn file_properties(
 /// `walk` lets `cancel_folder_size` stop it when the dialog closes.
 #[tauri::command]
 async fn folder_size(path: String, walk: u64) -> Result<u64, String> {
+    if cloud::is_cloud(&path) {
+        return Err(cloud::service::unsupported());
+    }
     blocking(move || properties::folder_size(&path, || properties::walk_cancelled(walk))).await?
 }
 
@@ -195,12 +263,23 @@ fn cancel_folder_size(walk: u64) {
 }
 
 #[tauri::command]
+fn make_dir(path: String) -> Result<(), String> {
+    if cloud::is_cloud(&path) {
+        return Err(cloud::service::unsupported());
+    }
+    fs_ops::make_dir(path)
+}
+
+#[tauri::command]
 async fn copy_entry(
     app: tauri::AppHandle,
     from: String,
     to: String,
     overwrite: bool,
 ) -> Result<(), String> {
+    if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
+        return Err(cloud::service::unsupported());
+    }
     blocking(move || {
         let state = app.state::<VersionsState>();
         let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
@@ -218,6 +297,9 @@ async fn move_entry(
     to: String,
     overwrite: bool,
 ) -> Result<(), String> {
+    if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
+        return Err(cloud::service::unsupported());
+    }
     blocking(move || {
         let state = app.state::<VersionsState>();
         let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
@@ -230,6 +312,9 @@ async fn move_entry(
 
 #[tauri::command]
 async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result<(), String> {
+    if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
+        return Err(cloud::service::unsupported());
+    }
     blocking(move || {
         let state = app.state::<VersionsState>();
         let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
@@ -251,6 +336,9 @@ fn home_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// the move can be undone.
 #[tauri::command]
 async fn trash_entry(app: tauri::AppHandle, path: String) -> Result<Option<String>, String> {
+    if cloud::is_cloud(&path) {
+        return Err(cloud::service::unsupported());
+    }
     blocking(move || {
         let home = home_dir(&app)?;
         let origin = PathBuf::from(&path);
@@ -298,6 +386,9 @@ async fn trash_info(
 /// Returns the restored path.
 #[tauri::command]
 async fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    if cloud::is_cloud(&path) {
+        return Err(cloud::service::unsupported());
+    }
     blocking(move || {
         let log_path = config_file(&app, "trash_log.json")?;
         let _guard = TRASH_LOG.lock().unwrap_or_else(|e| e.into_inner());
@@ -318,6 +409,9 @@ async fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, St
 /// Delete an item in the Trash for good.
 #[tauri::command]
 async fn delete_permanently(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    if cloud::is_cloud(&path) {
+        return Err(cloud::service::unsupported());
+    }
     blocking(move || {
         let path = PathBuf::from(path);
         let trash_dir = trash_ops::trash_dir_for(&path, &home_dir(&app)?);
@@ -374,6 +468,9 @@ async fn make_versioned_dir(app: tauri::AppHandle, path: String) -> Result<(), S
 /// `.versions/meta.json`, not SQLite.
 #[tauri::command]
 async fn versioned_root(app: tauri::AppHandle, path: String) -> Option<String> {
+    if cloud::is_cloud(&path) {
+        return None;
+    }
     blocking(move || {
         let path = PathBuf::from(&path);
         if in_trash(&app, &path) || versions::is_internal_path(&path) {
@@ -617,18 +714,28 @@ fn opened_versions_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// when the file has no thumbnail. Raw bytes avoid JSON-encoding the image.
 #[tauri::command]
 async fn thumbnail(app: tauri::AppHandle, path: String, size: u32) -> tauri::ipc::Response {
-    let png = blocking(move || {
-        thumbnail_dir(&app)
-            .and_then(|dir| {
-                thumbnails::thumbnail(Path::new(&path), size.clamp(32, 1024), &dir)
-                    .ok()
-                    .flatten()
-            })
-            .and_then(|p| std::fs::read(p).ok())
-            .unwrap_or_default()
-    })
-    .await
-    .unwrap_or_default();
+    let size = size.clamp(32, 1024);
+    let png = if cloud::is_cloud(&path) {
+        blocking(move || {
+            let state = app.state::<CloudState>();
+            cloud::service::thumbnail(&state, &path, size)
+        })
+        .await
+        .unwrap_or_default()
+    } else {
+        blocking(move || {
+            thumbnail_dir(&app)
+                .and_then(|dir| {
+                    thumbnails::thumbnail(Path::new(&path), size, &dir)
+                        .ok()
+                        .flatten()
+                })
+                .and_then(|p| std::fs::read(p).ok())
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default()
+    };
     tauri::ipc::Response::new(png)
 }
 
@@ -637,6 +744,119 @@ async fn thumbnail(app: tauri::AppHandle, path: String, size: u32) -> tauri::ipc
 #[tauri::command]
 async fn volumes() -> Result<Vec<platform::Volume>, String> {
     blocking(move || platform::volumes(&platform::volume_roots())).await
+}
+
+#[derive(serde::Serialize)]
+struct DriveConnectStart {
+    flow_id: String,
+    auth_url: String,
+}
+
+#[tauri::command]
+fn drive_accounts(
+    state: tauri::State<CloudState>,
+) -> Result<Vec<cloud::accounts::DriveAccount>, String> {
+    Ok(lock_state(&state.accounts)?.items().to_vec())
+}
+
+#[tauri::command]
+fn drive_disconnect(state: tauri::State<CloudState>, account: String) -> Result<(), String> {
+    if let Ok(Some(token)) = state.tokens.load(&account) {
+        cloud::oauth::revoke(token.refresh_token().unwrap_or(&token.access_token));
+    }
+    state.tokens.delete(&account)?;
+    lock_state(&state.accounts)?.remove(&account)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn drive_connect_start(state: tauri::State<CloudState>) -> Result<DriveConnectStart, String> {
+    let flow = cloud::oauth::start(&[cloud::oauth::SCOPE_READONLY])?;
+    let start = DriveConnectStart {
+        flow_id: flow.id.clone(),
+        auth_url: flow.auth_url.clone(),
+    };
+    let mut flows = lock_state(&state.flows)?;
+    // A frontend that vanished mid-dialog must not leave listeners behind.
+    flows.retain(|_, flow| {
+        flow.created.elapsed() < std::time::Duration::from_secs(300) && !flow.is_cancelled()
+    });
+    flows.insert(flow.id.clone(), std::sync::Arc::new(flow));
+    Ok(start)
+}
+
+#[tauri::command]
+async fn drive_connect_finish(
+    app: tauri::AppHandle,
+    flow_id: String,
+) -> Result<cloud::accounts::DriveAccount, String> {
+    blocking(move || {
+        let state = app.state::<CloudState>();
+        let flow = lock_state(&state.flows)?
+            .get(&flow_id)
+            .cloned()
+            .ok_or_else(|| "This sign-in attempt is no longer active.".to_string())?;
+        flow.claim()?;
+
+        let result = (|| -> Result<cloud::accounts::DriveAccount, String> {
+            let token = cloud::oauth::finish(
+                &flow,
+                &cloud::oauth::GoogleExchange::new(),
+                cloud::oauth::CALLBACK_TIMEOUT,
+            )?;
+            if token.refresh_token.is_none() {
+                return Err("Google did not return a refresh token. Sign in again.".into());
+            }
+            let about = cloud::drive::about(&token.access_token)?;
+            let scopes = if token.scopes.is_empty() {
+                vec![cloud::oauth::SCOPE_READONLY.to_string()]
+            } else {
+                token.scopes.clone()
+            };
+            let account = cloud::accounts::DriveAccount::new(
+                cloud::accounts::new_account_id(),
+                about.email,
+                about.name,
+                about.root_id,
+                scopes,
+                recent::now(),
+            );
+            state.tokens.save(&account.id, &token)?;
+            if let Err(error) = lock_state(&state.accounts)?.upsert(account.clone()) {
+                let _ = state.tokens.delete(&account.id);
+                return Err(error);
+            }
+            Ok(account)
+        })();
+
+        let _ = lock_state(&state.flows).map(|mut flows| flows.remove(&flow_id));
+        result
+    })
+    .await?
+}
+
+#[tauri::command]
+fn drive_connect_cancel(state: tauri::State<CloudState>, flow_id: String) -> Result<(), String> {
+    if let Some(flow) = lock_state(&state.flows)?.remove(&flow_id) {
+        flow.cancel();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn drive_open(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<cloud::service::OpenTarget, String> {
+    blocking(move || {
+        let state = app.state::<CloudState>();
+        let cache = app
+            .path()
+            .app_cache_dir()
+            .map_err(|error| error.to_string())?;
+        cloud::service::open(&state, &path, &cache)
+    })
+    .await?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -653,6 +873,7 @@ pub fn run() {
                 .app_config_dir()
                 .unwrap_or_else(|_| PathBuf::from("."));
             app.manage(VersionsState::new(config_dir.join("versioned.json")));
+            app.manage(CloudState::new(&config_dir));
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 handle.state::<VersionsState>().startup();
@@ -674,7 +895,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_dir,
             item_counts,
-            fs_ops::make_dir,
+            make_dir,
             rename_entry,
             fs_ops::path_exists,
             path_info,
@@ -703,6 +924,12 @@ pub fn run() {
             forget_recent,
             thumbnail,
             volumes,
+            drive_accounts,
+            drive_disconnect,
+            drive_connect_start,
+            drive_connect_finish,
+            drive_connect_cancel,
+            drive_open,
             make_versioned_dir,
             versioned_root,
             list_versions,

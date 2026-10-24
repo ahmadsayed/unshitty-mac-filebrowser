@@ -15,6 +15,19 @@ export interface Entry {
   origin?: string | null;
   /** Only in the Trash: when it was trashed (unix seconds). */
   trashed?: number;
+  /** Present only for a Google Drive entry. */
+  cloud?: CloudEntry;
+}
+
+/** Drive-specific fields on an `Entry`; local entries omit them. */
+export interface CloudEntry {
+  account: string;
+  id: string;
+  mime_type: string;
+  is_google_doc: boolean;
+  is_shortcut: boolean;
+  web_url?: string;
+  can_download: boolean;
 }
 
 /**
@@ -32,6 +45,43 @@ export async function listDir(
 export interface Volume {
   name: string;
   path: string;
+}
+
+/** A connected Google account. Tokens are deliberately not part of this. */
+export interface DriveAccount {
+  id: string;
+  email: string;
+  name: string;
+  root_id: string;
+  root_name: string;
+  root_path: string;
+  scopes: string[];
+  connected_at: number;
+}
+
+export interface DriveConnectStart {
+  flow_id: string;
+  auth_url: string;
+}
+
+export async function driveAccounts(): Promise<DriveAccount[]> {
+  return invoke<DriveAccount[]>("drive_accounts");
+}
+
+export async function driveConnectStart(): Promise<DriveConnectStart> {
+  return invoke<DriveConnectStart>("drive_connect_start");
+}
+
+export async function driveConnectFinish(flowId: string): Promise<DriveAccount> {
+  return invoke<DriveAccount>("drive_connect_finish", { flowId });
+}
+
+export async function driveConnectCancel(flowId: string): Promise<void> {
+  return invoke<void>("drive_connect_cancel", { flowId });
+}
+
+export async function driveDisconnect(account: string): Promise<void> {
+  return invoke<void>("drive_disconnect", { account });
 }
 
 /**
@@ -153,7 +203,20 @@ export async function starredFiles(showHidden: boolean): Promise<Entry[]> {
 
 /** Open a file (or an .app bundle) with its default macOS application. */
 export async function openFile(path: string): Promise<void> {
+  if (path.startsWith("gdrive://")) {
+    const target = await invoke<DriveOpenTarget>("drive_open", { path });
+    return target.kind === "url" ? openUrl(target.url) : openPath(target.path);
+  }
   return openPath(path);
+}
+
+export type DriveOpenTarget =
+  | { kind: "file"; path: string }
+  | { kind: "url"; url: string };
+
+/** Open a URL in the default browser (used by the sign-in flow). */
+export async function openExternal(url: string): Promise<void> {
+  return openUrl(url);
 }
 
 /** Open System Settings at Privacy & Security → Full Disk Access. */

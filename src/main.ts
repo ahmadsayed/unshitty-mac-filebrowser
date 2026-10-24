@@ -6,13 +6,16 @@ import {
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
   trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, fileProperties, folderSize,
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
-  type Entry,
+  driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
+  openExternal,
+  type Entry, type DriveAccount,
 } from "./api";
 import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
+import { CLOUD_PREFIX, isCloudPath as isCloud, resolveTypedPath } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -98,6 +101,9 @@ const fixedSidebarPaths = new Set<string>();
 
 let home = "";
 let trashPath = "";
+/** The connected Google account, if any. */
+let driveAccount: DriveAccount | null = null;
+let cloudOpenNoticeShown = false;
 /** Mounted volumes, as the backend reported them; used for breadcrumbs and
  * for guessing whether a drag crosses filesystems. */
 let mountedVolumes: { name: string; path: string }[] = [];
@@ -131,12 +137,37 @@ export function escapeHtml(text: string): string {
 }
 
 function basename(path: string): string {
+  if (isCloud(path)) {
+    const segment = path.replace(/\/+$/, "").split("/").pop() ?? "";
+    return cloudSegmentName(segment) || "My Drive";
+  }
   return path.replace(/\/+$/, "").split("/").pop() || "/";
 }
 
 function parentOf(path: string): string {
+  if (isCloud(path)) {
+    const trimmed = path.replace(/\/+$/, "");
+    const slash = trimmed.lastIndexOf("/");
+    return slash > "gdrive://".length ? trimmed.slice(0, slash) : trimmed;
+  }
   const p = path.replace(/\/+$/, "").replace(/\/[^/]*$/, "");
   return p || "/";
+}
+
+/** The display name inside a `<file-id>~<encoded name>` segment. */
+function cloudSegmentName(segment: string): string {
+  const tilde = segment.indexOf("~");
+  const encoded = tilde >= 0 ? segment.slice(tilde + 1) : segment;
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return encoded;
+  }
+}
+
+/** The first folder of an account, whose parent is the account itself. */
+function isCloudRoot(path: string): boolean {
+  return isCloud(path) && path.slice(CLOUD_PREFIX.length).split("/").filter(Boolean).length <= 1;
 }
 
 function joinPath(dir: string, name: string): string {
@@ -299,7 +330,7 @@ async function reload(select?: string[]): Promise<void> {
 
 /** The folder that keeps versions for `loc`, if any (never for Trash or Recent). */
 function lookupVersionedRoot(loc: string): Promise<string | null> {
-  if (isPseudo(loc) || (!!trashPath && loc === trashPath)) return Promise.resolve(null);
+  if (isCloud(loc) || isPseudo(loc) || (!!trashPath && loc === trashPath)) return Promise.resolve(null);
   return versionedRoot(loc).catch(() => null);
 }
 
@@ -342,6 +373,7 @@ function goForward(): void {
 
 function goUp(): void {
   if (isPseudo(location) || location === "/") return;
+  if (isCloud(location) && isCloudRoot(location)) return;
   navigate(parentOf(location), { select: location });
 }
 
@@ -369,6 +401,21 @@ function crumbsFor(loc: string): Crumb[] {
   if (isPseudo(loc)) {
     const p = PSEUDO[loc.slice(PSEUDO_PREFIX.length) as Pseudo];
     return [{ label: p.label, path: loc, icon: p.icon }];
+  }
+  if (isCloud(loc)) {
+    const parts = loc.slice(CLOUD_PREFIX.length).split("/").filter(Boolean);
+    const account = parts.shift() ?? "";
+    if (parts.length === 0) {
+      return [{ label: "Google Drive", path: loc, icon: "network-workgroup" }];
+    }
+    let base = `${CLOUD_PREFIX}${account}`;
+    const crumbs: Crumb[] = [];
+    for (const segment of parts) {
+      base += `/${segment}`;
+      crumbs.push({ label: cloudSegmentName(segment) || "My Drive", path: base });
+    }
+    crumbs[0] = { ...crumbs[0], icon: "network-workgroup" };
+    return crumbs;
   }
   if (trashPath && (loc === trashPath || loc.startsWith(trashPath + "/"))) {
     return [{ label: "Trash", path: trashPath, icon: "user-trash" }, ...segments(trashPath, loc)];
@@ -428,11 +475,14 @@ function closePathEntry(): void {
 }
 
 async function submitPathEntry(): Promise<void> {
-  let typed = pathEntry.value.trim();
+  const resolved = resolveTypedPath(pathEntry.value, location, home);
+  if (resolved.error) {
+    showToast(resolved.error);
+    pathEntry.focus();
+    return;
+  }
+  const typed = resolved.path;
   if (!typed) return;
-  if (typed === "~" || typed.startsWith("~/")) typed = home + typed.slice(1);
-  else if (!typed.startsWith("/") && !isPseudo(location)) typed = joinPath(location, typed);
-  typed = typed.length > 1 ? typed.replace(/\/+$/, "") : typed;
   try {
     await listDir(typed, prefs.showHidden);
   } catch (err) {
@@ -1069,7 +1119,11 @@ async function openEntry(entry: Entry): Promise<void> {
     showToast(`Could not open “${entry.name}”: ${cleanError(err)}`);
     return;
   }
-  if (!isAppBundle(entry)) addRecent(entry.path).catch(() => {});
+  if (isCloud(entry.path) && !entry.cloud?.is_google_doc && !cloudOpenNoticeShown) {
+    cloudOpenNoticeShown = true;
+    showToast("Opened a local copy. Changes are not uploaded to Google Drive.");
+  }
+  if (!isAppBundle(entry) && !isCloud(entry.path)) addRecent(entry.path).catch(() => {});
 }
 
 /** Enter / Open: one item activates; several open every file (folders can't all be shown). */
@@ -1228,8 +1282,23 @@ function openItemMenu(at: Anchor): void {
     location === RECENT ? recentItemMenu(sel, single)
     : inTrash() ? trashItemMenu(sel, single)
     : location === STARRED ? starredItemMenu(sel, single)
+    : sel.every((entry) => entry.cloud) ? cloudItemMenu(single)
     : folderItemMenu(sel, single);
   openMenu(at, items);
+}
+
+/** Read-only actions for Drive items; writes land in the next milestone. */
+function cloudItemMenu(single: Entry | null): MenuItem[] {
+  const web = single?.cloud?.web_url;
+  return [
+    { label: "Open", action: activateSelection },
+    ...(web ? [{ label: "Open in Browser", action: () => openExternal(web) }] : []),
+    openLocationItem(single),
+    { separator: true },
+    ...(single?.is_dir ? [bookmarkMenuItem(single.path)] : []),
+    { separator: true },
+    propertiesMenuItem(single),
+  ];
 }
 
 const cutCopyItems = (): MenuItem[] => [
@@ -1323,6 +1392,14 @@ function openBackgroundMenu(at: Anchor): void {
     ]);
     return;
   }
+  if (isCloud(location)) {
+    openMenu(at, [
+      { label: "Reload", action: () => void reload() },
+      { separator: true },
+      { label: "Select All", action: selectAll },
+    ]);
+    return;
+  }
   openMenu(at, [
     { label: "New Folder…", action: promptNewFolder },
     { separator: true },
@@ -1341,6 +1418,14 @@ function openLocationMenu(anchor: HTMLElement): void {
       { label: "Empty Trash…", disabled: entries.length === 0, action: confirmEmptyTrash },
       { separator: true },
       { label: "Select All", action: selectAll },
+    ]);
+    return;
+  }
+  if (isCloud(location)) {
+    openMenu(anchor, [
+      { label: "Copy Location", action: copyLocation },
+      { separator: true },
+      { label: "Select All", disabled: !hasEntries(location), action: selectAll },
     ]);
     return;
   }
@@ -1458,22 +1543,29 @@ async function showProperties(entry: Entry): Promise<void> {
   let historyBytes = 0;
   let closePropertiesDialog: (() => void) | null = null;
   if (info.is_dir) {
-    const row = propertyRow("Size", "Calculating…");
-    sizeValue = row.querySelector<HTMLElement>(".prop-value");
-    list.appendChild(row);
+    if (isCloud(info.path)) {
+      // Drive does not report recursive folder sizes cheaply.
+      add("Size", "—");
+    } else {
+      const row = propertyRow("Size", "Calculating…");
+      sizeValue = row.querySelector<HTMLElement>(".prop-value");
+      list.appendChild(row);
+    }
     if (info.item_count !== null) add("Contents", formatItemCount(info.item_count));
   } else {
     add("Size", sizeAndBytes(info.size));
   }
   add("Parent folder", info.parent, info.parent);
   add("Modified", formatDateDetailed(info.modified));
-  add("Accessed", formatDateDetailed(info.accessed));
-  add("Created", formatDateDetailed(info.created));
-  if (info.symlink_target) add("Link target", info.symlink_target, info.symlink_target);
-  add("Permissions", `${info.mode} (${info.octal})`);
+  if (!isCloud(info.path)) {
+    add("Accessed", formatDateDetailed(info.accessed));
+    add("Created", formatDateDetailed(info.created));
+    if (info.symlink_target) add("Link target", info.symlink_target, info.symlink_target);
+    add("Permissions", `${info.mode} (${info.octal})`);
+    add("Group", info.group);
+    add("Others", info.others);
+  }
   add("Owner", info.owner);
-  add("Group", info.group);
-  add("Others", info.others);
   extra.append(header, list);
   try {
     const root = await versionedRoot(entry.path).catch(() => null);
@@ -1584,6 +1676,10 @@ async function copyLocation(): Promise<void> {
 function setClipboard(mode: "copy" | "cut"): void {
   const sel = selectedEntries();
   if (sel.length === 0) return;
+  if (sel.some((entry) => entry.cloud)) {
+    showToast("Copy and Cut are not available for Google Drive items yet.");
+    return;
+  }
   clipboard = { paths: sel.map((e) => e.path), dirs: new Set(sel.filter((e) => e.is_dir).map((e) => e.path)), mode };
   // Paths also go to the system clipboard as text, handy for terminals.
   navigator.clipboard?.writeText(clipboard.paths.join("\n")).catch(() => {});
@@ -1726,6 +1822,10 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
 
 async function paste(destDir: string): Promise<void> {
   if (!clipboard) return;
+  if (isCloud(destDir) || clipboard.paths.some((path) => isCloud(path))) {
+    showToast("Copy and Paste are not available for Google Drive items yet.");
+    return;
+  }
   const { paths, dirs, mode } = clipboard;
   const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir);
   // A cut is only consumed once every item has been dealt with.
@@ -1740,7 +1840,7 @@ function inTrash(): boolean {
 }
 
 async function trashSelection(): Promise<void> {
-  if (inTrash()) return;
+  if (inTrash() || isCloud(location)) return;
   await trashPaths(selectedEntries().map((e) => e.path));
 }
 
@@ -2276,7 +2376,7 @@ function showValidation(v: Validation, entry: HTMLElement, message: HTMLElement)
 
 function startRename(entry: Entry): void {
   // Recent and Starred mix folders, so the name-clash check wouldn't work there.
-  if (isPseudo(location)) return;
+  if (isPseudo(location) || isCloud(entry.path)) return;
   const index = shown.findIndex((e) => e.path === entry.path);
   if (index < 0) return;
   scrollToIndex(index);
@@ -2340,7 +2440,7 @@ function startRename(entry: Entry): void {
 // ---------------------------------------------------------------------------
 
 function promptNewFolder(): void {
-  if (isPseudo(location) || listingError !== null) return;
+  if (isPseudo(location) || isCloud(location) || listingError !== null) return;
   const inside = !!versionedRootPath;
   const extra = document.createElement("div");
   extra.innerHTML = `
@@ -2638,17 +2738,24 @@ function onGlobalKeyDown(e: KeyboardEvent): void {
 // ---------------------------------------------------------------------------
 
 /** Add a sidebar row; `fixed` rows are built-in and can't be bookmarked again. */
-function sidebarRow(section: HTMLElement, label: string, icon: string, loc: string, fixed = true): HTMLElement {
+function sidebarRow(
+  section: HTMLElement,
+  label: string,
+  icon: string,
+  loc: string,
+  fixed = true,
+  onClick?: () => void
+): HTMLElement {
   const row = document.createElement("div");
   row.className = "sidebar-row";
   row.dataset.location = loc;
   row.setAttribute("role", "link");
   row.innerHTML = `${sym(icon)}<span class="sidebar-row-label"></span>`;
   row.querySelector(".sidebar-row-label")!.textContent = label;
-  row.title = isPseudo(loc) ? label : loc;
-  row.addEventListener("click", () => navigate(loc));
+  row.title = loc ? (isPseudo(loc) ? label : loc) : label;
+  row.addEventListener("click", onClick ?? (() => void navigate(loc)));
   section.appendChild(row);
-  if (fixed && !isPseudo(loc)) fixedSidebarPaths.add(loc);
+  if (fixed && loc && !isPseudo(loc)) fixedSidebarPaths.add(loc);
   return row;
 }
 
@@ -2658,10 +2765,98 @@ function updateSidebarSelection(): void {
   });
 }
 
+async function connectDrive(): Promise<void> {
+  let flowId: string | null = null;
+  let busy = false;
+  const status = document.createElement("p");
+  status.className = "dialog-text";
+  status.textContent =
+    "File Browser asks Google for read-only access to your Drive. The token is kept in your system keychain.";
+  const dialog = openDialog({
+    heading: "Connect to Google Drive",
+    body: "Google opens in your browser. This app never sees your password.",
+    extra: status,
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "connect", label: "Open Browser", style: "suggested" },
+    ],
+    defaultResponse: "cancel",
+    closeResponse: "cancel",
+    onResponse: async (id) => {
+      if (id === "cancel") {
+        if (flowId) await driveConnectCancel(flowId).catch(() => {});
+        return;
+      }
+      if (busy) return false;
+      busy = true;
+      dialog.setResponseEnabled("connect", false);
+      try {
+        const start = await driveConnectStart();
+        flowId = start.flow_id;
+        status.textContent = "Waiting for Google…";
+        await openExternal(start.auth_url);
+        const account = await driveConnectFinish(start.flow_id);
+        driveAccount = account;
+        dialog.close();
+        showToast(`Connected to ${account.email}`);
+        await buildSidebar();
+        await navigate(account.root_path);
+      } catch (err) {
+        const message = cleanError(err);
+        if (!/cancelled/i.test(message)) {
+          status.textContent = message;
+          dialog.setResponseEnabled("connect", true);
+          showToast(message);
+        }
+        busy = false;
+        return false;
+      }
+      busy = false;
+    },
+  });
+}
+
+function confirmDisconnectDrive(): void {
+  const account = driveAccount;
+  if (!account) return;
+  openDialog({
+    heading: "Disconnect Google Drive?",
+    body: `“${account.email}” will be removed from File Browser. Files in Google Drive are not deleted.`,
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "disconnect", label: "Disconnect", style: "destructive" },
+    ],
+    defaultResponse: "cancel",
+    closeResponse: "cancel",
+    onResponse: (id) => {
+      if (id !== "disconnect") return;
+      driveDisconnect(account.id)
+        .then(async () => {
+          driveAccount = null;
+          showToast("Disconnected from Google Drive");
+          if (isCloud(location)) await navigate(home || "/");
+          await buildSidebar();
+        })
+        .catch((err) => showToast(`Could not disconnect: ${cleanError(err)}`));
+    },
+  });
+}
+
 async function buildSidebar(): Promise<void> {
   const places = $("#sidebar-places");
   const bookmarks = $("#sidebar-bookmarks");
   const mounts = $("#sidebar-mounts");
+
+  places.replaceChildren();
+  bookmarks.replaceChildren();
+  mounts.replaceChildren();
+  fixedSidebarPaths.clear();
+
+  try {
+    driveAccount = (await driveAccounts())[0] ?? null;
+  } catch {
+    driveAccount = null;
+  }
 
   const tryDir = async (fn: () => Promise<string>) => {
     try {
@@ -2675,6 +2870,24 @@ async function buildSidebar(): Promise<void> {
   sidebarRow(places, "Recent", "document-open-recent", RECENT);
   sidebarRow(places, "Starred", "starred", STARRED);
   sidebarRow(places, "Network", "network-workgroup", `${PSEUDO_PREFIX}network`);
+  const driveRow = sidebarRow(
+    places,
+    "Google Drive",
+    "network-workgroup",
+    driveAccount?.root_path ?? "",
+    !!driveAccount,
+    driveAccount ? undefined : () => void connectDrive()
+  );
+  if (driveAccount) {
+    driveRow.title = driveAccount.email;
+    driveRow.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openMenu(event, [{ label: "Disconnect…", action: () => confirmDisconnectDrive() }]);
+    });
+  } else {
+    driveRow.title = "Connect to Google Drive";
+  }
   if (trashPath) sidebarRow(places, "Trash", "user-trash", trashPath);
 
   // Desktop plus GNOME's default bookmarks, resolved to this machine's folders

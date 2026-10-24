@@ -1,7 +1,8 @@
 # Google Drive — Design
 
 **Date:** 2026-10-24
-**Status:** Draft, pending approval. **Nothing in this document is implemented.**
+**Status:** M1 (read-only) implemented. M2 (writes) and M3 (cross-boundary
+drag and drop) are not started. Nothing in M2/M3 is implemented.
 **Tracking:** https://github.com/ahmadsayed/unshitty-mac-filebrowser/issues/12
 **Related:** `2026-10-23-file-browser-design.md` (the app's overall design),
 `2026-10-24-keep-versions-design.md` (version history), `AGENTS.md` (rules every
@@ -23,6 +24,25 @@ sees **Google Drive** in the sidebar, browses My Drive with the same grid/list
 views and breadcrumbs as a local folder, opens a document in its default app,
 and — in the second milestone — creates folders, uploads, renames, moves and
 trashes items. Nothing about local browsing changes.
+
+## Implementation status (2026-10-25)
+
+M1 is in the tree:
+
+- `gdrive://` path grammar and the location dispatcher.
+- `accounts.json`, keychain token storage with a `0600` fallback, and the
+  loopback PKCE sign-in.
+- Drive listing (paged), metadata, read-only Properties, thumbnail fetch and
+  PNG normalization, and Open/Open in Browser.
+- Sidebar row, connect/cancel/disconnect dialog, breadcrumbs, up/back/forward,
+  focus refresh and the read-only menus.
+- A shipped Desktop client ID (`drive.readonly`); no client secret.
+- Durable tests: 263 Rust, 98 frontend, plus the mock preview.
+
+Not started: M2 writes (new folder, rename, copy, move, upload, Drive Trash,
+Undo), M3 cross-boundary drag and drop, shared drives, multiple accounts,
+server-side search. A live Google consent screen was not exercised from this
+Linux environment; the callback/exchange is covered by a fake exchange.
 
 ## Why not the OS mount
 
@@ -106,6 +126,8 @@ below.
   Fedora 45 / GNOME 51 has no `gvfs-google` and no `libgdata`, so there is no
   Drive backend to discover (see "Why not the OS mount"). The app talks to
   Drive itself.
+- **U4. One shipped client ID.** The app embeds a single Desktop-app OAuth
+  client ID; users do not create a Google Cloud project.
 
 ### Proposed by the designer (review these)
 
@@ -610,13 +632,10 @@ clashes always prompt.
 Answer these before M1 implementation starts; the defaults above are
 recommendations, not blockers.
 
-1. **OAuth client.** Ship one client id for the app (easiest for the user, but
-   it is a shared quota and shows an unverified-app warning), or require each
-   user to create a Google Cloud "Desktop app" client (more setup, no shared
-   quota)? Proposed: bring-your-own for now, with a short setup page in the
-   README; revisit a shared client later.
-2. **Scope for M1.** Read-only first (proposed) or request full `drive` from
-   the first sign-in so there is only one consent screen?
+1. **OAuth client.** Decided: one client ID is shipped with the app. The
+   client secret is not used; PKCE protects the exchange.
+2. **Scope for M1.** Decided: `drive.readonly`. Writes request `drive` when M2
+   starts.
 3. **Multiple accounts.** Confirm one account is enough for v1.
 4. **Shared drives / Shared with me.** Needed in M1, or is My Drive enough?
 5. **Downloaded copies.** Is the "changes are not uploaded" toast acceptable,

@@ -28,8 +28,9 @@ to discover; macOS would work and Linux would not. The app therefore uses the
 Drive v3 API itself, with OAuth in the backend and the same code on both
 platforms. See "Why not the OS mount" in the spec.
 
-**Status:** Planning. Task 0 is a decision checkpoint; no production code is
-written before approval.
+**Status:** M1 (Tasks 1–10) implemented; M2/M3 (Tasks 11–13) are not started.
+Task 0's live OAuth spike still needs a real browser/account on the target
+machine.
 
 ## Global Constraints
 
@@ -104,6 +105,8 @@ The parts most likely to bite first:
 
 - [ ] **Step 1:** Answer the open questions in the spec that affect M1: OAuth
       client, scope, one account, shared drives, downloaded-copy notice.
+      **Answered:** one shipped client ID, `drive.readonly`, one account, My
+      Drive only, downloaded-copy notice accepted.
 - [ ] **Step 2:** Add the crates and record the exact versions in this plan.
       Expected: `oauth2` (PKCE + loopback), `reqwest` with
       `default-features = false, features = ["json", "rustls-tls", "stream"]`,

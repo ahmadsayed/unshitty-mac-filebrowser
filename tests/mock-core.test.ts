@@ -178,6 +178,33 @@ test("the Keep Versions commands", async () => {
   expect(await invoke("versioned_root", { path: `${HOME}/Kept` })).toBeNull();
 });
 
+test("Google Drive account commands connect, cancel and disconnect", async () => {
+  const accounts = () => invoke<Array<{ id: string; email: string; root_path: string }>>("drive_accounts");
+  expect(await accounts()).toEqual([]);
+
+  const start = await invoke<{ flow_id: string; auth_url: string }>("drive_connect_start");
+  expect(start.auth_url).toContain("accounts.google.com");
+  expect(await accounts()).toEqual([]);
+
+  const account = await invoke<{ id: string; email: string; root_path: string }>("drive_connect_finish", {
+    flowId: start.flow_id,
+  });
+  expect(account).toMatchObject({
+    email: "me@example.com",
+    root_path: "gdrive://mock/mock-root~My%20Drive",
+  });
+  expect(await accounts()).toHaveLength(1);
+
+  await invoke("drive_disconnect", { account: account.id });
+  expect(await accounts()).toEqual([]);
+
+  const cancelled = await invoke<{ flow_id: string }>("drive_connect_start");
+  await invoke("drive_connect_cancel", { flowId: cancelled.flow_id });
+  await expect(invoke("drive_connect_finish", { flowId: cancelled.flow_id })).rejects.toMatch(
+    /no longer active/,
+  );
+});
+
 test("unknown commands are reported", async () => {
   await expect(invoke("nope")).rejects.toMatch(/unknown command nope/);
 });

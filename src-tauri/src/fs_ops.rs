@@ -1,7 +1,6 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-#[tauri::command]
 pub fn make_dir(path: String) -> Result<(), String> {
     let p = Path::new(&path);
     if p.exists() {
@@ -27,6 +26,10 @@ pub struct Entry {
     pub modified: i64,
     pub is_hidden: bool,
     pub is_symlink: bool,
+    /// Present only for an entry from a cloud location. Local entries omit the
+    /// key entirely, so existing consumers see exactly the same JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<crate::cloud::CloudEntry>,
 }
 
 pub fn read_entries(path: &Path, show_hidden: bool) -> Result<Vec<Entry>, String> {
@@ -97,6 +100,7 @@ fn make_entry(entry_path: &Path, name: String) -> Option<Entry> {
         size: meta.len(),
         modified: secs(meta.modified()),
         is_symlink,
+        cloud: None,
     })
 }
 
@@ -358,6 +362,22 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn local_entries_do_not_serialize_a_cloud_field() {
+        let entry = Entry {
+            name: "a.txt".into(),
+            path: "/tmp/a.txt".into(),
+            is_dir: false,
+            size: 1,
+            modified: 0,
+            is_hidden: false,
+            is_symlink: false,
+            cloud: None,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(json.get("cloud").is_none());
+    }
 
     #[test]
     fn entries_for_skips_missing_and_hidden_paths() {
