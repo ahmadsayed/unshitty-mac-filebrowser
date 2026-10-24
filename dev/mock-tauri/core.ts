@@ -471,6 +471,55 @@ const VERSION_COMMANDS: Record<string, (args: Args) => unknown> = {
   stop_keeping_versions: (a) => stopKeepingVersions(str(a, "root")),
 };
 
+/** Offline stand-in for the Google Drive account commands. */
+const DRIVE_ROOT = "gdrive://mock/mock-root~My%20Drive";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+interface MockDriveAccount {
+  id: string;
+  email: string;
+  name: string;
+  root_id: string;
+  root_name: string;
+  root_path: string;
+  scopes: string[];
+  connected_at: number;
+}
+let driveAccount: MockDriveAccount | null = null;
+const driveFlows = new Set<string>();
+let driveFlowSeq = 0;
+
+const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
+  drive_accounts: () => (driveAccount ? [{ ...driveAccount }] : []),
+  drive_connect_start: () => {
+    const flow_id = `flow-${++driveFlowSeq}`;
+    driveFlows.add(flow_id);
+    return {
+      flow_id,
+      auth_url: "https://accounts.google.com/o/oauth2/v2/auth?mock=1",
+    };
+  },
+  drive_connect_finish: (a) => {
+    if (!driveFlows.delete(str(a, "flowId"))) {
+      throw "This sign-in attempt is no longer active.";
+    }
+    driveAccount = {
+      id: "mock-account",
+      email: "me@example.com",
+      name: "Me",
+      root_id: "mock-root",
+      root_name: "My Drive",
+      root_path: DRIVE_ROOT,
+      scopes: [DRIVE_SCOPE],
+      connected_at: now,
+    };
+    return { ...driveAccount };
+  },
+  drive_connect_cancel: (a) => void driveFlows.delete(str(a, "flowId")),
+  drive_disconnect: () => {
+    driveAccount = null;
+  },
+};
+
 /** Every command the app calls, by name. */
 const COMMANDS: Record<string, (args: Args) => unknown> = {
   list_dir: (a) => list(str(a, "path"), a.showHidden as boolean),
@@ -512,6 +561,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   delete_permanently: (a) => deletePermanently(str(a, "path")),
   empty_trash: () => emptyTrash(),
   rename_entry: (a) => renameEntry(str(a, "from"), str(a, "to")),
+  ...DRIVE_COMMANDS,
   ...VERSION_COMMANDS,
 };
 

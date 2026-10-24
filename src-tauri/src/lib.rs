@@ -1,3 +1,4 @@
+mod cloud;
 mod config_store;
 mod fs_ops;
 mod platform;
@@ -11,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::Manager;
 
+use cloud::CloudState;
 use versions::history::History;
 use versions::state::{Transfer, VersionsState};
 use versions::{VersionDiff, VersionInfo, restore};
@@ -18,6 +20,12 @@ use versions::{VersionDiff, VersionInfo, restore};
 fn config_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     Ok(dir.join(name))
+}
+
+fn lock_state<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String> {
+    mutex
+        .lock()
+        .map_err(|_| "Google Drive state is unavailable.".to_string())
 }
 
 /// Folders the user pinned to the sidebar ("Add to Bookmarks").
@@ -639,6 +647,103 @@ async fn volumes() -> Result<Vec<platform::Volume>, String> {
     blocking(move || platform::volumes(&platform::volume_roots())).await
 }
 
+#[derive(serde::Serialize)]
+struct DriveConnectStart {
+    flow_id: String,
+    auth_url: String,
+}
+
+#[tauri::command]
+fn drive_accounts(
+    state: tauri::State<CloudState>,
+) -> Result<Vec<cloud::accounts::DriveAccount>, String> {
+    Ok(lock_state(&state.accounts)?.items().to_vec())
+}
+
+#[tauri::command]
+fn drive_disconnect(state: tauri::State<CloudState>, account: String) -> Result<(), String> {
+    if let Ok(Some(token)) = state.tokens.load(&account) {
+        cloud::oauth::revoke(token.refresh_token().unwrap_or(&token.access_token));
+    }
+    state.tokens.delete(&account)?;
+    lock_state(&state.accounts)?.remove(&account)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn drive_connect_start(state: tauri::State<CloudState>) -> Result<DriveConnectStart, String> {
+    let flow = cloud::oauth::start(&[cloud::oauth::SCOPE_READONLY])?;
+    let start = DriveConnectStart {
+        flow_id: flow.id.clone(),
+        auth_url: flow.auth_url.clone(),
+    };
+    let mut flows = lock_state(&state.flows)?;
+    // A frontend that vanished mid-dialog must not leave listeners behind.
+    flows.retain(|_, flow| {
+        flow.created.elapsed() < std::time::Duration::from_secs(300) && !flow.is_cancelled()
+    });
+    flows.insert(flow.id.clone(), std::sync::Arc::new(flow));
+    Ok(start)
+}
+
+#[tauri::command]
+async fn drive_connect_finish(
+    app: tauri::AppHandle,
+    flow_id: String,
+) -> Result<cloud::accounts::DriveAccount, String> {
+    blocking(move || {
+        let state = app.state::<CloudState>();
+        let flow = lock_state(&state.flows)?
+            .get(&flow_id)
+            .cloned()
+            .ok_or_else(|| "This sign-in attempt is no longer active.".to_string())?;
+        flow.claim()?;
+
+        let result = (|| -> Result<cloud::accounts::DriveAccount, String> {
+            let token = cloud::oauth::finish(
+                &flow,
+                &cloud::oauth::GoogleExchange::new(),
+                cloud::oauth::CALLBACK_TIMEOUT,
+            )?;
+            if token.refresh_token.is_none() {
+                return Err("Google did not return a refresh token. Sign in again.".into());
+            }
+            let about = cloud::drive::about(&token.access_token)?;
+            let scopes = if token.scopes.is_empty() {
+                vec![cloud::oauth::SCOPE_READONLY.to_string()]
+            } else {
+                token.scopes.clone()
+            };
+            let account = cloud::accounts::DriveAccount::new(
+                cloud::accounts::new_account_id(),
+                about.email,
+                about.name,
+                about.root_id,
+                scopes,
+                recent::now(),
+            );
+            state.tokens.save(&account.id, &token)?;
+            if let Err(error) = lock_state(&state.accounts)?.upsert(account.clone()) {
+                let _ = state.tokens.delete(&account.id);
+                return Err(error);
+            }
+            Ok(account)
+        })();
+
+        let _ = lock_state(&state.flows).map(|mut flows| flows.remove(&flow_id));
+        result
+    })
+    .await?
+}
+
+#[tauri::command]
+fn drive_connect_cancel(state: tauri::State<CloudState>, flow_id: String) -> Result<(), String> {
+    if let Some(flow) = lock_state(&state.flows)?.remove(&flow_id) {
+        flow.cancel();
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     for (key, value) in platform::webview_env_to_set(|k| std::env::var_os(k).is_some()) {
@@ -653,6 +758,7 @@ pub fn run() {
                 .app_config_dir()
                 .unwrap_or_else(|_| PathBuf::from("."));
             app.manage(VersionsState::new(config_dir.join("versioned.json")));
+            app.manage(CloudState::new(&config_dir));
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 handle.state::<VersionsState>().startup();
@@ -703,6 +809,11 @@ pub fn run() {
             forget_recent,
             thumbnail,
             volumes,
+            drive_accounts,
+            drive_disconnect,
+            drive_connect_start,
+            drive_connect_finish,
+            drive_connect_cancel,
             make_versioned_dir,
             versioned_root,
             list_versions,
