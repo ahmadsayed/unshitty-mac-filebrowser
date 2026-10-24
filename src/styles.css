@@ -152,6 +152,14 @@ button, input {
   height: 100%;
 }
 
+/* A versioned folder is drawn as a stack: a darker back layer, then the
+   normal folder. The wrapper carries the tooltip the old badge had. */
+.versioned-icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 /* =============================================================================
    Window layout: sidebar | content
    ============================================================================= */

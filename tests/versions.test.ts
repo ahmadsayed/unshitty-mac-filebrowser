@@ -37,23 +37,26 @@ test("restore names are local, sortable and have no colon", () => {
   expect(restoreName("/a/.hidden", at)).toBe(".hidden (2026-01-02 03-04)");
 });
 
-test("versioned folders carry a badge in the view, the path bar and the sidebar", async () => {
-  const badge = (name: string) => item(name).querySelector(".emblem-versions");
+test("versioned folders stack the icon; the path bar and sidebar get a layer mark", async () => {
+  const stacked = (name: string) => item(name).querySelector(".versioned-icon");
   await goTo("/Users/me/Documents");
-  // List view, then grid view: only the versioned folder is badged.
+  // List view, then grid view: only the versioned folder has a back layer.
   await settle(10);
-  expect(badge("Versioned")?.getAttribute("title")).toBe("Keeps versions");
-  expect(badge("Projects")).toBeNull();
+  expect(stacked("Versioned")?.getAttribute("title")).toBe("Keeps versions");
+  expect(
+    stacked("Versioned")?.querySelector("use[href='#fc-folder-back']")
+  ).not.toBeNull();
+  expect(stacked("Projects")).toBeNull();
   await key("2", { mod: true });
   await settle(10);
-  expect(badge("Versioned")).not.toBeNull();
+  expect(stacked("Versioned")).not.toBeNull();
   await key("1", { mod: true });
-  // Inside it, the crumb for the versioned folder is badged; its parent isn't.
+  // Inside it, the crumb for the versioned folder is marked; its parent isn't.
   await goTo(VERSIONED);
   const crumb = (path: string) => $$(".crumb").find((c) => c.dataset.path === path)!;
   expect(crumb(VERSIONED).querySelector(".crumb-badge")).not.toBeNull();
   expect(crumb("/Users/me/Documents").querySelector(".crumb-badge")).toBeNull();
-  // Bookmarked, it is badged in the sidebar too.
+  // Bookmarked, it is marked in the sidebar too.
   await key("d", { mod: true });
   await settle(10);
   const pin = $$("#sidebar-bookmarks .sidebar-row.pin").find((r) => r.dataset.location === VERSIONED)!;
