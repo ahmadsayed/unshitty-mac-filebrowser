@@ -1,8 +1,9 @@
 # Google Drive — Design
 
 **Date:** 2026-10-24
-**Status:** M1 (read-only) implemented. M2 (writes) and M3 (cross-boundary
-drag and drop) are not started. Nothing in M2/M3 is implemented.
+**Status:** M1 (read-only), M2 (writes) and M3 (cross-boundary drag and
+drop) implemented. M4 (shared drives, Drive Trash view, search, multiple
+accounts) is not started.
 **Tracking:** https://github.com/ahmadsayed/unshitty-mac-filebrowser/issues/12
 **Related:** `2026-10-23-file-browser-design.md` (the app's overall design),
 `2026-10-24-keep-versions-design.md` (version history), `AGENTS.md` (rules every
@@ -46,11 +47,18 @@ M1 is in the tree:
   403s (3 attempts); thumbnail links remembered from listings. The backend has
   no separate concurrency limit: the frontend's 4-request thumbnail queue is
   the only caller that fans out.
-- Durable tests: 263 Rust, 98 frontend, plus the mock preview.
+- M2 and M3 (plan `docs/superpowers/plans/2026-10-25-google-drive-writes.md`):
+  sign-in asks for the full `drive` scope and read-only connections are told
+  to reconnect; New Folder, Rename, Copy, Move, Move to Trash and Undo inside
+  Drive (`cloud/write.rs`); upload and download between local folders and
+  Drive with size checks and staging names (`cloud/transfer.rs`); paste and
+  drag and drop in the UI, where a local ↔ Drive drop copies by default.
+- Durable tests: 340 Rust, 117 frontend, plus the mock preview.
 
-Not started: M2 writes (new folder, rename, copy, move, upload, Drive Trash,
-Undo), M3 cross-boundary drag and drop, shared drives, multiple accounts,
-server-side search. The live consent screen, token exchange and browsing were
+Not started: shared drives, Shared with me, a Drive Trash view, multiple
+accounts, server-side search. Writes were not exercised against the real
+Drive API from the development machine; they are tested against a fake
+server and the mock backend. The live consent screen, token exchange and browsing were
 tested with a real Gmail account on 2026-10-25; automated tests use a fake
 exchange and a local fake server.
 
@@ -189,6 +197,12 @@ gdrive://8f3c/R0OT~My%20Drive/1AbC~Documents/9xYz~report.docx
 - The frontend treats these strings as opaque except in the path helpers that
   learn a `gdrive://` case, and in the breadcrumb builder, which parses the
   segments for labels.
+- A destination that does not exist yet is a **pending** last segment with no
+  id, `…/~<encoded-name>` (for example `gdrive://8f3c/R0OT~My%20Drive/~New%20Folder`).
+  Only the last segment may be pending. New Folder, Rename, paste and drop
+  build their targets this way (`joinCloudPath` in `src/paths.ts`, the same
+  encoding as `location.rs`), and `path_exists` answers for them by looking
+  for a child with that name.
 
 **D3. One account in v1, modeled as a list.**
 `accounts.json` stores an array with at most one entry so multiple accounts can
@@ -392,7 +406,9 @@ in-flight flows), and keeps every non-trivial decision in the modules above.
 
 ### Command surface
 
-Existing commands keep their names and learn the Drive branch:
+Existing commands keep their names and learn the Drive branch. `make_dir`,
+`rename_entry`, `copy_entry` and `move_entry` return the item's final path,
+since a new Drive item's URI is only known once Drive has given it an id:
 
 | Command | Drive behaviour |
 | --- | --- |

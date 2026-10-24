@@ -28,7 +28,9 @@ to discover; macOS would work and Linux would not. The app therefore uses the
 Drive v3 API itself, with OAuth in the backend and the same code on both
 platforms. See "Why not the OS mount" in the spec.
 
-**Status:** M1 (Tasks 1–10) implemented; M2/M3 (Tasks 11–13) are not started.
+**Status:** M1 (Tasks 1–10) implemented. M2/M3 (Tasks 11–13) were replaced
+by `docs/superpowers/plans/2026-10-25-google-drive-writes.md` and are
+implemented.
 Task 0's live OAuth check is done: sign-in and browsing were tested with a
 real Gmail account on 2026-10-25.
 
