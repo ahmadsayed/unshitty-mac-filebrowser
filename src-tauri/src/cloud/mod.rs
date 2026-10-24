@@ -338,6 +338,21 @@ pub(crate) mod test_server {
     use std::thread;
 
     pub fn serve(responses: Vec<(u16, Vec<u8>, &'static str)>) -> (String, thread::JoinHandle<()>) {
+        let (base, _log, handle) = serve_logged(responses);
+        (base, handle)
+    }
+
+    /// Like `serve`, and also keeps each request's head (percent-decoded)
+    /// so a test can check what was sent.
+    pub fn serve_logged(
+        responses: Vec<(u16, Vec<u8>, &'static str)>,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        thread::JoinHandle<()>,
+    ) {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = log.clone();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = thread::spawn(move || {
@@ -345,8 +360,13 @@ pub(crate) mod test_server {
                 let Ok((mut stream, _)) = listener.accept() else {
                     return;
                 };
-                let mut buffer = [0u8; 4096];
-                let _ = stream.read(&mut buffer);
+                let mut buffer = [0u8; 65536];
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..read]).replace('+', " ");
+                let request = percent_encoding::percent_decode_str(&request)
+                    .decode_utf8_lossy()
+                    .into_owned();
+                seen.lock().unwrap().push(request);
                 let reason = if status == 200 { "OK" } else { "Error" };
                 let head = format!(
                     "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -356,7 +376,7 @@ pub(crate) mod test_server {
                 let _ = stream.write_all(&body);
             }
         });
-        (format!("http://{addr}"), handle)
+        (format!("http://{addr}"), log, handle)
     }
 
     pub fn json(value: &str) -> Vec<u8> {

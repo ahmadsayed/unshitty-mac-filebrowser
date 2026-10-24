@@ -1,7 +1,7 @@
 // Characterization tests for the path-bar rules, including the Drive cases
 // that must not fall back to a local path.
 import { expect, test } from "vitest";
-import { resolveTypedPath } from "../src/paths";
+import { joinCloudPath, resolveTypedPath } from "../src/paths";
 
 const HOME = "/Users/me";
 const CLOUD = "gdrive://acct/root~My%20Drive";
@@ -39,4 +39,12 @@ test("a bare name inside Drive is refused, but an absolute path is allowed", () 
   expect(resolveTypedPath("https://example.com/x", CLOUD, HOME)).toEqual({
     error: "Enter a Google Drive location or a full path.",
   });
+});
+
+test("Drive child paths encode the name like the backend", () => {
+  expect(joinCloudPath("gdrive://a/root~My%20Drive", "Q3 ~ draft (v2).txt")).toBe(
+    "gdrive://a/root~My%20Drive/~Q3%20%7E%20draft%20%28v2%29.txt",
+  );
+  expect(joinCloudPath("gdrive://a/root~My%20Drive/", "é")).toBe("gdrive://a/root~My%20Drive/~%C3%A9");
+  expect(joinCloudPath("gdrive://a/root~My%20Drive", "a-b_c.d")).toBe("gdrive://a/root~My%20Drive/~a-b_c.d");
 });

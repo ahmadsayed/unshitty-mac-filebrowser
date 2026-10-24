@@ -237,6 +237,47 @@ fn entry_for(parent: &DriveLocation, file: &DriveFile) -> Entry {
     }
 }
 
+/// Whether a Drive path names an existing, untrashed item. A pending path
+/// (`…/~name`) exists when its parent has a child with that name.
+pub fn path_exists(state: &CloudState, path: &str) -> bool {
+    path_exists_with(state, path, API_BASE, &google_refresh(state))
+}
+
+fn path_exists_with(state: &CloudState, path: &str, base: &str, refresh: Refresh) -> bool {
+    let Ok(drive) = drive_location(path) else {
+        return false;
+    };
+    let result = if drive.is_pending() {
+        let (Some(parent), Some(name)) = (drive.parent(), drive.name()) else {
+            return false;
+        };
+        let Some(parent_id) = parent.file_id().map(str::to_string) else {
+            return false;
+        };
+        authorized_with(state, &drive.account, base, refresh, |client| {
+            client
+                .find_children(&parent_id, name)
+                .map(|found| !found.is_empty())
+        })
+    } else {
+        let Some(id) = drive.file_id().map(str::to_string) else {
+            return false;
+        };
+        authorized_with(
+            state,
+            &drive.account,
+            base,
+            refresh,
+            |client| match client.get(&id) {
+                Ok(file) => Ok(!file.trashed),
+                Err(DriveError::NotFound) => Ok(false),
+                Err(error) => Err(error),
+            },
+        )
+    };
+    result.unwrap_or(false)
+}
+
 pub fn path_info(state: &CloudState, path: &str) -> Result<PathInfo, String> {
     let drive = drive_location(path)?;
     let id = drive
@@ -677,6 +718,7 @@ mod tests {
             web_view_link: Some("https://docs.google.com/x".into()),
             thumbnail_link: Some("https://lh3.googleusercontent.com/x=s220".into()),
             capabilities: Some(Capabilities { can_download: true }),
+            trashed: false,
         }
     }
 
@@ -765,6 +807,73 @@ mod tests {
         assert_eq!(safe_name(""), "item");
         assert_eq!(safe_component(".."), "item");
         assert!(!safe_name("a/b\\c").contains('/'));
+    }
+
+    fn full_reply(json_body: &str) -> (u16, Vec<u8>, &'static str) {
+        (200, json(json_body), "application/json")
+    }
+
+    #[test]
+    fn a_pending_path_exists_when_the_parent_has_that_name() {
+        let (base, log, server) = crate::cloud::test_server::serve_logged(vec![full_reply(
+            r#"{"files":[{"id":"f1","name":"a.txt","mimeType":"text/plain"}]}"#,
+        )]);
+        let (state, _dir) = test_state(valid_token());
+        assert!(path_exists_with(
+            &state,
+            "gdrive://acct/root~My%20Drive/~a.txt",
+            &base,
+            &fake_refresh
+        ));
+        server.join().unwrap();
+        let request = log.lock().unwrap()[0].clone();
+        assert!(request.contains("name = 'a.txt'"), "{request}");
+        assert!(request.contains("'root' in parents"), "{request}");
+        assert!(request.contains("trashed = false"), "{request}");
+    }
+
+    #[test]
+    fn a_pending_path_is_free_when_no_child_matches() {
+        let (base, server) = serve(vec![full_reply(r#"{"files":[]}"#)]);
+        let (state, _dir) = test_state(valid_token());
+        assert!(!path_exists_with(
+            &state,
+            "gdrive://acct/root~My%20Drive/~a.txt",
+            &base,
+            &fake_refresh
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn an_id_path_exists_unless_trashed() {
+        let (base, server) = serve(vec![
+            full_reply(r#"{"id":"f1","name":"a","mimeType":"text/plain"}"#),
+            full_reply(r#"{"id":"f1","name":"a","mimeType":"text/plain","trashed":true}"#),
+            (404, json("{}"), "application/json"),
+        ]);
+        let (state, _dir) = test_state(valid_token());
+        let path = "gdrive://acct/root~My%20Drive/f1~a";
+        assert!(path_exists_with(&state, path, &base, &fake_refresh));
+        assert!(!path_exists_with(&state, path, &base, &fake_refresh));
+        assert!(!path_exists_with(&state, path, &base, &fake_refresh));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn names_with_quotes_are_escaped_in_the_query() {
+        let (base, log, server) =
+            crate::cloud::test_server::serve_logged(vec![full_reply(r#"{"files":[]}"#)]);
+        let (state, _dir) = test_state(valid_token());
+        path_exists_with(
+            &state,
+            "gdrive://acct/root~My%20Drive/~it%27s",
+            &base,
+            &fake_refresh,
+        );
+        server.join().unwrap();
+        let request = log.lock().unwrap()[0].clone();
+        assert!(request.contains(r"name = 'it\'s'"), "{request}");
     }
 
     #[test]

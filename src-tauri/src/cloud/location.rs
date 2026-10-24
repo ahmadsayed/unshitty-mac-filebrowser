@@ -6,7 +6,12 @@
 //!
 //! ```text
 //! gdrive://<account>/<file-id>~<percent-encoded-name>/<file-id>~<name>
+//! gdrive://<account>/<file-id>~<name>/~<new-name>
 //! ```
+//!
+//! The last form is *pending*: a child that may not exist yet, named but
+//! without an id. It is how the frontend names the target of a New Folder,
+//! rename, paste or drop; only the last segment may be pending.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -38,7 +43,7 @@ pub struct DriveLocation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
-    /// Opaque Drive file or folder id.
+    /// Opaque Drive file or folder id; empty for a pending last segment.
     pub id: String,
     /// Decoded display name; may be empty when a pasted URI has no name.
     pub name: String,
@@ -70,6 +75,31 @@ impl DriveLocation {
         self.segments.last().map(|s| s.name.as_str())
     }
 
+    /// True when the last segment names a child that has no id yet.
+    pub fn is_pending(&self) -> bool {
+        self.segments.last().is_some_and(|s| s.id.is_empty())
+    }
+
+    /// The location one level up; `None` at the account root.
+    pub fn parent(&self) -> Option<DriveLocation> {
+        if self.segments.len() <= 1 {
+            return None;
+        }
+        let mut parent = self.clone();
+        parent.segments.pop();
+        Some(parent)
+    }
+
+    /// The location of a child with a known id.
+    pub fn child(&self, id: &str, name: &str) -> DriveLocation {
+        let mut child = self.clone();
+        child.segments.push(Segment {
+            id: id.into(),
+            name: name.into(),
+        });
+        child
+    }
+
     /// The canonical URI for this location.
     pub fn to_uri(&self) -> String {
         let mut out = String::from(DRIVE_SCHEME);
@@ -98,10 +128,13 @@ impl DriveLocation {
             return Err(format!("Invalid Google Drive account “{account}”"));
         }
 
-        let mut segments = Vec::new();
+        let mut segments: Vec<Segment> = Vec::new();
         for raw in parts {
             if raw.is_empty() {
                 return Err("Google Drive location has an empty path segment".into());
+            }
+            if segments.last().is_some_and(|s| s.id.is_empty()) {
+                return Err("Only the last part of a Google Drive location can be new".into());
             }
             segments.push(Segment::parse(raw)?);
         }
@@ -119,6 +152,16 @@ impl DriveLocation {
 impl Segment {
     fn parse(raw: &str) -> Result<Self, String> {
         let (id, encoded_name) = raw.split_once('~').unwrap_or((raw, ""));
+        if id.is_empty() {
+            let name = decode_name(encoded_name)?;
+            if name.is_empty() {
+                return Err("A new Google Drive item needs a name".into());
+            }
+            return Ok(Self {
+                id: String::new(),
+                name,
+            });
+        }
         if !valid_id(id) {
             return Err(format!("Invalid Google Drive file id “{id}”"));
         }
@@ -229,6 +272,36 @@ mod tests {
                 name: name.into(),
             }],
         }
+    }
+
+    #[test]
+    fn a_pending_last_segment_names_a_new_child() {
+        let loc = DriveLocation::parse("gdrive://acct/root~My%20Drive/~New%20Folder").unwrap();
+        assert!(loc.is_pending());
+        assert_eq!(loc.name(), Some("New Folder"));
+        assert_eq!(loc.parent().unwrap().file_id(), Some("root"));
+        assert_eq!(loc.to_uri(), "gdrive://acct/root~My%20Drive/~New%20Folder");
+    }
+
+    #[test]
+    fn only_the_last_segment_may_be_pending() {
+        assert!(DriveLocation::parse("gdrive://acct/~a/f1~b").is_err());
+        assert!(DriveLocation::parse("gdrive://acct/root~My%20Drive/~").is_err());
+        assert!(
+            !DriveLocation::parse("gdrive://acct/root~My%20Drive")
+                .unwrap()
+                .is_pending()
+        );
+    }
+
+    #[test]
+    fn child_appends_an_id_anchored_segment() {
+        let root = DriveLocation::root("acct", "root", "My Drive");
+        assert_eq!(
+            root.child("f1", "a b").to_uri(),
+            "gdrive://acct/root~My%20Drive/f1~a%20b"
+        );
+        assert!(root.parent().is_none());
     }
 
     #[test]

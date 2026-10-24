@@ -672,7 +672,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     const node = lookup(str(a, "path"));
     return node ? totalSize(node) : 0;
   },
-  make_dir: (a) => makeDir(str(a, "path")),
+  make_dir: (a) => (makeDir(str(a, "path")), str(a, "path")),
   load_pins: () => [...pins],
   save_pins: (a) => void (pins = [...(a.paths as string[])]),
   get_flag: (a) => flags[str(a, "name")] ?? false,
@@ -705,14 +705,14 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     const path = str(a, "path");
     return path.startsWith("gdrive://") ? !!driveNode(path) : lookup(path) !== undefined;
   },
-  copy_entry: (a) => transfer(a, false),
-  move_entry: (a) => transfer(a, true),
+  copy_entry: (a) => (transfer(a, false), str(a, "to")),
+  move_entry: (a) => (transfer(a, true), str(a, "to")),
   trash_entry: (a) => trashEntry(str(a, "path")),
   trash_info: (a) => (a.paths as string[]).map(trashInfo),
   restore_entry: (a) => restoreEntry(str(a, "path")),
   delete_permanently: (a) => deletePermanently(str(a, "path")),
   empty_trash: () => emptyTrash(),
-  rename_entry: (a) => renameEntry(str(a, "from"), str(a, "to")),
+  rename_entry: (a) => (renameEntry(str(a, "from"), str(a, "to")), str(a, "to")),
   ...DRIVE_COMMANDS,
   ...VERSION_COMMANDS,
 };

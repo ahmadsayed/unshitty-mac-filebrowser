@@ -16,7 +16,7 @@ import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
-import { CLOUD_PREFIX, isCloudPath as isCloud, resolveTypedPath } from "./paths";
+import { CLOUD_PREFIX, isCloudPath as isCloud, joinCloudPath, resolveTypedPath } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -171,7 +171,9 @@ function isCloudRoot(path: string): boolean {
   return isCloud(path) && path.slice(CLOUD_PREFIX.length).split("/").filter(Boolean).length <= 1;
 }
 
+/** The path of `name` inside `dir`. In Drive it is a pending `~name` path. */
 function joinPath(dir: string, name: string): string {
+  if (isCloud(dir)) return joinCloudPath(dir, name);
   return dir.replace(/\/+$/, "") + "/" + name;
 }
 
@@ -1797,12 +1799,12 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
     }, 600);
     try {
       if (moving) {
-        await moveEntry(from, to, overwrite);
-        followMove(from, to);
+        const moved = await moveEntry(from, to, overwrite);
+        followMove(from, moved);
+        done.push(moved);
       } else {
-        await copyEntry(from, to, overwrite);
+        done.push(await copyEntry(from, to, overwrite));
       }
-      done.push(to);
     } catch (err) {
       errors.push(`“${name}”: ${cleanError(err)}`);
     }
@@ -2409,15 +2411,16 @@ function startRename(entry: Entry): void {
     if (!validate()) return;
     const target = joinPath(location, input.value);
     button.disabled = true;
+    let renamed: string;
     try {
-      await renameEntry(entry.path, target);
+      renamed = await renameEntry(entry.path, target);
     } catch (err) {
       showValidation({ valid: false, message: cleanError(err), error: true }, input, message);
       return;
     }
-    followMove(entry.path, target);
+    followMove(entry.path, renamed);
     handle.close();
-    await reload([target]);
+    await reload([renamed]);
   };
 
   input.addEventListener("input", validate);
@@ -2476,8 +2479,10 @@ function promptNewFolder(): void {
       if (id !== "create") return;
       if (!validate()) return false;
       const target = joinPath(dir, input.value);
+      let created = target;
       try {
-        await (keep.checked ? makeVersionedDir(target) : makeDir(target));
+        if (keep.checked) await makeVersionedDir(target);
+        else created = await makeDir(target);
       } catch (err) {
         // D13: the folder may exist even when turning versions on failed.
         if (await pathExists(target).catch(() => false)) {
@@ -2489,7 +2494,7 @@ function promptNewFolder(): void {
         showValidation({ valid: false, message: cleanError(err), error: true }, row, message);
         return false;
       }
-      if (location === dir) await reload([target]);
+      if (location === dir) await reload([created]);
     },
   });
   input.addEventListener("input", validate);

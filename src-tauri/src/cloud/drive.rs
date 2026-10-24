@@ -12,6 +12,9 @@ use serde::de::DeserializeOwned;
 
 pub const API_BASE: &str = "https://www.googleapis.com/drive/v3";
 
+/// The metadata every single-file request asks for.
+const FILE_FIELDS: &str = "id,name,mimeType,size,modifiedTime,webViewLink,thumbnailLink,capabilities(canDownload),trashed";
+
 /// Attempts per request, counting the first. Only 429, 5xx and Drive's
 /// rate-limit 403s are retried.
 const ATTEMPTS: u32 = 3;
@@ -140,6 +143,8 @@ pub struct DriveFile {
     pub thumbnail_link: Option<String>,
     #[serde(default)]
     pub capabilities: Option<Capabilities>,
+    #[serde(default)]
+    pub trashed: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -271,7 +276,7 @@ impl DriveClient {
 
     pub fn list(&self, folder_id: &str, page: Option<&str>) -> Result<DrivePage, DriveError> {
         let query = format!("'{folder_id}' in parents and trashed = false");
-        let fields = "nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLink,thumbnailLink,capabilities(canDownload))";
+        let fields = "nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLink,thumbnailLink,capabilities(canDownload),trashed)";
         let mut params: Vec<(&str, &str)> = vec![
             ("q", query.as_str()),
             ("pageSize", "1000"),
@@ -290,8 +295,29 @@ impl DriveClient {
         })
     }
 
+    /// The untrashed children of `parent_id` named exactly `name`. Drive
+    /// allows several, so this is a list.
+    pub fn find_children(&self, parent_id: &str, name: &str) -> Result<Vec<DriveFile>, DriveError> {
+        let query = format!(
+            "name = '{}' and '{}' in parents and trashed = false",
+            escape_query(name),
+            escape_query(parent_id)
+        );
+        let fields = format!("files({FILE_FIELDS})");
+        let response: ListResponse = self.get_json(
+            &format!("{}/files", self.base),
+            &[
+                ("q", query.as_str()),
+                ("fields", fields.as_str()),
+                ("supportsAllDrives", "true"),
+                ("includeItemsFromAllDrives", "true"),
+            ],
+        )?;
+        Ok(response.files)
+    }
+
     pub fn get(&self, id: &str) -> Result<DriveFile, DriveError> {
-        let fields = "id,name,mimeType,size,modifiedTime,webViewLink,thumbnailLink,capabilities(canDownload)";
+        let fields = FILE_FIELDS;
         self.get_json(
             &format!("{}/files/{}", self.base, id),
             &[("fields", fields), ("supportsAllDrives", "true")],
@@ -387,6 +413,12 @@ fn retry_delay(attempt: u32, retry_after: Option<&str>, backoff: Duration) -> Op
     let base = backoff * 2u32.pow(attempt.saturating_sub(1).min(8));
     let jitter = getrandom::u32().unwrap_or(0) % 1000;
     Some(base + base * jitter / 2000)
+}
+
+/// Quote a value for a Drive search query (`'…'`): backslash and quote are
+/// escaped with a backslash.
+fn escape_query(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
 /// Drive thumbnail links end in a `=s<size>` suffix; ask for the size we need.

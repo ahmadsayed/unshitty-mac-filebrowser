@@ -262,12 +262,30 @@ fn cancel_folder_size(walk: u64) {
     properties::cancel_walks_up_to(walk);
 }
 
+/// The write commands return the item's final path: for Drive it is only
+/// known once Drive has given the new item an id.
 #[tauri::command]
-fn make_dir(path: String) -> Result<(), String> {
+fn make_dir(path: String) -> Result<String, String> {
     if cloud::is_cloud(&path) {
         return Err(cloud::service::unsupported());
     }
-    fs_ops::make_dir(path)
+    fs_ops::make_dir(path.clone())?;
+    Ok(path)
+}
+
+/// Whether `path` exists. For Drive this asks the API, so it runs off the
+/// command thread.
+#[tauri::command]
+async fn path_exists(app: tauri::AppHandle, path: String) -> bool {
+    blocking(move || {
+        if cloud::is_cloud(&path) {
+            cloud::service::path_exists(&app.state::<CloudState>(), &path)
+        } else {
+            fs_ops::path_exists(path)
+        }
+    })
+    .await
+    .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -276,7 +294,7 @@ async fn copy_entry(
     from: String,
     to: String,
     overwrite: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
     if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
         return Err(cloud::service::unsupported());
     }
@@ -284,8 +302,9 @@ async fn copy_entry(
         let state = app.state::<VersionsState>();
         let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
         state.transfer(&from_path, &to_path, Transfer::Copy, || {
-            fs_ops::copy_entry(from, to, overwrite)
-        })
+            fs_ops::copy_entry(from, to.clone(), overwrite)
+        })?;
+        Ok(to_path.to_string_lossy().to_string())
     })
     .await?
 }
@@ -296,7 +315,7 @@ async fn move_entry(
     from: String,
     to: String,
     overwrite: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
     if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
         return Err(cloud::service::unsupported());
     }
@@ -304,14 +323,15 @@ async fn move_entry(
         let state = app.state::<VersionsState>();
         let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
         state.transfer(&from_path, &to_path, Transfer::Move, || {
-            fs_ops::move_entry(from, to, overwrite)
-        })
+            fs_ops::move_entry(from, to.clone(), overwrite)
+        })?;
+        Ok(to_path.to_string_lossy().to_string())
     })
     .await?
 }
 
 #[tauri::command]
-async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result<(), String> {
+async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result<String, String> {
     if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
         return Err(cloud::service::unsupported());
     }
@@ -319,8 +339,9 @@ async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result
         let state = app.state::<VersionsState>();
         let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
         state.transfer(&from_path, &to_path, Transfer::Move, || {
-            fs_ops::rename_entry(from, to)
-        })
+            fs_ops::rename_entry(from, to.clone())
+        })?;
+        Ok(to_path.to_string_lossy().to_string())
     })
     .await?
 }
@@ -935,7 +956,7 @@ pub fn run() {
             item_counts,
             make_dir,
             rename_entry,
-            fs_ops::path_exists,
+            path_exists,
             path_info,
             file_properties,
             folder_size,

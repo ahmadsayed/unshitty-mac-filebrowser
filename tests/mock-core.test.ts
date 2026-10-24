@@ -242,6 +242,17 @@ test("the Google OAuth client is validated and locked while connected", async ()
   expect(await status()).toEqual({ configured: false, client_id: null });
 });
 
+test("write commands return the item's final path", async () => {
+  expect(await invoke("make_dir", { path: `${HOME}/Final` })).toBe(`${HOME}/Final`);
+  expect(await invoke("rename_entry", { from: `${HOME}/Final`, to: `${HOME}/Final2` })).toBe(`${HOME}/Final2`);
+  expect(
+    await invoke("copy_entry", { from: `${HOME}/Final2`, to: `${HOME}/Final3`, overwrite: false }),
+  ).toBe(`${HOME}/Final3`);
+  expect(
+    await invoke("move_entry", { from: `${HOME}/Final3`, to: `${HOME}/Final4`, overwrite: false }),
+  ).toBe(`${HOME}/Final4`);
+});
+
 test("unknown commands are reported", async () => {
   await expect(invoke("nope")).rejects.toMatch(/unknown command nope/);
 });

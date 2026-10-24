@@ -13,6 +13,21 @@ export function cloudAccountKey(path: string): string {
   return path.slice(CLOUD_PREFIX.length).split("/")[0] ?? "";
 }
 
+/**
+ * The Drive path of a child named `name` that may not exist yet: a pending
+ * `~name` segment. The name is encoded exactly as the backend's `NAME_SET`
+ * does: every byte except ASCII letters, digits, `.`, `-` and `_` as `%XX`.
+ */
+export function joinCloudPath(dir: string, name: string): string {
+  const encoded = [...new TextEncoder().encode(name)]
+    .map((byte) => {
+      const char = String.fromCharCode(byte);
+      return /[A-Za-z0-9._-]/.test(char) ? char : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+    })
+    .join("");
+  return `${dir.replace(/\/+$/, "")}/~${encoded}`;
+}
+
 /** Resolve what the user typed in the path bar. */
 export function resolveTypedPath(
   input: string,

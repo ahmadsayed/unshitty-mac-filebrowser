@@ -162,7 +162,6 @@ pub fn item_counts(paths: Vec<String>, show_hidden: bool) -> Vec<Option<FolderSu
 // ---------------------------------------------------------------------------
 
 /// True if something (even a broken symlink) exists at `path`.
-#[tauri::command]
 pub fn path_exists(path: String) -> bool {
     std::fs::symlink_metadata(&path).is_ok()
 }
