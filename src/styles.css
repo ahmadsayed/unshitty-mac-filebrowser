@@ -834,6 +834,10 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   from { opacity: 0; transform: scale(0.96); }
 }
 
+.popover.no-animation {
+  animation: none;
+}
+
 .popover-arrow {
   position: absolute;
   width: 14px;

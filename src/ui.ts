@@ -43,6 +43,12 @@ export function openPopover(
   document.body.appendChild(layer);
 
   const isElement = anchor instanceof HTMLElement;
+  if (!isElement) {
+    // Point anchors are context menus. They often replace a menu that has
+    // just been dismissed, so replaying the fade makes the menu blink at
+    // (nearly) the same spot; open them instantly like a native menu.
+    pop.classList.add("no-animation");
+  }
   if (isElement) anchor.classList.add("open");
 
   // Position: below the anchor when it fits, otherwise above; clamp to window.
