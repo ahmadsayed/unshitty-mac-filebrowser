@@ -16,7 +16,7 @@ import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
-import { CLOUD_PREFIX, isCloudPath as isCloud, joinCloudPath, resolveTypedPath } from "./paths";
+import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, joinCloudPath, resolveTypedPath } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -2003,7 +2003,11 @@ function dropTargetAt(x: number, y: number, sources: string[]): DropTarget | nul
     if (e?.is_dir && !isAppBundle(e) && !sources.includes(e.path)) return { dir: e.path, el: item };
   }
   const row = el.closest<HTMLElement>(".sidebar-row");
-  if (row) return isPseudo(row.dataset.location!) ? null : { dir: row.dataset.location!, el: row };
+  if (row) {
+    // A disconnected Google Drive row has no location.
+    const loc = row.dataset.location;
+    return !loc || isPseudo(loc) ? null : { dir: loc, el: row };
+  }
   const crumb = el.closest<HTMLElement>(".crumb");
   if (crumb) return crumb.dataset.path && !isPseudo(crumb.dataset.path) ? { dir: crumb.dataset.path, el: crumb } : null;
   // Anywhere else in the view means the folder being shown.
@@ -2025,7 +2029,8 @@ function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; 
   const dir = target.dir;
   // Into itself or its own subfolder: refused.
   if (sources.some((src) => dir === src || dir.startsWith(src + "/"))) return null;
-  if (dir === trashPath) return inTrash() ? null : "trash";
+  // Drive items go to Drive's Trash with Move to Trash, not the app's Trash.
+  if (dir === trashPath) return inTrash() || sources.some(isCloud) ? null : "trash";
   const forceCopy = isMac ? mods.altKey : mods.ctrlKey;
   const forceMove = isMac ? mods.metaKey : mods.shiftKey;
   // Moving items to the folder they are already in does nothing.
@@ -2033,6 +2038,9 @@ function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; 
   if (forceCopy) return "copy";
   if (allHere) return null;
   if (forceMove) return "move";
+  // Local ↔ Drive is another storage: copy, before any device guess.
+  const storage = (path: string) => (isCloud(path) ? cloudAccountKey(path) : "");
+  if (sources.some((src) => storage(src) !== storage(dir))) return "copy";
   // Same filesystem moves, another one copies (GNOME and Finder agree here).
   const same = (src: string) => {
     const a = devices?.get(src), b = devices?.get(dir);

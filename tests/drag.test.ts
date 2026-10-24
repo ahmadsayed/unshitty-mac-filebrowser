@@ -150,3 +150,11 @@ test("files dropped from another app are moved on the same disk and copied from 
   await settle(20);
   expect(await invoke("path_exists", { path: `${HOME}/main.rs` })).toBe(true);
 });
+
+test("the Google Drive row is not a drop target while disconnected", async () => {
+  await goTo(`${HOME}/D`);
+  const driveRow = $$(".sidebar-row").find((r) => r.textContent?.includes("Google Drive"))!;
+  await dragTo("four.txt", driveRow);
+  expect(names()).toContain("four.txt");
+  expect(await invoke("path_exists", { path: "/four.txt" })).toBe(false);
+});

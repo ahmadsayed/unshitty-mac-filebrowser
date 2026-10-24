@@ -70,8 +70,10 @@ files, so the photo thumbnails are placeholders.</sub>
 - **Google Drive (Experimental):** add your own Google OAuth client once
   ([setup guide](docs/google-drive.md)), connect a Google account from the
   sidebar and browse My Drive with the same views, breadcrumbs and thumbnails.
-  New Folder, Rename, Cut, Copy and Paste work inside Drive and between Drive
-  and local folders, with the usual Replace / Skip / Keep Both prompt. Move to
+  New Folder, Rename, Cut, Copy, Paste and drag and drop work inside Drive and
+  between Drive and local folders, with the usual Replace / Skip / Keep Both
+  prompt; a drop between Drive and a local folder copies unless you hold ⌘
+  (Shift on Linux) to move. Move to
   Trash uses Drive's Trash and can be undone; nothing is ever deleted
   permanently. Files open as a local snapshot; Google Docs open in the browser
   and stay in Drive. The refresh token is kept in the OS keychain (with a

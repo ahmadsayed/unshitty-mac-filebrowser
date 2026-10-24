@@ -1,6 +1,7 @@
 // The Google Drive location: connect through the mock, browse the fake Drive,
 // and keep the read-only milestone free of version markers and write actions.
 import { beforeAll, expect, test } from "vitest";
+import { driveLog, invoke } from "../dev/mock-tauri/core";
 import { $, $$, boot, click, closeOverlays, goTo, item, key, menuLabels, mouse, names, respond, selectedNames, settle, toasts, type } from "./app";
 
 beforeAll(async () => {
@@ -185,4 +186,59 @@ test("the Drive item menu offers writes and has no empty sections", async () => 
   const doubled = rows.some((row, i) => i > 0 && row.className === "menu-separator" && rows[i - 1].className === "menu-separator");
   expect(doubled).toBe(false);
   await closeOverlays();
+});
+
+// Drag and drop between local folders and Drive.
+let pointAt: Element | null = null;
+
+async function dragTo(name: string, target: Element, mods: MouseEventInit = {}): Promise<void> {
+  document.elementFromPoint = () => pointAt;
+  await mouse(item(name), "mousedown", { clientX: 50, clientY: 60 });
+  pointAt = target;
+  window.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 300, ...mods }));
+  await settle(10);
+  window.dispatchEvent(new MouseEvent("mousemove", { clientX: 301, clientY: 301, ...mods }));
+  await settle(10);
+  window.dispatchEvent(new MouseEvent("mouseup", { clientX: 301, clientY: 301, ...mods }));
+  await settle(25);
+  pointAt = null;
+}
+
+const row = (text: string) => $$(".sidebar-row").find((r) => r.textContent?.trim() === text)!;
+
+test("dropping a local file on the Google Drive row copies it", async () => {
+  await invoke("copy_entry", { from: "/Users/me/Desktop/todo.txt", to: "/Users/me/Desktop/drop-me.txt", overwrite: false });
+  await goTo("/Users/me/Desktop");
+  await dragTo("drop-me.txt", row("Google Drive"));
+  expect(names()).toContain("drop-me.txt");
+  expect(await invoke("path_exists", { path: `${DRIVE}/~drop-me.txt` })).toBe(true);
+});
+
+test("dropping a Drive item on a local folder copies it", async () => {
+  await goTo(DRIVE);
+  await dragTo("Report.docx", row("Downloads"));
+  expect(names()).toContain("Report.docx");
+  expect(await invoke("path_exists", { path: "/Users/me/Downloads/Report.docx" })).toBe(true);
+});
+
+test("dragging inside Drive moves the item", async () => {
+  await goTo(DRIVE);
+  await dragTo("Report.docx", item("Projects"));
+  expect(names()).not.toContain("Report.docx");
+  expect(await invoke("path_exists", { path: `${DRIVE}/~Projects` })).toBe(true);
+});
+
+test("a Drive item dropped on the Trash row does nothing", async () => {
+  await goTo(DRIVE);
+  await dragTo("drop-me.txt", row("Trash"));
+  expect(names()).toContain("drop-me.txt");
+});
+
+test("forcing a move from Drive to local trashes the Drive item only after the copy", async () => {
+  await goTo(DRIVE);
+  driveLog.length = 0;
+  await dragTo("drop-me.txt", row("Downloads"), { metaKey: true });
+  expect(driveLog).toEqual(["download drop-me.txt", "trash drop-me.txt"]);
+  expect(names()).not.toContain("drop-me.txt");
+  expect(await invoke("path_exists", { path: "/Users/me/Downloads/drop-me.txt" })).toBe(true);
 });
