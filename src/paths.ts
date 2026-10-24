@@ -22,6 +22,19 @@ export function joinCloudPath(dir: string, name: string): string {
   return `${dir.replace(/\/+$/, "")}/~${encodeCloudName(name)}`;
 }
 
+/**
+ * A Drive name as a local file name, by the backend's `safe_name` rules:
+ * `/`, `\`, NUL and control characters become `_`, leading and trailing
+ * dots and spaces go, an empty result is "item", and at most 180 characters
+ * are kept. Drive allows names like "a/b" and ".." that would escape the
+ * destination folder.
+ */
+export function safeLocalName(name: string): string {
+  const cleaned = [...name].map((c) => (c === "/" || c === "\\" || c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127 ? "_" : c)).join("");
+  const trimmed = cleaned.replace(/^\.+|\.+$/g, "").trim();
+  return trimmed ? [...trimmed].slice(0, 180).join("") : "item";
+}
+
 /** A Drive display name as it appears in a `gdrive://` path. */
 export function encodeCloudName(name: string): string {
   return [...new TextEncoder().encode(name)]

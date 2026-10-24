@@ -271,6 +271,7 @@ function driveDownload(from: string, to: string, overwrite: boolean, move: boole
   const item = driveItemAt(from);
   if (!item) throw `“${from}” no longer exists`;
   if (item.doc) throw `“${item.name}” is a Google Docs file and can only be copied within Google Drive.`;
+  if (["", ".", ".."].includes(to.split("/").pop() ?? "")) throw `“${to}” is not a valid name for a local item.`;
   const [toParent, toName] = parentAndName(to);
   if (!toParent?.dir) throw "Failed to copy: No such file or directory";
   if (toParent.children[toName]) {

@@ -169,6 +169,16 @@ pub(crate) fn download_in(
     to: &Path,
     overwrite: bool,
 ) -> Result<String, String> {
+    // `/dest/..` or `/dest/.` would make Replace trash `dest` itself. The
+    // raw text is checked: `Path::components` quietly drops a trailing `.`.
+    let raw = to.to_string_lossy();
+    let last = raw.rsplit(std::path::MAIN_SEPARATOR).next().unwrap_or("");
+    if matches!(last, "" | "." | "..") {
+        return Err(format!(
+            "“{}” is not a valid name for a local item.",
+            to.display()
+        ));
+    }
     let replacing = std::fs::symlink_metadata(to).is_ok();
     if replacing && !overwrite {
         return Err(format!("Target already exists: {}", to.display()));
@@ -579,6 +589,31 @@ mod tests {
         result.unwrap();
         assert_eq!(std::fs::read(target.join("a.txt")).unwrap(), b"1");
         assert_eq!(std::fs::read(target.join("a (2).txt")).unwrap(), b"2");
+    }
+
+    #[test]
+    fn a_download_target_that_is_not_a_plain_name_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let inner = dir.path().join("Downloads");
+        std::fs::create_dir(&inner).unwrap();
+        std::fs::write(inner.join("keep.txt"), b"mine").unwrap();
+        for target in [inner.join(".."), inner.join("."), inner.join("x/..")] {
+            // A 404 stops an unguarded download before it touches the disk,
+            // so this test stays harmless while it fails.
+            // Not joined: when the guard holds, the reply is never asked for.
+            let (base, log, _server) =
+                crate::cloud::test_server::serve_replies(vec![Reply::json(404, "{}")]);
+            let (state, _dir) = crate::cloud::write::tests::state();
+            let result = download_in(
+                &crate::cloud::write::tests::ctx(&state, &base),
+                &format!("{ROOT}/f1~a.txt"),
+                &target,
+                true,
+            );
+            assert!(result.is_err(), "{}", target.display());
+            assert!(heads(&log).is_empty(), "{} reached Drive", target.display());
+        }
+        assert_eq!(std::fs::read(inner.join("keep.txt")).unwrap(), b"mine");
     }
 
     #[test]

@@ -242,3 +242,20 @@ test("forcing a move from Drive to local trashes the Drive item only after the c
   expect(names()).not.toContain("drop-me.txt");
   expect(await invoke("path_exists", { path: "/Users/me/Downloads/drop-me.txt" })).toBe(true);
 });
+
+test("Drive names that aren't valid local names are made safe when pasted locally", async () => {
+  await invoke("make_dir", { path: `${DRIVE}/~a%2Fb` });
+  await invoke("make_dir", { path: `${DRIVE}/~..` });
+  await invoke("make_dir", { path: "/Users/me/Safe" });
+  for (const name of ["a/b", ".."]) {
+    await goTo(DRIVE);
+    await select(name);
+    await key("c", { mod: true });
+    await goTo("/Users/me/Safe");
+    await key("v", { mod: true });
+    await settle(15);
+  }
+  expect(names()).toEqual(["a_b", "item"]);
+  expect(await invoke("path_exists", { path: "/Users/me/Safe" })).toBe(true);
+  expect(await invoke("path_exists", { path: "/Users/me/a" })).toBe(false);
+});

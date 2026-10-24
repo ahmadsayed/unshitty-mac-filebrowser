@@ -16,7 +16,7 @@ import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
-import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, joinCloudPath, resolveTypedPath } from "./paths";
+import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, joinCloudPath, resolveTypedPath, safeLocalName } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -1769,7 +1769,8 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
 
   for (let i = 0; i < paths.length; i++) {
     const from = paths[i];
-    const name = basename(from);
+    // A Drive name can be "a/b" or "..": locally it must stay one plain name.
+    const name = isCloud(from) && !isCloud(destDir) ? safeLocalName(basename(from)) : basename(from);
     const isDir = dirs.has(from);
     const moving = move(from);
     anyMove ||= moving;
