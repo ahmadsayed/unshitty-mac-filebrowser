@@ -62,6 +62,8 @@ pub enum Error {
     NotOurs(String),
     /// The history is open read-only because another instance holds the lock.
     ReadOnly,
+    /// The history was closed for a copy, move, trash or clear; no more writes.
+    Closed,
     /// WAL mode is unavailable (network/cloud volume) (D18).
     NotLocal,
     /// The file is over the capture limit (D5).
@@ -86,6 +88,10 @@ impl fmt::Display for Error {
             Error::ReadOnly => write!(
                 f,
                 "The version history of this folder is in use by another window."
+            ),
+            Error::Closed => write!(
+                f,
+                "The version history of this folder was closed while it was in use."
             ),
             Error::NotLocal => write!(f, "Version history needs a folder on a local disk."),
             Error::TooLarge => write!(f, "The file is too large to keep versions of."),

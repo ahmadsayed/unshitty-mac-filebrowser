@@ -163,13 +163,25 @@ where
         .lock()
         .map_err(|_| Error::Io("capture lock poisoned".into()))?;
     let relative = rel_path(rel);
-    // D8: record the current state synchronously, even if the watcher is behind.
-    let _ = capture::record_locked(history, &relative);
+    // D8: record the current state synchronously, even if the watcher is
+    // behind. If that fails the dialog's promise ("It stays in the history
+    // too") would be false, so refuse instead of replacing.
+    capture::record_locked(history, &relative).map_err(|e| {
+        Error::Io(format!(
+            "the current file could not be saved to the history first, so it was not replaced ({e})"
+        ))
+    })?;
 
     let original = join_rel(&history.root, rel);
     let staging = write_staging(history, &row)?;
-    let current_exists = fs::symlink_metadata(&original).is_ok();
-    if current_exists {
+    let current = fs::symlink_metadata(&original).ok();
+    // The replacement keeps the current file's permissions (an executable
+    // script stays executable); a fresh `create_new` file would get 0666 & umask.
+    let permissions = current
+        .as_ref()
+        .filter(|meta| meta.is_file())
+        .map(|meta| meta.permissions());
+    if current.is_some() {
         if let Err(e) = trash(&original) {
             let _ = fs::remove_file(&staging);
             return Err(e);
@@ -181,6 +193,9 @@ where
     let placed = copy_new(&staging, &original);
     if placed.is_ok() {
         let _ = fs::remove_file(&staging);
+        if let Some(permissions) = permissions {
+            let _ = fs::set_permissions(&original, permissions);
+        }
         Ok(())
     } else {
         // Keep the staged copy so the restored bytes are not lost; the old
@@ -462,6 +477,103 @@ mod tests {
 
         let restored = restore_deleted(&history, b"notes.txt", "").unwrap();
         assert_eq!(fs::read(restored).unwrap(), b"gone\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replace_refuses_when_the_current_file_cannot_be_recorded() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, history) = history_with_file(b"one\n");
+        edit(&history, b"two\n");
+        let old = ids(&history)[1];
+        let path = history.root.join("notes.txt");
+        fs::write(&path, b"three, not yet recorded\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        if File::open(&path).is_ok() {
+            return; // running as root: permissions can't make it unreadable
+        }
+        let mut trashed = false;
+        let result = replace_with(&history, b"notes.txt", old, |_| {
+            trashed = true;
+            Ok(())
+        });
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(result.is_err());
+        assert!(!trashed, "an unrecorded file must not be replaced");
+        assert_eq!(fs::read(&path).unwrap(), b"three, not yet recorded\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replace_keeps_the_current_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, history) = history_with_file(b"#!/bin/sh\necho one\n");
+        let path = history.root.join("notes.txt");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o750)).unwrap();
+        edit(&history, b"#!/bin/sh\necho two\n");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o750)).unwrap();
+        let old = ids(&history)[1];
+        let trashed = history.root.join("trashed-current");
+        replace_with(&history, b"notes.txt", old, |p| {
+            fs::rename(p, &trashed).map_err(|e| Error::Io(e.to_string()))
+        })
+        .unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o750);
+    }
+
+    #[test]
+    fn a_failed_placement_after_the_trash_keeps_the_staged_copy() {
+        let (_dir, history) = history_with_file(b"one\n");
+        edit(&history, b"two\n");
+        let old = ids(&history)[1];
+        let trashed = history.root.join("trashed-current");
+        let original = history.root.join("notes.txt");
+        // Something appears at the path between the Trash move and placement.
+        let err = replace_with(&history, b"notes.txt", old, |p| {
+            fs::rename(p, &trashed).map_err(|e| Error::Io(e.to_string()))?;
+            fs::create_dir(&original).map_err(|e| Error::Io(e.to_string()))
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("restored copy is at"), "{err}");
+        assert_eq!(fs::read(&trashed).unwrap(), b"two\n");
+        let staged: Vec<_> = fs::read_dir(&history.tmp).unwrap().flatten().collect();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(fs::read(staged[0].path()).unwrap(), b"one\n");
+    }
+
+    #[test]
+    fn restoring_a_deleted_file_never_overwrites() {
+        let (_dir, history) = history_with_file(b"gone\n");
+        let path = history.root.join("notes.txt");
+        fs::remove_file(&path).unwrap();
+        capture::record(&history, Path::new("notes.txt")).unwrap();
+
+        // Something new took the name: without a fallback name, refuse.
+        fs::write(&path, b"newcomer").unwrap();
+        assert!(restore_deleted(&history, b"notes.txt", "").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"newcomer");
+
+        // With one, restore next to it.
+        let restored = restore_deleted(&history, b"notes.txt", "notes (old).txt").unwrap();
+        assert_eq!(restored, history.root.join("notes (old).txt"));
+        assert_eq!(fs::read(&restored).unwrap(), b"gone\n");
+        assert_eq!(fs::read(&path).unwrap(), b"newcomer");
+        assert!(fs::read_dir(&history.tmp).unwrap().next().is_none(), "staging cleaned up");
+    }
+
+    #[test]
+    fn restoring_a_deleted_file_recreates_its_folder() {
+        let dir = tempdir().unwrap();
+        let history = History::create(dir.path()).unwrap();
+        let sub = history.root.join("a/b");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("deep.txt"), b"deep").unwrap();
+        capture::record(&history, Path::new("a/b/deep.txt")).unwrap();
+        fs::remove_dir_all(history.root.join("a")).unwrap();
+        capture::tombstone_prefix(&history, Path::new("a")).unwrap();
+        let restored = restore_deleted(&history, b"a/b/deep.txt", "").unwrap();
+        assert_eq!(fs::read(restored).unwrap(), b"deep");
     }
 
     #[test]

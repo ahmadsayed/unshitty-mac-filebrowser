@@ -3,6 +3,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::Connection;
@@ -27,7 +28,10 @@ pub struct History {
     pub index_path: PathBuf,
     /// Serializes captures, scans, restores that write, and transfers.
     pub capture_lock: Mutex<()>,
-    #[allow(dead_code)]
+    /// Set by `quiesce`: no more writes, and running scans stop early. A scan
+    /// thread can outlive the state map's reference, so this, not dropping the
+    /// `Arc`, is what ends a history's writes.
+    closed: AtomicBool,
     lock: File,
     writer: Option<Mutex<Connection>>,
     reader: Mutex<Connection>,
@@ -90,6 +94,7 @@ impl History {
             tmp,
             index_path,
             capture_lock: Mutex::new(()),
+            closed: AtomicBool::new(false),
             lock,
             writer: Some(Mutex::new(writer)),
             reader: Mutex::new(reader),
@@ -150,6 +155,7 @@ impl History {
             tmp,
             index_path,
             capture_lock: Mutex::new(()),
+            closed: AtomicBool::new(false),
             lock,
             writer,
             reader: Mutex::new(reader),
@@ -173,6 +179,13 @@ impl History {
     }
 
     pub fn writer(&self) -> Result<MutexGuard<'_, Connection>> {
+        if self.is_closed() {
+            return Err(Error::Closed);
+        }
+        self.raw_writer()
+    }
+
+    fn raw_writer(&self) -> Result<MutexGuard<'_, Connection>> {
         self.writer
             .as_ref()
             .ok_or(Error::ReadOnly)?
@@ -189,6 +202,38 @@ impl History {
     pub fn checkpoint(&self) -> Result<()> {
         let writer = self.writer()?;
         index::checkpoint(&writer)
+    }
+
+    /// Refuse further writes; `quiesce` also waits for the one in progress.
+    pub fn begin_close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    /// Stop all writes: new captures fail with `Closed`, a running scan stops
+    /// at its next file, and this waits for the capture in progress (if any)
+    /// before folding the WAL into the index. The lock file stays held, so
+    /// Clear History can keep it through the Trash move.
+    pub fn quiesce(&self) {
+        self.begin_close();
+        let _guard = self.capture_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if self.writable {
+            if let Ok(writer) = self.raw_writer() {
+                let _ = index::checkpoint(&writer);
+            }
+        }
+    }
+
+    /// Give up the folder lock now rather than when the last `Arc` is dropped,
+    /// so the same folder (or its new path after a move) can be reopened
+    /// writable right away. Only call after `quiesce`.
+    pub fn release_lock(&self) {
+        if self.writable {
+            let _ = self.lock.unlock();
+        }
     }
 
     pub fn info(&self) -> Result<HistoryInfo> {
