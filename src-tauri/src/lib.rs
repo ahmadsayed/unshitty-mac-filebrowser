@@ -761,10 +761,10 @@ fn drive_accounts(
 
 #[tauri::command]
 fn drive_disconnect(state: tauri::State<CloudState>, account: String) -> Result<(), String> {
-    if let Ok(Some(token)) = state.tokens.load(&account) {
+    if let Ok(Some(token)) = state.token(&account) {
         cloud::oauth::revoke(token.refresh_token().unwrap_or(&token.access_token));
     }
-    state.tokens.delete(&account)?;
+    state.delete_token(&account)?;
     lock_state(&state.accounts)?.remove(&account)?;
     Ok(())
 }
@@ -807,7 +807,7 @@ async fn drive_connect_finish(
             if token.refresh_token.is_none() {
                 return Err("Google did not return a refresh token. Sign in again.".into());
             }
-            let about = cloud::drive::about(&token.access_token)?;
+            let about = cloud::service::about(&state, &token.access_token)?;
             let scopes = if token.scopes.is_empty() {
                 vec![cloud::oauth::SCOPE_READONLY.to_string()]
             } else {
@@ -821,9 +821,9 @@ async fn drive_connect_finish(
                 scopes,
                 recent::now(),
             );
-            state.tokens.save(&account.id, &token)?;
+            state.save_token(&account.id, &token)?;
             if let Err(error) = lock_state(&state.accounts)?.upsert(account.clone()) {
-                let _ = state.tokens.delete(&account.id);
+                let _ = state.delete_token(&account.id);
                 return Err(error);
             }
             Ok(account)
