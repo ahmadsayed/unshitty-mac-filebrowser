@@ -69,7 +69,10 @@ pub fn record(log: &mut TrashLog, trashed: &Path, origin: &Path, now: i64) {
     log.items.retain(|p, _| fs::symlink_metadata(p).is_ok());
     log.items.insert(
         trashed.to_string_lossy().to_string(),
-        LoggedItem { origin: origin.to_string_lossy().to_string(), time: now },
+        LoggedItem {
+            origin: origin.to_string_lossy().to_string(),
+            time: now,
+        },
     );
     if log.items.len() > MAX_LOGGED {
         let mut times: Vec<i64> = log.items.values().map(|i| i.time).collect();
@@ -110,13 +113,17 @@ pub fn trash_dir_for(path: &Path, home: &Path) -> PathBuf {
         if same_disk {
             return home.join(".Trash");
         }
-        return mount_root(path).join(".Trashes").join(uid(home).to_string());
+        return mount_root(path)
+            .join(".Trashes")
+            .join(uid(home).to_string());
     }
     // freedesktop.org layout (Linux), for development and tests.
     if same_disk {
         return home_trash(home).join("files");
     }
-    mount_root(path).join(format!(".Trash-{}", uid(home))).join("files")
+    mount_root(path)
+        .join(format!(".Trash-{}", uid(home)))
+        .join("files")
 }
 
 #[cfg(unix)]
@@ -249,7 +256,12 @@ fn names_in(dir: &Path) -> HashSet<OsString> {
 
 /// The entry that appeared in `dir` since `before` was taken and looks like
 /// the trashed `original_name`. `None` when it can't be told apart.
-fn find_new(dir: &Path, before: &HashSet<OsString>, original_name: &str, is_dir: bool) -> Option<PathBuf> {
+fn find_new(
+    dir: &Path,
+    before: &HashSet<OsString>,
+    original_name: &str,
+    is_dir: bool,
+) -> Option<PathBuf> {
     let stem = Path::new(original_name)
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -267,7 +279,10 @@ fn find_new(dir: &Path, before: &HashSet<OsString>, original_name: &str, is_dir:
     // Name clashes in the Trash get renamed ("a 2.txt", Finder: "a 10.21.33.txt").
     let similar: Vec<&PathBuf> = fresh
         .iter()
-        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&stem)))
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(&stem))
+        })
         .collect();
     match similar[..] {
         [one] => Some(one.clone()),
@@ -278,12 +293,21 @@ fn find_new(dir: &Path, before: &HashSet<OsString>, original_name: &str, is_dir:
 /// Move `path` to the Trash and return where it ended up, if that could be
 /// worked out (it's needed for Undo, not for trashing itself).
 pub fn trash_and_locate(path: &Path, home: &Path) -> Result<Option<PathBuf>, String> {
-    let meta = fs::symlink_metadata(path).map_err(|_| format!("“{}” no longer exists", path.display()))?;
-    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let meta =
+        fs::symlink_metadata(path).map_err(|_| format!("“{}” no longer exists", path.display()))?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     let dir = trash_dir_for(path, home);
     let before = names_in(&dir);
     trash::delete(path).map_err(|e| format!("Failed to move to Trash: {}", e))?;
-    Ok(find_new(&dir, &before, &name, meta.is_dir() && !meta.file_type().is_symlink()))
+    Ok(find_new(
+        &dir,
+        &before,
+        &name,
+        meta.is_dir() && !meta.file_type().is_symlink(),
+    ))
 }
 
 /// Where a trashed item came from: its `.trashinfo` sidecar first, then this
@@ -292,7 +316,12 @@ pub fn trash_and_locate(path: &Path, home: &Path) -> Result<Option<PathBuf>, Str
 /// a log entry can outlive its item (restored by another app) and then
 /// describe a later one that reused the name.
 /// `trash_dir` is the Trash folder `trashed` sits in (see `trash_dir_for`).
-pub fn origin_of(trashed: &Path, trash_dir: &Path, log: &TrashLog, put_back: &HashMap<String, PathBuf>) -> Option<PathBuf> {
+pub fn origin_of(
+    trashed: &Path,
+    trash_dir: &Path,
+    log: &TrashLog,
+    put_back: &HashMap<String, PathBuf>,
+) -> Option<PathBuf> {
     if let Some(origin) = sidecar_origin(trashed, trash_dir) {
         return Some(origin);
     }
@@ -304,7 +333,12 @@ pub fn origin_of(trashed: &Path, trash_dir: &Path, log: &TrashLog, put_back: &Ha
 }
 
 /// Origin and trash date for each path in the Trash.
-pub fn info(paths: &[String], home: &Path, log: &TrashLog, put_back: &HashMap<String, PathBuf>) -> Vec<TrashInfo> {
+pub fn info(
+    paths: &[String],
+    home: &Path,
+    log: &TrashLog,
+    put_back: &HashMap<String, PathBuf>,
+) -> Vec<TrashInfo> {
     paths
         .iter()
         .map(|p| {
@@ -316,7 +350,8 @@ pub fn info(paths: &[String], home: &Path, log: &TrashLog, put_back: &HashMap<St
                 None => log.items.get(p).map(|i| i.time),
             };
             TrashInfo {
-                origin: origin_of(path, &trash_dir, log, put_back).map(|o| o.to_string_lossy().to_string()),
+                origin: origin_of(path, &trash_dir, log, put_back)
+                    .map(|o| o.to_string_lossy().to_string()),
                 trashed: logged.unwrap_or_else(|| changed_time(path)),
             }
         })
@@ -344,12 +379,23 @@ pub fn restore(trashed: &Path, origin: &Path, trash_dir: &Path) -> Result<(), St
         return Err(format!("“{}” is no longer in the Trash", trashed.display()));
     }
     if fs::symlink_metadata(origin).is_ok() {
-        let folder = origin.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "/".into());
-        let name = origin.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        return Err(format!("An item named “{}” already exists in “{}”", name, folder));
+        let folder = origin
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/".into());
+        let name = origin
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        return Err(format!(
+            "An item named “{}” already exists in “{}”",
+            name, folder
+        ));
     }
     if let Some(parent) = origin.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Cannot recreate “{}”: {}", parent.display(), e))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Cannot recreate “{}”: {}", parent.display(), e))?;
     }
     fs::rename(trashed, origin).map_err(|e| format!("Cannot restore: {}", e))?;
     drop_sidecar(trashed, trash_dir);
@@ -370,7 +416,9 @@ pub fn delete_permanently(path: &Path, trash_dir: &Path) -> Result<(), String> {
     if fs::symlink_metadata(path).is_err() {
         return Err(format!("“{}” no longer exists", path.display()));
     }
-    let inside = path.parent().is_some_and(|parent| is_subpath(parent, trash_dir));
+    let inside = path
+        .parent()
+        .is_some_and(|parent| is_subpath(parent, trash_dir));
     if !inside {
         return Err("Only items in the Trash can be deleted permanently".into());
     }
@@ -391,10 +439,16 @@ pub fn empty(trash_root: &Path) -> Result<(), String> {
     };
     let mut first_error = None;
     for dir in dirs {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             if let Err(e) = remove_tree(&entry.path()) {
-                first_error.get_or_insert(format!("Cannot delete “{}”: {}", entry.file_name().to_string_lossy(), e));
+                first_error.get_or_insert(format!(
+                    "Cannot delete “{}”: {}",
+                    entry.file_name().to_string_lossy(),
+                    e
+                ));
             }
         }
     }
@@ -412,7 +466,9 @@ pub fn empty(trash_root: &Path) -> Result<(), String> {
 
 /// Name in the Trash → original path, from `ds_store` on a volume mounted at `volume_root`.
 pub fn read_put_back(ds_store: &Path, volume_root: &Path) -> HashMap<String, PathBuf> {
-    let Ok(data) = fs::read(ds_store) else { return HashMap::new() };
+    let Ok(data) = fs::read(ds_store) else {
+        return HashMap::new();
+    };
     let mut folders: HashMap<String, String> = HashMap::new();
     let mut names: HashMap<String, String> = HashMap::new();
     for (file, code, value) in ds_records(&data).unwrap_or_default() {
@@ -426,17 +482,25 @@ pub fn read_put_back(ds_store: &Path, volume_root: &Path) -> HashMap<String, Pat
         .into_iter()
         .map(|(file, folder)| {
             let name = names.get(&file).cloned().unwrap_or_else(|| file.clone());
-            (file, volume_root.join(folder.trim_start_matches('/')).join(name))
+            (
+                file,
+                volume_root.join(folder.trim_start_matches('/')).join(name),
+            )
         })
         .collect()
 }
 
 fn be32(d: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_be_bytes(d.get(at..at.checked_add(4)?)?.try_into().ok()?))
+    Some(u32::from_be_bytes(
+        d.get(at..at.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 fn utf16be(bytes: &[u8]) -> Option<String> {
-    let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
     String::from_utf16(&units).ok()
 }
 
@@ -452,7 +516,9 @@ fn ds_records(d: &[u8]) -> Option<Vec<(String, [u8; 4], String)>> {
         return None;
     }
     p += 8;
-    let addrs: Vec<u32> = (0..count).map(|i| be32(d, p + 4 * i)).collect::<Option<_>>()?;
+    let addrs: Vec<u32> = (0..count)
+        .map(|i| be32(d, p + 4 * i))
+        .collect::<Option<_>>()?;
     p += 4 * count.div_ceil(256) * 256;
 
     // Table of contents: (name, block id) pairs; "DSDB" is the B-tree's master block.
@@ -469,14 +535,21 @@ fn ds_records(d: &[u8]) -> Option<Vec<(String, [u8; 4], String)>> {
             master = Some(id);
         }
     }
-    let block = |id: u32| -> Option<usize> { Some((*addrs.get(id as usize)? & !0x1f) as usize + 4) };
+    let block =
+        |id: u32| -> Option<usize> { Some((*addrs.get(id as usize)? & !0x1f) as usize + 4) };
     let root = be32(d, block(master?)?)?;
     let mut out = Vec::new();
     walk_node(d, &block, root, &mut out, 0)?;
     Some(out)
 }
 
-fn walk_node(d: &[u8], block: &dyn Fn(u32) -> Option<usize>, id: u32, out: &mut Vec<(String, [u8; 4], String)>, depth: u32) -> Option<()> {
+fn walk_node(
+    d: &[u8],
+    block: &dyn Fn(u32) -> Option<usize>,
+    id: u32,
+    out: &mut Vec<(String, [u8; 4], String)>,
+    depth: u32,
+) -> Option<()> {
     if depth > 16 {
         return None;
     }
@@ -535,7 +608,10 @@ mod tests {
 
         // Renamed because "a.txt" was taken.
         fs::write(t.join("a 10.21.33.txt"), "new").unwrap();
-        assert_eq!(find_new(t, &before, "a.txt", false), Some(t.join("a 10.21.33.txt")));
+        assert_eq!(
+            find_new(t, &before, "a.txt", false),
+            Some(t.join("a 10.21.33.txt"))
+        );
         // Wrong kind.
         assert_eq!(find_new(t, &before, "a.txt", true), None);
 
@@ -577,7 +653,14 @@ mod tests {
         assert!(err.contains("already exists"), "{}", err);
         assert_eq!(fs::read_to_string(&origin).unwrap(), "keep me");
         assert!(trashed.exists());
-        assert!(restore(&dir.path().join("missing"), &dir.path().join("x"), dir.path()).is_err());
+        assert!(
+            restore(
+                &dir.path().join("missing"),
+                &dir.path().join("x"),
+                dir.path()
+            )
+            .is_err()
+        );
     }
 
     // --- layout helpers --------------------------------------------------
@@ -607,7 +690,10 @@ mod tests {
 
         assert!(delete_permanently(&outside, &trash).is_err());
         assert!(outside.exists());
-        assert!(delete_permanently(&trash, &trash).is_err(), "the Trash itself");
+        assert!(
+            delete_permanently(&trash, &trash).is_err(),
+            "the Trash itself"
+        );
         assert!(trash.exists());
         let sneaky = trash.join("../precious.txt");
         assert!(delete_permanently(&sneaky, &trash).is_err());
@@ -659,13 +745,29 @@ mod tests {
         fs::write(&a, "").unwrap();
         let mut log = TrashLog::default();
         record(&mut log, &a, Path::new("/Users/me/a"), 100);
-        record(&mut log, &dir.path().join("gone"), Path::new("/Users/me/gone"), 101);
+        record(
+            &mut log,
+            &dir.path().join("gone"),
+            Path::new("/Users/me/gone"),
+            101,
+        );
         assert_eq!(log.items.len(), 2);
         record(&mut log, &a, Path::new("/Users/me/a"), 102);
         assert_eq!(log.items.len(), 1, "the missing item is dropped");
 
-        let info = info(&[a.to_string_lossy().to_string()], dir.path(), &log, &HashMap::new());
-        assert_eq!(info[0], TrashInfo { origin: Some("/Users/me/a".into()), trashed: 102 });
+        let info = info(
+            &[a.to_string_lossy().to_string()],
+            dir.path(),
+            &log,
+            &HashMap::new(),
+        );
+        assert_eq!(
+            info[0],
+            TrashInfo {
+                origin: Some("/Users/me/a".into()),
+                trashed: 102
+            }
+        );
     }
 
     #[test]
@@ -673,7 +775,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let f = dir.path().join("trash-me.txt");
         fs::write(&f, "bye").unwrap();
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| dir.path().to_path_buf());
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| dir.path().to_path_buf());
 
         let found = trash_and_locate(&f, &home).unwrap();
         assert!(!f.exists());
@@ -725,7 +829,9 @@ mod tests {
     /// offsets, block 0 the master record, the rest B-tree nodes.
     fn ds_store(nodes: &[Vec<u8>], root: u32) -> Vec<u8> {
         let mut d = vec![0u8; 0x8000];
-        let put = |d: &mut Vec<u8>, at: usize, bytes: &[u8]| d[at..at + bytes.len()].copy_from_slice(bytes);
+        let put = |d: &mut Vec<u8>, at: usize, bytes: &[u8]| {
+            d[at..at + bytes.len()].copy_from_slice(bytes)
+        };
         let mut addrs = vec![];
         let master_at = 0x20usize;
         addrs.push(master_at as u32 | 5);
@@ -760,18 +866,33 @@ mod tests {
     #[test]
     fn reads_put_back_records_from_a_leaf() {
         let dir = tempdir().unwrap();
-        let leaf = node(0, &[
-            (None, long_record("notes 10.21.33.txt", b"Iloc")),
-            (None, ustr_record("notes 10.21.33.txt", b"ptbL", "Users/me/Documents/")),
-            (None, ustr_record("notes 10.21.33.txt", b"ptbN", "notes.txt")),
-            (None, ustr_record("Photos", b"ptbL", "Users/me/Pictures/")),
-        ]);
+        let leaf = node(
+            0,
+            &[
+                (None, long_record("notes 10.21.33.txt", b"Iloc")),
+                (
+                    None,
+                    ustr_record("notes 10.21.33.txt", b"ptbL", "Users/me/Documents/"),
+                ),
+                (
+                    None,
+                    ustr_record("notes 10.21.33.txt", b"ptbN", "notes.txt"),
+                ),
+                (None, ustr_record("Photos", b"ptbL", "Users/me/Pictures/")),
+            ],
+        );
         let path = dir.path().join(".DS_Store");
         fs::write(&path, ds_store(&[leaf], 1)).unwrap();
 
         let map = read_put_back(&path, Path::new("/"));
-        assert_eq!(map.get("notes 10.21.33.txt"), Some(&PathBuf::from("/Users/me/Documents/notes.txt")));
-        assert_eq!(map.get("Photos"), Some(&PathBuf::from("/Users/me/Pictures/Photos")));
+        assert_eq!(
+            map.get("notes 10.21.33.txt"),
+            Some(&PathBuf::from("/Users/me/Documents/notes.txt"))
+        );
+        assert_eq!(
+            map.get("Photos"),
+            Some(&PathBuf::from("/Users/me/Pictures/Photos"))
+        );
         assert_eq!(map.len(), 2);
     }
 
@@ -779,8 +900,14 @@ mod tests {
     fn walks_internal_nodes() {
         let dir = tempdir().unwrap();
         let left = node(0, &[(None, ustr_record("a.txt", b"ptbL", "Users/me/"))]);
-        let right = node(0, &[(None, ustr_record("c.txt", b"ptbL", "Users/me/Desktop/"))]);
-        let root = node(2, &[(Some(1), ustr_record("b.txt", b"ptbL", "Users/me/Music/"))]);
+        let right = node(
+            0,
+            &[(None, ustr_record("c.txt", b"ptbL", "Users/me/Desktop/"))],
+        );
+        let root = node(
+            2,
+            &[(Some(1), ustr_record("b.txt", b"ptbL", "Users/me/Music/"))],
+        );
         let path = dir.path().join(".DS_Store");
         fs::write(&path, ds_store(&[left, right, root], 3)).unwrap();
 
@@ -797,7 +924,10 @@ mod tests {
         assert!(read_put_back(&path, Path::new("/")).is_empty());
         fs::write(&path, b"\x00\x00\x00\x01Bud1\xff\xff\xff\xff").unwrap();
         assert!(read_put_back(&path, Path::new("/")).is_empty());
-        let mut good = ds_store(&[node(0, &[(None, ustr_record("x", b"ptbL", "Users/"))])], 1);
+        let mut good = ds_store(
+            &[node(0, &[(None, ustr_record("x", b"ptbL", "Users/"))])],
+            1,
+        );
         good.truncate(0x1010);
         fs::write(&path, &good).unwrap();
         assert!(read_put_back(&path, Path::new("/")).is_empty());
@@ -820,9 +950,16 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(sidecar_origin(&trashed, &files), Some(PathBuf::from("/home/me/My Notes.txt")));
+        assert_eq!(
+            sidecar_origin(&trashed, &files),
+            Some(PathBuf::from("/home/me/My Notes.txt"))
+        );
         // A relative or missing Path is not usable.
-        fs::write(info.join("notes.txt.trashinfo"), "[Trash Info]\nPath=relative.txt\n").unwrap();
+        fs::write(
+            info.join("notes.txt.trashinfo"),
+            "[Trash Info]\nPath=relative.txt\n",
+        )
+        .unwrap();
         assert_eq!(sidecar_origin(&trashed, &files), None);
         fs::remove_file(info.join("notes.txt.trashinfo")).unwrap();
         assert_eq!(sidecar_origin(&trashed, &files), None);
@@ -837,14 +974,21 @@ mod tests {
         fs::create_dir_all(&info).unwrap();
         fs::create_dir_all(&files).unwrap();
         let trashed = files.join("a.txt");
-        fs::write(info.join("a.txt.trashinfo"), "[Trash Info]\nPath=/home/me/a.txt\n").unwrap();
+        fs::write(
+            info.join("a.txt.trashinfo"),
+            "[Trash Info]\nPath=/home/me/a.txt\n",
+        )
+        .unwrap();
 
         // A stale log entry, left behind when another app restored an earlier
         // `a.txt`, must not send this one to the wrong folder.
         let mut log = TrashLog::default();
         log.items.insert(
             trashed.to_string_lossy().to_string(),
-            LoggedItem { origin: "/home/me/stale/a.txt".into(), time: 5 },
+            LoggedItem {
+                origin: "/home/me/stale/a.txt".into(),
+                time: 5,
+            },
         );
         assert_eq!(
             origin_of(&trashed, &files, &log, &HashMap::new()),
@@ -869,19 +1013,33 @@ mod tests {
         // Restore: the item goes back and its sidecar is gone.
         let trashed = files.join("a.txt");
         fs::write(&trashed, "hi").unwrap();
-        fs::write(info.join("a.txt.trashinfo"), "[Trash Info]\nPath=/home/me/a.txt\n").unwrap();
+        fs::write(
+            info.join("a.txt.trashinfo"),
+            "[Trash Info]\nPath=/home/me/a.txt\n",
+        )
+        .unwrap();
         let origin = dir.path().join("back/a.txt");
         restore(&trashed, &origin, &files).unwrap();
         assert_eq!(fs::read_to_string(&origin).unwrap(), "hi");
-        assert!(!info.join("a.txt.trashinfo").exists(), "sidecar removed on restore");
+        assert!(
+            !info.join("a.txt.trashinfo").exists(),
+            "sidecar removed on restore"
+        );
 
         // Delete permanently: same, so `info/` can't collect orphans.
         let trashed = files.join("b.txt");
         fs::write(&trashed, "bye").unwrap();
-        fs::write(info.join("b.txt.trashinfo"), "[Trash Info]\nPath=/home/me/b.txt\n").unwrap();
+        fs::write(
+            info.join("b.txt.trashinfo"),
+            "[Trash Info]\nPath=/home/me/b.txt\n",
+        )
+        .unwrap();
         delete_permanently(&trashed, &files).unwrap();
         assert!(!trashed.exists());
-        assert!(!info.join("b.txt.trashinfo").exists(), "sidecar removed on delete");
+        assert!(
+            !info.join("b.txt.trashinfo").exists(),
+            "sidecar removed on delete"
+        );
     }
 
     /// A trashed project with its own `files/` and `info/` folders, like the
@@ -893,7 +1051,11 @@ mod tests {
         fs::create_dir_all(project.join("files")).unwrap();
         fs::create_dir_all(project.join("info")).unwrap();
         fs::write(project.join("files/a.txt"), "x").unwrap();
-        fs::write(project.join("info/a.txt.trashinfo"), "[Trash Info]\nPath=/etc/a.txt\n").unwrap();
+        fs::write(
+            project.join("info/a.txt.trashinfo"),
+            "[Trash Info]\nPath=/etc/a.txt\n",
+        )
+        .unwrap();
         (files, project)
     }
 
@@ -933,12 +1095,22 @@ mod tests {
 
         // Its "record" would send Restore to /etc/a.txt.
         assert_eq!(sidecar_origin(&nested, &files), None);
-        assert_eq!(origin_of(&nested, &files, &TrashLog::default(), &HashMap::new()), None);
+        assert_eq!(
+            origin_of(&nested, &files, &TrashLog::default(), &HashMap::new()),
+            None
+        );
         // Asked about the wrong Trash folder, a real record is ignored too.
-        fs::write(dir.path().join("Trash/info/top.txt.trashinfo"), "[Trash Info]\nPath=/home/me/top.txt\n").unwrap();
+        fs::write(
+            dir.path().join("Trash/info/top.txt.trashinfo"),
+            "[Trash Info]\nPath=/home/me/top.txt\n",
+        )
+        .unwrap();
         fs::write(files.join("top.txt"), "x").unwrap();
         assert_eq!(sidecar_origin(&files.join("top.txt"), &project), None);
-        assert_eq!(sidecar_origin(&files.join("top.txt"), &files), Some(PathBuf::from("/home/me/top.txt")));
+        assert_eq!(
+            sidecar_origin(&files.join("top.txt"), &files),
+            Some(PathBuf::from("/home/me/top.txt"))
+        );
     }
 
     #[cfg(not(target_os = "macos"))]

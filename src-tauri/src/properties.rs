@@ -110,8 +110,8 @@ fn octal_string(mode: u32) -> String {
 
 pub fn file_properties(path: &str, show_hidden: bool) -> Result<FileProperties, String> {
     let p = Path::new(path);
-    let link_meta = std::fs::symlink_metadata(p)
-        .map_err(|e| format!("Could not read properties: {}", e))?;
+    let link_meta =
+        std::fs::symlink_metadata(p).map_err(|e| format!("Could not read properties: {}", e))?;
     let is_symlink = link_meta.file_type().is_symlink();
     // Show the target's size and dates, like GNOME Files; a broken link keeps
     // what the link itself reports.
@@ -208,7 +208,9 @@ pub fn folder_size(path: &str, cancelled: impl Fn() -> bool) -> Result<u64, Stri
     let mut total = 0;
     let mut pending = vec![p.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             if entry.file_name().to_string_lossy() == crate::versions::VERSIONS_DIR {
                 continue;
@@ -247,7 +249,11 @@ struct FileId {
 #[cfg(unix)]
 fn file_id(meta: &std::fs::Metadata) -> Option<FileId> {
     use std::os::unix::fs::MetadataExt;
-    Some(FileId { device: meta.dev(), inode: meta.ino(), links: meta.nlink() })
+    Some(FileId {
+        device: meta.dev(),
+        inode: meta.ino(),
+        links: meta.nlink(),
+    })
 }
 
 #[cfg(not(unix))]
@@ -287,7 +293,10 @@ mod tests {
         assert_eq!(access_label(0o600, 6, true), "Read/write, no access");
         assert_eq!(access_label(0o050, 3, true), "Access files");
         assert_eq!(access_label(0o004, 0, true), "List files only");
-        assert_eq!(access_label(0o003, 0, true), crate::platform::WRITE_ONLY_FOLDER);
+        assert_eq!(
+            access_label(0o003, 0, true),
+            crate::platform::WRITE_ONLY_FOLDER
+        );
         assert_eq!(access_label(0o002, 0, true), "Write-only, no access");
         assert_eq!(access_label(0o001, 0, true), "Access-only");
         assert_eq!(access_label(0o000, 0, true), "None");
@@ -324,7 +333,10 @@ mod tests {
         assert_eq!(props.mode.len(), 10);
         assert!(props.octal.len() >= 3);
         assert_eq!(props.owner, "Read and write");
-        assert_eq!(props.mode, permission_string(0o100000 | u32::from_str_radix(&props.octal, 8).unwrap()));
+        assert_eq!(
+            props.mode,
+            permission_string(0o100000 | u32::from_str_radix(&props.octal, 8).unwrap())
+        );
     }
 
     #[test]
@@ -358,7 +370,10 @@ mod tests {
         let props = file_properties(&link.to_string_lossy(), true).unwrap();
         assert!(props.is_symlink);
         assert!(!props.is_dir);
-        assert_eq!(props.symlink_target, Some(target.to_string_lossy().to_string()));
+        assert_eq!(
+            props.symlink_target,
+            Some(target.to_string_lossy().to_string())
+        );
         assert_eq!(props.size, 5);
     }
 
