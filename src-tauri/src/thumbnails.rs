@@ -1,8 +1,10 @@
 //! File thumbnails for the grid and list views, cached as PNGs on disk.
 //!
 //! On macOS they come from Quick Look (`qlmanage`), which covers images
-//! (HEIC included), video, PDF and office documents. If Quick Look can't help,
-//! or on other systems, common image formats are decoded directly.
+//! (HEIC included), video, PDF and office documents and runs out of process.
+//! If Quick Look can't help, or on other systems, common image formats are
+//! decoded directly — in this process, so decoding is serialized and large
+//! files are skipped rather than allowed to balloon the app's memory.
 //!
 //! Cache entries are keyed on path, size, modification time and requested
 //! size, so editing a file produces a fresh thumbnail. Files that have no
@@ -11,6 +13,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 /// Stable 64-bit FNV-1a, so cache names survive Rust upgrades.
@@ -103,9 +106,27 @@ fn quick_look(path: &Path, size: u32, out: &Path) -> bool {
     done
 }
 
+/// Raster decoding is serialized. The UI can have four thumbnail requests in
+/// flight, and four simultaneous full-size decodes of a large photo is where
+/// the peak memory went: a 12-megapixel image is ~48 MB as RGBA, so four at
+/// once cost ~190 MB. One at a time is free at thumbnail sizes.
+static DECODE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Largest image worth decoding for a thumbnail; 80 megapixels is ~320 MB as
+/// RGBA, far past anything a 256 px thumbnail needs. Bigger files are treated
+/// as thumbnailless instead of risking the app's memory.
+const MAX_PIXELS: u64 = 80_000_000;
+
 /// Decode a common image format directly (respecting EXIF rotation) and
 /// shrink it to fit `size`. Small images are kept at their own size.
 fn decode_image(path: &Path, size: u32, out: &Path) -> bool {
+    let _guard = DECODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let decoded = decode_image_now(path, size, out);
+    release_free_memory();
+    decoded
+}
+
+fn decode_image_now(path: &Path, size: u32, out: &Path) -> bool {
     use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 
     let Ok(reader) = ImageReader::open(path).and_then(|r| r.with_guessed_format()) else { return false };
@@ -113,6 +134,12 @@ fn decode_image(path: &Path, size: u32, out: &Path) -> bool {
         return false;
     }
     let Ok(mut decoder) = reader.into_decoder() else { return false };
+    // Read the header size first: a huge scan would allocate hundreds of
+    // megabytes just to be thrown away.
+    let (width, height) = decoder.dimensions();
+    if !worth_decoding(width, height) {
+        return false;
+    }
     let orientation = decoder.orientation().ok();
     let Ok(mut img) = DynamicImage::from_decoder(decoder) else { return false };
     if let Some(o) = orientation {
@@ -128,6 +155,32 @@ fn decode_image(path: &Path, size: u32, out: &Path) -> bool {
     }
     fs::rename(&tmp, out).is_ok()
 }
+
+/// Whether an image is small enough that a thumbnail is worth the memory.
+fn worth_decoding(width: u32, height: u32) -> bool {
+    u64::from(width) * u64::from(height) <= MAX_PIXELS
+}
+
+/// Give freed heap back to the OS after a decode.
+///
+/// glibc keeps released heap in per-arena pools instead of returning it, so a
+/// folder of large photos left this process tens of megabytes above where it
+/// started long after the thumbnails were written. `malloc_trim` hands those
+/// pages back. Only glibc has it, which is what the cfg selects.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn release_free_memory() {
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> i32;
+    }
+    // SAFETY: malloc_trim only releases memory the allocator already considers
+    // free; it cannot affect live allocations.
+    unsafe {
+        malloc_trim(0);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn release_free_memory() {}
 
 /// Delete cache entries older than `max_age`; run once at startup.
 pub fn prune(cache_dir: &Path, max_age: Duration) {
@@ -167,6 +220,56 @@ mod tests {
         let thumb = thumbnail(&src, 128, &cache).unwrap().expect("thumbnail");
         let (w, h) = image::image_dimensions(&thumb).unwrap();
         assert_eq!((w, h), (128, 64));
+    }
+
+    #[test]
+    fn oversized_images_are_skipped_instead_of_decoded() {
+        // Exactly at the budget is fine; one pixel past it is not.
+        assert!(worth_decoding(8000, 10000));
+        assert!(worth_decoding(10, 10));
+        assert!(!worth_decoding(8001, 10000));
+        assert!(!worth_decoding(9000, 9000));
+        assert!(!worth_decoding(u32::MAX, u32::MAX), "must not overflow");
+
+        // A refused image still gets a `.none` marker, so it isn't retried.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("scan.png");
+        write_png(&src, 400, 400);
+        let cache = dir.path().join("cache");
+        let thumb = thumbnail(&src, 64, &cache).unwrap().expect("small image still works");
+        assert!(thumb.exists());
+    }
+
+    #[test]
+    fn decoding_one_at_a_time_still_produces_every_thumbnail() {
+        // The decode lock serializes work; concurrent requests must all
+        // succeed, just in sequence.
+        let dir = tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let paths: Vec<PathBuf> = (0..4)
+            .map(|i| {
+                let p = dir.path().join(format!("photo-{i}.png"));
+                write_png(&p, 600, 600);
+                p
+            })
+            .collect();
+
+        let handles: Vec<_> = paths
+            .into_iter()
+            .map(|p| {
+                let cache = cache.clone();
+                std::thread::spawn(move || thumbnail(&p, 96, &cache).map(|t| t.is_some()))
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap(), Ok(true));
+        }
+    }
+
+    #[test]
+    fn free_memory_release_is_harmless() {
+        // No-op on most platforms; must never touch live allocations.
+        release_free_memory();
     }
 
     #[test]
