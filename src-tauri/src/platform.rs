@@ -16,6 +16,26 @@ pub const IS_MACOS: bool = cfg!(target_os = "macos");
 /// exactly this, the Drop Box in every user's Public folder, so say so there.
 pub const WRITE_ONLY_FOLDER: &str = if IS_MACOS { "Write-only (Drop Box)" } else { "Write-only" };
 
+/// Wait for `child` to exit, killing it once `timeout` has passed. True when it
+/// exited on its own. External helpers (qlmanage, mdfind) can hang on unusual
+/// input, and a stuck one must never hold a worker thread forever.
+pub fn wait_or_kill(child: &mut std::process::Child, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
 /// A mounted volume as the sidebar shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Volume {
@@ -222,6 +242,20 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("plain")).unwrap();
         assert!(!is_mount_point(&dir.path().join("plain")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wait_or_kill_waits_for_quick_programs_and_kills_stuck_ones() {
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+        let mut quick = Command::new("true").spawn().unwrap();
+        assert!(wait_or_kill(&mut quick, Duration::from_secs(5)));
+        let mut stuck = Command::new("sleep").arg("10").spawn().unwrap();
+        let start = Instant::now();
+        assert!(!wait_or_kill(&mut stuck, Duration::from_millis(100)));
+        assert!(start.elapsed() < Duration::from_secs(5), "killed, not waited out");
+        assert!(stuck.try_wait().unwrap().is_some(), "the stuck process was reaped");
     }
 
     #[test]
