@@ -50,8 +50,9 @@ M1 is in the tree:
 
 Not started: M2 writes (new folder, rename, copy, move, upload, Drive Trash,
 Undo), M3 cross-boundary drag and drop, shared drives, multiple accounts,
-server-side search. A live Google consent screen was not exercised from this
-Linux environment; the callback/exchange is covered by a fake exchange.
+server-side search. The live consent screen, token exchange and browsing were
+tested with a real Gmail account on 2026-10-25; automated tests use a fake
+exchange and a local fake server.
 
 ## Why not the OS mount
 
