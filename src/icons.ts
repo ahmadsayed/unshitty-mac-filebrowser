@@ -39,6 +39,8 @@ const SYMBOLIC: Record<string, string> = {
   "drive-harddisk": `<path d="M3.2 2.5h9.6l2.2 7v3a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5v-3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M1.5 9.5h13" stroke="currentColor" stroke-width="1.5"/><circle cx="11.75" cy="11.75" r="1" fill="currentColor"/>`,
   "media-eject": `<path d="M8 2.5 13.5 9h-11z" fill="currentColor"/><rect x="2.5" y="11" width="11" height="2.5" rx="1" fill="currentColor"/>`,
   "emblem-symbolic-link": `<path d="M4 12V9.5a3 3 0 0 1 3-3h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="m9.5 3.5 3 3-3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`,
+  // A clock with a back-turning arrow: "keeps earlier versions".
+  "emblem-versions": `<path d="M3.4 5.2A5.25 5.25 0 1 1 2.75 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M1.4 3.4 3.4 5.2l2.3-1.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 5.25v3l2 1.25" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`,
   "object-select": `<path d="m3 8.5 3.25 3.25L13 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`,
   "window-close": `<path d="m4.5 4.5 7 7m0-7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`,
   "dialog-error": `<circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5v4.25" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/><circle cx="8" cy="11.25" r="1" fill="currentColor"/>`,
@@ -229,7 +231,12 @@ export function isAppBundle(entry: Entry): boolean {
 }
 
 /** Full-colour icon for a listing entry; `folderKind` comes from the XDG folder map. */
-export function entryIcon(entry: Entry, folderKind: FolderKind = "plain"): string {
+/** The badge for a folder that keeps versions (also used in the path bar and sidebar). */
+export function versionsBadge(className = "emblem emblem-versions"): string {
+  return `<span class="${className}" title="Keeps versions">${sym("emblem-versions")}</span>`;
+}
+
+export function entryIcon(entry: Entry, folderKind: FolderKind = "plain", versioned = false): string {
   // macOS app bundles are folders, but show (and open) as applications.
   const id = isAppBundle(entry)
     ? "fc-file-executable"
@@ -239,7 +246,8 @@ export function entryIcon(entry: Entry, folderKind: FolderKind = "plain"): strin
   const link = entry.is_symlink
     ? `<span class="emblem">${sym("emblem-symbolic-link")}</span>`
     : "";
-  return `<svg class="fc" viewBox="0 0 64 64" aria-hidden="true"><use href="#${id}"/></svg>${link}`;
+  const versions = versioned ? versionsBadge() : "";
+  return `<svg class="fc" viewBox="0 0 64 64" aria-hidden="true"><use href="#${id}"/></svg>${link}${versions}`;
 }
 
 /** Inject the icon sprite into the document once, at startup. */

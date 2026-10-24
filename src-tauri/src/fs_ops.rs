@@ -107,25 +107,45 @@ pub fn list_dir(path: String, show_hidden: bool) -> Result<Vec<Entry>, String> {
     read_entries(Path::new(&path), show_hidden)
 }
 
-/// Number of entries directly inside `path`, or `None` if it can't be read.
-pub fn count_items(path: &Path, show_hidden: bool) -> Option<u32> {
-    let read_dir = std::fs::read_dir(path).ok()?;
-    let count = read_dir
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            name != crate::versions::VERSIONS_DIR && (show_hidden || !name.starts_with('.'))
-        })
-        .count();
-    Some(count as u32)
+/// What the "N items" column needs about a folder: how many entries it has,
+/// and whether it keeps versions (an owned `.versions/` inside). The flag is
+/// noticed while counting, so the version badge costs no extra directory
+/// read; only a folder that has `.versions` gets its marker read (D14).
+#[derive(Debug, Serialize, PartialEq)]
+pub struct FolderSummary {
+    pub count: u32,
+    pub versioned: bool,
 }
 
-/// Item counts for several folders at once (the "12 items" size column).
-pub fn item_counts(paths: Vec<String>, show_hidden: bool) -> Vec<Option<u32>> {
+/// Summary of the folder at `path`, or `None` if it can't be read.
+pub fn folder_summary(path: &Path, show_hidden: bool) -> Option<FolderSummary> {
+    let read_dir = std::fs::read_dir(path).ok()?;
+    let mut count = 0;
+    let mut has_versions = false;
+    for entry in read_dir.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == crate::versions::VERSIONS_DIR {
+            has_versions = true;
+        } else if show_hidden || !name.starts_with('.') {
+            count += 1;
+        }
+    }
+    let versioned = has_versions && crate::versions::read_marker(path).is_ok();
+    Some(FolderSummary { count, versioned })
+}
+
+/// Number of entries directly inside `path`, or `None` if it can't be read.
+pub fn count_items(path: &Path, show_hidden: bool) -> Option<u32> {
+    folder_summary(path, show_hidden).map(|summary| summary.count)
+}
+
+/// Summaries for several folders at once (the "12 items" size column and the
+/// version badge on folder icons).
+pub fn item_counts(paths: Vec<String>, show_hidden: bool) -> Vec<Option<FolderSummary>> {
     paths
         .iter()
-        .map(|p| count_items(Path::new(p), show_hidden))
+        .map(|p| folder_summary(Path::new(p), show_hidden))
         .collect()
 }
 
@@ -437,7 +457,27 @@ mod tests {
             ],
             false,
         );
-        assert_eq!(counts, vec![Some(0), None]);
+        assert_eq!(counts, vec![Some(FolderSummary { count: 0, versioned: false }), None]);
+    }
+
+    #[test]
+    fn a_folder_with_an_owned_history_is_versioned() {
+        let dir = tempdir().unwrap();
+        let owned = dir.path().join("Owned");
+        fs::create_dir(&owned).unwrap();
+        drop(crate::versions::history::History::create(&owned).unwrap());
+        fs::write(owned.join("a.txt"), "a").unwrap();
+        // A `.versions` another tool made doesn't count (D14).
+        let foreign = dir.path().join("Foreign");
+        fs::create_dir_all(foreign.join(".versions")).unwrap();
+        fs::write(foreign.join(".versions/meta.json"), r#"{"app":"other"}"#).unwrap();
+        let plain = dir.path().join("Plain");
+        fs::create_dir(&plain).unwrap();
+
+        let summary = |p: &Path, hidden| folder_summary(p, hidden).unwrap();
+        assert_eq!(summary(&owned, true), FolderSummary { count: 1, versioned: true });
+        assert_eq!(summary(&foreign, true), FolderSummary { count: 0, versioned: false });
+        assert_eq!(summary(&plain, false), FolderSummary { count: 0, versioned: false });
     }
 
     // ----- make_dir tests -----

@@ -583,6 +583,22 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   box-shadow: 0 0 0 1px var(--shade);
 }
 .emblem .sym { width: 60%; height: 60%; }
+/* Keeps versions: bottom-right, so it never covers the link emblem. */
+.emblem-versions {
+  left: auto;
+  right: 8%;
+  color: var(--accent);
+}
+/* The same badge, inline after a path bar crumb or a sidebar bookmark. */
+.crumb-badge,
+.sidebar-badge {
+  display: inline-grid;
+  place-items: center;
+  color: var(--accent);
+  margin-inline-start: 4px;
+}
+.crumb-badge .sym,
+.sidebar-badge .sym { width: 12px; height: 12px; }
 
 /* ----- List view ----- */
 .list-body {

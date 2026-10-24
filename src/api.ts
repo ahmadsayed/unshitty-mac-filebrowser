@@ -42,12 +42,18 @@ export async function listVolumes(): Promise<Volume[]> {
   return invoke<Volume[]>("volumes");
 }
 
-/** Item counts for several folders; `null` where a folder can't be read. */
+/** A folder's item count, and whether it keeps versions. */
+export interface FolderSummary {
+  count: number;
+  versioned: boolean;
+}
+
+/** Summaries for several folders; `null` where a folder can't be read. */
 export async function itemCounts(
   paths: string[],
   showHidden: boolean
-): Promise<(number | null)[]> {
-  return invoke<(number | null)[]>("item_counts", { paths, showHidden });
+): Promise<(FolderSummary | null)[]> {
+  return invoke<(FolderSummary | null)[]>("item_counts", { paths, showHidden });
 }
 
 /** Create a new directory at the given path. Errors if the path already exists. */
