@@ -3,7 +3,8 @@ import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desk
 import {
   listDir, makeDir, renameEntry, itemCounts, copyEntry, moveEntry, trashEntry, pathExists,
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
-  recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles, type Entry,
+  recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
+  trashInfo, restoreEntry, deletePermanently, emptyTrash, type Entry,
 } from "./api";
 import { entryIcon, fileKind, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
@@ -143,14 +144,21 @@ function hasEntries(loc: string): boolean {
 
 /** Views of items from many folders, which get a Location column. */
 function showsWhere(): boolean {
-  return location === RECENT || location === STARRED;
+  return location === RECENT || location === STARRED || location === trashPath;
 }
 
 /** The entries shown at `loc`. */
 async function listLocation(loc: string): Promise<Entry[]> {
   if (loc === RECENT) return recentFiles(prefs.showHidden);
   if (loc === STARRED) return starredFiles(prefs.showHidden);
-  return isPseudo(loc) ? [] : listDir(loc, prefs.showHidden);
+  if (isPseudo(loc)) return [];
+  const list = await listDir(loc, prefs.showHidden);
+  if (loc === trashPath && list.length) {
+    // Where each item came from and when it was trashed, for the columns and Restore.
+    const info = await trashInfo(list.map((e) => e.path)).catch(() => []);
+    info.forEach((t, i) => Object.assign(list[i], t));
+  }
+  return list;
 }
 
 function locationName(loc: string): string {
@@ -167,7 +175,7 @@ function locationName(loc: string): string {
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 function sortValue(e: Entry): number {
-  if (prefs.sortKey === "modified") return e.modified;
+  if (prefs.sortKey === "modified") return e.trashed ?? e.modified;
   if (e.is_dir) return counts.get(e.path) ?? -1;
   return e.size;
 }
@@ -486,6 +494,8 @@ function renderView(): void {
     viewEl.innerHTML = statusPage("dialog-error", "Unable to Access Location", listingError);
   } else if (shown.length === 0 && searchQuery) {
     viewEl.innerHTML = statusPage("system-search", "No Results Found", "Try a different search.");
+  } else if (shown.length === 0 && location === trashPath) {
+    viewEl.innerHTML = statusPage("user-trash", "Trash is Empty", "");
   } else if (shown.length === 0) {
     viewEl.innerHTML = statusPage("folder", "Folder is Empty", "");
   } else if (prefs.view === "grid") {
@@ -524,8 +534,9 @@ function listHeaderHtml(): string {
     // Fixed order, so the headers are plain labels.
     return `<div class="list-header with-where"><span>Name</span><span>Size</span><span>Location</span><span>Recency</span><span></span></div>`;
   }
-  const where = showsWhere() ? "<span>Location</span>" : "";
-  return `<div class="list-header${where ? " with-where" : ""}">${col("name", "Name")}${col("size", "Size")}${where}${col("modified", "Modified")}<span></span></div>`;
+  const trash = location === trashPath;
+  const where = showsWhere() ? `<span>${trash ? "Original Location" : "Location"}</span>` : "";
+  return `<div class="list-header${where ? " with-where" : ""}">${col("name", "Name")}${col("size", "Size")}${where}${col("modified", trash ? "Trashed On" : "Modified")}<span></span></div>`;
 }
 
 function itemHtml(i: number): string {
@@ -539,8 +550,12 @@ function itemHtml(i: number): string {
       `<div class="icon">${iconHtml(e)}</div>` +
       `<div class="name">${escapeHtml(e.name)}</div></div>`;
   }
-  const date = location === RECENT ? e.used ?? e.modified : e.modified;
-  const where = showsWhere() ? `<span class="meta where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</span>` : "";
+  const date = location === RECENT ? e.used ?? e.modified : e.trashed ?? e.modified;
+  // In the Trash, the location is where the item came from.
+  const from = location === trashPath ? e.origin : e.path;
+  const where = !showsWhere() ? "" : from
+    ? `<span class="meta where" title="${escapeHtml(parentOf(from))}">${escapeHtml(whereText(from))}</span>`
+    : `<span class="meta where"></span>`;
   return `<div class="list-row item${cls}${where ? " with-where" : ""}" data-index="${i}" role="option" aria-selected="${sel}" ${pos}>` +
     `<div class="name-cell"><div class="icon">${iconHtml(e)}</div><span class="name">${escapeHtml(e.name)}</span></div>` +
     `<span class="meta size">${sizeText(e)}</span>${where}` +
@@ -1097,6 +1112,20 @@ function openItemMenu(at: Anchor): void {
     ]);
     return;
   }
+  if (inTrash()) {
+    // Only items at the top of the Trash know where they came from.
+    const restorable = location === trashPath && sel.some((e) => e.origin);
+    openMenu(at, [
+      { label: "Open", action: activateSelection },
+      ...(location === trashPath ? [{ label: "Restore From Trash", disabled: !restorable, action: restoreSelection }] : []),
+      { separator: true },
+      { label: "Cut", action: () => setClipboard("cut") },
+      { label: "Copy", action: () => setClipboard("copy") },
+      { separator: true },
+      { label: "Delete Permanently…", action: () => confirmDeletePermanently(sel) },
+    ]);
+    return;
+  }
   if (location === STARRED) {
     openMenu(at, [
       { label: "Open", action: activateSelection },
@@ -1121,15 +1150,23 @@ function openItemMenu(at: Anchor): void {
     ...(intoFolder ? [{ label: "Paste Into Folder", disabled: !clipboard, action: () => paste(intoFolder.path) }] : []),
     { separator: true },
     { label: "Rename…", disabled: !single, action: () => single && startRename(single) },
-    ...(inTrash() ? [] : [starMenuItem(sel)]),
+    starMenuItem(sel),
     { separator: true },
-    { label: "Move to Trash", disabled: inTrash(), action: trashSelection },
+    { label: "Move to Trash", action: trashSelection },
   ]);
 }
 
 function openBackgroundMenu(at: Anchor): void {
   if (isPseudo(location)) {
     openMenu(at, [{ label: "Select All", action: selectAll }]);
+    return;
+  }
+  if (location === trashPath) {
+    openMenu(at, [
+      { label: "Empty Trash…", disabled: entries.length === 0, action: confirmEmptyTrash },
+      { separator: true },
+      { label: "Select All", action: selectAll },
+    ]);
     return;
   }
   openMenu(at, [
@@ -1142,6 +1179,14 @@ function openBackgroundMenu(at: Anchor): void {
 
 function openLocationMenu(anchor: HTMLElement): void {
   const real = !isPseudo(location);
+  if (location === trashPath) {
+    openMenu(anchor, [
+      { label: "Empty Trash…", disabled: entries.length === 0, action: confirmEmptyTrash },
+      { separator: true },
+      { label: "Select All", action: selectAll },
+    ]);
+    return;
+  }
   openMenu(anchor, [
     { label: "New Folder…", disabled: !real, action: promptNewFolder },
     ...(real ? [bookmarkMenuItem(location)] : []),
@@ -1412,13 +1457,24 @@ async function trashSelection(): Promise<void> {
   await trashPaths(selectedEntries().map((e) => e.path));
 }
 
+/** Delete / ⌘⌫: to the Trash, or out of it for good when already there. */
+function trashOrDelete(): void {
+  if (inTrash()) confirmDeletePermanently(selectedEntries());
+  else trashSelection();
+}
+
+/** The last Move to Trash, for Undo: where each item went and came from. */
+let lastTrashed: { trashed: string; origin: string }[] = [];
+
 async function trashPaths(paths: string[]): Promise<void> {
   if (paths.length === 0) return;
   const errors: string[] = [];
+  const undoable: { trashed: string; origin: string }[] = [];
   let done = 0;
   for (const p of paths) {
     try {
-      await trashEntry(p);
+      const trashed = await trashEntry(p);
+      if (trashed) undoable.push({ trashed, origin: p });
       done++;
     } catch (err) {
       errors.push(`“${basename(p)}”: ${cleanError(err)}`);
@@ -1428,9 +1484,107 @@ async function trashPaths(paths: string[]): Promise<void> {
     clipboard.paths = clipboard.paths.filter((p) => !paths.includes(p));
     if (clipboard.paths.length === 0) clipboard = null;
   }
-  if (errors.length) showToast(`Could not move ${errors[0]} to the Trash`);
-  else showToast(done === 1 ? `“${basename(paths[0])}” moved to trash` : `${done} items moved to trash`);
+  lastTrashed = undoable;
+  if (errors.length) {
+    showToast(`Could not move ${errors[0]} to the Trash`);
+  } else {
+    const message = done === 1 ? `“${basename(paths[0])}” moved to trash` : `${done} items moved to trash`;
+    showToast(message, undoable.length ? { button: { label: "Undo", onClick: undoTrash } } : {});
+  }
   await reload([]);
+}
+
+/** Put the items from the last Move to Trash back. */
+async function undoTrash(): Promise<void> {
+  const items = lastTrashed;
+  lastTrashed = [];
+  if (items.length === 0) return;
+  const restored: string[] = [];
+  const errors: string[] = [];
+  for (const { trashed, origin } of items) {
+    try {
+      restored.push(await restoreEntry(trashed));
+    } catch (err) {
+      errors.push(`“${basename(origin)}”: ${cleanError(err)}`);
+    }
+  }
+  if (errors.length) showToast(`Could not restore ${errors[0]}`);
+  await reload(restored);
+}
+
+async function restoreSelection(): Promise<void> {
+  const errors: string[] = [];
+  for (const e of selectedEntries()) {
+    if (!e.origin) continue;
+    try {
+      await restoreEntry(e.path);
+    } catch (err) {
+      errors.push(`“${e.name}”: ${cleanError(err)}`);
+    }
+  }
+  if (errors.length) showToast(errors.length === 1 ? `Could not restore ${errors[0]}` : `Could not restore ${errors.length} items. ${errors[0]}`);
+  await reload([]);
+}
+
+function confirmDeletePermanently(sel: Entry[]): void {
+  if (sel.length === 0 || !inTrash()) return;
+  openDialog({
+    heading: sel.length === 1
+      ? `Are you sure you want to permanently delete “${sel[0].name}”?`
+      : `Are you sure you want to permanently delete the ${sel.length} selected items?`,
+    body: "If you delete an item, it will be permanently lost.",
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "delete", label: "Delete", style: "destructive" },
+    ],
+    defaultResponse: "cancel",
+    closeResponse: "cancel",
+    onResponse: (id) => {
+      if (id === "delete") deleteEntries(sel);
+    },
+  });
+}
+
+async function deleteEntries(sel: Entry[]): Promise<void> {
+  const errors: string[] = [];
+  for (const e of sel) {
+    try {
+      await deletePermanently(e.path);
+    } catch (err) {
+      errors.push(`“${e.name}”: ${cleanError(err)}`);
+    }
+  }
+  if (errors.length) showToast(`Could not delete ${errors[0]}`);
+  await reload([]);
+}
+
+function confirmEmptyTrash(): void {
+  openDialog({
+    heading: "Empty all items from Trash?",
+    body: "All items in the Trash will be permanently deleted.",
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "empty", label: "Empty Trash", style: "destructive" },
+    ],
+    defaultResponse: "cancel",
+    closeResponse: "cancel",
+    onResponse: (id) => {
+      if (id === "empty") runEmptyTrash();
+    },
+  });
+}
+
+async function runEmptyTrash(): Promise<void> {
+  try {
+    await emptyTrash();
+  } catch (err) {
+    showToast(`Could not empty the Trash: ${cleanError(err)}`);
+  }
+  lastTrashed = [];
+  if (inTrash()) {
+    if (location === trashPath) await reload([]);
+    else await navigate(trashPath);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1753,6 +1907,7 @@ function onSidebarContextMenu(e: MouseEvent): void {
   if (row.classList.contains("pin")) {
     items.push({ separator: true }, { label: "Remove from Bookmarks", action: () => setBookmarked(loc, false) });
   }
+  if (loc === trashPath) items.push({ separator: true }, { label: "Empty Trash…", action: confirmEmptyTrash });
   openMenu({ x: e.clientX, y: e.clientY }, items);
 }
 
@@ -1937,7 +2092,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
   ]],
   ["Files", [
     ["Open", "Enter"], ["Rename", "F2"], ["New folder", isMac ? "⇧⌘N" : "Shift+Ctrl+N"], ["Select all", `${MOD}A`],
-    ["Copy / Cut / Paste", `${MOD}C / ${MOD}X / ${MOD}V`], ["Move to Trash", isMac ? "⌘⌫ or Delete" : "Delete"],
+    ["Copy / Cut / Paste", `${MOD}C / ${MOD}X / ${MOD}V`], ["Move to Trash", isMac ? "⌘⌫ or Delete" : "Delete"], ["Undo Move to Trash", `${MOD}Z`],
     ["Cancel cut", "Esc"], ["Bookmark this folder", `${MOD}D`],
   ]],
 ];
@@ -2038,10 +2193,10 @@ function onViewKeyDown(e: KeyboardEvent): void {
       else if (!cancelCut()) clearSelection();
       break;
     case "Delete":
-      trashSelection();
+      trashOrDelete();
       break;
     case "Backspace":
-      if (mod) trashSelection();
+      if (mod) trashOrDelete();
       else goBack();
       break;
     case " ":
@@ -2094,6 +2249,7 @@ function onGlobalKeyDown(e: KeyboardEvent): void {
   if (isMac && e.metaKey && e.key === "]") return run(goForward);
   if (isMac && e.metaKey && e.key === "ArrowUp") return run(goUp);
   if (inInput) return;
+  if (mod && !e.shiftKey && key === "z" && lastTrashed.length) return run(undoTrash);
   if (mod && key === "a") return run(selectAll);
   if (mod && !e.shiftKey && key === "c" && selected.size) return run(() => setClipboard("copy"));
   if (mod && !e.shiftKey && key === "x" && selected.size) return run(() => setClipboard("cut"));

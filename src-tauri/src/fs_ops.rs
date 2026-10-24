@@ -309,14 +309,6 @@ pub fn move_entry(from: String, to: String, overwrite: bool) -> Result<(), Strin
     Ok(())
 }
 
-/// Move `path` to the system Trash (recoverable).
-#[tauri::command(async)]
-pub fn trash_entry(path: String) -> Result<(), String> {
-    if std::fs::symlink_metadata(&path).is_err() {
-        return Err(format!("“{}” no longer exists", path));
-    }
-    trash::delete(&path).map_err(|e| format!("Failed to move to Trash: {}", e))
-}
 
 
 #[cfg(test)]
@@ -651,16 +643,6 @@ mod tests {
     }
 
     #[test]
-    fn trash_entry_removes_file_from_its_location() {
-        let dir = tempdir().unwrap();
-        let f = dir.path().join("trash-me.txt");
-        fs::write(&f, "bye").unwrap();
-
-        trash_entry(s(&f)).unwrap();
-        assert!(!f.exists());
-    }
-
-    #[test]
     fn path_info_reports_kind_device_and_missing() {
         let dir = tempdir().unwrap();
         let f = dir.path().join("f.txt");
@@ -685,7 +667,6 @@ mod tests {
 
         assert!(copy_entry(s(&gone), s(&dst), false).is_err());
         assert!(move_entry(s(&gone), s(&dst), false).is_err());
-        assert!(trash_entry(s(&gone)).is_err());
         assert!(!path_exists(s(&gone)));
     }
 }

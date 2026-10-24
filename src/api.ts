@@ -11,6 +11,10 @@ export interface Entry {
   is_symlink: boolean;
   /** Only in Recent: when the file was last used (unix seconds). */
   used?: number;
+  /** Only in the Trash: where the item came from, if known. */
+  origin?: string | null;
+  /** Only in the Trash: when it was trashed (unix seconds). */
+  trashed?: number;
 }
 
 /**
@@ -60,9 +64,34 @@ export async function moveEntry(from: string, to: string, overwrite: boolean): P
   return invoke<void>("move_entry", { from, to, overwrite });
 }
 
-/** Move `path` to the Trash. */
-export async function trashEntry(path: string): Promise<void> {
-  return invoke<void>("trash_entry", { path });
+/** Move `path` to the Trash. Resolves with its path in the Trash when known (for Undo). */
+export async function trashEntry(path: string): Promise<string | null> {
+  return invoke<string | null>("trash_entry", { path });
+}
+
+export interface TrashInfo {
+  origin: string | null;
+  trashed: number;
+}
+
+/** Original location and trash date of items in the Trash. */
+export async function trashInfo(paths: string[]): Promise<TrashInfo[]> {
+  return invoke<TrashInfo[]>("trash_info", { paths });
+}
+
+/** Move an item in the Trash back to where it came from; resolves with that path. */
+export async function restoreEntry(path: string): Promise<string> {
+  return invoke<string>("restore_entry", { path });
+}
+
+/** Delete an item in the Trash for good. */
+export async function deletePermanently(path: string): Promise<void> {
+  return invoke<void>("delete_permanently", { path });
+}
+
+/** Delete everything in the Trash. */
+export async function emptyTrash(): Promise<void> {
+  return invoke<void>("empty_trash");
 }
 
 /** Files used lately, here or in other apps, newest first. */

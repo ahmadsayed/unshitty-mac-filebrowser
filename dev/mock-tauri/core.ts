@@ -50,7 +50,7 @@ const tree: Record<string, Node> = {
       "link-to-docs": d({}, 50 * day, true),
       ".zshrc": f(2_048, 100 * day),
       ".config": d({ "settings.json": f(512, day) }, 10 * day),
-      ".Trash": d({ "old.txt": f(42, 9 * day) }),
+      ".Trash": d({ "old.txt": f(42, 9 * day), "unknown origin.zip": f(31_000, 30 * day) }),
     }),
   }),
   // 10k entries for checking large-folder performance: type /big in the path bar.
@@ -99,13 +99,35 @@ function parentAndName(path: string): [Node | undefined, string] {
   return [lookup(path.slice(0, i) || "/"), path.slice(i + 1)];
 }
 
-function trash(parent: Node & { dir: true }, name: string): void {
-  const bin = lookup("/Users/me/.Trash");
+const TRASH = "/Users/me/.Trash";
+/** Path in the Trash → original path and when it was trashed (the real app's trash_log.json). */
+const trashLog = new Map<string, { origin: string; time: number }>([
+  [`${TRASH}/old.txt`, { origin: "/Users/me/Documents/old.txt", time: now - 9 * day }],
+]);
+
+/** Move `name` out of `parent` into the Trash; returns its path there. */
+function trash(parent: Node & { dir: true }, name: string, origin?: string): string {
+  const bin = lookup(TRASH);
   if (!bin?.dir) throw "no trash";
   let target = name;
   for (let n = 2; bin.children[target]; n++) target = `${name} ${n}`;
   bin.children[target] = parent.children[name];
   delete parent.children[name];
+  const trashed = `${TRASH}/${target}`;
+  if (origin) trashLog.set(trashed, { origin, time: Math.floor(Date.now() / 1000) });
+  return trashed;
+}
+
+/** Make the folders on the way to `path`, like the backend's restore. */
+function ensureDir(path: string): Node & { dir: true } {
+  let node = lookup("/") as Node & { dir: true };
+  for (const part of path.split("/").filter(Boolean)) {
+    node.children[part] ??= d({}, 0);
+    const next = node.children[part];
+    if (!next.dir) throw `“${part}” is not a folder`;
+    node = next;
+  }
+  return node;
 }
 
 /** Path → last used time, standing in for Spotlight plus the app's own list. */
@@ -258,7 +280,39 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
     case "trash_entry": {
       const [parent, name] = parentAndName(args.path as string);
       if (!parent?.dir || !parent.children[name]) throw `“${args.path}” no longer exists`;
-      trash(parent, name);
+      return trash(parent, name, args.path as string) as T;
+    }
+    case "trash_info":
+      return (args.paths as string[]).map((p) => {
+        const logged = trashLog.get(p);
+        return { origin: logged?.origin ?? null, trashed: logged?.time ?? now - 2 * day };
+      }) as T;
+    case "restore_entry": {
+      const path = args.path as string;
+      const logged = trashLog.get(path);
+      if (!logged) throw "The original location is unknown";
+      const [bin, name] = parentAndName(path);
+      if (!bin?.dir || !bin.children[name]) throw `“${path}” is no longer in the Trash`;
+      const [, originName] = parentAndName(logged.origin);
+      const dir = ensureDir(logged.origin.slice(0, logged.origin.lastIndexOf("/")));
+      if (dir.children[originName]) throw `An item named “${originName}” already exists in “${logged.origin.split("/").at(-2)}”`;
+      dir.children[originName] = bin.children[name];
+      delete bin.children[name];
+      trashLog.delete(path);
+      return logged.origin as T;
+    }
+    case "delete_permanently": {
+      const path = args.path as string;
+      if (!path.startsWith(TRASH + "/")) throw "Only items in the Trash can be deleted permanently";
+      const [parent, name] = parentAndName(path);
+      if (!parent?.dir || !parent.children[name]) throw `“${path}” no longer exists`;
+      delete parent.children[name];
+      return undefined as T;
+    }
+    case "empty_trash": {
+      const bin = lookup(TRASH);
+      if (bin?.dir) bin.children = {};
+      trashLog.clear();
       return undefined as T;
     }
     case "rename_entry": {

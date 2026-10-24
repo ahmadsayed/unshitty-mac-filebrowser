@@ -2,8 +2,10 @@ mod config_store;
 mod fs_ops;
 mod recent;
 mod thumbnails;
+mod trash_ops;
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::Manager;
 
 fn config_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
@@ -99,6 +101,75 @@ fn forget_recent(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String
     config_store::write_json(&file, &store)
 }
 
+/// Serializes read-modify-write of `trash_log.json`.
+static TRASH_LOG: Mutex<()> = Mutex::new(());
+
+fn home_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path().home_dir().map_err(|e| e.to_string())
+}
+
+/// Move `path` to the Trash. Returns where it went, when that's known, so
+/// the move can be undone.
+#[tauri::command(async)]
+fn trash_entry(app: tauri::AppHandle, path: String) -> Result<Option<String>, String> {
+    let home = home_dir(&app)?;
+    let origin = PathBuf::from(&path);
+    let trashed = trash_ops::trash_and_locate(&origin, &home)?;
+    if let (Some(trashed), Ok(log_path)) = (&trashed, config_file(&app, "trash_log.json")) {
+        let _guard = TRASH_LOG.lock().unwrap_or_else(|e| e.into_inner());
+        let mut log = trash_ops::read_log(&log_path);
+        trash_ops::record(&mut log, trashed, &origin, recent::now());
+        let _ = config_store::write_json(&log_path, &log);
+    }
+    Ok(trashed.map(|p| p.to_string_lossy().to_string()))
+}
+
+/// Finder's "Put Back" records for the home Trash.
+fn put_back(home: &Path) -> std::collections::HashMap<String, PathBuf> {
+    trash_ops::read_put_back(&home.join(".Trash/.DS_Store"), Path::new("/"))
+}
+
+/// Original location and trash date of items in the Trash.
+#[tauri::command(async)]
+fn trash_info(app: tauri::AppHandle, paths: Vec<String>) -> Vec<trash_ops::TrashInfo> {
+    let log = config_file(&app, "trash_log.json")
+        .map(|p| trash_ops::read_log(&p))
+        .unwrap_or_default();
+    let records = home_dir(&app).map(|h| put_back(&h)).unwrap_or_default();
+    trash_ops::info(&paths, &log, &records)
+}
+
+/// "Restore From Trash" and Undo: move an item back where it came from.
+/// Returns the restored path.
+#[tauri::command(async)]
+fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let log_path = config_file(&app, "trash_log.json")?;
+    let _guard = TRASH_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    let mut log = trash_ops::read_log(&log_path);
+    let trashed = PathBuf::from(&path);
+    let origin = trash_ops::origin_of(&trashed, &log, &put_back(&home_dir(&app)?))
+        .ok_or_else(|| "The original location is unknown".to_string())?;
+    trash_ops::restore(&trashed, &origin)?;
+    log.items.remove(&path);
+    let _ = config_store::write_json(&log_path, &log);
+    Ok(origin.to_string_lossy().to_string())
+}
+
+/// Delete an item in the Trash for good.
+#[tauri::command(async)]
+fn delete_permanently(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    let trash_dir = trash_ops::trash_dir_for(&path, &home_dir(&app)?);
+    trash_ops::delete_permanently(&path, &trash_dir)
+}
+
+/// Delete everything in the home Trash.
+#[tauri::command(async)]
+fn empty_trash(app: tauri::AppHandle) -> Result<(), String> {
+    let home = home_dir(&app)?;
+    trash_ops::empty(&home.join(".Trash"))
+}
+
 fn thumbnail_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path().app_cache_dir().ok().map(|d| d.join("thumbnails"))
 }
@@ -134,7 +205,11 @@ pub fn run() {
             fs_ops::path_info,
             fs_ops::copy_entry,
             fs_ops::move_entry,
-            fs_ops::trash_entry,
+            trash_entry,
+            trash_info,
+            restore_entry,
+            delete_permanently,
+            empty_trash,
             load_pins,
             save_pins,
             get_flag,

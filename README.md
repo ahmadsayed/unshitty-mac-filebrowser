@@ -51,7 +51,10 @@ files, so the photo thumbnails are placeholders.</sub>
   Finder land in the folder under the pointer
 - Thumbnails for images (HEIC too), videos, PDFs and office documents, made by
   macOS Quick Look and cached on disk; toggle with "Show Thumbnails" in the menu
-- Rename, new folder, Move to Trash
+- Rename, new folder, Move to Trash with an **Undo** button in the toast (or ⌘Z)
+- Trash: Original Location and Trashed On columns, **Restore From Trash** (also
+  for items trashed in Finder, from its "Put Back" records), **Delete
+  Permanently…** and **Empty Trash…**, both after a confirmation
 - Open files in their default app (double-click or Enter); `.app` bundles launch,
   with "Show Package Contents" in the context menu
 - Recent: files opened lately in any app (from Spotlight) or from here, newest
@@ -92,16 +95,17 @@ exact build: after rebuilding, toggle the permission off and on again.
   the Rust side. Type `/big` in the path bar for a 10,000-item folder; add `?demo`
   to the URL to hide the test-only folders.
 - `cd src-tauri && cargo test` runs the backend tests (listing, copy/move/trash
-  safety checks, settings files, thumbnails, Recent).
+  safety checks, settings files, thumbnails, Recent, Trash).
 - Thumbnails are cached in `~/Library/Caches/io.github.ahmadsayed.filebrowser/thumbnails`;
   entries unused for 60 days are removed at startup.
 - Design notes and the implementation plan live in `docs/superpowers/`.
 
 ## Not supported yet
 
-Network is a placeholder; there is no Undo after Move to
-Trash, no dragging files out of the app into Finder or other apps, no tabs,
-and no disk-wide search.
+Network is a placeholder; Undo covers only the last Move to Trash; the Trash
+view shows the home Trash, not the Trash folders of other drives; there is no
+dragging files out of the app into Finder or other apps, no tabs, and no
+disk-wide search.
 
 ## Credits and thanks
 
