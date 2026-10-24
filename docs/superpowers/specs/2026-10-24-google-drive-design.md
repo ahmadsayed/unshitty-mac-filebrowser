@@ -36,9 +36,9 @@ M1 is in the tree:
   PNG normalization, and Open/Open in Browser.
 - Sidebar row, connect/cancel/disconnect dialog, breadcrumbs, up/back/forward,
   focus refresh and the read-only menus.
-- A shipped Desktop client ID and its non-confidential client secret
-  (`drive.readonly`), compiled from the git-ignored `.env` or the
-  `FILEBROWSER_GOOGLE_CLIENT_ID`/`_SECRET` build environment.
+- Bring-your-own OAuth client (U5): the Connect dialog asks for the user's
+  Desktop client JSON first, stored as `google-client.json` (`0600`); user guide
+  in `docs/google-drive.md`.
 - One shared HTTP client; access tokens cached in memory (the keychain is read
   once per account and written on refresh); refreshes serialized so parallel
   requests refresh once, keeping the refresh token Google omits from refresh
@@ -136,8 +136,15 @@ below.
   Fedora 45 / GNOME 51 has no `gvfs-google` and no `libgdata`, so there is no
   Drive backend to discover (see "Why not the OS mount"). The app talks to
   Drive itself.
-- **U4. One shipped client ID.** The app embeds a single Desktop-app OAuth
-  client ID; users do not create a Google Cloud project.
+- **U4. One shipped client ID.** *Superseded by U5 on 2026-10-25.* The app
+  embedded a single Desktop-app OAuth client ID; users did not create a Google
+  Cloud project.
+- **U5. Users bring their own OAuth client.** (2026-10-25) The app ships no
+  client and no secret. Each user creates a Desktop-app client in their own
+  Google Cloud project, following `docs/google-drive.md`, and adds its JSON in
+  the Connect dialog. Chosen to avoid publishing and verifying a shared app,
+  its 100-user cap for unverified apps, and shipping a secret in the binary.
+  The cost is a one-time setup of about 10 minutes per user.
 
 ### Proposed by the designer (review these)
 
@@ -202,9 +209,14 @@ be added later without a migration.
   write milestone. An unverified OAuth app shows Google's "Google hasn't
   verified this app" warning; this is documented, not worked around.
 - The Desktop client's `client_secret` is required by Google's token endpoint
-  and is sent in the request body, never in the auth URL. It is built in from
-  the git-ignored `.env`; for an installed app Google treats it as
-  non-confidential, and PKCE still protects the exchange.
+  and is sent in the request body, never in the auth URL. It comes from the
+  user's own client (U5), stored by `cloud/client.rs` in `google-client.json`
+  (`0600`) rather than the keychain: Google treats an installed app's secret
+  as non-confidential, and PKCE still protects the exchange. The secret is
+  never sent to the frontend (`drive_client_status` returns only the client
+  ID). Changing or removing the client is refused while an account is
+  connected, because tokens can only be refreshed by the client that issued
+  them.
 
 **D5. Tokens live in the OS keychain, never in the config file or logs.**
 The `keyring` crate gives one API on macOS (Keychain) and Linux (Secret
@@ -645,9 +657,8 @@ clashes always prompt.
 Answer these before M1 implementation starts; the defaults above are
 recommendations, not blockers.
 
-1. **OAuth client.** Decided: one Desktop client ID and its non-confidential
-   secret are built in from the git-ignored `.env`. PKCE still protects the
-   exchange.
+1. **OAuth client.** Decided (U5): each user brings their own Desktop client;
+   nothing is built in. PKCE still protects the exchange.
 2. **Scope for M1.** Decided: `drive.readonly`. Writes request `drive` when M2
    starts.
 3. **Multiple accounts.** Confirm one account is enough for v1.

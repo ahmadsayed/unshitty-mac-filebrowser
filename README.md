@@ -67,7 +67,8 @@ files, so the photo thumbnails are placeholders.</sub>
 - Starred: star files and folders from the context menu or the star at the end
   of each list row; Starred lists them all, and stars follow renames and moves
   made in the app
-- **Google Drive (Experimental, read-only):** connect a Google account from the
+- **Google Drive (Experimental, read-only):** add your own Google OAuth client
+  once ([setup guide](docs/google-drive.md)), connect a Google account from the
   sidebar and browse My Drive with the same views, breadcrumbs and thumbnails.
   Files open as a local snapshot; Google Docs open in the browser. The refresh
   token is kept in the OS keychain (with a private file fallback). Writes,
@@ -97,18 +98,9 @@ npm run tauri build    # macOS: bundle/macos/File Browser.app
                        # Linux: bundle/deb, bundle/rpm and bundle/appimage
 ```
 
-Google Drive needs the Desktop OAuth client JSON in `.env`:
-
-```sh
-cp .env.example .env   # then paste the downloaded client JSON
-```
-
-`.env` is git-ignored. The client ID and secret are compiled into the binary at
-build time; re-run the build after changing it. CI can set
-`FILEBROWSER_GOOGLE_CLIENT_ID` and `FILEBROWSER_GOOGLE_CLIENT_SECRET` instead.
-With neither, the app builds with a warning and Drive sign-in reports that it
-is not configured; a malformed `.env` fails the build. For an installed app
-Google treats the secret as non-confidential; PKCE is still used.
+Google Drive needs no build setup. The app ships no Google client: each user
+creates a Desktop OAuth client in their own Google Cloud project and adds its
+JSON file in the app. See [docs/google-drive.md](docs/google-drive.md).
 
 ### Linux
 

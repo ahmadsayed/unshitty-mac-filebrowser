@@ -30,14 +30,21 @@ pub struct Auth {
 /// Exchanges a refresh token for a new access token. Tests use a fake.
 type Refresh<'a> = &'a dyn Fn(&str) -> Result<Token, String>;
 
-fn google_refresh(refresh_token: &str) -> Result<Token, String> {
-    crate::cloud::oauth::GoogleExchange::new().refresh(refresh_token)
+/// Refreshes with the user's OAuth client, the one that issued the token.
+fn google_refresh(state: &CloudState) -> impl Fn(&str) -> Result<Token, String> + '_ {
+    move |refresh_token| {
+        // An account connected before clients were per-user has none stored.
+        let client = state.oauth_client().ok_or(
+            "Google Drive session expired. Disconnect Google Drive, then connect again with your own OAuth client.",
+        )?;
+        crate::cloud::oauth::GoogleExchange::new(&client).refresh(refresh_token)
+    }
 }
 
 /// The account and access token for a Drive path, refreshing an expired token
 /// once. Every operation starts here.
 pub fn credentials(state: &CloudState, account_id: &str) -> Result<Auth, String> {
-    credentials_with(state, account_id, &google_refresh)
+    credentials_with(state, account_id, &google_refresh(state))
 }
 
 fn credentials_with(
@@ -102,7 +109,7 @@ fn authorized<T>(
     account_id: &str,
     work: impl Fn(&DriveClient) -> Result<T, DriveError>,
 ) -> Result<T, String> {
-    authorized_with(state, account_id, API_BASE, &google_refresh, work)
+    authorized_with(state, account_id, API_BASE, &google_refresh(state), work)
 }
 
 /// Run `work` with a client for the account; a 401 refreshes the token and
@@ -146,7 +153,7 @@ pub fn drive_location(path: &str) -> Result<DriveLocation, String> {
 }
 
 pub fn list_dir(state: &CloudState, path: &str, _show_hidden: bool) -> Result<Vec<Entry>, String> {
-    list_dir_with(state, path, API_BASE, &google_refresh)
+    list_dir_with(state, path, API_BASE, &google_refresh(state))
 }
 
 fn list_dir_with(
@@ -318,7 +325,7 @@ pub enum OpenTarget {
 /// Materialize a read-only snapshot for the default app, or return the web
 /// URL for a Google-native document.
 pub fn open(state: &CloudState, path: &str, cache_dir: &Path) -> Result<OpenTarget, String> {
-    open_with(state, path, cache_dir, API_BASE, &google_refresh)
+    open_with(state, path, cache_dir, API_BASE, &google_refresh(state))
 }
 
 fn open_with(
@@ -388,7 +395,7 @@ fn open_with(
 /// from the listing first; links expire after a few hours, so a failure falls
 /// back to fresh metadata.
 pub fn thumbnail(state: &CloudState, path: &str, size: u32) -> Vec<u8> {
-    thumbnail_with(state, path, size, API_BASE, &google_refresh)
+    thumbnail_with(state, path, size, API_BASE, &google_refresh(state))
 }
 
 fn thumbnail_with(
@@ -515,7 +522,14 @@ mod tests {
         accounts.upsert(test_account()).unwrap();
         let store = FileTokenStore::new(dir.path().join("tokens"));
         store.save("acct", &token).unwrap();
-        (CloudState::with_store(accounts, Box::new(store)), dir)
+        (
+            CloudState::with_store(
+                accounts,
+                Box::new(store),
+                crate::cloud::client::ClientStore::new(dir.path().join("google-client.json")),
+            ),
+            dir,
+        )
     }
 
     /// Google's refresh response: a new access token, no refresh token, no
@@ -592,6 +606,13 @@ mod tests {
             assert_eq!(thread.join().unwrap(), "refreshed");
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn refreshing_without_an_oauth_client_says_to_reconnect() {
+        let (state, _dir) = test_state(expired_token());
+        let error = credentials(&state, "acct").err().unwrap();
+        assert!(error.contains("Disconnect Google Drive"), "{error}");
     }
 
     #[test]

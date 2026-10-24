@@ -182,6 +182,9 @@ test("Google Drive account commands connect, cancel and disconnect", async () =>
   const accounts = () => invoke<Array<{ id: string; email: string; root_path: string }>>("drive_accounts");
   expect(await accounts()).toEqual([]);
 
+  await expect(invoke("drive_connect_start")).rejects.toMatch(/own OAuth client/);
+  await invoke("drive_client_set", { json: DESKTOP_CLIENT });
+
   const start = await invoke<{ flow_id: string; auth_url: string }>("drive_connect_start");
   expect(start.auth_url).toContain("accounts.google.com");
   expect(await accounts()).toEqual([]);
@@ -203,6 +206,40 @@ test("Google Drive account commands connect, cancel and disconnect", async () =>
   await expect(invoke("drive_connect_finish", { flowId: cancelled.flow_id })).rejects.toMatch(
     /no longer active/,
   );
+});
+
+const DESKTOP_CLIENT = JSON.stringify({
+  installed: { client_id: "123-abc.apps.googleusercontent.com", client_secret: "GOCSPX-test" },
+});
+
+test("the Google OAuth client is validated and locked while connected", async () => {
+  const status = () => invoke<{ configured: boolean; client_id: string | null }>("drive_client_status");
+  await invoke("drive_client_clear");
+  expect(await status()).toEqual({ configured: false, client_id: null });
+
+  await expect(invoke("drive_client_set", { json: "nope" })).rejects.toMatch(/not an OAuth client/);
+  await expect(invoke("drive_client_set", { json: '{"web":{}}' })).rejects.toMatch(/Desktop app/);
+  await expect(
+    invoke("drive_client_set", { json: '{"installed":{"client_id":"x","client_secret":"s"}}' }),
+  ).rejects.toMatch(/client ID/);
+  await expect(
+    invoke("drive_client_set", {
+      json: '{"installed":{"client_id":"1-a.apps.googleusercontent.com"}}',
+    }),
+  ).rejects.toMatch(/client secret/);
+
+  expect(await invoke("drive_client_set", { json: DESKTOP_CLIENT })).toEqual({
+    configured: true,
+    client_id: "123-abc.apps.googleusercontent.com",
+  });
+
+  const start = await invoke<{ flow_id: string }>("drive_connect_start");
+  const account = await invoke<{ id: string }>("drive_connect_finish", { flowId: start.flow_id });
+  await expect(invoke("drive_client_clear")).rejects.toMatch(/Disconnect Google Drive first/);
+  await expect(invoke("drive_client_set", { json: DESKTOP_CLIENT })).rejects.toMatch(/Disconnect/);
+  await invoke("drive_disconnect", { account: account.id });
+  await invoke("drive_client_clear");
+  expect(await status()).toEqual({ configured: false, client_id: null });
 });
 
 test("unknown commands are reported", async () => {

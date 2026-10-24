@@ -186,7 +186,8 @@ impl TokenStore for KeyringTokenStore {
     }
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+/// Write a file only the user can read (`0600`), atomically.
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension("json.tmp");
     #[cfg(unix)]
     {
@@ -198,17 +199,16 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
             .truncate(true)
             .mode(0o600)
             .open(&tmp)
-            .map_err(|error| format!("Failed to write the Google Drive token: {error}"))?;
+            .map_err(|error| format!("Failed to write Google Drive settings: {error}"))?;
         file.write_all(bytes)
-            .map_err(|error| format!("Failed to write the Google Drive token: {error}"))?;
+            .map_err(|error| format!("Failed to write Google Drive settings: {error}"))?;
     }
     #[cfg(not(unix))]
     {
         fs::write(&tmp, bytes)
-            .map_err(|error| format!("Failed to write the Google Drive token: {error}"))?;
+            .map_err(|error| format!("Failed to write Google Drive settings: {error}"))?;
     }
-    fs::rename(&tmp, path)
-        .map_err(|error| format!("Failed to save the Google Drive token: {error}"))
+    fs::rename(&tmp, path).map_err(|error| format!("Failed to save Google Drive settings: {error}"))
 }
 
 #[cfg(test)]

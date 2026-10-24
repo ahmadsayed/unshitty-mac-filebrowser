@@ -573,12 +573,51 @@ interface MockDriveAccount {
   connected_at: number;
 }
 let driveAccount: MockDriveAccount | null = null;
+/** The user's OAuth client id; the mock checks the file's shape like the backend. */
+let driveClientId: string | null = null;
+
+function parseDriveClient(json: string): string {
+  const notClient =
+    "This is not an OAuth client file. Download the JSON from the client's page in Google Cloud.";
+  let file: { installed?: { client_id?: string; client_secret?: string }; web?: unknown };
+  try {
+    file = JSON.parse(json);
+  } catch {
+    throw notClient;
+  }
+  if (!file.installed) {
+    throw file.web ? "This is a web application client. Create a client of type Desktop app." : notClient;
+  }
+  const id = file.installed.client_id?.trim() ?? "";
+  if (!id.endsWith(".apps.googleusercontent.com")) throw "The client file has no valid client ID.";
+  if (!file.installed.client_secret?.trim()) {
+    throw "The client file has no client secret. Download it again from Google Cloud.";
+  }
+  return id;
+}
+
+function refuseWhileConnected(): void {
+  if (driveAccount) throw "Disconnect Google Drive first.";
+}
 const driveFlows = new Set<string>();
 let driveFlowSeq = 0;
 
 const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
   drive_accounts: () => (driveAccount ? [{ ...driveAccount }] : []),
+  drive_client_status: () => ({ configured: driveClientId !== null, client_id: driveClientId }),
+  drive_client_set: (a) => {
+    refuseWhileConnected();
+    driveClientId = parseDriveClient(str(a, "json"));
+    return { configured: true, client_id: driveClientId };
+  },
+  drive_client_clear: () => {
+    refuseWhileConnected();
+    driveClientId = null;
+  },
   drive_connect_start: () => {
+    if (!driveClientId) {
+      throw "Google Drive needs your own OAuth client. Add one in the Connect dialog.";
+    }
     const flow_id = `flow-${++driveFlowSeq}`;
     driveFlows.add(flow_id);
     return {

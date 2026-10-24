@@ -1011,6 +1011,41 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   text-align: left;
 }
 
+.dialog-links {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.dialog-links .flat-btn { color: var(--accent); font-weight: 700; }
+
+.dialog-error:empty { display: none; }
+.dialog-error { color: var(--destructive); margin-top: 6px; }
+
+/* Paste box for the OAuth client JSON */
+.client-json {
+  display: block;
+  width: 100%;
+  height: 96px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 12px;
+  background: var(--card-bg);
+  box-shadow: 0 0 0 1px var(--card-shade);
+  color: inherit;
+  font-family: ui-monospace, "Adwaita Mono", monospace;
+  font-size: 9pt;
+  resize: none;
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.client-json:focus { outline-color: color-mix(in srgb, var(--accent-bg) 50%, transparent); }
+
 .dialog-responses {
   display: flex;
   gap: 12px;

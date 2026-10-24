@@ -9,6 +9,7 @@
 //! cloud path to `std::fs`.
 
 pub mod accounts;
+pub mod client;
 pub mod drive;
 pub mod location;
 pub mod oauth;
@@ -22,6 +23,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Serialize;
 
 use accounts::Accounts;
+use client::{ClientStore, OAuthClient};
 use oauth::PendingFlow;
 use token::{KeyringTokenStore, Token, TokenStore};
 
@@ -34,6 +36,9 @@ pub struct CloudState {
     pub accounts: Mutex<Accounts>,
     pub tokens: Box<dyn TokenStore>,
     pub flows: Mutex<HashMap<String, Arc<PendingFlow>>>,
+    /// The user's own OAuth client; `None` until they add one.
+    client: Mutex<Option<OAuthClient>>,
+    client_store: ClientStore,
     /// Tokens in use, by account. The keychain is read once per account and
     /// written only when a token changes.
     live_tokens: Mutex<HashMap<String, Token>>,
@@ -56,18 +61,71 @@ impl CloudState {
                 "filebrowser",
                 config_dir.join("tokens"),
             )),
+            ClientStore::new(config_dir.join("google-client.json")),
         )
     }
 
-    pub fn with_store(accounts: Accounts, tokens: Box<dyn TokenStore>) -> Self {
+    pub fn with_store(
+        accounts: Accounts,
+        tokens: Box<dyn TokenStore>,
+        client_store: ClientStore,
+    ) -> Self {
         Self {
             accounts: Mutex::new(accounts),
             tokens,
             flows: Mutex::new(HashMap::new()),
+            client: Mutex::new(client_store.load()),
+            client_store,
             live_tokens: Mutex::new(HashMap::new()),
             refreshing: Mutex::new(()),
             http: OnceLock::new(),
             thumbnail_links: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn oauth_client(&self) -> Option<OAuthClient> {
+        self.client
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// The user's client, or the error the Connect dialog shows without one.
+    pub fn require_oauth_client(&self) -> Result<OAuthClient, String> {
+        self.oauth_client().ok_or_else(|| {
+            "Google Drive needs your own OAuth client. Add one in the Connect dialog.".into()
+        })
+    }
+
+    /// Store a client from the JSON file Google lets users download.
+    pub fn set_oauth_client(&self, json: &str) -> Result<OAuthClient, String> {
+        self.refuse_while_connected()?;
+        let client = client::parse(json)?;
+        self.client_store.save(&client)?;
+        *self.client.lock().unwrap_or_else(|p| p.into_inner()) = Some(client.clone());
+        Ok(client)
+    }
+
+    pub fn clear_oauth_client(&self) -> Result<(), String> {
+        self.refuse_while_connected()?;
+        self.client_store.delete()?;
+        *self.client.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        Ok(())
+    }
+
+    /// Tokens belong to the client that issued them and cannot be refreshed
+    /// with another one, so the client only changes with no account connected.
+    fn refuse_while_connected(&self) -> Result<(), String> {
+        let connected = !self
+            .accounts
+            .lock()
+            .map_err(|_| "Google Drive state is unavailable.".to_string())?
+            .items()
+            .is_empty();
+        if connected {
+            Err("Disconnect Google Drive first.".into())
+        } else {
+            Ok(())
         }
     }
 
@@ -183,6 +241,76 @@ mod tests {
         assert!(parse("gdrive://").is_err());
         assert!(parse("gdrive://acct").is_err());
         assert!(parse("gdrive://acct/").is_err());
+    }
+
+    fn state_in(dir: &Path) -> CloudState {
+        CloudState::with_store(
+            Accounts::load(dir.join("accounts.json")),
+            Box::new(token::FileTokenStore::new(dir.join("tokens"))),
+            ClientStore::new(dir.join("google-client.json")),
+        )
+    }
+
+    const DESKTOP: &str = r#"{"installed":{"client_id":"123-abc.apps.googleusercontent.com","client_secret":"GOCSPX-test"}}"#;
+
+    #[test]
+    fn the_oauth_client_is_saved_and_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        assert!(state.oauth_client().is_none());
+        assert!(
+            state
+                .require_oauth_client()
+                .unwrap_err()
+                .contains("own OAuth client")
+        );
+        state.set_oauth_client(DESKTOP).unwrap();
+        assert_eq!(
+            state_in(dir.path()).oauth_client(),
+            Some(client::test_client())
+        );
+
+        state.clear_oauth_client().unwrap();
+        assert!(state.oauth_client().is_none());
+        assert!(state_in(dir.path()).oauth_client().is_none());
+    }
+
+    #[test]
+    fn an_invalid_client_leaves_the_current_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        state.set_oauth_client(DESKTOP).unwrap();
+        assert!(state.set_oauth_client(r#"{"web":{}}"#).is_err());
+        assert_eq!(state.oauth_client(), Some(client::test_client()));
+    }
+
+    #[test]
+    fn the_client_cannot_change_while_an_account_is_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        state.set_oauth_client(DESKTOP).unwrap();
+        state
+            .accounts
+            .lock()
+            .unwrap()
+            .upsert(accounts::DriveAccount::new(
+                "acct".into(),
+                "me@example.com".into(),
+                "Me".into(),
+                "root".into(),
+                vec![],
+                0,
+            ))
+            .unwrap();
+        assert_eq!(
+            state.set_oauth_client(DESKTOP).unwrap_err(),
+            "Disconnect Google Drive first."
+        );
+        assert_eq!(
+            state.clear_oauth_client().unwrap_err(),
+            "Disconnect Google Drive first."
+        );
+        assert!(state.oauth_client().is_some());
     }
 
     #[test]

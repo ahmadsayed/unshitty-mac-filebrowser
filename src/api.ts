@@ -64,6 +64,25 @@ export interface DriveConnectStart {
   auth_url: string;
 }
 
+/** The user's own OAuth client. The secret never reaches the frontend. */
+export interface DriveClientStatus {
+  configured: boolean;
+  client_id: string | null;
+}
+
+export async function driveClientStatus(): Promise<DriveClientStatus> {
+  return invoke<DriveClientStatus>("drive_client_status");
+}
+
+/** Store the client from the JSON file Google lets users download. */
+export async function driveClientSet(json: string): Promise<DriveClientStatus> {
+  return invoke<DriveClientStatus>("drive_client_set", { json });
+}
+
+export async function driveClientClear(): Promise<void> {
+  return invoke<void>("drive_client_clear");
+}
+
 export async function driveAccounts(): Promise<DriveAccount[]> {
   return invoke<DriveAccount[]>("drive_accounts");
 }

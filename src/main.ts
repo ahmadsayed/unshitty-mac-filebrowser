@@ -7,6 +7,7 @@ import {
   trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, fileProperties, folderSize,
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
+  driveClientStatus, driveClientSet, driveClientClear,
   openExternal,
   type Entry, type DriveAccount,
 } from "./api";
@@ -2765,17 +2766,126 @@ function updateSidebarSelection(): void {
   });
 }
 
+/** How to create the OAuth client File Browser needs (docs/google-drive.md). */
+const DRIVE_GUIDE_URL =
+  "https://github.com/ahmadsayed/unshitty-mac-filebrowser/blob/main/docs/google-drive.md";
+
+/** Connect Google Drive, asking for the user's OAuth client first if needed. */
 async function connectDrive(): Promise<void> {
+  const status = await driveClientStatus().catch(() => null);
+  if (status?.configured) openConnectDialog();
+  else openClientSetup();
+}
+
+/** A row of flat link-style buttons for a dialog's extra area. */
+function dialogLinks(links: { label: string; action: () => void }[]): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "dialog-links";
+  for (const link of links) {
+    const button = document.createElement("button");
+    button.className = "flat-btn";
+    button.textContent = link.label;
+    button.addEventListener("click", link.action);
+    row.appendChild(button);
+  }
+  return row;
+}
+
+/**
+ * File Browser ships no Google client: the user creates a Desktop-app OAuth
+ * client in their own Google Cloud project and gives us its JSON file, by
+ * choosing the downloaded file or pasting its contents.
+ */
+function openClientSetup(): void {
+  const extra = document.createElement("div");
+  const json = document.createElement("textarea");
+  json.className = "client-json";
+  json.placeholder = "Paste the client JSON here, or choose the downloaded file";
+  json.spellcheck = false;
+  const file = document.createElement("input");
+  file.type = "file";
+  file.accept = ".json,application/json";
+  file.hidden = true;
+  const error = document.createElement("p");
+  error.className = "dialog-text dialog-error";
+  extra.append(
+    dialogLinks([
+      { label: "Open Guide", action: () => void openExternal(DRIVE_GUIDE_URL) },
+      { label: "Choose File…", action: () => file.click() },
+    ]),
+    json,
+    file,
+    error,
+  );
+
+  const submit = async (): Promise<boolean> => {
+    try {
+      await driveClientSet(json.value);
+      dialog.close();
+      openConnectDialog();
+      return true;
+    } catch (err) {
+      error.textContent = cleanError(err);
+      return false;
+    }
+  };
+  file.addEventListener("change", async () => {
+    const chosen = file.files?.[0];
+    if (!chosen) return;
+    json.value = await chosen.text();
+    file.value = "";
+    await submit();
+  });
+
+  // No default response: Enter must stay a newline in the paste box.
+  const dialog = openDialog({
+    heading: "Add Your Google Client",
+    body: "Google Drive needs an OAuth client from your own Google Cloud project. The guide shows how to create one.",
+    extra,
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "add", label: "Add Client", style: "suggested" },
+    ],
+    closeResponse: "cancel",
+    onResponse: async (id) => {
+      if (id !== "add") return;
+      if (!(await submit())) return false;
+    },
+  });
+  json.focus();
+}
+
+function openConnectDialog(): void {
   let flowId: string | null = null;
   let busy = false;
+  const extra = document.createElement("div");
   const status = document.createElement("p");
   status.className = "dialog-text";
   status.textContent =
-    "File Browser asks Google for read-only access to your Drive. The token is kept in your system keychain.";
+    "File Browser asks Google for read-only access to your Drive. The token is kept in your system keychain. " +
+    "Google warns that your client is unverified: choose Advanced, then continue.";
+  extra.append(
+    status,
+    dialogLinks([
+      { label: "Open Guide", action: () => void openExternal(DRIVE_GUIDE_URL) },
+      {
+        label: "Change Client…",
+        action: () => {
+          if (busy) return;
+          driveClientClear()
+            .then(() => {
+              dialog.close();
+              openClientSetup();
+            })
+            .catch((err) => showToast(cleanError(err)));
+        },
+      },
+    ]),
+  );
   const dialog = openDialog({
     heading: "Connect to Google Drive",
     body: "Google opens in your browser. This app never sees your password.",
-    extra: status,
+    extra,
     responses: [
       { id: "cancel", label: "Cancel" },
       { id: "connect", label: "Open Browser", style: "suggested" },
