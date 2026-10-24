@@ -240,7 +240,7 @@ function driveWithin(from: string, to: string, overwrite: boolean, move: boolean
   if (!item) throw `“${from}” no longer exists`;
   const { parent, name } = driveTarget(to);
   if (parseDrive(to).ids.includes(item.id)) throw "Cannot copy or move a folder into itself";
-  if (move && item.parent === parent.id && item.name === name) throw "The source and destination are the same";
+  if (item.parent === parent.id && item.name === name) throw "The source and destination are the same";
   const old = driveClash(parent.id, name, overwrite, item.id);
   if (old) old.trashed = true;
   if (!move) return drivePath(driveCopyTree(item, parent.id, name).id);
@@ -278,12 +278,17 @@ function driveDownload(from: string, to: string, overwrite: boolean, move: boole
     if (!overwrite) throw `Target already exists: ${to}`;
     trash(toParent, toName);
   }
-  const build = (d: DriveItem): Node =>
-    d.isDir
-      ? { dir: true, modified: now, children: Object.fromEntries(driveChildren(d.id).filter((c) => !c.doc).map((c) => [c.name, build(c)])) }
-      : { dir: false, size: d.size, modified: now };
+  // Like the backend: Google Docs are left out and named in an error after
+  // the rest is copied, and a move then keeps its source.
+  const skipped: string[] = [];
+  const build = (d: DriveItem): Node => {
+    if (!d.isDir) return { dir: false, size: d.size, modified: now };
+    const children = driveChildren(d.id).filter((c) => !(c.doc && skipped.push(c.name)));
+    return { dir: true, modified: now, children: Object.fromEntries(children.map((c) => [c.name, build(c)])) };
+  };
   toParent.children[toName] = build(item);
   driveLog.push(`download ${item.name}`);
+  if (skipped.length) throw `“${skipped[0]}” is a Google Docs file and can only be copied within Google Drive.`;
   if (move) {
     item.trashed = true;
     driveLog.push(`trash ${item.name}`);

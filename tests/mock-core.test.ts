@@ -316,6 +316,20 @@ test("copying between local folders and Drive", async () => {
   expect(await names(`${HOME}/FromDrive`)).toContain("todo.txt");
 });
 
+test("the mock Drive refuses like the backend on failure paths", async () => {
+  await expect(
+    invoke("copy_entry", { from: `${DRIVE}/file-2~Report.docx`, to: `${DRIVE}/~Report.docx`, overwrite: true }),
+  ).rejects.toMatch("The source and destination are the same");
+
+  await invoke("copy_entry", { from: `${DRIVE}/file-3~Plan`, to: `${DRIVE_DOCS}/~Plan`, overwrite: false });
+  await invoke("make_dir", { path: `${HOME}/Into` });
+  await expect(
+    invoke("move_entry", { from: DRIVE_DOCS, to: `${HOME}/Into/Documents`, overwrite: false }),
+  ).rejects.toMatch("“Plan” is a Google Docs file and can only be copied within Google Drive.");
+  expect(await names(`${HOME}/Into/Documents`)).toContain("nested.txt");
+  expect(await names(DRIVE)).toContain("Documents");
+});
+
 test("unknown commands are reported", async () => {
   await expect(invoke("nope")).rejects.toMatch(/unknown command nope/);
 });
