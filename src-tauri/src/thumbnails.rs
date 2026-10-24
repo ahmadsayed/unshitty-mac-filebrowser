@@ -13,6 +13,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -112,6 +113,9 @@ fn quick_look(path: &Path, size: u32, out: &Path) -> bool {
 /// once cost ~190 MB. One at a time is free at thumbnail sizes.
 static DECODE_LOCK: Mutex<()> = Mutex::new(());
 
+/// Decodes running or waiting for `DECODE_LOCK`.
+static DECODES_WAITING: AtomicUsize = AtomicUsize::new(0);
+
 /// Largest image worth decoding for a thumbnail; 80 megapixels is ~320 MB as
 /// RGBA, far past anything a 256 px thumbnail needs. Bigger files are treated
 /// as thumbnailless instead of risking the app's memory.
@@ -120,9 +124,17 @@ const MAX_PIXELS: u64 = 80_000_000;
 /// Decode a common image format directly (respecting EXIF rotation) and
 /// shrink it to fit `size`. Small images are kept at their own size.
 fn decode_image(path: &Path, size: u32, out: &Path) -> bool {
-    let _guard = DECODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let decoded = decode_image_now(path, size, out);
-    release_free_memory();
+    DECODES_WAITING.fetch_add(1, Ordering::SeqCst);
+    let decoded = {
+        let _guard = DECODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        decode_image_now(path, size, out)
+    };
+    // Trim once the queue has drained, not after every decode: a trim walks
+    // the whole heap, and while scrolling a photo folder the next decode is
+    // already waiting. Outside the lock, so it never delays one either.
+    if DECODES_WAITING.fetch_sub(1, Ordering::SeqCst) == 1 {
+        release_free_memory();
+    }
     decoded
 }
 

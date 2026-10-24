@@ -224,6 +224,14 @@ export async function folderSize(path: string, walk: number): Promise<number> {
   return invoke<number>("folder_size", { path, walk });
 }
 
+/**
+ * A fresh id for `folderSize`. The backend hands them out so they only grow
+ * for the life of the process, whatever the clock or a webview reload does.
+ */
+export async function newFolderWalk(): Promise<number> {
+  return invoke<number>("new_folder_walk");
+}
+
 /** Stop folder-size walk `walk` and every earlier one. */
 export async function cancelFolderSize(walk: number): Promise<void> {
   return invoke<void>("cancel_folder_size", { walk });

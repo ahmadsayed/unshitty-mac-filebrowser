@@ -170,11 +170,17 @@ pub fn file_properties(path: &str, show_hidden: bool) -> Result<FileProperties, 
     })
 }
 
-/// Folder-size walks with an id up to this one are cancelled. The frontend
-/// numbers its walks in increasing order (from the clock, so the order holds
-/// across reloads), so one number covers every walk it has given up on, even
-/// a cancel that overtakes its own walk on the way in.
+/// Folder-size walks with an id up to this one are cancelled. Ids come from
+/// `new_walk_id`, so they grow for the life of the process (a webview reload
+/// or a clock change can't reuse one), and one number covers every walk the
+/// frontend has given up on, even a cancel that overtakes its own walk.
 static CANCELLED_UP_TO: AtomicU64 = AtomicU64::new(0);
+static LAST_WALK: AtomicU64 = AtomicU64::new(0);
+
+/// A walk id larger than every one handed out before.
+pub fn new_walk_id() -> u64 {
+    LAST_WALK.fetch_add(1, Ordering::Relaxed) + 1
+}
 
 /// Stop walk `id` and every earlier one.
 pub fn cancel_walks_up_to(id: u64) {
@@ -411,6 +417,15 @@ mod tests {
         // An older cancel arriving late doesn't un-cancel anything.
         cancel_walks_up_to(base);
         assert!(walk_cancelled(base + 2));
+    }
+
+    #[test]
+    fn walk_ids_only_grow() {
+        // Cancellation itself is covered above; `CANCELLED_UP_TO` is shared
+        // by the whole process, so this test leaves it alone.
+        let a = new_walk_id();
+        let b = new_walk_id();
+        assert!(a > 0 && b > a);
     }
 
     #[test]
