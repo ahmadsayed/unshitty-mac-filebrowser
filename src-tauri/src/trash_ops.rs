@@ -709,6 +709,7 @@ mod tests {
     fn deleting_a_link_keeps_its_target() {
         let dir = tempdir().unwrap();
         let trash = items_dir(&dir.path().join("Trash"));
+        fs::create_dir_all(&trash).unwrap();
         let target = dir.path().join("target");
         fs::create_dir(&target).unwrap();
         fs::write(target.join("data.txt"), "keep").unwrap();
