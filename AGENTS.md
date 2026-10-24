@@ -36,6 +36,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src-tauri/src/trash_ops.rs` | Trash + locate (for Undo), restore, delete permanently, empty; macOS `~/.Trash` + Finder "Put Back" in `.DS_Store`, Linux `Trash/{files,info}` + `.trashinfo`, `trash_log.json` |
 | `src-tauri/src/recent.rs` | Recent: Spotlight (`mdfind`) on macOS, `recently-used.xbel` on Linux, merged with `recent.json` |
 | `src-tauri/src/config_store.rs` | `pins.json` / `starred.json` / `flags.json` in the app config dir, Full Disk Access check |
+| `src-tauri/src/versions/` | Keep Versions: `.versions/` ownership, SQLite index, content-addressed zstd objects, capture/watch/restore |
 | `src-tauri/src/lib.rs` | Command registration, commands that need `AppHandle`, startup |
 | `dev/mock-tauri/` | In-memory fake backend for browser previews and the frontend tests |
 | `tests/` | Vitest frontend tests: the real app in jsdom against `dev/mock-tauri/` (`tests/app.ts` boots and drives it) |
@@ -95,12 +96,13 @@ the DOM. Code that adds a mock command needs a case in
   ```
   `npm run build` must run first, because `generate_context!` reads `../dist`.
 - **Backend modules must still be testable without Tauri.** Copy `fs_ops.rs`,
-  `config_store.rs`, `platform.rs`, `properties.rs`, `thumbnails.rs`, `recent.rs` and
-  `trash_ops.rs` into a scratch crate depending on `serde`, `serde_json`, `trash`,
-  `image` (same features as `src-tauri/Cargo.toml`) plus dev-dependency
-  `tempfile`, strip the `#[tauri::command]` lines,
-  and run `cargo test`. Keep new backend logic in plain functions; only `lib.rs`
-  may use `AppHandle` and other Tauri types.
+  `config_store.rs`, `platform.rs`, `properties.rs`, `thumbnails.rs`, `recent.rs`,
+  `trash_ops.rs` and `versions/` into a scratch crate depending on `serde`,
+  `serde_json`, `trash`, `image` (same features as `src-tauri/Cargo.toml`),
+  `rusqlite` (`default-features = false`, features `bundled` + `backup`), `zstd`,
+  `blake3`, `notify` and `similar`, plus dev-dependency `tempfile`, strip the
+  `#[tauri::command]` lines, and run `cargo test`. Keep new backend logic in
+  plain functions; only `lib.rs` may use `AppHandle` and other Tauri types.
 - **macOS-only behaviour can't be verified from Linux**: window chrome, traffic
   lights, Quick Look thumbnails, Spotlight results in Recent, where Finder puts
   trashed items and its `.DS_Store` "Put Back" records, Full Disk Access,
@@ -139,6 +141,11 @@ the DOM. Code that adds a mock command needs a case in
   only inside a Trash folder (refused elsewhere, with tests) and only after a
   confirmation dialog whose default response is Cancel.
 - Restoring never overwrites: an existing item at the original path is an error.
+- Anything that touches `.versions/` must prove ownership (the `meta.json` + DB
+  `meta` marker, D14) before registering, clearing or trashing it. Object files
+  are content-addressed: a full frame and a delta frame of the same bytes share
+  a name, so the `objects` row decides the encoding and a referenced object is
+  never rewritten.
 - Anything that touches the Trash must work for both layouts (macOS `~/.Trash`
   and freedesktop `Trash/{files,info}`); a change there needs a test on each.
 - Replacing an existing item stages the new one under a temporary name, sends

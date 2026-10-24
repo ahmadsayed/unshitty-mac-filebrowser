@@ -23,6 +23,7 @@
   --accent-fg: #ffffff;
   --accent: #1c71d8;
   --destructive: #c01c28;
+  --success: #2ec27e;
 
   --window-bg: #fafafb;
   --window-fg: rgba(0, 0, 6, 0.8);
@@ -68,6 +69,7 @@
   :root {
     --accent: #78aeed;
     --destructive: #ff7b63;
+    --success: #57e389;
 
     --window-bg: #222226;
     --window-fg: #ffffff;
@@ -1162,6 +1164,149 @@ kbd {
   width: 18px;
   height: 18px;
   accent-color: var(--accent-bg);
+}
+
+/* ---------------------------------------------------------------------------
+   Keep Versions
+   --------------------------------------------------------------------------- */
+
+.versions-check {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 2px;
+  margin-top: 12px;
+}
+.versions-check label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.check-hint {
+  margin-left: 28px;
+  font-size: 9pt;
+  opacity: var(--dim);
+}
+.badge.experimental {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 8.5pt;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-bg) 18%, transparent);
+}
+
+.versions-dialog { width: min(620px, calc(100vw - 24px)); }
+.versions-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 220px;
+}
+.versions-list {
+  max-height: 240px;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--card-bg);
+  box-shadow: 0 0 0 1px var(--card-shade);
+}
+.version-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 7px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.version-row + .version-row { border-top: 1px solid var(--card-shade); }
+.version-row:hover { background: var(--item-hover); }
+.version-row.selected { background: var(--item-selected); }
+.version-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-bg) 50%, transparent);
+  outline-offset: -2px;
+}
+.version-size {
+  opacity: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.version-tag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 8.5pt;
+  font-weight: 700;
+}
+.version-tag.current {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-bg) 18%, transparent);
+}
+.version-tag.deleted {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 14%, transparent);
+}
+.versions-note {
+  font-size: 9pt;
+  opacity: var(--dim);
+}
+.versions-diff {
+  max-height: 280px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--view-bg);
+  box-shadow: inset 0 0 0 1px var(--card-shade);
+  font: 9.5pt/1.4 ui-monospace, "SF Mono", monospace;
+  white-space: pre-wrap;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.versions-diff.loading { opacity: var(--dim); }
+.diff-line { padding: 0 2px; border-radius: 2px; }
+.diff-line.added { background: color-mix(in srgb, var(--success) 18%, transparent); }
+.diff-line.removed { background: color-mix(in srgb, var(--destructive) 16%, transparent); }
+.diff-line.truncated { opacity: var(--dim); font-style: italic; }
+
+.deleted-dialog { width: min(560px, calc(100vw - 24px)); }
+.deleted-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 10px;
+  background: var(--card-bg);
+  box-shadow: 0 0 0 1px var(--card-shade);
+}
+.deleted-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 12px;
+}
+.deleted-row + .deleted-row { border-top: 1px solid var(--card-shade); }
+.deleted-name { overflow-wrap: anywhere; }
+.deleted-when,
+.deleted-size {
+  font-size: 9pt;
+  opacity: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.deleted-empty {
+  padding: 24px;
+  text-align: center;
+  opacity: var(--dim);
+}
+.props-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--card-shade);
 }
 
 /* =============================================================================

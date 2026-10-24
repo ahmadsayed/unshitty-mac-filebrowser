@@ -1,10 +1,55 @@
 # Keep Versions — Design
 
 **Date:** 2026-10-24
-**Revision:** 2 (incorporates `2026-10-24-keep-versions-design-review.md`)
-**Status:** Draft, pending approval
+**Revision:** 4 (all delivery steps implemented)
+**Status:** Implemented. The storage layer, capture/watch/restore, commands,
+frontend dialogs and documentation are in the tree; see the status addendum in
+`2026-10-24-keep-versions-design-review-2.md`.
 **Related:** `2026-10-23-file-browser-design.md` (the app's overall design),
 `AGENTS.md` (rules every change must keep)
+
+## Changes in revision 4 (implementation)
+
+- `history.rs`, `capture.rs`, `watch.rs`, `restore.rs`, `registry.rs`,
+  `state.rs` were added; `lib.rs` owns the managed `VersionsState` and the
+  copy/move/rename/trash hooks.
+- The copy/move helper uses the quiesce variant: stop watchers, checkpoint and
+  close the source histories, let `copy_recursive` copy the closed tree, then
+  reopen the copy with a new `folder_id` and scan it. This replaces the earlier
+  online-backup sketch; both are safe, but quiescing needs no page-by-page copy.
+- The frontend has `src/versions.ts` (Versions…, Deleted Files…, Properties
+  rows), the New Folder checkbox, context-menu entries and mocks. The diff has
+  a request token; Clear/Stop close the stale Properties dialog.
+- `history_info` sums objects + index/WAL for the root and its owned nested
+  histories.
+- Remaining follow-ups are listed in the review: Finder copies while running,
+  mtime-preserving writes, coalescing of rapid saves, a watcher cap on Linux,
+  and reachability of type-changed/deleted histories.
+
+## Changes in revision 3 (Step 1 implementation)
+
+The storage layer is now code, and three details were settled while writing it:
+
+- **Crates:** `rusqlite` is `default-features = false` with `bundled` + `backup`
+  (`backup` is not enabled by `bundled`). `zstd` 0.14.3 and `blake3` 1.8 are in.
+- **Schema gate:** `PRAGMA user_version = 1` is written with the schema; the
+  ownership rows in `meta` are written only after the WAL check and the test
+  transaction have passed (R6). A failed creation therefore leaves no marker.
+- **Object encoding:** the object file is named by the BLAKE3 of the decoded
+  content, so a `full` frame and a `delta` frame of the same bytes would share
+  a name. The `objects` row decides the encoding. `capture` must check
+  `objects` before writing and use `store::write_full_unless` /
+  `write_delta_unless`; the plain `write_full`/`write_delta` always install the
+  encoding they are asked for and must never replace an object a row points at.
+  A file with no row is an orphan and may be overwritten under the folder lock.
+
+Also implemented from the review: paged `list_versions` (R8), the indexed BLOB
+range for directory prefixes (R7), separate read-only and read-write opens
+(R5), the `.versions/meta.json` ownership gate (R1), holding the lock through
+the Trash move (R2), `create_new` + copy for restores instead of hard links
+(R4), and canonical roots (R9). The remaining follow-ups (Finder copies, nested
+history size, deleted-history reachability, mtime-preserving writes, coalescing
+of rapid saves) are noted in the review and the README limitations.
 
 ## Changes in revision 2
 
@@ -87,13 +132,13 @@ Wording and widgets still follow libadwaita and GNOME conventions. Finder's
 | D11 | Turning versions on for an **existing** folder is out of scope for v1. | The user asked for the New Folder entry point. |
 | D12 | Editor temp files are ignored (list below). | They would flood history with noise. |
 | D13 | If turning versions on fails after the folder was created, the folder is **kept** and an error says so. Nothing is ever removed with `remove_dir_all`. | Never delete; an empty folder is harmless. |
-| D14 | **Ownership marker.** A `.versions/` is ours only if its index opens and `meta` holds `app = 'unshitty-mac-filebrowser'` and a `folder_id`. Anything else is foreign: never registered, watched, shown, cleared or trashed. `make_versioned_dir` refuses to write into an existing `.versions/`. | We must never trash a directory another tool made. |
+| D14 | **Ownership marker.** A `.versions/` is ours only if its index opens and `meta` holds `app = 'unshitty-mac-filebrowser'` and a `folder_id`, mirrored in a tiny `.versions/meta.json` (app, folder_id, schema_version) that `versioned_root` can read without opening SQLite. Anything else is foreign: never registered, watched, shown, cleared or trashed. `make_versioned_dir` refuses to write into an existing `.versions/`. | We must never trash a directory another tool made, and navigation must not open an index. |
 | D15 | **Raw byte paths.** Paths are stored as the exact on-disk bytes (`OsStr` bytes, both targets are Unix) relative to the root, plus a lossy display string. No Unicode normalization. Cross-platform *matching* (a folder moved macOS ↔ Linux with NFD names) is not a goal; not corrupting anything is. | Normalizing breaks Linux; lossy strings alias distinct names. Answers review question 1. |
 | D16 | **Lock file per history.** The process that owns a history holds an exclusive lock on `.versions/lock` (`std::fs::File::try_lock`, Rust ≥ 1.89; the toolchain is 1.99). A second app instance that can't get the lock does not watch or capture and treats that history as read-only: Versions… and Deleted Files… work; Restore Copy works; Replace, Clear and Stop refuse with "The version history of this folder is in use by another window." | No single-instance plugin needed; prevents duplicate captures and unsafe `tmp/` cleanup. Answers review question 2. |
 | D17 | **Type change = deletion.** When a path that had versions becomes a folder, symlink or other non-regular file, a tombstone is recorded. | The history stays restorable and nothing is shown as current. Answers review question 3. |
 | D18 | **Local disks only.** Creating a versioned folder requires that the index opens in WAL mode and survives a test transaction; otherwise "Version history needs a folder on a local disk." Network and cloud-synced folders are unsupported in v1. | WAL is unreliable on SMB/NFS. |
 | D19 | **Restore names come from the frontend.** It formats `<stem> (<YYYY-MM-DD HH-MM>)<ext>` in local time and passes it in; the backend validates it and enforces no-overwrite. No date crate in the backend. | Rust std has no local time zone; the frontend already formats dates. Answers review question 5. |
-| D20 | `history_info`: `bytes` = sum of `stored_size` over distinct objects; `versions` = rows that are not tombstones; `files` = distinct paths with at least one non-tombstone version, including files deleted since. UI: "12.3 MB, 214 versions of 37 files". | Answers review question 4; dedupes identical content. |
+| D20 | `history_info`: `bytes` = `SUM(stored_size)` over distinct objects **plus** `index.sqlite` and its `-wal` (and, for a versioned root, the histories of owned nested roots); `versions` = rows that are not tombstones; `files` = distinct paths with at least one non-tombstone version, including files deleted since. UI: "12.3 MB, 214 versions of 37 files". | Answers review question 4; dedupes identical content and keeps the disk-usage figure honest. |
 
 ## Non-goals (v1)
 
@@ -136,12 +181,15 @@ only `lib.rs` touches Tauri types.
 | `capture.rs` | Record one path; tombstone a directory prefix; the launch scan. | `history`, `store`, `index` |
 | `watch.rs` | One `notify` watcher per owned history; a pure coalescer with an injected clock. | `notify`, `capture` |
 | `restore.rs` | Rebuild to `.versions/tmp/`; Restore Copy; Replace; deleted files; text diff. | `history`, `store`, `index`, `trash`, `similar` |
-| `transfer.rs` | Copy and move of folders that contain histories: snapshot the index, copy objects, verify, register. Called from `fs_ops` copy/move. | `history`, `index` |
+| `registry.rs` | `versioned.json`: read/write, register/unregister, prefix rewrites for moves. | `config_store` |
+| `state.rs` | The managed set of open histories and watchers: open/register, canonical roots, suspend/resume for copy/move/trash, startup scan. | `history`, `watch`, `capture`, `registry` |
 
 Add to `src-tauri/Cargo.toml`, updating `Cargo.lock` minimally (AGENTS.md):
 
-- `rusqlite` with feature `bundled` (SQLite compiled in; also gives the
-  online backup API)
+- `rusqlite` with `default-features = false` and the `bundled` + `backup`
+  features (SQLite compiled in; `backup` is a separate non-default feature;
+  the current quiesce copy does not need it, but keep it for future transfer
+  work and for `integrity_check`-style snapshots)
 - `zstd` (0.14.x; the review reports `Encoder::with_ref_prefix` and
   `Decoder::with_ref_prefix` there, verify when adding)
 - `blake3`
@@ -183,6 +231,7 @@ public domain. Add them to AGENTS.md's scratch-crate note.
 <folder>/
 └── .versions/                 mode 0700
     ├── index.sqlite           mode 0600  (+ -wal / -shm while open)
+    ├── meta.json              app + folder_id + schema_version (D14)
     ├── lock                   held exclusively by the owning process (D16)
     ├── objects/
     │   └── 3f/
@@ -201,12 +250,13 @@ PRAGMA journal_mode = WAL;      -- must return 'wal' (D18)
 PRAGMA synchronous = NORMAL;    -- a power loss can lose the last batch, not corrupt
 PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 5000;
+-- PRAGMA user_version = 1;   -- the schema gate; written with the tables
 
 CREATE TABLE meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
--- rows, written in the creating transaction:
+-- rows, written after the WAL check and test transaction:
 --   schema_version = '1'
 --   app            = 'unshitty-mac-filebrowser'   (D14)
 --   folder_id      = random 128-bit hex
@@ -263,16 +313,18 @@ Per open history (`history.rs`):
 - `lock` file: exclusive for the process lifetime (D16).
 - `capture_lock: Mutex<()>`: serializes captures, scans, restores that write,
   and transfers for this history.
-- `writer: Mutex<Connection>`: held only for short transactions (latest-row
-  read, inserts, `mtime` update, checkpoint). Never across file reads,
-  hashing, compression or directory walks.
-- `reader: Mutex<Connection>`: for `list_versions`, `deleted_files`,
-  `history_info`, `version_diff` lookups. WAL lets it read while the writer
-  commits.
+- `writer: Mutex<Connection>`: opened `READ_WRITE`; held only for short
+  transactions (latest-row read, inserts, `mtime` update, checkpoint). Never
+  across file reads, hashing, compression or directory walks.
+- `reader: Mutex<Connection>`: opened `READ_ONLY` with `query_only = ON`; for
+  `list_versions`, `deleted_files`, `history_info`, `version_diff` lookups. WAL
+  lets it read while the writer commits. A read-only open never sets
+  `journal_mode`/`synchronous`, never migrates and never clears `tmp/`.
 
-`versioned_root` never opens an index or waits on any of these: it uses the
-registry map plus `stat` calls, and opening a newly found history happens on
-a background thread.
+`versioned_root` never opens an index or waits on any of these: it reads the
+small `.versions/meta.json` marker and uses the registry map plus `stat` calls.
+Opening a newly found history happens on a background thread, which then
+verifies the DB `meta` rows against `meta.json`.
 
 ## Data flow
 
@@ -282,13 +334,16 @@ a background thread.
 2. Frontend calls `make_versioned_dir(path)`.
 3. Backend: `fs_ops::make_dir`. Then, refusing if `<path>/.versions` already
    exists (D14): create `.versions/` (0700), `tmp/`, `objects/`, `lock`;
-   take the lock; create the index (0600) with schema and `meta` in one
-   transaction; verify `journal_mode` is `wal` and run a test write/read
-   transaction (D18); register; start the watcher.
+   take the lock; create the index (0600) with the schema and
+   `PRAGMA user_version = 1`; verify `journal_mode` is `wal` and run a test
+   write/read transaction (D18); only then write the `meta` rows (app,
+   `folder_id`, schema_version, created_at); register; start the watcher.
 4. If anything in step 3 fails, keep the folder (D13) and return "The folder
    was created, but versions could not be turned on: <reason>". A partly
-   created `.versions/` is left as is (it has no `meta` row, so it is not
-   ours by D14 and will never be adopted).
+   created `.versions/` is left as is. If the failure happens before the
+   `meta` write it has no marker, so it is not ours by D14 and is never
+   adopted; a history whose `meta` was written but whose watcher failed is
+   valid and can be adopted later.
 
 ### Capturing one path (`capture::record(history, rel_path)`)
 
@@ -309,26 +364,33 @@ Takes `capture_lock` for the whole operation.
    `tmp/obj-<pid>-<n>`, level 19 for ≤ 1 MiB else 6, long-distance matching
    for > 8 MiB. Stat again; if size or mtime changed, delete our temp file and
    re-queue the path. If the hash equals the latest row's, update `mtime` and
-   delete the temp file. If an object with this hash exists, delete the temp
-   file and only insert a row. Otherwise `fsync`, rename to
-   `objects/xx/<hash>`, then insert `objects` + `versions` rows in one short
-   transaction.
+   delete the temp file. Before installing, check `objects` for the hash: if a
+   row exists, delete the temp file and insert only a `versions` row, using
+   that row's kind/base/depth (a full frame and a delta frame of the same
+   content share a name, so the existing row is authoritative). Otherwise
+   `fsync`, rename to `objects/xx/<hash>`, then insert `objects` + `versions`
+   rows in one short transaction. `store::write_full_unless` performs the
+   check inside the streaming pass with an index callback.
 5. **Delta path** (file ≤ 128 MiB and the latest object qualifies): read the
    file into memory, stat again (re-queue if it changed), hash. Same hash →
-   update `mtime`, done. Known hash → insert a row, done. Otherwise rebuild the
-   base (`store::read`, ≤ 128 MiB), compress with the base as zstd reference
-   prefix, window log covering base + new (up to 28; decoder
-   `window_log_max` 28). If the delta is ≥ 90 % of the raw size, store a full
-   copy instead. Write to `tmp/`, `fsync`, rename, insert rows.
+   update `mtime`, done. Known hash in `objects` → insert a row using the
+   existing row, done (no write). Otherwise rebuild the base (`store::read`,
+   ≤ 128 MiB), compress with the base as zstd reference prefix, window log
+   covering base + new (up to 28; decoder `window_log_max` 28). If the delta
+   is ≥ 90 % of the raw size, store a full copy instead. Write to `tmp/`,
+   `fsync`, rename, insert rows. `store::write_delta_unless` checks the index
+   before compressing.
 6. A crash between rename and insert leaves an orphan object (see "Orphan
-   objects"); a row never points at a missing object.
+   objects"); a row never points at a missing object. Never rewrite an object
+   that a row references.
 
 ### Tombstoning a directory (`capture::tombstone_prefix(history, rel_dir)`)
 
-For every path under `rel_dir/` (BLOB prefix match on the bytes, with the
-`/` separator) whose latest row is not a tombstone and which no longer exists
-as a regular file, insert a tombstone. Used for directory remove and rename
-events (old path), and by the launch scan for vanished directories.
+For every path under `rel_dir/` (the indexed BLOB range `path >= rel_dir ||
+X'2F' AND path < rel_dir || X'30'`, so `foo/…` matches but `foobar` does not)
+whose latest row is not a tombstone and which no longer exists as a regular
+file, insert a tombstone. The root uses no range. Used for directory remove and
+rename events (old path), and by the launch scan for vanished directories.
 
 ### Launch scan (`capture::scan(history)`)
 
@@ -382,10 +444,12 @@ any tracked file (D2), invisible to capture.
 
 - **Restore Copy** `(path, version, name)`: rebuild into staging, `fsync`.
   Create missing parent folders. Then place it at `name` (from the frontend,
-  D19; validated as a single file name) without overwriting: hard-link the
-  staging file to the target (`fs::hard_link` fails if the target exists),
-  then remove the staging link; on `AlreadyExists` try `<stem> 2<ext>`,
-  ` 3`, …. Returns the final path.
+  D19; validated as a single file name) without overwriting:
+  `OpenOptions::create_new(true)` and stream-copy the staging bytes into it.
+  `create_new` is the portable no-overwrite primitive; hard links are not
+  available on exFAT/FAT local disks, so they are at most an optional fast
+  path with a copy fallback. On `AlreadyExists` try `<stem> 2<ext>`, ` 3`, ….
+  Returns the final path. The copy gets `0666 & umask`, not the staging mode.
 - **Replace…** `(path, version)`: requires the lock (D16). `record` the
   current file first (D8). Rebuild into staging, `fsync`. Move the current
   file to the Trash (`trash` crate), then `rename` staging into place. If the
@@ -406,12 +470,15 @@ hash: one history row, no new object.
 Both act on an owned root and require the lock (D16):
 
 1. Re-check ownership (D14) immediately before acting; refuse if it fails.
-2. Stop the watcher, checkpoint, close both connections, release the lock.
-3. Move `.versions/` to the Trash.
+2. Stop the watcher and checkpoint, but **keep the lock open**.
+3. Move `.versions/` to the Trash while the lock is still held (moving a
+   directory with an open locked file is fine on both targets); release it
+   only after the move succeeds. If the move fails, keep the history, the
+   registry and the lock state unchanged.
 4. **Clear History…**: create a fresh history as in "Creating" (new
    `folder_id`), run `scan` (current state becomes the first versions),
    restart the watcher. **Stop Keeping Versions…**: remove the root from the
-   registry.
+   registry only after the move succeeded.
 
 ### Orphan objects (review suggestion declined)
 
@@ -436,11 +503,11 @@ Written with `config_store::write_json` (temp file + rename) under a
 
 | Operation | What happens |
 |---|---|
-| `versioned_root(path)` on navigation | Walk up from `path` with `stat`: the nearest ancestor-or-self whose `.versions/index.sqlite` exists. Never for paths in the Trash. If it isn't registered, register it and open it on a background thread; only if the ownership check passes does it count (until then, and if it fails, the result is `None`). |
-| Same-volume move/rename of a registered root | Stop watcher, checkpoint, close, release lock; `rename`; rewrite the registry prefix; reopen; restart watcher. |
+| `versioned_root(path)` on navigation | Walk up from `path` with `stat`: the nearest ancestor-or-self that has a `.versions/meta.json` whose `app` is ours. Never for paths in the Trash. If it isn't registered, register it and open it on a background thread; the open verifies the DB `meta` matches `meta.json`, and only then does the result count (until then, and if verification fails, the result is `None`). |
+| Same-volume move/rename of a registered root | Stop watcher, checkpoint, close, release lock; `rename`; rewrite the registry prefix; reopen; restart watcher. Roots are canonicalised (`fs::canonicalize`) before registration, so a symlinked path does not open the same history twice. |
 | Same-volume move of a folder containing registered roots | The same for every registered root under it. |
 | Move a root out of a versioned parent | As above; it stays its own root. The parent's watcher sees the removal and tombstones the paths it had recorded there, if any. |
-| Copy (same or cross volume) of a folder containing owned histories | `transfer.rs`: `copy_recursive` copies everything except the files inside each owned `.versions/` directory. For each history: take an online backup of the index from the reader connection into `<dest>/.versions/index.sqlite` (consistent snapshot, no `-wal`/`-shm`); then copy `objects/` (immutable; extra unreferenced objects are harmless); create `tmp/` and `lock`; give the copy a new `folder_id`; `PRAGMA integrity_check` must return `ok`; register; open; `scan` it. Foreign `.versions/` directories are copied as ordinary files. |
+| Copy (same or cross volume) of a folder containing owned histories | Stop the watchers and close the source histories (a checkpoint is folded in), then let the ordinary `copy_recursive` copy the tree. A closed, checkpointed index is a consistent file; the copy therefore contains a valid history without copying a live WAL. For each copied history: open it, give it a new `folder_id` (DB `meta` + `meta.json`), run `PRAGMA integrity_check`, register, start its watcher, and `scan` it. Foreign `.versions/` directories are copied as ordinary files. (This is the quiesce variant of the review's online-backup suggestion; it is simpler and avoids copying objects separately.) |
 | Cross-volume move | The copy above, verified, then the existing "delete the source only after the copy fully succeeded" rule; stop and close the source history before its removal. |
 | Trash a registered root, or a folder containing roots | Stop watcher, close, unregister **before** the Trash move. |
 | Restore a root from the Trash | No automatic registration; `versioned_root` finds it on navigation. |
@@ -452,8 +519,9 @@ All errors are user-facing strings in GNOME wording.
 | Command | Signature (Rust) | Notes |
 |---|---|---|
 | `make_versioned_dir` | `async (path: String) -> Result<(), String>` | D13, D14, D18. |
-| `versioned_root` | `async (path: String) -> Option<String>` | Never blocks on a history. |
-| `list_versions` | `async (path: String) -> Result<Vec<VersionInfo>, String>` | Index only; works for files no longer on disk. |
+| `versioned_root` | `async (path: String) -> Option<String>` | Never blocks on a history; reads `meta.json`. |
+| `list_versions` | `async (path: String, limit: Option<u32>, offset: Option<u32>) -> Result<Vec<VersionInfo>, String>` | Newest first, page size clamped to 5,000 (default 1,000); index only, works for files no longer on disk (R8). |
+| `version_count` | `async (path: String) -> Result<u64, String>` | Total rows, so the dialog can say "showing the newest 1,000". |
 | `version_diff` | `async (path: String, version: i64) -> Result<VersionDiff, String>` | D9. |
 | `restore_version_copy` | `async (path: String, version: i64, name: String) -> Result<String, String>` | Returns the final path. |
 | `replace_with_version` | `async (path: String, version: i64) -> Result<(), String>` | D8, D16. |
@@ -745,7 +813,7 @@ tests on its own:
 5. `is_internal_path` in listings/counts/Starred/Recent/folder size;
    `make_versioned_dir`, `versioned_root`; New Folder checkbox; mocks.
 6. `restore.rs` + diff; Versions… and Deleted Files… dialogs.
-7. `transfer.rs` + hooks in `fs_ops` copy/move/trash; registry matrix tests.
+7. Copy/move/rename/trash hooks in `state.rs` and `lib.rs`; registry matrix tests.
 8. Properties rows, Clear History…, Stop Keeping Versions….
 9. README: feature entry marked Experimental, the Known limitations above,
    and "Not supported yet" entries for the non-goals. AGENTS.md: new files in

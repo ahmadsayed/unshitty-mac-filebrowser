@@ -10,7 +10,6 @@ pub fn make_dir(path: String) -> Result<(), String> {
     std::fs::create_dir(p).map_err(|e| format!("Failed to create directory: {}", e))
 }
 
-#[tauri::command]
 pub fn rename_entry(from: String, to: String) -> Result<(), String> {
     let to_path = Path::new(&to);
     if to_path.exists() {
@@ -37,6 +36,10 @@ pub fn read_entries(path: &Path, show_hidden: bool) -> Result<Vec<Entry>, String
     let mut entries = Vec::new();
     for dir_entry in read_dir.flatten() {
         let name = dir_entry.file_name().to_string_lossy().to_string();
+        // The history directory is always hidden, even with Show Hidden Files.
+        if name == crate::versions::VERSIONS_DIR {
+            continue;
+        }
         if name.starts_with('.') && !show_hidden {
             continue;
         }
@@ -58,6 +61,7 @@ pub fn entry_for(path: &Path) -> Option<Entry> {
 pub fn entries_for(paths: &[String], show_hidden: bool) -> Vec<Entry> {
     paths
         .iter()
+        .filter(|p| !crate::versions::is_internal_path(Path::new(p)))
         .filter_map(|p| entry_for(Path::new(p)))
         .filter(|e| show_hidden || !e.is_hidden)
         .collect()
@@ -108,7 +112,11 @@ pub fn count_items(path: &Path, show_hidden: bool) -> Option<u32> {
     let read_dir = std::fs::read_dir(path).ok()?;
     let count = read_dir
         .filter_map(|e| e.ok())
-        .filter(|e| show_hidden || !e.file_name().to_string_lossy().starts_with('.'))
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name != crate::versions::VERSIONS_DIR && (show_hidden || !name.starts_with('.'))
+        })
         .count();
     Some(count as u32)
 }
@@ -326,6 +334,22 @@ mod tests {
         assert_eq!(names(entries_for(&paths, false)), [("a.txt".into(), false), ("Folder".into(), true)]);
         assert_eq!(entries_for(&paths, true).len(), 3);
         assert_eq!(entries_for(&paths, false)[0].size, 5);
+    }
+
+    #[test]
+    fn versions_directory_is_hidden_even_with_show_hidden() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "a").unwrap();
+        fs::create_dir(dir.path().join(".versions")).unwrap();
+        fs::write(dir.path().join(".versions/index.sqlite"), "x").unwrap();
+
+        for show_hidden in [false, true] {
+            let entries = read_entries(dir.path(), show_hidden).unwrap();
+            assert!(!entries.iter().any(|e| e.name == ".versions"));
+            assert_eq!(count_items(dir.path(), show_hidden), Some(1));
+        }
+        let inside = dir.path().join(".versions/index.sqlite");
+        assert!(entries_for(&[inside.to_string_lossy().to_string()], true).is_empty());
     }
 
     #[test]

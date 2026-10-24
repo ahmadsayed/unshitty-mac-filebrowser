@@ -5,13 +5,14 @@ import {
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
   trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, fileProperties, folderSize,
-  cancelFolderSize, newFolderWalk,
+  cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
   type Entry,
 } from "./api";
 import { entryIcon, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
+import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -66,6 +67,8 @@ const STARRED = `${PSEUDO_PREFIX}starred`;
 
 /** Current location: an absolute path, or "pseudo:<name>". */
 let location = "";
+/** Nearest folder that keeps versions, if the current location is in one. */
+let versionedRootPath: string | null = null;
 let entries: Entry[] = [];
 /** Entries in display order (sorted + search-filtered). */
 let shown: Entry[] = [];
@@ -248,6 +251,10 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   }
 
   location = loc;
+  versionedRootPath =
+    isPseudo(loc) || (!!trashPath && loc === trashPath)
+      ? null
+      : await versionedRoot(loc).catch(() => null);
   entries = next;
   listingError = error;
   counts.clear();
@@ -285,6 +292,10 @@ async function reload(select?: string[]): Promise<void> {
   renderView();
   scrollEl.scrollTop = top;
   if (select?.[0]) revealPath(select[0]);
+  versionedRootPath =
+    isPseudo(location) || (!!trashPath && location === trashPath)
+      ? null
+      : await versionedRoot(location).catch(() => null);
 }
 
 /** A failed folder open; macOS privacy blocks get a shortcut to the setting. */
@@ -1278,6 +1289,7 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
     { separator: true },
     { label: "Move to Trash", action: trashSelection },
     { separator: true },
+    ...versionsMenuItem(single),
     propertiesMenuItem(single),
   ];
 }
@@ -1299,6 +1311,9 @@ function openBackgroundMenu(at: Anchor): void {
     { label: "New Folder…", action: promptNewFolder },
     { separator: true },
     { label: "Paste", disabled: !clipboard, action: () => paste(location) },
+    ...(versionedRootPath
+      ? [{ label: "Deleted Files…" as const, action: () => showDeletedFiles(location, () => void reload()) }]
+      : []),
     { label: "Select All", action: selectAll },
   ]);
 }
@@ -1354,6 +1369,18 @@ function openMainMenu(anchor: HTMLElement): void {
 
 function propertiesMenuItem(single: Entry | null): MenuItem {
   return { label: "Properties", disabled: !single, action: () => single && showProperties(single) };
+}
+
+/** "Versions…" for a regular file inside a folder that keeps versions. */
+function versionsMenuItem(single: Entry | null): MenuItem[] {
+  if (!single || single.is_dir || single.is_symlink) return [];
+  if (!insideVersionedRoot(single.path, versionedRootPath)) return [];
+  return [
+    {
+      label: "Versions…",
+      action: () => showVersions(single, () => void reload()),
+    },
+  ];
 }
 
 /** "12.3 MB (12,345,678 bytes)", but plain "512 bytes" so the number isn't repeated. */
@@ -1412,6 +1439,8 @@ async function showProperties(entry: Entry): Promise<void> {
   };
 
   let sizeValue: HTMLElement | null = null;
+  let historyBytes = 0;
+  let closePropertiesDialog: (() => void) | null = null;
   if (info.is_dir) {
     const row = propertyRow("Size", "Calculating…");
     sizeValue = row.querySelector<HTMLElement>(".prop-value");
@@ -1429,11 +1458,19 @@ async function showProperties(entry: Entry): Promise<void> {
   add("Owner", info.owner);
   add("Group", info.group);
   add("Others", info.others);
+  try {
+    const root = await versionedRoot(entry.path).catch(() => null);
+    historyBytes =
+      (await addVersionRows(list, entry, root, () => void reload(), () => closePropertiesDialog?.()))
+        ?.bytes ?? 0;
+  } catch {
+    /* Properties still works without the history rows */
+  }
 
   extra.append(header, list);
   // Closing the dialog stops the size walk, which can take minutes on Home.
   const walk = sizeValue ? await newFolderWalk().catch(() => 0) : 0;
-  openDialog({
+  const propertiesDialog = openDialog({
     heading: "Properties",
     className: "properties-dialog",
     extra,
@@ -1444,11 +1481,12 @@ async function showProperties(entry: Entry): Promise<void> {
       if (walk) cancelFolderSize(walk).catch(() => {});
     },
   });
+  closePropertiesDialog = () => propertiesDialog.close();
 
   if (sizeValue) {
     try {
       const bytes = await folderSize(info.path, walk);
-      if (sizeValue.isConnected) sizeValue.textContent = sizeAndBytes(bytes);
+      if (sizeValue.isConnected) sizeValue.textContent = sizeAndBytes(bytes + historyBytes);
     } catch {
       if (sizeValue.isConnected) sizeValue.textContent = "Unknown";
     }
@@ -2275,12 +2313,18 @@ function startRename(entry: Entry): void {
 
 function promptNewFolder(): void {
   if (isPseudo(location) || listingError !== null) return;
+  const inside = !!versionedRootPath;
   const extra = document.createElement("div");
   extra.innerHTML = `
     <div class="entry-row"><label for="new-folder-name">Folder Name</label><input id="new-folder-name" type="text" spellcheck="false" /></div>
+    <div class="check-row versions-check">
+      <label><input id="new-folder-versions" type="checkbox" ${inside ? "disabled" : ""} /> Keep versions <span class="badge experimental">Experimental</span></label>
+      <div class="check-hint">${inside ? "Already inside a folder that keeps versions" : "Keeps every saved version of the files in this folder."}</div>
+    </div>
     <div class="field-message" style="margin-top:8px"></div>`;
   const row = extra.querySelector<HTMLElement>(".entry-row")!;
-  const input = extra.querySelector("input")!;
+  const input = extra.querySelector("input#new-folder-name")! as HTMLInputElement;
+  const keep = extra.querySelector<HTMLInputElement>("#new-folder-versions")!;
   const message = extra.querySelector<HTMLElement>(".field-message")!;
   const dir = location;
 
@@ -2304,8 +2348,15 @@ function promptNewFolder(): void {
       if (!validate()) return false;
       const target = joinPath(dir, input.value);
       try {
-        await makeDir(target);
+        await (keep.checked ? makeVersionedDir(target) : makeDir(target));
       } catch (err) {
+        // D13: the folder may exist even when turning versions on failed.
+        if (await pathExists(target).catch(() => false)) {
+          dialog.close();
+          await reload([target]);
+          showToast(cleanError(err));
+          return;
+        }
         showValidation({ valid: false, message: cleanError(err), error: true }, row, message);
         return false;
       }

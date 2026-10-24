@@ -90,6 +90,9 @@ pub fn forget(store: &mut RecentStore, paths: &[String], now: i64) {
 /// Things that shouldn't appear in Recent even if they were opened: hidden
 /// files (unless shown), app data in ~/Library, and the insides of bundles.
 fn excluded(path: &str, home: &Path, show_hidden: bool) -> bool {
+    if path.split('/').any(|p| p == crate::versions::VERSIONS_DIR) {
+        return true;
+    }
     let library = format!("{}/Library/", home.display());
     if path.starts_with(&library) {
         return true;

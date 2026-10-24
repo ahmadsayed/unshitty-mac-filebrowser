@@ -32,6 +32,12 @@ const tree: Record<string, Node> = {
         "Roadmap.key": f(9_810_220, 400 * day),
         "Notes.md": f(4_120, 3600),
         Projects: d({ "unshitty-mac-filebrowser": d({ "README.md": f(2_200, 60) }), website: d() }),
+        Versioned: d({
+          "notes.txt": f(2_100, 2 * 3600),
+          "image.png": f(120_000, day),
+          "large.txt": f(2_000_000, day),
+          ".versions": d({ "index.sqlite": f(12_000, 3600) }),
+        }),
       }, 1 * day),
       Downloads: d({
         "Firefox 150.dmg": f(138_221_004, 5 * day),
@@ -81,6 +87,7 @@ function list(path: string, showHidden: boolean): Entry[] {
   if (path === "/System") throw `Failed to read directory: Operation not permitted (os error 1)`;
   const base = path.replace(/\/$/, "");
   return Object.entries(node.children)
+    .filter(([name]) => name !== ".versions")
     .filter(([name]) => showHidden || !name.startsWith("."))
     .filter(([name]) => !DEMO || !TEST_ONLY.has(`${base}/${name}`))
     .map(([name, child]) => ({
@@ -259,7 +266,7 @@ function fileProperties(path: string) {
     is_symlink: !!node.link,
     symlink_target: node.link ? "/Users/me/Documents" : null,
     size: isDir ? 96 : node.size,
-    item_count: isDir ? Object.keys(node.children).length : null,
+    item_count: isDir ? Object.keys(node.children).filter((n) => n !== ".versions").length : null,
     modified: node.modified,
     accessed: node.modified,
     created: node.modified - 100 * day,
@@ -362,6 +369,102 @@ function trashInfo(path: string) {
   return { origin: logged?.origin ?? null, trashed: logged?.time ?? now - 2 * day };
 }
 
+// ---------------------------------------------------------------------------
+// Keep Versions
+// ---------------------------------------------------------------------------
+
+/** Folders the mock reports as versioned. */
+const versionedRoots = new Set<string>(["/Users/me/Documents/Versioned"]);
+
+/** Canned version lists for the files in Documents/Versioned. */
+function mockVersions(path: string) {
+  const v = (id: number, size: number, ago: number, current = false) =>
+    ({ id, size, mtime: now - ago, recorded_at: now - ago, deleted: false, current });
+  if (path.endsWith("/notes.txt")) {
+    return [
+      v(3, 2_100, 3_600, true),
+      v(2, 2_000, 7_200),
+      v(1, 1_700, day),
+      { id: 0, size: 0, mtime: 0, recorded_at: now - 2 * day, deleted: true, current: false },
+    ];
+  }
+  if (path.endsWith("/image.png")) return [v(1, 120_000, day, true)];
+  if (path.endsWith("/large.txt")) return [v(2, 2_000_000, 60, true), v(1, 1_900_000, 120)];
+  return [];
+}
+
+function versionedRoot(path: string): string | null {
+  return [...versionedRoots].find((r) => path === r || path.startsWith(r + "/")) ?? null;
+}
+
+function makeVersionedDir(path: string): void {
+  makeDir(path);
+  const [parent, name] = parentAndName(path);
+  (parent as Node & { dir: true }).children[name] = d({ ".versions": d({ "index.sqlite": f(12_000, 0) }) }, 0);
+  versionedRoots.add(path);
+}
+
+function versionDiff(path: string, version: number) {
+  if (path.endsWith("/image.png")) return { kind: "binary" };
+  if (path.endsWith("/large.txt")) return { kind: "too_large" };
+  if (version === 0) return { kind: "deleted" };
+  if (version >= 3) return { kind: "same" };
+  return {
+    kind: "text",
+    lines: [
+      { tag: " ", text: "# Notes" },
+      { tag: "-", text: version === 1 ? "first draft" : "old line" },
+      { tag: "+", text: "new line" },
+    ],
+    truncated: false,
+  };
+}
+
+/** Put a stand-in for a restored file at `dir/name`; refuses to overwrite. */
+function placeRestored(path: string, name: string, size: number, clash: string): string {
+  const [parent] = parentAndName(path);
+  if (!parent?.dir) throw "Could not restore: missing folder";
+  if (parent.children[name]) throw clash;
+  parent.children[name] = f(size, 0);
+  return `${path.slice(0, path.lastIndexOf("/"))}/${name}`;
+}
+
+function replaceWithVersion(path: string): void {
+  const [parent, name] = parentAndName(path);
+  if (!parent?.dir || !parent.children[name]) throw "The file is not in the folder any more";
+  parent.children[name] = f(1_700, 0);
+}
+
+function clearHistory(root: string): void {
+  const node = lookup(root);
+  if (node?.dir) node.children[".versions"] = d({ "index.sqlite": f(12_000, 0) }, 0);
+}
+
+function stopKeepingVersions(root: string): void {
+  const node = lookup(root);
+  if (node?.dir) delete node.children[".versions"];
+  versionedRoots.delete(root);
+}
+
+const VERSION_COMMANDS: Record<string, (args: Args) => unknown> = {
+  versioned_root: (a) => versionedRoot(str(a, "path")),
+  make_versioned_dir: (a) => makeVersionedDir(str(a, "path")),
+  list_versions: (a) => mockVersions(str(a, "path")),
+  version_count: (a) => mockVersions(str(a, "path")).length,
+  version_diff: (a) => versionDiff(str(a, "path"), a.version as number),
+  restore_version_copy: (a) =>
+    placeRestored(str(a, "path"), str(a, "name"), 1_700, `An item named “${str(a, "name")}” already exists`),
+  replace_with_version: (a) => replaceWithVersion(str(a, "path")),
+  deleted_files: (a) => [{ path: `${str(a, "dir")}/draft.md`, deleted_at: now - 3 * 3600, size: 320 }],
+  restore_deleted: (a) => {
+    const path = str(a, "path");
+    return placeRestored(path, path.slice(path.lastIndexOf("/") + 1), 320, "Something is already at that path");
+  },
+  history_info: () => ({ bytes: 12_400_000, versions: 214, files: 37 }),
+  clear_history: (a) => clearHistory(str(a, "root")),
+  stop_keeping_versions: (a) => stopKeepingVersions(str(a, "root")),
+};
+
 /** Every command the app calls, by name. */
 const COMMANDS: Record<string, (args: Args) => unknown> = {
   list_dir: (a) => list(str(a, "path"), a.showHidden as boolean),
@@ -403,6 +506,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   delete_permanently: (a) => deletePermanently(str(a, "path")),
   empty_trash: () => emptyTrash(),
   rename_entry: (a) => renameEntry(str(a, "from"), str(a, "to")),
+  ...VERSION_COMMANDS,
 };
 
 export async function invoke<T>(cmd: string, args: Args = {}): Promise<T> {

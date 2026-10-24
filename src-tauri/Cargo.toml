@@ -25,6 +25,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 trash = "5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "backup"] }
+zstd = "0.14.3"
+blake3 = "1.8.7"
+notify = "8.2.0"
+similar = "3.2.0"
 
 
 [dev-dependencies]
