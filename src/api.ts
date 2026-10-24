@@ -277,6 +277,7 @@ export type VersionDiff =
   | { kind: "not_on_disk" };
 
 export interface DeletedFile {
+  /** Absolute path of the deleted file. */
   path: string;
   deleted_at: number;
   size: number;
@@ -322,6 +323,11 @@ export async function restoreVersionCopy(
   return invoke<string>("restore_version_copy", { path, version, name });
 }
 
+/** Materialize a version as a read-only cache copy; returns its path. */
+export async function openVersion(path: string, version: number, name: string): Promise<string> {
+  return invoke<string>("open_version", { path, version, name });
+}
+
 export async function replaceWithVersion(path: string, version: number): Promise<void> {
   return invoke<void>("replace_with_version", { path, version });
 }
@@ -332,6 +338,11 @@ export async function deletedFiles(dir: string): Promise<DeletedFile[]> {
 
 export async function restoreDeleted(path: string, fallbackName: string): Promise<string> {
   return invoke<string>("restore_deleted", { path, fallbackName });
+}
+
+/** Materialize a deleted file's last version as a read-only cache copy. */
+export async function openDeleted(path: string, name: string): Promise<string> {
+  return invoke<string>("open_deleted", { path, name });
 }
 
 export async function historyInfo(root: string): Promise<HistoryInfo> {

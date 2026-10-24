@@ -44,7 +44,9 @@ frontend dialogs and documentation are in the tree; see the status addendum in
   online-backup sketch; both are safe, but quiescing needs no page-by-page copy.
 - The frontend has `src/versions.ts` (Versions…, Deleted Files…, Properties
   rows), the New Folder checkbox, context-menu entries and mocks. The diff has
-  a request token; Clear/Stop close the stale Properties dialog.
+  a request token; Clear/Stop close the stale Properties dialog. Versions… gains
+  **Open Copy**, and Deleted Files… gains **Open**; both materialize a read-only
+  cache copy (D21) and never restore or overwrite the original.
 - `history_info` sums objects + index/WAL for the root and its owned nested
   histories.
 - Remaining follow-ups are listed in the review: Finder copies while running,
@@ -131,8 +133,9 @@ Wording and widgets still follow libadwaita and GNOME conventions. Finder's
 4. **v1 stores zstd deltas for every file type**, with a full copy every N
    versions. Splitting container formats (3MF, DOCX, ODT, glTF) into parts is
    a later spec.
-5. **UI:** a **Versions…** dialog on a file (list, text diff preview, Restore
-   Copy, Replace…) and a **Deleted Files…** dialog for a folder.
+5. **UI:** a **Versions…** dialog on a file (list, text diff preview, Open
+   Copy, Restore Copy, Replace…) and a **Deleted Files…** dialog for a folder
+   (open or restore).
 6. **Retention: forever.** Nothing is deleted automatically. Properties shows
    the history's size, and the user can clear it explicitly.
 7. **Approach A:** our own store: SQLite index + zstd + file watcher, rather
@@ -159,11 +162,12 @@ Wording and widgets still follow libadwaita and GNOME conventions. Finder's
 | D13 | If turning versions on fails after the folder was created, the folder is **kept** and an error says so. Nothing is ever removed with `remove_dir_all`. | Never delete; an empty folder is harmless. |
 | D14 | **Ownership marker.** A `.versions/` is ours only if its index opens and `meta` holds `app = 'unshitty-mac-filebrowser'` and a `folder_id`, mirrored in a tiny `.versions/meta.json` (app, folder_id, schema_version) that `versioned_root` can read without opening SQLite. Anything else is foreign: never registered, watched, shown, cleared or trashed. `make_versioned_dir` refuses to write into an existing `.versions/`. | We must never trash a directory another tool made, and navigation must not open an index. |
 | D15 | **Raw byte paths.** Paths are stored as the exact on-disk bytes (`OsStr` bytes, both targets are Unix) relative to the root, plus a lossy display string. No Unicode normalization. Cross-platform *matching* (a folder moved macOS ↔ Linux with NFD names) is not a goal; not corrupting anything is. | Normalizing breaks Linux; lossy strings alias distinct names. Answers review question 1. |
-| D16 | **Lock file per history.** The process that owns a history holds an exclusive lock on `.versions/lock` (`std::fs::File::try_lock`, Rust ≥ 1.89; the toolchain is 1.99). A second app instance that can't get the lock does not watch or capture and treats that history as read-only: Versions… and Deleted Files… work; Restore Copy works; Replace, Clear and Stop refuse with "The version history of this folder is in use by another window." | No single-instance plugin needed; prevents duplicate captures and unsafe `tmp/` cleanup. Answers review question 2. |
+| D16 | **Lock file per history.** The process that owns a history holds an exclusive lock on `.versions/lock` (`std::fs::File::try_lock`, Rust ≥ 1.89; the toolchain is 1.99). A second app instance that can't get the lock does not watch or capture and treats that history as read-only: Versions… and Deleted Files… work; Open Copy and Restore Copy work; Replace, Clear and Stop refuse with "The version history of this folder is in use by another window." | No single-instance plugin needed; prevents duplicate captures and unsafe `tmp/` cleanup. Answers review question 2. |
 | D17 | **Type change = deletion.** When a path that had versions becomes a folder, symlink or other non-regular file, a tombstone is recorded. | The history stays restorable and nothing is shown as current. Answers review question 3. |
 | D18 | **Local disks only.** Creating a versioned folder requires that the index opens in WAL mode and survives a test transaction; otherwise "Version history needs a folder on a local disk." Network and cloud-synced folders are unsupported in v1. | WAL is unreliable on SMB/NFS. |
 | D19 | **Restore names come from the frontend.** It formats `<stem> (<YYYY-MM-DD HH-MM>)<ext>` in local time and passes it in; the backend validates it and enforces no-overwrite. No date crate in the backend. | Rust std has no local time zone; the frontend already formats dates. Answers review question 5. |
 | D20 | `history_info`: `bytes` = `SUM(stored_size)` over distinct objects **plus** `index.sqlite` and its `-wal` (and, for a versioned root, the histories of owned nested roots); `versions` = rows that are not tombstones; `files` = distinct paths with at least one non-tombstone version, including files deleted since. UI: "12.3 MB, 214 versions of 37 files". | Answers review question 4; dedupes identical content and keeps the disk-usage figure honest. |
+| D21 | **Open Copy** materializes a version as a read-only file under the app cache and opens it in the default app; it never writes to the folder or the history. The copy's mtime is the version's mtime, and copies are pruned after seven days. | Inspecting an old version must not require restoring it; read-only prevents a silent edit that is not captured. |
 
 ## Non-goals (v1)
 
@@ -549,9 +553,11 @@ All errors are user-facing strings in GNOME wording.
 | `version_count` | `async (path: String) -> Result<u64, String>` | Total rows, so the dialog can say "showing the newest 1,000". |
 | `version_diff` | `async (path: String, version: i64) -> Result<VersionDiff, String>` | D9. |
 | `restore_version_copy` | `async (path: String, version: i64, name: String) -> Result<String, String>` | Returns the final path. |
+| `open_version` | `async (path: String, version: i64, name: String) -> Result<String, String>` | D21; returns the read-only cache copy to open. |
 | `replace_with_version` | `async (path: String, version: i64) -> Result<(), String>` | D8, D16. |
-| `deleted_files` | `async (dir: String) -> Result<Vec<DeletedFile>, String>` | Recursive under `dir`. |
+| `deleted_files` | `async (dir: String) -> Result<Vec<DeletedFile>, String>` | Recursive under `dir`; `path` is absolute so it can be restored or opened. |
 | `restore_deleted` | `async (path: String, fallback_name: String) -> Result<String, String>` | Returns where it went. |
+| `open_deleted` | `async (path: String, name: String) -> Result<String, String>` | D21 for a deleted file's last real version. |
 | `history_info` | `async (root: String) -> Result<HistoryInfo, String>` | D20. |
 | `clear_history` | `async (root: String) -> Result<(), String>` | D7, D14, D16. |
 | `stop_keeping_versions` | `async (root: String) -> Result<(), String>` | D7, D14, D16. |

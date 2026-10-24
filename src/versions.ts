@@ -5,6 +5,9 @@ import {
   deletedFiles,
   historyInfo,
   listVersions,
+  openDeleted,
+  openFile,
+  openVersion,
   replaceWithVersion,
   restoreDeleted,
   restoreVersionCopy,
@@ -19,6 +22,7 @@ import {
   type VersionInfo,
 } from "./api";
 import { formatDate, formatDateDetailed, formatSize } from "./format";
+import { sym } from "./icons";
 import { openDialog, showToast } from "./ui";
 
 function clean(error: unknown): string {
@@ -43,6 +47,28 @@ export function restoreName(path: string, unixSeconds: number): string {
   const stem = hasExt ? name.slice(0, dot) : name;
   const ext = hasExt ? name.slice(dot) : "";
   return `${stem} (${restoreStamp(unixSeconds)})${ext}`;
+}
+
+const OPEN_COPY_TOAST = "Opened a read-only copy. Use Restore Copy to edit.";
+
+/** Open a version in the default app from a read-only cache copy. */
+function openVersionCopy(entry: Entry, version: VersionInfo): void {
+  const name = restoreName(entry.path, version.mtime);
+  showToast("Preparing a copy…", { timeout: 60_000 });
+  openVersion(entry.path, version.id, name)
+    .then((path) => openFile(path))
+    .then(() => showToast(OPEN_COPY_TOAST))
+    .catch((err) => showToast(`Could not open the copy: ${clean(err)}`));
+}
+
+/** Open a deleted file's last real version without restoring it. */
+function openDeletedCopy(file: DeletedFile): void {
+  const name = restoreName(file.path, file.deleted_at);
+  showToast("Preparing a copy…", { timeout: 60_000 });
+  openDeleted(file.path, name)
+    .then((path) => openFile(path))
+    .then(() => showToast("Opened a read-only copy. Use Restore to keep it."))
+    .catch((err) => showToast(`Could not open the copy: ${clean(err)}`));
 }
 
 function isInside(path: string, root: string): boolean {
@@ -122,7 +148,9 @@ export async function showVersions(entry: Entry, onChanged: () => void): Promise
   let dialog: ReturnType<typeof openDialog>;
 
   const setButtons = () => {
+    const openable = !!selected && !selected.deleted && !loading;
     const usable = !!selected && !selected.deleted && !selected.current && !loading;
+    dialog.setResponseEnabled("open", openable);
     dialog.setResponseEnabled("restore", usable);
     dialog.setResponseEnabled("replace", usable && canReplace);
   };
@@ -186,13 +214,16 @@ export async function showVersions(entry: Entry, onChanged: () => void): Promise
     className: "versions-dialog",
     extra,
     responses: [
+      { id: "open", label: "Open Copy" },
       { id: "restore", label: "Restore Copy" },
       { id: "replace", label: "Replace…", style: "destructive" },
       { id: "close", label: "Close" },
     ],
     closeResponse: "close",
     onResponse: (id) => {
-      if (id === "restore" && selected) {
+      if (id === "open" && selected && !selected.deleted) {
+        openVersionCopy(entry, selected);
+      } else if (id === "restore" && selected) {
         const name = restoreName(entry.path, selected.deleted ? selected.recorded_at : selected.mtime);
         restoreVersionCopy(entry.path, selected.id, name)
           .then((path) => {
@@ -281,11 +312,18 @@ export async function showDeletedFiles(dir: string, onChanged: () => void): Prom
     const size = document.createElement("span");
     size.className = "deleted-size";
     size.textContent = formatSize(file.size);
-    const button = document.createElement("button");
-    button.className = "btn pill";
-    button.textContent = "Restore";
-    button.addEventListener("click", () => restore(file, row));
-    row.append(name, when, size, button);
+    const actions = document.createElement("div");
+    actions.className = "deleted-actions";
+    const open = document.createElement("button");
+    open.className = "btn pill";
+    open.textContent = "Open";
+    open.addEventListener("click", () => openDeletedCopy(file));
+    const restoreButton = document.createElement("button");
+    restoreButton.className = "btn pill";
+    restoreButton.textContent = "Restore";
+    restoreButton.addEventListener("click", () => restore(file, row));
+    actions.append(open, restoreButton);
+    row.append(name, when, size, actions);
     extra.appendChild(row);
   }
 
@@ -324,16 +362,17 @@ export async function addVersionRows(
     );
     const actions = document.createElement("div");
     actions.className = "props-actions";
-    const clear = document.createElement("button");
-    clear.className = "btn pill destructive";
-    clear.textContent = "Clear History…";
-    clear.addEventListener("click", () => confirmClear(root, entry.name, onChanged, onClose));
-    const stop = document.createElement("button");
-    stop.className = "btn pill destructive";
-    stop.textContent = "Stop Keeping Versions…";
-    stop.addEventListener("click", () => confirmStop(root, entry.name, onChanged, onClose));
-    actions.append(clear, stop);
-    list.appendChild(actions);
+    actions.append(
+      actionRow("Clear History…", () =>
+        confirmClear(root, entry.name, onChanged, onClose)
+      ),
+      actionRow("Stop Keeping Versions…", () =>
+        confirmStop(root, entry.name, onChanged, onClose)
+      )
+    );
+    // A separate group keeps destructive actions out of the facts list.
+    if (list.parentElement) list.insertAdjacentElement("afterend", actions);
+    else list.appendChild(actions);
     return info;
   }
   if (!entry.is_dir && isInside(entry.path, root)) {
@@ -358,6 +397,21 @@ function addRow(list: HTMLElement, label: string, value: string): void {
   val.textContent = value;
   row.append(key, val);
   list.appendChild(row);
+}
+
+/** A full-width destructive row that opens a confirmation dialog. */
+function actionRow(label: string, onClick: () => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "props-action";
+  const text = document.createElement("span");
+  text.textContent = label;
+  const chevron = document.createElement("span");
+  chevron.className = "props-action-chevron";
+  chevron.innerHTML = sym("go-next");
+  button.append(text, chevron);
+  button.addEventListener("click", onClick);
+  return button;
 }
 
 function closeProperties(onClose?: () => void): void {

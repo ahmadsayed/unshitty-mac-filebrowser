@@ -1,10 +1,11 @@
 //! Version history for users: list, diff, Restore Copy, Replace, and deleted
 //! files. Rebuilds happen through `store`; placement never overwrites.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, FileTimes, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use similar::{ChangeTag, TextDiff};
 
@@ -16,6 +17,7 @@ use crate::versions::{
 const MAX_DIFF_INPUT: u64 = 1 << 20;
 const MAX_DIFF_LINES: usize = 2000;
 static NEXT_STAGING: AtomicU64 = AtomicU64::new(0);
+static NEXT_OPEN: AtomicU64 = AtomicU64::new(0);
 
 /// Rows for the Versions… dialog, newest first. `current` is stat-based: the
 /// latest row plus a matching size/mtime, never a hash (D9/R6).
@@ -216,7 +218,9 @@ pub fn deleted_files(history: &History, dir: Option<&[u8]>) -> Result<Vec<Delete
     Ok(rows
         .into_iter()
         .map(|row| DeletedFile {
-            path: row.display,
+            path: join_rel(&history.root, &row.path)
+                .to_string_lossy()
+                .into_owned(),
             deleted_at: row.deleted_at,
             size: row.size,
         })
@@ -260,6 +264,152 @@ pub fn restore_deleted(history: &History, rel: &[u8], fallback_name: &str) -> Re
     };
     let _ = fs::remove_file(&staging);
     result
+}
+
+/// Materialize `version` as a read-only file under `base` (the app cache),
+/// named `name`, for opening in the default app. The versioned folder and its
+/// history are never touched.
+pub fn open_copy(
+    history: &History,
+    rel: &[u8],
+    version: i64,
+    name: &str,
+    base: &Path,
+) -> Result<PathBuf> {
+    let row = version_row(history, version)?;
+    if row.path != rel || row.is_tombstone() {
+        return Err(Error::Damaged);
+    }
+    open_row(history, &row, name, base)
+}
+
+/// Materialize the last real version of a deleted path as a read-only copy.
+pub fn open_deleted(history: &History, rel: &[u8], name: &str, base: &Path) -> Result<PathBuf> {
+    validate_rel_path(rel)?;
+    let row = {
+        let reader = history.reader()?;
+        index::last_live_version(&reader, rel)?
+    }
+    .ok_or_else(|| Error::Io("there is no version of that file to open".into()))?;
+    open_row(history, &row, name, base)
+}
+
+fn open_row(history: &History, row: &VersionRow, name: &str, base: &Path) -> Result<PathBuf> {
+    validate_name(name)?;
+    if row.is_tombstone() {
+        return Err(Error::Damaged);
+    }
+    let dir = new_open_dir(base)?;
+    let path = dir.join(name);
+    if let Err(error) = write_read_only(history, row, &path) {
+        let _ = fs::remove_dir_all(&dir);
+        return Err(error);
+    }
+    Ok(path)
+}
+
+fn write_read_only(history: &History, row: &VersionRow, path: &Path) -> Result<()> {
+    let hash = row.hash.as_deref().ok_or(Error::Damaged)?;
+    let chain = {
+        let reader = history.reader()?;
+        capture::chain_for(&reader, hash)?
+    };
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    let store = Store::new(history.objects.clone(), history.tmp.clone());
+    if let Err(error) = store.read_to(&chain, hash, &mut file) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
+    file.sync_all()?;
+    // Best effort: some filesystems keep coarser timestamps.
+    if let Ok(nanos) = u64::try_from(row.mtime) {
+        let when = SystemTime::UNIX_EPOCH + Duration::from_nanos(nanos);
+        let _ = file.set_times(FileTimes::new().set_modified(when));
+    }
+    drop(file);
+    make_read_only(path)
+}
+
+/// A private folder for one opened copy. The creation second is part of the
+/// name so `prune_opened` does not have to trust directory mtimes.
+fn new_open_dir(base: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(base)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(base, fs::Permissions::from_mode(0o700));
+    }
+    for _ in 0..1000 {
+        let n = NEXT_OPEN.fetch_add(1, Ordering::Relaxed);
+        let dir = base.join(format!(
+            "{}-{}-{n}",
+            crate::versions::now_seconds(),
+            std::process::id()
+        ));
+        match fs::create_dir(&dir) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+                }
+                return Ok(dir);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(Error::Io(e.to_string())),
+        }
+    }
+    Err(Error::Io(
+        "could not create a folder for the opened copy".into(),
+    ))
+}
+
+/// Delete opened copies older than `max_age_seconds`, using the creation stamp
+/// in the folder name. Unknown entries are left alone.
+pub fn prune_opened(base: &Path, now: i64, max_age_seconds: i64) {
+    let Ok(entries) = fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let created = name.split('-').next().unwrap_or("");
+        let Ok(created) = created.parse::<i64>() else {
+            continue;
+        };
+        if now.saturating_sub(created) < max_age_seconds {
+            continue;
+        }
+        let path = entry.path();
+        let _ = if path.is_dir() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
+    }
+}
+
+#[cfg(unix)]
+fn make_read_only(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o444))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn make_read_only(path: &Path) -> Result<()> {
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(path, permissions)?;
+    Ok(())
 }
 
 fn version_row(history: &History, version: i64) -> Result<VersionRow> {
@@ -472,12 +622,109 @@ mod tests {
         capture::record(&history, Path::new("notes.txt")).unwrap();
         let deleted = deleted_files(&history, None).unwrap();
         assert_eq!(deleted.len(), 1);
-        assert_eq!(deleted[0].path, "notes.txt");
+        assert_eq!(
+            deleted[0].path,
+            history.root.join("notes.txt").to_string_lossy()
+        );
         assert_eq!(deleted[0].size, 5);
         assert_eq!(last_size(&history, b"notes.txt").unwrap(), 5);
 
         let restored = restore_deleted(&history, b"notes.txt", "").unwrap();
         assert_eq!(fs::read(restored).unwrap(), b"gone\n");
+    }
+
+    #[test]
+    fn open_copy_materializes_a_private_read_only_file() {
+        let (_root, history) = history_with_file(b"one\n");
+        edit(&history, b"two\n");
+        let old = ids(&history)[1];
+        let cache = tempdir().unwrap();
+        let base = cache.path().join("opened");
+        let opened = open_copy(&history, b"notes.txt", old, "notes (old).txt", &base).unwrap();
+        assert_eq!(fs::read(&opened).unwrap(), b"one\n");
+        assert_eq!(opened.file_name().unwrap(), "notes (old).txt");
+        assert_eq!(fs::read(history.root.join("notes.txt")).unwrap(), b"two\n");
+        assert!(opened.starts_with(&base));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&opened).unwrap().permissions().mode() & 0o777,
+                0o444
+            );
+            assert_eq!(
+                fs::metadata(opened.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+        // A second open gets its own folder instead of replacing the first.
+        let again = open_copy(&history, b"notes.txt", old, "notes (old).txt", &base).unwrap();
+        assert_ne!(opened, again);
+        assert_eq!(fs::read(&again).unwrap(), b"one\n");
+    }
+
+    #[test]
+    fn open_copy_refuses_a_tombstone_or_another_files_version() {
+        let (_root, history) = history_with_file(b"gone\n");
+        fs::write(history.root.join("other.txt"), b"other\n").unwrap();
+        capture::record(&history, Path::new("other.txt")).unwrap();
+        let other = list_infos(&history, b"other.txt", None, None).unwrap()[0].id;
+        let base = tempdir().unwrap();
+        assert!(open_copy(&history, b"notes.txt", other, "wrong.txt", base.path()).is_err());
+
+        fs::remove_file(history.root.join("notes.txt")).unwrap();
+        capture::record(&history, Path::new("notes.txt")).unwrap();
+        let tombstone = list_infos(&history, b"notes.txt", None, None).unwrap()[0].id;
+        assert!(open_copy(&history, b"notes.txt", tombstone, "gone.txt", base.path()).is_err());
+    }
+
+    #[test]
+    fn a_read_only_history_can_open_a_copy() {
+        let (_root, history) = history_with_file(b"one\n");
+        let version = ids(&history)[0];
+        let second = History::open(&history.root).unwrap();
+        assert!(!second.writable);
+        let base = tempdir().unwrap();
+        let opened = open_copy(&second, b"notes.txt", version, "notes.txt", base.path()).unwrap();
+        assert_eq!(fs::read(opened).unwrap(), b"one\n");
+        // The owner still works and the lock was not disturbed.
+        assert!(history.writer().is_ok());
+    }
+
+    #[test]
+    fn open_deleted_materializes_the_last_live_version() {
+        let (_root, history) = history_with_file(b"gone\n");
+        fs::remove_file(history.root.join("notes.txt")).unwrap();
+        capture::record(&history, Path::new("notes.txt")).unwrap();
+        let base = tempdir().unwrap();
+        let opened =
+            open_deleted(&history, b"notes.txt", "notes (deleted).txt", base.path()).unwrap();
+        assert_eq!(fs::read(opened).unwrap(), b"gone\n");
+        assert!(
+            !history.root.join("notes.txt").exists(),
+            "opening is not restoring"
+        );
+        assert!(open_deleted(&history, b"never.txt", "x.txt", base.path()).is_err());
+    }
+
+    #[test]
+    fn old_opened_copies_are_pruned_by_their_creation_stamp() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().join("opened");
+        fs::create_dir_all(base.join("1000-1-0")).unwrap();
+        fs::write(base.join("1000-1-0/file.txt"), b"x").unwrap();
+        fs::create_dir_all(base.join("1800-1-0")).unwrap();
+        fs::create_dir_all(base.join("keep")).unwrap();
+        prune_opened(&base, 2000, 500);
+        assert!(!base.join("1000-1-0").exists());
+        assert!(base.join("1800-1-0").exists());
+        assert!(base.join("keep").exists());
+        // A missing cache directory is not an error.
+        prune_opened(&dir.path().join("missing"), 2000, 500);
     }
 
     #[cfg(unix)]

@@ -1123,12 +1123,48 @@ kbd {
   opacity: var(--dim);
 }
 
-.props-list {
+.props-list,
+.props-actions {
   border-radius: 12px;
   background: var(--card-bg);
   box-shadow: 0 0 0 1px var(--card-shade), 0 1px 3px 1px rgba(0, 0, 6, 0.03);
   overflow: hidden;
 }
+
+.props-actions {
+  display: flex;
+  flex-direction: column;
+}
+
+.props-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--destructive);
+  font: inherit;
+  font-size: 10pt;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+.props-action + .props-action { border-top: 1px solid var(--card-shade); }
+.props-action:hover { background: var(--item-hover); }
+.props-action:active { background: color-mix(in srgb, currentColor 12%, transparent); }
+.props-action:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--destructive) 55%, transparent);
+  outline-offset: -2px;
+}
+.props-action-chevron {
+  display: flex;
+  opacity: 0.55;
+}
+.props-action-chevron .sym { width: 14px; height: 14px; }
 
 .prop-row {
   display: flex;
@@ -1305,6 +1341,11 @@ kbd {
   padding: 7px 12px;
 }
 .deleted-row + .deleted-row { border-top: 1px solid var(--card-shade); }
+.deleted-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
 .deleted-name { overflow-wrap: anywhere; }
 .deleted-when,
 .deleted-size {
@@ -1316,13 +1357,6 @@ kbd {
   padding: 24px;
   text-align: center;
   opacity: var(--dim);
-}
-.props-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 9px 14px;
-  border-top: 1px solid var(--card-shade);
 }
 
 /* =============================================================================

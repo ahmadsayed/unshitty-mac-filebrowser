@@ -159,10 +159,14 @@ test("the Keep Versions commands", async () => {
   expect(await diff("notes.txt", 1)).toMatchObject({ kind: "text", truncated: false });
   expect(await invoke("restore_version_copy", { path: `${V}/notes.txt`, version: 1, name: "n1.txt" })).toBe(`${V}/n1.txt`);
   await expect(invoke("restore_version_copy", { path: `${V}/notes.txt`, version: 1, name: "n1.txt" })).rejects.toMatch(/already exists/);
+  expect(await invoke("open_version", { path: `${V}/notes.txt`, version: 1, name: "n1.txt" })).toBe(`${HOME}/.cache/opened-versions/n1.txt`);
   await expect(invoke("restore_version_copy", { path: "/nope/x", version: 1, name: "y" })).rejects.toMatch(/missing folder/);
   await invoke("replace_with_version", { path: `${V}/notes.txt`, version: 1 });
   await expect(invoke("replace_with_version", { path: `${V}/gone.txt`, version: 1 })).rejects.toMatch(/not in the folder/);
   expect(await invoke("deleted_files", { dir: V })).toEqual([expect.objectContaining({ path: `${V}/draft.md` })]);
+  expect(await invoke("open_deleted", { path: `${V}/draft.md`, name: "draft (old).md" })).toBe(
+    `${HOME}/.cache/opened-versions/draft (old).md`,
+  );
   expect(await invoke("restore_deleted", { path: `${V}/draft.md`, fallbackName: "" })).toBe(`${V}/draft.md`);
   await expect(invoke("restore_deleted", { path: `${V}/draft.md`, fallbackName: "" })).rejects.toMatch(/already at that path/);
   expect(await invoke("history_info", { root: V })).toEqual({ bytes: 12_400_000, versions: 214, files: 37 });
