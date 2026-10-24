@@ -11,6 +11,10 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 pub const API_BASE: &str = "https://www.googleapis.com/drive/v3";
+pub const UPLOAD_BASE: &str = "https://www.googleapis.com/upload/drive/v3";
+
+/// Upload chunk size: Drive wants a multiple of 256 KiB.
+pub const CHUNK: usize = 8 * 1024 * 1024;
 
 /// The metadata every single-file request asks for.
 const FILE_FIELDS: &str = "id,name,mimeType,size,modifiedTime,webViewLink,thumbnailLink,capabilities(canDownload),trashed";
@@ -246,9 +250,40 @@ fn about_from(about: AboutResponse) -> Result<AboutInfo, String> {
 
 // ---------------------------------------------------------------- client
 
+/// A metadata change for `DriveClient::update`. Parents travel in the query,
+/// the rest in the JSON body; `None` fields are left alone.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct FileChange {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trashed: Option<bool>,
+    #[serde(skip)]
+    pub add_parent: Option<String>,
+    #[serde(skip)]
+    pub remove_parent: Option<String>,
+}
+
+impl FileChange {
+    pub fn trash(trashed: bool) -> Self {
+        Self {
+            trashed: Some(trashed),
+            ..Self::default()
+        }
+    }
+
+    pub fn rename(name: &str) -> Self {
+        Self {
+            name: Some(name.to_string()),
+            ..Self::default()
+        }
+    }
+}
+
 pub struct DriveClient {
     http: reqwest::blocking::Client,
     base: String,
+    upload_base: String,
     token: String,
     /// The first retry waits about this long; later ones double it.
     backoff: Duration,
@@ -257,9 +292,16 @@ pub struct DriveClient {
 impl DriveClient {
     /// `base` is API_BASE in production; tests point it at a local server.
     pub fn new(http: reqwest::blocking::Client, base: &str, token: String) -> Self {
+        let base = base.trim_end_matches('/').to_string();
+        let upload_base = if base == API_BASE {
+            UPLOAD_BASE.to_string()
+        } else {
+            format!("{base}/upload")
+        };
         Self {
             http,
-            base: base.trim_end_matches('/').to_string(),
+            base,
+            upload_base,
             token,
             backoff: Duration::from_millis(500),
         }
@@ -356,6 +398,165 @@ impl DriveClient {
         Some(out)
     }
 
+    /// Every page of a folder's untrashed children.
+    pub fn list_all(&self, folder_id: &str) -> Result<Vec<DriveFile>, DriveError> {
+        let mut files = Vec::new();
+        let mut page: Option<String> = None;
+        loop {
+            let response = self.list(folder_id, page.as_deref())?;
+            files.extend(response.files);
+            match response.next_page_token {
+                Some(token) => page = Some(token),
+                None => return Ok(files),
+            }
+        }
+    }
+
+    pub fn create_folder(&self, parent_id: &str, name: &str) -> Result<DriveFile, DriveError> {
+        let body = serde_json::json!({
+            "name": name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_id],
+        });
+        self.json_request(
+            reqwest::Method::POST,
+            &format!("{}/files", self.base),
+            &[],
+            &body,
+        )
+    }
+
+    pub fn update(&self, id: &str, change: &FileChange) -> Result<DriveFile, DriveError> {
+        let mut query = Vec::new();
+        if let Some(parent) = &change.add_parent {
+            query.push(("addParents", parent.as_str()));
+        }
+        if let Some(parent) = &change.remove_parent {
+            query.push(("removeParents", parent.as_str()));
+        }
+        let body = serde_json::to_value(change).map_err(|e| DriveError::Parse(e.to_string()))?;
+        self.json_request(
+            reqwest::Method::PATCH,
+            &format!("{}/files/{}", self.base, id),
+            &query,
+            &body,
+        )
+    }
+
+    /// A server-side copy of a file (Drive cannot copy folders).
+    pub fn copy_file(
+        &self,
+        id: &str,
+        parent_id: &str,
+        name: &str,
+    ) -> Result<DriveFile, DriveError> {
+        let body = serde_json::json!({ "name": name, "parents": [parent_id] });
+        self.json_request(
+            reqwest::Method::POST,
+            &format!("{}/files/{}/copy", self.base, id),
+            &[],
+            &body,
+        )
+    }
+
+    /// Upload a local file with Drive's resumable protocol, in `CHUNK`s.
+    /// Drive creates the file only when the last chunk arrives, so a failed
+    /// upload leaves nothing behind.
+    pub fn upload(
+        &self,
+        parent_id: &str,
+        name: &str,
+        local: &Path,
+    ) -> Result<DriveFile, DriveError> {
+        let io = |error: std::io::Error| DriveError::Unavailable(error.to_string());
+        let size = std::fs::metadata(local).map_err(io)?.len();
+        let metadata = serde_json::json!({ "name": name, "parents": [parent_id] });
+        let url = format!("{}/files", self.upload_base);
+        let started = self.send(|| {
+            self.http
+                .post(&url)
+                .query(&[
+                    ("uploadType", "resumable"),
+                    ("supportsAllDrives", "true"),
+                    ("fields", FILE_FIELDS),
+                ])
+                .bearer_auth(&self.token)
+                .header("X-Upload-Content-Length", size)
+                .json(&metadata)
+        })?;
+        let session = started
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| DriveError::Parse("Drive did not start an upload session".into()))?
+            .to_string();
+
+        let mut file = std::fs::File::open(local).map_err(io)?;
+        let mut offset = 0u64;
+        let mut stalls = 0;
+        loop {
+            let end = (offset + CHUNK as u64).min(size);
+            let chunk = read_chunk(&mut file, offset, (end - offset) as usize).map_err(io)?;
+            let range = if size == 0 {
+                "bytes */0".to_string()
+            } else {
+                format!("bytes {offset}-{}/{size}", end - 1)
+            };
+            let response = self.send_accepting(
+                || {
+                    self.http
+                        .put(&session)
+                        .header(reqwest::header::CONTENT_RANGE, &range)
+                        .body(chunk.clone())
+                },
+                |status| status == 308,
+            )?;
+            if response.status().as_u16() != 308 {
+                let body = response
+                    .text()
+                    .map_err(|error| DriveError::Parse(error.to_string()))?;
+                return serde_json::from_str(&body)
+                    .map_err(|error| DriveError::Parse(error.to_string()));
+            }
+            let next = response
+                .headers()
+                .get(reqwest::header::RANGE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(next_offset)
+                .unwrap_or(0);
+            // Progress or give up: a server that never accepts bytes must not
+            // keep us looping.
+            stalls = if next > offset { 0 } else { stalls + 1 };
+            if stalls >= ATTEMPTS {
+                return Err(DriveError::Unavailable(
+                    "the upload made no progress".into(),
+                ));
+            }
+            offset = next;
+        }
+    }
+
+    fn json_request<T: DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        query: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<T, DriveError> {
+        let response = self.send(|| {
+            self.http
+                .request(method.clone(), url)
+                .query(query)
+                .query(&[("supportsAllDrives", "true"), ("fields", FILE_FIELDS)])
+                .bearer_auth(&self.token)
+                .json(body)
+        })?;
+        let text = response
+            .text()
+            .map_err(|error| DriveError::Parse(error.to_string()))?;
+        serde_json::from_str(&text).map_err(|error| DriveError::Parse(error.to_string()))
+    }
+
     fn get_json<T: DeserializeOwned>(
         &self,
         url: &str,
@@ -374,11 +575,25 @@ impl DriveClient {
         &self,
         request: impl Fn() -> reqwest::blocking::RequestBuilder,
     ) -> Result<reqwest::blocking::Response, DriveError> {
+        self.send_accepting(request, |_| false)
+    }
+
+    /// `send`, also accepting the statuses `accept` approves (an upload
+    /// chunk's `308 Resume Incomplete`).
+    fn send_accepting(
+        &self,
+        request: impl Fn() -> reqwest::blocking::RequestBuilder,
+        accept: impl Fn(u16) -> bool,
+    ) -> Result<reqwest::blocking::Response, DriveError> {
         let mut attempt = 0;
         loop {
             attempt += 1;
             let (error, retry_after) = match request().send() {
-                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response)
+                    if response.status().is_success() || accept(response.status().as_u16()) =>
+                {
+                    return Ok(response);
+                }
                 Ok(response) => {
                     let status = response.status().as_u16();
                     let retry_after = response
@@ -413,6 +628,21 @@ fn retry_delay(attempt: u32, retry_after: Option<&str>, backoff: Duration) -> Op
     let base = backoff * 2u32.pow(attempt.saturating_sub(1).min(8));
     let jitter = getrandom::u32().unwrap_or(0) % 1000;
     Some(base + base * jitter / 2000)
+}
+
+/// Read up to `length` bytes at `offset`.
+fn read_chunk(file: &mut std::fs::File, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(offset))?;
+    let mut chunk = Vec::with_capacity(length);
+    file.take(length as u64).read_to_end(&mut chunk)?;
+    Ok(chunk)
+}
+
+/// The next byte to send after a `308`'s `Range: bytes=0-N` (that is, N+1).
+fn next_offset(range: &str) -> Option<u64> {
+    let last = range.trim().strip_prefix("bytes=")?.split('-').nth(1)?;
+    last.trim().parse::<u64>().ok().map(|last| last + 1)
 }
 
 /// Quote a value for a Drive search query (`'…'`): backslash and quote are
@@ -641,6 +871,182 @@ mod tests {
                 .is_none()
         );
         server.join().unwrap();
+    }
+
+    use crate::cloud::test_server::{Reply, serve_replies};
+
+    const FILE: &str = r#"{"id":"new","name":"n","mimeType":"text/plain","size":"5"}"#;
+
+    #[test]
+    fn create_folder_posts_the_folder_mime_type_and_parent() {
+        let (base, log, server) = serve_replies(vec![Reply::json(200, FILE)]);
+        let file = client(&base).create_folder("p1", "Docs").unwrap();
+        server.join().unwrap();
+        assert_eq!(file.id, "new");
+        let request = log.lock().unwrap()[0].clone();
+        assert!(request.head.starts_with("POST /files?"), "{}", request.head);
+        let body = request.body_text();
+        assert!(
+            body.contains("application/vnd.google-apps.folder"),
+            "{body}"
+        );
+        assert!(body.contains(r#""parents":["p1"]"#), "{body}");
+        assert!(body.contains(r#""name":"Docs""#), "{body}");
+    }
+
+    #[test]
+    fn update_moves_with_add_and_remove_parents() {
+        let (base, log, server) = serve_replies(vec![Reply::json(200, FILE)]);
+        let change = FileChange {
+            add_parent: Some("p2".into()),
+            remove_parent: Some("p1".into()),
+            ..FileChange::default()
+        };
+        client(&base).update("f1", &change).unwrap();
+        server.join().unwrap();
+        let head = log.lock().unwrap()[0].head.clone();
+        assert!(head.starts_with("PATCH /files/f1?"), "{head}");
+        assert!(head.contains("addParents=p2"), "{head}");
+        assert!(head.contains("removeParents=p1"), "{head}");
+    }
+
+    #[test]
+    fn update_trashes_and_untrashes() {
+        let (base, log, server) =
+            serve_replies(vec![Reply::json(200, FILE), Reply::json(200, FILE)]);
+        let client = client(&base);
+        client.update("f1", &FileChange::trash(true)).unwrap();
+        client.update("f1", &FileChange::trash(false)).unwrap();
+        server.join().unwrap();
+        let log = log.lock().unwrap();
+        assert_eq!(log[0].body_text(), r#"{"trashed":true}"#);
+        assert_eq!(log[1].body_text(), r#"{"trashed":false}"#);
+    }
+
+    #[test]
+    fn copy_file_names_the_copy_and_its_parent() {
+        let (base, log, server) = serve_replies(vec![Reply::json(200, FILE)]);
+        client(&base).copy_file("f1", "p2", "a (copy).txt").unwrap();
+        server.join().unwrap();
+        let request = log.lock().unwrap()[0].clone();
+        assert!(
+            request.head.starts_with("POST /files/f1/copy?"),
+            "{}",
+            request.head
+        );
+        assert!(request.body_text().contains(r#""name":"a (copy).txt""#));
+        assert!(request.body_text().contains(r#""parents":["p2"]"#));
+    }
+
+    fn local_file(bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("up.bin");
+        std::fs::write(&path, bytes).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn upload_starts_a_session_and_sends_the_bytes() {
+        let (base, log, server) = serve_replies(vec![
+            Reply::json(200, "").header("Location", "{base}/session/1"),
+            Reply::json(200, FILE),
+        ]);
+        let (_dir, path) = local_file(b"hello");
+        let file = client(&base).upload("p1", "up.bin", &path).unwrap();
+        server.join().unwrap();
+        assert_eq!(file.id, "new");
+        let log = log.lock().unwrap();
+        assert!(
+            log[0].head.starts_with("POST /upload/files?"),
+            "{}",
+            log[0].head
+        );
+        assert!(log[0].head.contains("uploadType=resumable"));
+        assert!(log[0].body_text().contains(r#""parents":["p1"]"#));
+        assert!(log[1].head.starts_with("PUT /session/1"), "{}", log[1].head);
+        assert!(
+            log[1].head.contains("content-range: bytes 0-4/5"),
+            "{}",
+            log[1].head
+        );
+        assert_eq!(log[1].body, b"hello");
+    }
+
+    #[test]
+    fn upload_resumes_after_a_308() {
+        let size = CHUNK + 10;
+        let bytes: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        let (base, log, server) = serve_replies(vec![
+            Reply::json(200, "").header("Location", "{base}/session/1"),
+            Reply::json(308, "").header("Range", "bytes=0-262143"),
+            Reply::json(200, FILE),
+        ]);
+        let (_dir, path) = local_file(&bytes);
+        client(&base).upload("p1", "up.bin", &path).unwrap();
+        server.join().unwrap();
+        let log = log.lock().unwrap();
+        assert!(
+            log[1]
+                .head
+                .contains(&format!("content-range: bytes 0-{}/{size}", CHUNK - 1))
+        );
+        assert!(
+            log[2]
+                .head
+                .contains(&format!("content-range: bytes 262144-{}/{size}", size - 1)),
+            "{}",
+            log[2].head
+        );
+        assert_eq!(log[2].body, bytes[262144..]);
+    }
+
+    #[test]
+    fn upload_of_an_empty_file_sends_no_chunk_range() {
+        let (base, log, server) = serve_replies(vec![
+            Reply::json(200, "").header("Location", "{base}/session/1"),
+            Reply::json(200, FILE),
+        ]);
+        let (_dir, path) = local_file(b"");
+        client(&base).upload("p1", "empty", &path).unwrap();
+        server.join().unwrap();
+        assert!(
+            log.lock().unwrap()[1]
+                .head
+                .contains("content-range: bytes */0")
+        );
+    }
+
+    #[test]
+    fn a_failed_upload_session_is_an_error() {
+        let (base, server) = {
+            let (base, _log, server) = serve_replies(vec![
+                Reply::json(200, "").header("Location", "{base}/session/1"),
+                Reply::json(400, r#"{"error":{"message":"bad"}}"#),
+            ]);
+            (base, server)
+        };
+        let (_dir, path) = local_file(b"hello");
+        assert!(client(&base).upload("p1", "up.bin", &path).is_err());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn list_all_follows_every_page() {
+        let (base, server) = serve(vec![
+            (
+                200,
+                json(r#"{"files":[{"id":"a","name":"a","mimeType":"x"}],"nextPageToken":"2"}"#),
+                "application/json",
+            ),
+            (
+                200,
+                json(r#"{"files":[{"id":"b","name":"b","mimeType":"x"}]}"#),
+                "application/json",
+            ),
+        ]);
+        let files = client(&base).list_all("p1").unwrap();
+        server.join().unwrap();
+        assert_eq!(files.len(), 2);
     }
 
     #[test]
