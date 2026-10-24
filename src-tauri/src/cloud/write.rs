@@ -256,21 +256,30 @@ pub(crate) fn copy_in(c: &Ctx, from: &str, to: &str, overwrite: bool) -> Result<
         &t.name,
         t.replaced.as_ref(),
         &staged,
+        true,
     )
 }
 
-/// Swap a complete staged copy into place: trash what it replaces, then give
-/// it the final name. Any failure trashes the staged copy.
+/// Swap a complete staged item into place: trash what it replaces, then
+/// give it the final name. If the rename fails, the replaced item comes back
+/// out of the Trash. A staged *copy* (`ours`) is trashed on failure; a staged
+/// move is the user's own item, so the caller puts it back instead.
 pub(crate) fn finish_staged(
     client: &DriveClient,
     parent: &DriveLocation,
     name: &str,
     replaced: Option<&DriveFile>,
     staged: &DriveFile,
+    ours: bool,
 ) -> Result<String, String> {
+    let discard = || {
+        if ours {
+            let _ = client.update(&staged.id, &FileChange::trash(true));
+        }
+    };
     if let Some(old) = replaced {
         if let Err(error) = client.update(&old.id, &FileChange::trash(true)) {
-            let _ = client.update(&staged.id, &FileChange::trash(true));
+            discard();
             return Err(format!(
                 "Could not move the existing item to the Trash: {}",
                 message(error)
@@ -280,7 +289,10 @@ pub(crate) fn finish_staged(
     match client.update(&staged.id, &FileChange::rename(name)) {
         Ok(done) => Ok(parent.child(&done.id, &done.name).to_uri()),
         Err(error) => {
-            let _ = client.update(&staged.id, &FileChange::trash(true));
+            if let Some(old) = replaced {
+                let _ = client.update(&old.id, &FileChange::trash(false));
+            }
+            discard();
             Err(message(error))
         }
     }
@@ -316,26 +328,43 @@ pub(crate) fn move_in(c: &Ctx, from: &str, to: &str, overwrite: bool) -> Result<
         .source_parent_id
         .clone()
         .ok_or_else(|| "My Drive itself cannot be moved.".to_string())?;
-    if let Some(old) = &t.replaced {
-        t.client
-            .update(&old.id, &FileChange::trash(true))
-            .map_err(|error| {
-                format!(
-                    "Could not move the existing item to the Trash: {}",
-                    message(error)
-                )
-            })?;
-    }
+    // With Replace, move in under a staging name first (AGENTS.md: stage,
+    // trash the old item, then rename into place).
+    let staged_name = match t.replaced {
+        Some(_) => format!(".{}.filebrowser-move", t.name),
+        None => t.name.clone(),
+    };
+    let crosses = t.target_parent_id != source_parent_id;
     let mut change = FileChange::default();
-    if t.name != t.source.name {
-        change.name = Some(t.name.clone());
+    if staged_name != t.source.name {
+        change.name = Some(staged_name);
     }
-    if t.target_parent_id != source_parent_id {
+    if crosses {
         change.add_parent = Some(t.target_parent_id.clone());
-        change.remove_parent = Some(source_parent_id);
+        change.remove_parent = Some(source_parent_id.clone());
     }
     let moved = t.client.update(&t.source.id, &change).map_err(message)?;
-    Ok(t.target_parent.child(&moved.id, &moved.name).to_uri())
+    if t.replaced.is_none() {
+        return Ok(t.target_parent.child(&moved.id, &moved.name).to_uri());
+    }
+    let finished = finish_staged(
+        &t.client,
+        &t.target_parent,
+        &t.name,
+        t.replaced.as_ref(),
+        &moved,
+        false,
+    );
+    if finished.is_err() {
+        // Put the item back where and as it was.
+        let mut back = FileChange::rename(&t.source.name);
+        if crosses {
+            back.add_parent = Some(source_parent_id);
+            back.remove_parent = Some(t.target_parent_id.clone());
+        }
+        let _ = t.client.update(&t.source.id, &back);
+    }
+    finished
 }
 
 #[cfg(test)]
@@ -715,11 +744,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_move_with_replace_trashes_the_old_item_first() {
+    fn a_move_with_replace_is_staged_before_the_old_item_goes() {
         let (result, log) = run(
             vec![
                 ok(file("f1", "a.txt")),
                 found(&[file("old", "a.txt")]),
+                ok(file("f1", ".a.txt.filebrowser-move")),
                 ok(file("old", "a.txt")),
                 ok(file("f1", "a.txt")),
             ],
@@ -734,8 +764,75 @@ pub(crate) mod tests {
         );
         assert_eq!(result.unwrap(), format!("{ROOT}/p2~Other/f1~a.txt"));
         let log = log.lock().unwrap();
-        assert!(log[2].head.starts_with("PATCH /files/old?"));
-        assert!(log[3].head.starts_with("PATCH /files/f1?"));
+        assert!(
+            log[2].head.starts_with("PATCH /files/f1?") && log[2].head.contains("addParents=p2")
+        );
+        assert_eq!(log[2].body_text(), r#"{"name":".a.txt.filebrowser-move"}"#);
+        assert!(log[3].head.starts_with("PATCH /files/old?"));
+        assert_eq!(log[3].body_text(), r#"{"trashed":true}"#);
+        assert_eq!(log[4].body_text(), r#"{"name":"a.txt"}"#);
+    }
+
+    #[test]
+    fn a_failed_rename_after_replace_restores_the_old_item() {
+        let (result, log) = run(
+            vec![
+                ok(file("f1", "a.txt")),
+                found(&[file("old", "a.txt")]),
+                ok(file("c1", ".a.txt.filebrowser-copy")),
+                ok(file("old", "a.txt")),
+                Reply::json(403, r#"{"error":{"message":"nope"}}"#),
+                ok(file("old", "a.txt")),
+                ok(file("c1", ".a.txt.filebrowser-copy")),
+            ],
+            |c| {
+                copy_in(
+                    c,
+                    &format!("{ROOT}/f1~a.txt"),
+                    &format!("{ROOT}/p2~Other/~a.txt"),
+                    true,
+                )
+            },
+        );
+        assert!(result.unwrap_err().contains("nope"));
+        let log = log.lock().unwrap();
+        assert!(log[5].head.starts_with("PATCH /files/old?"));
+        assert_eq!(log[5].body_text(), r#"{"trashed":false}"#);
+        assert!(log[6].head.starts_with("PATCH /files/c1?"));
+        assert_eq!(log[6].body_text(), r#"{"trashed":true}"#);
+    }
+
+    #[test]
+    fn a_failed_move_with_replace_puts_everything_back() {
+        let (result, log) = run(
+            vec![
+                ok(file("f1", "a.txt")),
+                found(&[file("old", "a.txt")]),
+                ok(file("f1", ".a.txt.filebrowser-move")),
+                ok(file("old", "a.txt")),
+                Reply::json(403, r#"{"error":{"message":"nope"}}"#),
+                ok(file("old", "a.txt")),
+                ok(file("f1", "a.txt")),
+            ],
+            |c| {
+                move_in(
+                    c,
+                    &format!("{ROOT}/f1~a.txt"),
+                    &format!("{ROOT}/p2~Other/~a.txt"),
+                    true,
+                )
+            },
+        );
+        assert!(result.unwrap_err().contains("nope"));
+        let log = log.lock().unwrap();
+        assert_eq!(log[5].body_text(), r#"{"trashed":false}"#);
+        let back = &log[6];
+        assert!(back.head.starts_with("PATCH /files/f1?"), "{}", back.head);
+        assert!(back.head.contains("addParents=root") && back.head.contains("removeParents=p2"));
+        assert_eq!(back.body_text(), r#"{"name":"a.txt"}"#);
+        assert!(log.iter().all(
+            |r| !(r.head.starts_with("PATCH /files/f1?") && r.body_text().contains("trashed"))
+        ));
     }
 
     #[test]

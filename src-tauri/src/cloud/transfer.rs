@@ -112,7 +112,7 @@ pub(crate) fn upload_in(c: &Ctx, from: &Path, to: &str, overwrite: bool) -> Resu
     let uploaded = if staged_name == name {
         parent.child(&staged.id, &staged.name).to_uri()
     } else {
-        write::finish_staged(&client, &parent, &name, replaced.as_ref(), &staged)?
+        write::finish_staged(&client, &parent, &name, replaced.as_ref(), &staged, true)?
     };
     match skipped.first() {
         // The rest was uploaded; the error names what was left out, so a
