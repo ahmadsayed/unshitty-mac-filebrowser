@@ -219,9 +219,14 @@ export async function fileProperties(path: string, showHidden: boolean): Promise
   return invoke<FileProperties>("file_properties", { path, showHidden });
 }
 
-/** Total size of every file inside a folder, recursively. */
-export async function folderSize(path: string): Promise<number> {
-  return invoke<number>("folder_size", { path });
+/** Total size of every file inside a folder, recursively; `walk` names it for `cancelFolderSize`. */
+export async function folderSize(path: string, walk: number): Promise<number> {
+  return invoke<number>("folder_size", { path, walk });
+}
+
+/** Stop folder-size walk `walk` and every earlier one. */
+export async function cancelFolderSize(walk: number): Promise<void> {
+  return invoke<void>("cancel_folder_size", { walk });
 }
 
 /** PNG bytes of a thumbnail no larger than `size` px; empty when there is none. */

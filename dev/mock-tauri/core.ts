@@ -255,11 +255,13 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
         created: node.modified - 100 * day,
         mode: isDir ? "drwxr-xr-x" : node.link ? "lrwxrwxrwx" : "-rw-r--r--",
         octal: isDir ? "755" : "644",
-        owner: "Read and write",
-        group: "Read-only",
-        others: "Read-only",
+        owner: isDir ? "Create and delete files" : "Read and write",
+        group: isDir ? "Access files" : "Read-only",
+        others: isDir ? "Access files" : "Read-only",
       } as T;
     }
+    case "cancel_folder_size":
+      return undefined as T;
     case "folder_size": {
       const node = lookup(args.path as string);
       return (node ? totalSize(node) : 0) as T;
