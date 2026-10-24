@@ -283,16 +283,20 @@ impl FileChange {
     }
 }
 
-pub struct DriveClient {
+/// Fetches a new access token; see `DriveClient::with_refresher`.
+type Refresher<'a> = Box<dyn Fn() -> Result<String, String> + 'a>;
+
+pub struct DriveClient<'a> {
     http: reqwest::blocking::Client,
     base: String,
     upload_base: String,
-    token: String,
+    token: std::cell::RefCell<String>,
+    refresher: Option<Refresher<'a>>,
     /// The first retry waits about this long; later ones double it.
     backoff: Duration,
 }
 
-impl DriveClient {
+impl<'a> DriveClient<'a> {
     /// `base` is API_BASE in production; tests point it at a local server.
     pub fn new(http: reqwest::blocking::Client, base: &str, token: String) -> Self {
         let base = base.trim_end_matches('/').to_string();
@@ -305,9 +309,22 @@ impl DriveClient {
             http,
             base,
             upload_base,
-            token,
+            token: std::cell::RefCell::new(token),
+            refresher: None,
             backoff: Duration::from_millis(500),
         }
+    }
+
+    /// Refresh the token when a request comes back 401 and send that one
+    /// request again. Multi-step writes outlive an access token (about an
+    /// hour); resending the request that was refused repeats nothing.
+    pub fn with_refresher(mut self, refresh: impl Fn() -> Result<String, String> + 'a) -> Self {
+        self.refresher = Some(Box::new(refresh));
+        self
+    }
+
+    fn token(&self) -> String {
+        self.token.borrow().clone()
     }
 
     /// Fetch the account's email, display name and root folder id.
@@ -375,7 +392,7 @@ impl DriveClient {
             self.http
                 .get(&url)
                 .query(&[("alt", "media"), ("supportsAllDrives", "true")])
-                .bearer_auth(&self.token)
+                .bearer_auth(self.token())
         })?;
         let mut file = std::fs::File::create(dest)
             .map_err(|error| DriveError::Unavailable(error.to_string()))?;
@@ -483,7 +500,7 @@ impl DriveClient {
                     ("supportsAllDrives", "true"),
                     ("fields", FILE_FIELDS),
                 ])
-                .bearer_auth(&self.token)
+                .bearer_auth(self.token())
                 .header("X-Upload-Content-Length", size)
                 .json(&metadata)
         })?;
@@ -551,7 +568,7 @@ impl DriveClient {
                 .request(method.clone(), url)
                 .query(query)
                 .query(&[("supportsAllDrives", "true"), ("fields", FILE_FIELDS)])
-                .bearer_auth(&self.token)
+                .bearer_auth(self.token())
                 .json(body)
         })?;
         let text = response
@@ -565,7 +582,7 @@ impl DriveClient {
         url: &str,
         query: &[(&str, &str)],
     ) -> Result<T, DriveError> {
-        let response = self.send(|| self.http.get(url).query(query).bearer_auth(&self.token))?;
+        let response = self.send(|| self.http.get(url).query(query).bearer_auth(self.token()))?;
         let body = response
             .text()
             .map_err(|error| DriveError::Parse(error.to_string()))?;
@@ -589,6 +606,7 @@ impl DriveClient {
         accept: impl Fn(u16) -> bool,
     ) -> Result<reqwest::blocking::Response, DriveError> {
         let mut attempt = 0;
+        let mut refreshed = false;
         loop {
             attempt += 1;
             let (error, retry_after) = match request().send() {
@@ -609,6 +627,14 @@ impl DriveClient {
                 }
                 Err(error) => (DriveError::Unavailable(error.to_string()), None),
             };
+            if error.is_unauthorized() && !refreshed {
+                if let Some(refresh) = &self.refresher {
+                    refreshed = true;
+                    attempt -= 1;
+                    *self.token.borrow_mut() = refresh().map_err(|_| DriveError::Unauthorized)?;
+                    continue;
+                }
+            }
             if attempt >= ATTEMPTS || !error.is_retryable() {
                 return Err(error);
             }
@@ -837,6 +863,49 @@ mod tests {
         client(&base).download("f1", &dest).unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"hello drive");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn a_401_refreshes_the_token_once_and_resends_that_request() {
+        let (base, log, server) = serve_replies(vec![
+            Reply::json(401, r#"{"error":{"message":"expired"}}"#),
+            Reply::json(200, r#"{"files":[]}"#),
+        ]);
+        let calls = std::cell::Cell::new(0);
+        let refresh = || {
+            calls.set(calls.get() + 1);
+            Ok("fresh".to_string())
+        };
+        let client = client(&base).with_refresher(&refresh);
+        client.list("root", None).unwrap();
+        server.join().unwrap();
+        assert_eq!(calls.get(), 1);
+        let log = log.lock().unwrap();
+        assert!(
+            log[0].head.contains("authorization: Bearer token"),
+            "{}",
+            log[0].head
+        );
+        assert!(
+            log[1].head.contains("authorization: Bearer fresh"),
+            "{}",
+            log[1].head
+        );
+    }
+
+    #[test]
+    fn a_second_401_after_refreshing_is_unauthorized() {
+        let (base, server) = serve(vec![
+            (401, json("{}"), "application/json"),
+            (401, json("{}"), "application/json"),
+        ]);
+        let refresh = || Ok("fresh".to_string());
+        let error = client(&base)
+            .with_refresher(&refresh)
+            .list("root", None)
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.is_unauthorized());
     }
 
     #[test]

@@ -63,7 +63,7 @@ pub(crate) fn message(error: DriveError) -> String {
     error.message()
 }
 
-pub(crate) fn client(c: &Ctx, account: &str) -> Result<DriveClient, String> {
+pub(crate) fn client<'a>(c: &Ctx<'a>, account: &str) -> Result<DriveClient<'a>, String> {
     service::client_with(c.state, account, c.base, c.refresh)
 }
 
@@ -153,8 +153,8 @@ pub(crate) fn restore_in(c: &Ctx, path: &str) -> Result<String, String> {
 }
 
 /// What a checked copy or move works with.
-struct Transfer {
-    client: DriveClient,
+struct Transfer<'a> {
+    client: DriveClient<'a>,
     source: DriveFile,
     source_parent_id: Option<String>,
     target_parent: DriveLocation,
@@ -166,7 +166,7 @@ struct Transfer {
 
 /// The refusals of `fs_ops::check_transfer`, for Drive. Path-only checks run
 /// before any request.
-fn check(c: &Ctx, from: &str, to: &str, overwrite: bool) -> Result<Transfer, String> {
+fn check<'a>(c: &Ctx<'a>, from: &str, to: &str, overwrite: bool) -> Result<Transfer<'a>, String> {
     let (source_location, account) = service::writable(c.state, from)?;
     let source_id = id_of(&source_location)?;
     let target = service::drive_location(to)?;

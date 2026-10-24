@@ -104,21 +104,25 @@ fn renew(
     Ok(token)
 }
 
-/// A client with a fresh token for one account. Multi-step writes use one
-/// client throughout; they are not replayed after a 401 (that could repeat
-/// half of the work).
-pub(crate) fn client_with(
-    state: &CloudState,
+/// A client with a fresh token for one account, for multi-step writes. A
+/// request refused with 401 midway refreshes the token and is sent again on
+/// its own; the steps before it are never repeated.
+pub(crate) fn client_with<'a>(
+    state: &'a CloudState,
     account_id: &str,
     base: &str,
-    refresh: Refresh,
-) -> Result<DriveClient, String> {
+    refresh: Refresh<'a>,
+) -> Result<DriveClient<'a>, String> {
     let auth = credentials_with(state, account_id, refresh)?;
-    Ok(DriveClient::new(
-        state.http()?,
-        base,
-        auth.token.access_token,
-    ))
+    let account = auth.account;
+    Ok(
+        DriveClient::new(state.http()?, base, auth.token.access_token).with_refresher(move || {
+            let current = state
+                .token(&account.id)?
+                .ok_or_else(|| "Google Drive is not connected. Sign in again.".to_string())?;
+            renew(state, &account, &current, refresh).map(|token| token.access_token)
+        }),
+    )
 }
 
 fn authorized<T>(
@@ -727,6 +731,21 @@ mod tests {
             state.token("acct").unwrap().unwrap().access_token,
             "refreshed"
         );
+    }
+
+    #[test]
+    fn a_client_refreshes_its_token_in_the_middle_of_a_long_write() {
+        let (base, server) = serve(vec![
+            (401, json("{}"), "application/json"),
+            full_reply(r#"{"files":[]}"#),
+        ]);
+        let (state, _dir) = test_state(valid_token());
+        let client = client_with(&state, "acct", &base, &fake_refresh).unwrap();
+        client.list("root", None).unwrap();
+        server.join().unwrap();
+        let saved = state.token("acct").unwrap().unwrap();
+        assert_eq!(saved.access_token, "refreshed");
+        assert_eq!(saved.refresh_token(), Some("refresh"));
     }
 
     #[test]
