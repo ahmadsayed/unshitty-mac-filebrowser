@@ -37,13 +37,22 @@ M1 is in the tree:
 - Sidebar row, connect/cancel/disconnect dialog, breadcrumbs, up/back/forward,
   focus refresh and the read-only menus.
 - A shipped Desktop client ID and its non-confidential client secret
-  (`drive.readonly`), compiled from the git-ignored `.env`.
+  (`drive.readonly`), compiled from the git-ignored `.env` or the
+  `FILEBROWSER_GOOGLE_CLIENT_ID`/`_SECRET` build environment.
+- One shared HTTP client; access tokens cached in memory (the keychain is read
+  once per account and written on refresh); refreshes serialized so parallel
+  requests refresh once, keeping the refresh token Google omits from refresh
+  responses; retry with backoff and `Retry-After` for 429, 5xx and rate-limit
+  403s (3 attempts); thumbnail links remembered from listings. The backend has
+  no separate concurrency limit: the frontend's 4-request thumbnail queue is
+  the only caller that fans out.
 - Durable tests: 263 Rust, 98 frontend, plus the mock preview.
 
 Not started: M2 writes (new folder, rename, copy, move, upload, Drive Trash,
 Undo), M3 cross-boundary drag and drop, shared drives, multiple accounts,
-server-side search. A live Google consent screen was not exercised from this
-Linux environment; the callback/exchange is covered by a fake exchange.
+server-side search. The live consent screen, token exchange and browsing were
+tested with a real Gmail account on 2026-10-25; automated tests use a fake
+exchange and a local fake server.
 
 ## Why not the OS mount
 

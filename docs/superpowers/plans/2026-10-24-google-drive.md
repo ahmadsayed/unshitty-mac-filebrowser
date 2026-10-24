@@ -29,8 +29,8 @@ Drive v3 API itself, with OAuth in the backend and the same code on both
 platforms. See "Why not the OS mount" in the spec.
 
 **Status:** M1 (Tasks 1–10) implemented; M2/M3 (Tasks 11–13) are not started.
-Task 0's live OAuth spike still needs a real browser/account on the target
-machine.
+Task 0's live OAuth check is done: sign-in and browsing were tested with a
+real Gmail account on 2026-10-25.
 
 ## Global Constraints
 

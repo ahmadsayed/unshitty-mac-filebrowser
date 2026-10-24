@@ -14,8 +14,9 @@ use std::time::{Duration, Instant};
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::blocking::{Client as HttpClient, ClientBuilder};
 use oauth2::{
-    AuthType, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
-    PkceCodeVerifier, RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
+    AuthType, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointNotSet,
+    EndpointSet, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken, Scope,
+    TokenResponse, TokenUrl,
 };
 use url::Url;
 
@@ -110,11 +111,8 @@ pub fn start(scopes: &[&str]) -> Result<PendingFlow, String> {
         .port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
 
-    let client = BasicClient::new(ClientId::new(client_id().to_string()))
-        .set_client_secret(ClientSecret::new(client_secret().to_string()))
-        .set_auth_type(AuthType::RequestBody)
+    let client = google_client(client_id(), client_secret())?
         .set_auth_uri(AuthUrl::new(AUTH_URL.to_string()).map_err(|e| e.to_string())?)
-        .set_token_uri(TokenUrl::new(TOKEN_URL.to_string()).map_err(|e| e.to_string())?)
         .set_redirect_uri(RedirectUrl::new(redirect_uri.clone()).map_err(|e| e.to_string())?);
 
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
@@ -227,13 +225,9 @@ impl Default for GoogleExchange {
 
 impl TokenExchange for GoogleExchange {
     fn exchange(&self, code: &str, verifier: &str, redirect_uri: &str) -> Result<Token, String> {
-        let client = BasicClient::new(ClientId::new(self.client_id.clone()))
-            .set_client_secret(ClientSecret::new(self.client_secret.clone()))
-            .set_auth_type(AuthType::RequestBody)
-            .set_token_uri(TokenUrl::new(TOKEN_URL.to_string()).map_err(|e| e.to_string())?)
-            .set_redirect_uri(
-                RedirectUrl::new(redirect_uri.to_string()).map_err(|e| e.to_string())?,
-            );
+        let client = google_client(&self.client_id, &self.client_secret)?.set_redirect_uri(
+            RedirectUrl::new(redirect_uri.to_string()).map_err(|e| e.to_string())?,
+        );
         let http = http_client()?;
         let response = client
             .exchange_code(AuthorizationCode::new(code.to_string()))
@@ -244,10 +238,7 @@ impl TokenExchange for GoogleExchange {
     }
 
     fn refresh(&self, refresh_token: &str) -> Result<Token, String> {
-        let client = BasicClient::new(ClientId::new(self.client_id.clone()))
-            .set_client_secret(ClientSecret::new(self.client_secret.clone()))
-            .set_auth_type(AuthType::RequestBody)
-            .set_token_uri(TokenUrl::new(TOKEN_URL.to_string()).map_err(|e| e.to_string())?);
+        let client = google_client(&self.client_id, &self.client_secret)?;
         let http = http_client()?;
         let response = client
             .exchange_refresh_token(&RefreshToken::new(refresh_token.to_string()))
@@ -263,6 +254,21 @@ pub fn revoke(token: &str) {
     if let Ok(http) = http_client() {
         let _ = http.post(REVOKE_URL).form(&[("token", token)]).send();
     }
+}
+
+/// The Desktop client with Google's token endpoint. Google wants the secret in
+/// the request body, not in a Basic auth header.
+fn google_client(
+    id: &str,
+    secret: &str,
+) -> Result<
+    BasicClient<EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>,
+    String,
+> {
+    Ok(BasicClient::new(ClientId::new(id.to_string()))
+        .set_client_secret(ClientSecret::new(secret.to_string()))
+        .set_auth_type(AuthType::RequestBody)
+        .set_token_uri(TokenUrl::new(TOKEN_URL.to_string()).map_err(|e| e.to_string())?))
 }
 
 fn http_client() -> Result<HttpClient, String> {

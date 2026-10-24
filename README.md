@@ -104,8 +104,10 @@ cp .env.example .env   # then paste the downloaded client JSON
 ```
 
 `.env` is git-ignored. The client ID and secret are compiled into the binary at
-build time; re-run the build after changing it. Without `.env`, the app builds
-but Drive sign-in reports that it is not configured. For an installed app
+build time; re-run the build after changing it. CI can set
+`FILEBROWSER_GOOGLE_CLIENT_ID` and `FILEBROWSER_GOOGLE_CLIENT_SECRET` instead.
+With neither, the app builds with a warning and Drive sign-in reports that it
+is not configured; a malformed `.env` fails the build. For an installed app
 Google treats the secret as non-confidential; PKCE is still used.
 
 ### Linux

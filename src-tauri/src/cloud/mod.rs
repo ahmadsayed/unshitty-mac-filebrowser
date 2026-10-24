@@ -17,13 +17,16 @@ pub mod token;
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 
 use accounts::Accounts;
 use oauth::PendingFlow;
-use token::{KeyringTokenStore, TokenStore};
+use token::{KeyringTokenStore, Token, TokenStore};
+
+/// Forget remembered thumbnail links past this many; a listing refills them.
+const THUMBNAIL_LINKS_MAX: usize = 50_000;
 
 /// Process-wide Google Drive state: connected accounts, token storage and
 /// sign-in flows that have not finished yet.
@@ -31,19 +34,105 @@ pub struct CloudState {
     pub accounts: Mutex<Accounts>,
     pub tokens: Box<dyn TokenStore>,
     pub flows: Mutex<HashMap<String, Arc<PendingFlow>>>,
+    /// Tokens in use, by account. The keychain is read once per account and
+    /// written only when a token changes.
+    live_tokens: Mutex<HashMap<String, Token>>,
+    /// Held while a token is refreshed, so parallel requests refresh once.
+    pub(crate) refreshing: Mutex<()>,
+    /// Built on first use, on a blocking thread (a blocking client must not be
+    /// created inside the async runtime).
+    http: OnceLock<reqwest::blocking::Client>,
+    /// `thumbnailLink` by `account/file-id`, remembered from listings so a
+    /// thumbnail needs one request instead of two.
+    thumbnail_links: Mutex<HashMap<String, String>>,
 }
 
 impl CloudState {
     pub fn new(config_dir: &Path) -> Self {
-        Self {
-            accounts: Mutex::new(Accounts::load(config_dir.join("accounts.json"))),
+        Self::with_store(
+            Accounts::load(config_dir.join("accounts.json")),
             // Keychain/Secret Service first; a 0600 file is the fallback.
-            tokens: Box::new(KeyringTokenStore::new(
+            Box::new(KeyringTokenStore::new(
                 "filebrowser",
                 config_dir.join("tokens"),
             )),
+        )
+    }
+
+    pub fn with_store(accounts: Accounts, tokens: Box<dyn TokenStore>) -> Self {
+        Self {
+            accounts: Mutex::new(accounts),
+            tokens,
             flows: Mutex::new(HashMap::new()),
+            live_tokens: Mutex::new(HashMap::new()),
+            refreshing: Mutex::new(()),
+            http: OnceLock::new(),
+            thumbnail_links: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The shared HTTP client for Drive requests.
+    pub fn http(&self) -> Result<reqwest::blocking::Client, String> {
+        if let Some(client) = self.http.get() {
+            return Ok(client.clone());
+        }
+        let client = drive::http_client()?;
+        Ok(self.http.get_or_init(|| client).clone())
+    }
+
+    /// The account's current token: from memory, else from the keychain.
+    pub fn token(&self, account: &str) -> Result<Option<Token>, String> {
+        if let Some(token) = self.live_tokens().get(account) {
+            return Ok(Some(token.clone()));
+        }
+        let token = self.tokens.load(account)?;
+        if let Some(token) = &token {
+            self.live_tokens().insert(account.into(), token.clone());
+        }
+        Ok(token)
+    }
+
+    /// Persist a new token and use it from now on.
+    pub fn save_token(&self, account: &str, token: &Token) -> Result<(), String> {
+        self.tokens.save(account, token)?;
+        self.live_tokens().insert(account.into(), token.clone());
+        Ok(())
+    }
+
+    /// Remove the account's token from memory and storage.
+    pub fn delete_token(&self, account: &str) -> Result<(), String> {
+        self.live_tokens().remove(account);
+        self.thumbnail_links()
+            .retain(|key, _| !key.starts_with(&format!("{account}/")));
+        self.tokens.delete(account)
+    }
+
+    pub fn thumbnail_link(&self, account: &str, id: &str) -> Option<String> {
+        self.thumbnail_links()
+            .get(&format!("{account}/{id}"))
+            .cloned()
+    }
+
+    pub fn remember_thumbnail_link(&self, account: &str, id: &str, link: &str) {
+        let mut links = self.thumbnail_links();
+        if links.len() >= THUMBNAIL_LINKS_MAX {
+            links.clear();
+        }
+        links.insert(format!("{account}/{id}"), link.to_string());
+    }
+
+    // A poisoned lock only means another thread panicked mid-update; these
+    // maps are caches, so their contents stay usable.
+    fn live_tokens(&self) -> std::sync::MutexGuard<'_, HashMap<String, Token>> {
+        self.live_tokens
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn thumbnail_links(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
+        self.thumbnail_links
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -109,5 +198,40 @@ mod tests {
         };
         let json = serde_json::to_value(entry).unwrap();
         assert!(json.get("web_url").is_none());
+    }
+}
+
+/// A one-shot HTTP server for tests: serves one canned response per
+/// connection, in order, on a random local port.
+#[cfg(test)]
+pub(crate) mod test_server {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    pub fn serve(responses: Vec<(u16, Vec<u8>, &'static str)>) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            for (status, body, content_type) in responses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let reason = if status == 200 { "OK" } else { "Error" };
+                let head = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    pub fn json(value: &str) -> Vec<u8> {
+        value.as_bytes().to_vec()
     }
 }
