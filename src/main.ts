@@ -1062,6 +1062,7 @@ function indexFromEvent(e: MouseEvent): number {
 
 function onViewMouseDown(e: MouseEvent): void {
   viewEl.classList.remove("keyboard-nav");
+  cancelPendingNarrow();
   const sortBtn = (e.target as HTMLElement).closest<HTMLElement>("[data-sort]");
   if (sortBtn) return;
 
@@ -1169,6 +1170,9 @@ function startRubberband(start: MouseEvent, additive: boolean): void {
 
 function onViewContextMenu(e: MouseEvent): void {
   e.preventDefault();
+  // A ⌃-click on macOS starts as a left press that may have armed a narrow;
+  // the menu swallows its release, so drop it here.
+  cancelPendingNarrow();
   if (!hasEntries(location) || listingError !== null) return;
   const at = { x: e.clientX, y: e.clientY };
   const index = indexFromEvent(e);
@@ -1919,6 +1923,13 @@ let drag: DragState | null = null;
 /** Set while a press on a selected item may still narrow the selection on release. */
 let pendingNarrow: (() => void) | null = null;
 
+/** Forget a pending narrow whose release never reached the view (a menu took it). */
+function cancelPendingNarrow(): void {
+  if (!pendingNarrow) return;
+  viewEl.removeEventListener("mouseup", pendingNarrow);
+  pendingNarrow = null;
+}
+
 /** After a press on an item, start dragging once the pointer moves a few pixels. */
 function armDrag(start: MouseEvent): void {
   const onMove = (e: MouseEvent) => {
@@ -1937,10 +1948,7 @@ function armDrag(start: MouseEvent): void {
 function beginDrag(e: MouseEvent): void {
   const sel = selectedEntries();
   if (sel.length === 0) return;
-  if (pendingNarrow) {
-    viewEl.removeEventListener("mouseup", pendingNarrow);
-    pendingNarrow = null;
-  }
+  cancelPendingNarrow();
   const ghost = document.createElement("div");
   ghost.className = "drag-ghost";
   ghost.innerHTML = `<div class="drag-icon">${iconHtml(sel[0])}</div>` +
