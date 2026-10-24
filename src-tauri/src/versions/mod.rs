@@ -472,6 +472,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_error_has_a_user_facing_message() {
+        let cases = [
+            (Error::Changed, "The file changed while it was being read"),
+            (Error::Damaged, "This version is damaged and can't be restored."),
+            (Error::IndexDamaged(String::new()), "This folder's version history is damaged."),
+            (
+                Error::IndexDamaged("bad row".into()),
+                "This folder's version history is damaged: bad row",
+            ),
+            (Error::NotOurs("x".into()), "Not a version history this app owns: x"),
+            (
+                Error::ReadOnly,
+                "The version history of this folder is in use by another window.",
+            ),
+            (
+                Error::Closed,
+                "The version history of this folder was closed while it was in use.",
+            ),
+            (Error::NotLocal, "Version history needs a folder on a local disk."),
+            (Error::TooLarge, "The file is too large to keep versions of."),
+            (Error::Io("disk".into()), "Could not read or write version history: disk"),
+            (Error::Db("locked".into()), "Could not read or write the version index: locked"),
+        ];
+        for (error, message) in cases {
+            assert_eq!(error.to_string(), message);
+        }
+        let io: Error = std::io::Error::other("boom").into();
+        assert_eq!(io, Error::Io("boom".into()));
+    }
+
+    #[test]
     fn hashes_and_folder_ids_are_strict() {
         assert!(is_valid_hash(&"a".repeat(64)));
         assert!(is_valid_hash(&"0123456789abcdef".repeat(4)));
