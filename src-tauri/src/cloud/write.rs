@@ -237,7 +237,7 @@ pub(crate) fn copy_in(c: &Ctx, from: &str, to: &str, overwrite: bool) -> Result<
             .client
             .create_folder(&t.target_parent_id, &staged_name)
             .map_err(message)?;
-        if let Err(error) = copy_children(&t.client, &t.source.id, &staged.id) {
+        if let Err(error) = copy_children(&t.client, &t.source.id, &staged.id, &staged.id) {
             let _ = t.client.update(&staged.id, &FileChange::trash(true));
             return Err(message(error));
         }
@@ -287,12 +287,22 @@ pub(crate) fn finish_staged(
 }
 
 /// Copy a folder's contents into another folder, recursively. Drive copies
-/// only files, so folders are recreated.
-fn copy_children(client: &DriveClient, from: &str, to: &str) -> Result<(), DriveError> {
+/// only files, so folders are recreated. `staged` (the copy being built) is
+/// skipped: when the target lies inside the source, the walk meets it, and
+/// copying it would never end.
+fn copy_children(
+    client: &DriveClient,
+    from: &str,
+    to: &str,
+    staged: &str,
+) -> Result<(), DriveError> {
     for child in client.list_all(from)? {
+        if child.id == staged {
+            continue;
+        }
         if child.is_dir() {
             let folder = client.create_folder(to, &child.name)?;
-            copy_children(client, &child.id, &folder.id)?;
+            copy_children(client, &child.id, &folder.id, staged)?;
         } else {
             client.copy_file(&child.id, to, &child.name)?;
         }
@@ -509,6 +519,35 @@ pub(crate) mod tests {
         assert!(log[4].body_text().contains(r#""parents":["s1"]"#));
         assert!(log[5].head.starts_with("PATCH /files/s1?"));
         assert_eq!(log[5].body_text(), r#"{"name":"Docs"}"#);
+    }
+
+    #[test]
+    fn copying_a_folder_into_its_own_subfolder_does_not_copy_the_copy() {
+        // The target "sub" really is inside d1, but a pasted Drive link
+        // gives a one-segment path, so only the tree walk can notice.
+        let (result, log) = run(
+            vec![
+                ok(folder("d1", "Docs")),
+                found(&[]),
+                ok(folder("s1", ".Docs.filebrowser-copy")),
+                found(&[folder("sub", "Sub")]),
+                ok(folder("n1", "Sub")),
+                found(&[folder("s1", ".Docs.filebrowser-copy")]),
+                ok(folder("s1", "Docs")),
+            ],
+            |c| {
+                copy_in(
+                    c,
+                    &format!("{ROOT}/d1~Docs"),
+                    "gdrive://acct/sub~Sub/~Docs",
+                    false,
+                )
+            },
+        );
+        assert_eq!(result.unwrap(), "gdrive://acct/sub~Sub/s1~Docs");
+        let log = log.lock().unwrap();
+        assert_eq!(log.len(), 7);
+        assert_eq!(log[6].body_text(), r#"{"name":"Docs"}"#);
     }
 
     #[test]
