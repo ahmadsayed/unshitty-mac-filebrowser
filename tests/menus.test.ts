@@ -169,3 +169,55 @@ test("Properties of a folder shows its size", async () => {
   expect($(".dialog-layer").textContent).toMatch(/bytes|kB/);
   await closeOverlays();
 });
+
+const popover = () => document.querySelector<HTMLElement>(".popover");
+const fades = () => !popover()!.classList.contains("no-animation");
+const layer = () => $(".popover-layer");
+
+test("a menu opened from nothing fades in, however soon after the last one closed", async () => {
+  await goTo(HOME);
+  await rightClick(item("main.rs"));
+  expect(fades()).toBe(true);
+  await key("Escape", { target: layer() });
+  await rightClick(item("Empty folder"));
+  expect(fades()).toBe(true);
+  // A press that only dismisses the menu doesn't make the next one instant.
+  await mouse(layer(), "mousedown", { clientX: 50, clientY: 50 });
+  await mouse(document.body, "mouseup");
+  await rightClick(item("main.rs"));
+  expect(fades()).toBe(true);
+  await closeOverlays();
+});
+
+test("a right-click over an open menu replaces it without the fade", async () => {
+  await goTo(HOME);
+  await rightClick(item("main.rs"));
+  await mouse(layer(), "mousedown", { button: 2, clientX: 50, clientY: 50 });
+  await mouse(item("Empty folder"), "contextmenu", { button: 2 });
+  expect(menuLabels()).toContain("Paste Into Folder");
+  expect(fades()).toBe(false);
+  await closeOverlays();
+  // Header menus too.
+  await click($("#btn-main-menu"));
+  await mouse(layer(), "mousedown", { button: 2, clientX: 50, clientY: 50 });
+  await mouse(item("main.rs"), "contextmenu", { button: 2 });
+  expect(menuLabels()).toContain("Rename…");
+  expect(fades()).toBe(false);
+  await closeOverlays();
+});
+
+test("clicking a menu button while its menu is open closes it", async () => {
+  await goTo(HOME);
+  const button = $("#btn-main-menu");
+  await click(button);
+  expect(popover()).not.toBeNull();
+  // The backdrop takes the press; the click that follows lands on the button.
+  await mouse(layer(), "mousedown");
+  await mouse(button, "mouseup");
+  await mouse(button, "click");
+  expect(popover()).toBeNull();
+  expect(button.classList.contains("open")).toBe(false);
+  await click(button);
+  expect(popover()).not.toBeNull();
+  await closeOverlays();
+});
