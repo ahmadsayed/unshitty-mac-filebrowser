@@ -15,6 +15,7 @@ pub mod location;
 pub mod oauth;
 pub mod service;
 pub mod token;
+pub mod write;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -385,9 +386,13 @@ pub(crate) mod test_server {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let server_base = base.clone();
+        // A test whose code makes fewer requests than expected must fail,
+        // not hang: give up after five seconds without a connection.
+        listener.set_nonblocking(true).unwrap();
         let handle = thread::spawn(move || {
             for reply in replies {
-                let Ok((mut stream, _)) = listener.accept() else {
+                let Some(mut stream) = accept_within(&listener, std::time::Duration::from_secs(5))
+                else {
                     return;
                 };
                 seen.lock().unwrap().push(read_request(&mut stream));
@@ -410,6 +415,20 @@ pub(crate) mod test_server {
             }
         });
         (base, log, handle)
+    }
+
+    fn accept_within(listener: &TcpListener, wait: std::time::Duration) -> Option<TcpStream> {
+        let deadline = std::time::Instant::now() + wait;
+        while std::time::Instant::now() < deadline {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false).ok()?;
+                    return Some(stream);
+                }
+                Err(_) => thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
+        None
     }
 
     /// Read the head up to the blank line, then `Content-Length` bytes.

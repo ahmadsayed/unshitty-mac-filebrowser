@@ -265,12 +265,35 @@ fn cancel_folder_size(walk: u64) {
 /// The write commands return the item's final path: for Drive it is only
 /// known once Drive has given the new item an id.
 #[tauri::command]
-fn make_dir(path: String) -> Result<String, String> {
+async fn make_dir(app: tauri::AppHandle, path: String) -> Result<String, String> {
     if cloud::is_cloud(&path) {
-        return Err(cloud::service::unsupported());
+        return blocking(move || cloud::write::make_dir(&app.state::<CloudState>(), &path)).await?;
     }
     fs_ops::make_dir(path.clone())?;
     Ok(path)
+}
+
+/// Copy or move within Drive. Mixed local/Drive transfers are refused here
+/// until the cross-boundary branch handles them.
+async fn drive_transfer(
+    app: tauri::AppHandle,
+    from: String,
+    to: String,
+    overwrite: bool,
+    moving: bool,
+) -> Result<String, String> {
+    if !(cloud::is_cloud(&from) && cloud::is_cloud(&to)) {
+        return Err(cloud::service::unsupported());
+    }
+    blocking(move || {
+        let state = app.state::<CloudState>();
+        if moving {
+            cloud::write::move_item(&state, &from, &to, overwrite)
+        } else {
+            cloud::write::copy(&state, &from, &to, overwrite)
+        }
+    })
+    .await?
 }
 
 /// Whether `path` exists. For Drive this asks the API, so it runs off the
@@ -296,7 +319,7 @@ async fn copy_entry(
     overwrite: bool,
 ) -> Result<String, String> {
     if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
-        return Err(cloud::service::unsupported());
+        return drive_transfer(app, from, to, overwrite, false).await;
     }
     blocking(move || {
         let state = app.state::<VersionsState>();
@@ -317,7 +340,7 @@ async fn move_entry(
     overwrite: bool,
 ) -> Result<String, String> {
     if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
-        return Err(cloud::service::unsupported());
+        return drive_transfer(app, from, to, overwrite, true).await;
     }
     blocking(move || {
         let state = app.state::<VersionsState>();
@@ -332,8 +355,10 @@ async fn move_entry(
 
 #[tauri::command]
 async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result<String, String> {
+    // write::rename refuses a local path on either side.
     if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
-        return Err(cloud::service::unsupported());
+        return blocking(move || cloud::write::rename(&app.state::<CloudState>(), &from, &to))
+            .await?;
     }
     blocking(move || {
         let state = app.state::<VersionsState>();
@@ -358,7 +383,8 @@ fn home_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 async fn trash_entry(app: tauri::AppHandle, path: String) -> Result<Option<String>, String> {
     if cloud::is_cloud(&path) {
-        return Err(cloud::service::unsupported());
+        // Drive's own Trash (D10); never a permanent delete.
+        return blocking(move || cloud::write::trash(&app.state::<CloudState>(), &path)).await?;
     }
     blocking(move || {
         let home = home_dir(&app)?;
@@ -408,7 +434,7 @@ async fn trash_info(
 #[tauri::command]
 async fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, String> {
     if cloud::is_cloud(&path) {
-        return Err(cloud::service::unsupported());
+        return blocking(move || cloud::write::restore(&app.state::<CloudState>(), &path)).await?;
     }
     blocking(move || {
         let log_path = config_file(&app, "trash_log.json")?;

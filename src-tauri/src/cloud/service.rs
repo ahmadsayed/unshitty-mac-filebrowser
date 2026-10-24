@@ -28,10 +28,10 @@ pub struct Auth {
 }
 
 /// Exchanges a refresh token for a new access token. Tests use a fake.
-type Refresh<'a> = &'a dyn Fn(&str) -> Result<Token, String>;
+pub(crate) type Refresh<'a> = &'a dyn Fn(&str) -> Result<Token, String>;
 
 /// Refreshes with the user's OAuth client, the one that issued the token.
-fn google_refresh(state: &CloudState) -> impl Fn(&str) -> Result<Token, String> + '_ {
+pub(crate) fn google_refresh(state: &CloudState) -> impl Fn(&str) -> Result<Token, String> + '_ {
     move |refresh_token| {
         // An account connected before clients were per-user has none stored.
         let client = state.oauth_client().ok_or(
@@ -102,6 +102,23 @@ fn renew(
     }
     state.save_token(&account.id, &token)?;
     Ok(token)
+}
+
+/// A client with a fresh token for one account. Multi-step writes use one
+/// client throughout; they are not replayed after a 401 (that could repeat
+/// half of the work).
+pub(crate) fn client_with(
+    state: &CloudState,
+    account_id: &str,
+    base: &str,
+    refresh: Refresh,
+) -> Result<DriveClient, String> {
+    let auth = credentials_with(state, account_id, refresh)?;
+    Ok(DriveClient::new(
+        state.http()?,
+        base,
+        auth.token.access_token,
+    ))
 }
 
 fn authorized<T>(
