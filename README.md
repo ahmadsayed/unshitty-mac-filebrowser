@@ -67,6 +67,11 @@ files, so the photo thumbnails are placeholders.</sub>
 - Starred: star files and folders from the context menu or the star at the end
   of each list row; Starred lists them all, and stars follow renames and moves
   made in the app
+- **Keep Versions (Experimental):** tick "Keep versions" when creating a folder
+  to record every saved state of its files. The context menu gains **Versions…**
+  (text diff, Restore Copy, Replace…) and **Deleted Files…** (restore a deleted
+  file). History is stored in `.versions/` inside the folder, compressed with
+  zstd deltas; it is local only and is **not a backup**
 - Bookmarks: "Add to Bookmarks" (⌘D) pins folders to the sidebar
 - Mounted volumes in the sidebar
 - Large folders stay fast: only the visible items are rendered
@@ -141,6 +146,15 @@ Network is a placeholder; Undo covers only the last Move to Trash; the Trash
 view shows the home Trash, not the Trash folders of other drives; there is no
 dragging files out of the app into Finder or other apps, no tabs, and no
 disk-wide search.
+
+Keep Versions (Experimental) is deliberately limited: history lives on the same
+disk as the files, so it is **not a backup**; changes made and overwritten while
+the app is closed are only noticed by the launch scan; versioned folders must be
+on a local disk; one app instance records a folder at a time (a second instance
+sees it read-only); retention is forever until **Clear History…** or **Stop
+Keeping Versions…**, which move `.versions/` to the Trash. Splitting container
+formats, a "folder at time T" slider and previews of old images/documents are
+not implemented.
 
 On Linux, everything except the shell works the same way, but:
 

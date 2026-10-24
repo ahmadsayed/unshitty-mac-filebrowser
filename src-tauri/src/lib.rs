@@ -5,10 +5,15 @@ mod properties;
 mod recent;
 mod thumbnails;
 mod trash_ops;
+mod versions;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::Manager;
+
+use versions::history::History;
+use versions::state::VersionsState;
+use versions::{capture, index, restore, VersionDiff, VersionInfo};
 
 fn config_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -168,14 +173,158 @@ fn cancel_folder_size(walk: u64) {
     properties::cancel_walks_up_to(walk);
 }
 
-#[tauri::command]
-async fn copy_entry(from: String, to: String, overwrite: bool) -> Result<(), String> {
-    blocking(move || fs_ops::copy_entry(from, to, overwrite)).await?
+fn transfer_dest(from: &Path, to: &Path, root: &Path) -> Option<PathBuf> {
+    root.strip_prefix(from)
+        .ok()
+        .map(|relative| to.join(relative))
+}
+
+fn suspend_roots(state: &VersionsState, roots: &[PathBuf]) -> Result<(), String> {
+    let mut suspended: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        // Open first so a history owned by another instance is detected; a
+        // live read-only index must never be copied or moved under them (D16).
+        if let Ok(history) = state.open(root) {
+            if !history.writable {
+                let _ = state.resume(root);
+                for root in &suspended {
+                    let _ = state.resume(root);
+                }
+                return Err(versions::Error::ReadOnly.to_string());
+            }
+        }
+        state.take(root);
+        suspended.push(root.clone());
+    }
+    Ok(())
+}
+
+fn resume_roots(state: &VersionsState, roots: &[PathBuf]) {
+    for root in roots {
+        if root.exists() {
+            let _ = state.resume(root);
+        }
+    }
 }
 
 #[tauri::command]
-async fn move_entry(from: String, to: String, overwrite: bool) -> Result<(), String> {
-    blocking(move || fs_ops::move_entry(from, to, overwrite)).await?
+async fn copy_entry(
+    app: tauri::AppHandle,
+    from: String,
+    to: String,
+    overwrite: bool,
+) -> Result<(), String> {
+    blocking(move || {
+        let state = app.state::<VersionsState>();
+        let from_path = PathBuf::from(&from);
+        let to_path = PathBuf::from(&to);
+        let source_roots = state.discover_under(&from_path);
+        let target_roots = state.discover_under(&to_path);
+        suspend_roots(&state, &source_roots)?;
+        if let Err(error) = suspend_roots(&state, &target_roots) {
+            resume_roots(&state, &source_roots);
+            return Err(error);
+        }
+
+        let result = fs_ops::copy_entry(from, to, overwrite);
+        if result.is_ok() {
+            for root in &source_roots {
+                if let Some(dest) = transfer_dest(&from_path, &to_path, root) {
+                    if dest.join(versions::VERSIONS_DIR).is_dir() {
+                        if let Err(e) = state.register_copy(&dest) {
+                            eprintln!("versions: could not register copy {}: {e}", dest.display());
+                        }
+                    }
+                }
+            }
+            for root in &target_roots {
+                if root.join(versions::VERSIONS_DIR).is_dir() {
+                    let _ = state.resume(root);
+                } else {
+                    state.unregister(root);
+                }
+            }
+        } else {
+            resume_roots(&state, &source_roots);
+            resume_roots(&state, &target_roots);
+        }
+        result
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn move_entry(
+    app: tauri::AppHandle,
+    from: String,
+    to: String,
+    overwrite: bool,
+) -> Result<(), String> {
+    blocking(move || {
+        let state = app.state::<VersionsState>();
+        let from_path = PathBuf::from(&from);
+        let to_path = PathBuf::from(&to);
+        let source_roots = state.discover_under(&from_path);
+        let target_roots = state.discover_under(&to_path);
+        suspend_roots(&state, &source_roots)?;
+        if let Err(error) = suspend_roots(&state, &target_roots) {
+            resume_roots(&state, &source_roots);
+            return Err(error);
+        }
+
+        let result = fs_ops::move_entry(from, to, overwrite);
+        if result.is_ok() {
+            for root in &source_roots {
+                if let Some(dest) = transfer_dest(&from_path, &to_path, root) {
+                    if let Err(e) = state.move_registered(root, &dest) {
+                        eprintln!("versions: could not reopen {}: {e}", dest.display());
+                    }
+                }
+            }
+            for root in &target_roots {
+                if root.join(versions::VERSIONS_DIR).is_dir() {
+                    let _ = state.resume(root);
+                } else {
+                    state.unregister(root);
+                }
+            }
+        } else {
+            resume_roots(&state, &source_roots);
+            resume_roots(&state, &target_roots);
+        }
+        result
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn rename_entry(
+    app: tauri::AppHandle,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    blocking(move || {
+        let state = app.state::<VersionsState>();
+        let from_path = PathBuf::from(&from);
+        let to_path = PathBuf::from(&to);
+        let source_roots = state.discover_under(&from_path);
+        suspend_roots(&state, &source_roots)?;
+
+        let result = fs_ops::rename_entry(from, to);
+        if result.is_ok() {
+            for root in &source_roots {
+                if let Some(dest) = transfer_dest(&from_path, &to_path, root) {
+                    if let Err(e) = state.move_registered(root, &dest) {
+                        eprintln!("versions: could not reopen {}: {e}", dest.display());
+                    }
+                }
+            }
+        } else {
+            resume_roots(&state, &source_roots);
+        }
+        result
+    })
+    .await?
 }
 
 /// Serializes read-modify-write of `trash_log.json`.
@@ -192,7 +341,21 @@ async fn trash_entry(app: tauri::AppHandle, path: String) -> Result<Option<Strin
     blocking(move || {
         let home = home_dir(&app)?;
         let origin = PathBuf::from(&path);
-        let trashed = trash_ops::trash_and_locate(&origin, &home)?;
+        let state = app.state::<VersionsState>();
+        let roots = state.discover_under(&origin);
+        suspend_roots(&state, &roots)?;
+        for root in &roots {
+            state.unregister(root);
+        }
+        let trashed = match trash_ops::trash_and_locate(&origin, &home) {
+            Ok(trashed) => trashed,
+            Err(error) => {
+                for root in &roots {
+                    let _ = state.open_registered(root);
+                }
+                return Err(error);
+            }
+        };
         if let (Some(trashed), Ok(log_path)) = (&trashed, config_file(&app, "trash_log.json")) {
             let _guard = TRASH_LOG.lock().unwrap_or_else(|e| e.into_inner());
             let mut log = trash_ops::read_log(&log_path);
@@ -268,6 +431,257 @@ fn trash_dir(app: tauri::AppHandle) -> String {
 }
 
 /// Delete everything in the home Trash.
+/// True when `path` is inside the user's Trash; versioned_root ignores it.
+fn in_trash(app: &tauri::AppHandle, path: &Path) -> bool {
+    let Ok(home) = app.path().home_dir() else {
+        return false;
+    };
+    path.starts_with(trash_ops::home_trash(&home))
+        || path.starts_with(trash_ops::ensure_items_root(&home))
+}
+
+/// New Folder with "Keep versions" ticked. The folder is kept even if the
+/// history cannot be created (D13).
+#[tauri::command]
+async fn make_versioned_dir(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    blocking(move || {
+        let root = PathBuf::from(&path);
+        fs_ops::make_dir(path)?;
+        let state = app.state::<VersionsState>();
+        match History::create(&root) {
+            Ok(history) => {
+                state.adopt(history);
+                Ok(())
+            }
+            Err(error) => Err(format!(
+                "The folder was created, but versions could not be turned on: {error}"
+            )),
+        }
+    })
+    .await?
+}
+
+/// The nearest versioned root for a location, if any. Cheap: it reads
+/// `.versions/meta.json`, not SQLite.
+#[tauri::command]
+async fn versioned_root(app: tauri::AppHandle, path: String) -> Option<String> {
+    blocking(move || {
+        let path = PathBuf::from(&path);
+        if in_trash(&app, &path) || versions::is_internal_path(&path) {
+            return None;
+        }
+        app.state::<VersionsState>()
+            .root_for(&path)
+            .ok()
+            .flatten()
+            .map(|root| root.to_string_lossy().to_string())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn history_and_rel(
+    app: &tauri::AppHandle,
+    path: &str,
+) -> Result<(std::sync::Arc<History>, PathBuf), String> {
+    let state = app.state::<VersionsState>();
+    if versions::is_internal_path(Path::new(path)) {
+        return Err("This folder does not keep versions.".to_string());
+    }
+    let Some((history, rel)) = state
+        .history_for(Path::new(path))
+        .map_err(|e| e.to_string())?
+    else {
+        return Err("This folder does not keep versions.".to_string());
+    };
+    Ok((history, rel))
+}
+
+#[tauri::command]
+async fn list_versions(
+    app: tauri::AppHandle,
+    path: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<VersionInfo>, String> {
+    blocking(move || {
+        let (history, rel) = history_and_rel(&app, &path)?;
+        let rel = versions::path_bytes(&rel);
+        restore::list_infos(&history, &rel, limit, offset).map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn version_count(app: tauri::AppHandle, path: String) -> Result<u64, String> {
+    blocking(move || {
+        let (history, rel) = history_and_rel(&app, &path)?;
+        let rel = versions::path_bytes(&rel);
+        restore::version_count(&history, &rel).map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn version_diff(
+    app: tauri::AppHandle,
+    path: String,
+    version: i64,
+) -> Result<VersionDiff, String> {
+    blocking(move || {
+        let (history, rel) = history_and_rel(&app, &path)?;
+        let rel = versions::path_bytes(&rel);
+        restore::diff(&history, &rel, version).map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn restore_version_copy(
+    app: tauri::AppHandle,
+    path: String,
+    version: i64,
+    name: String,
+) -> Result<String, String> {
+    blocking(move || {
+        let (history, rel) = history_and_rel(&app, &path)?;
+        let rel = versions::path_bytes(&rel);
+        restore::restore_copy(&history, &rel, version, &name)
+            .map(|path| path.to_string_lossy().to_string())
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn replace_with_version(
+    app: tauri::AppHandle,
+    path: String,
+    version: i64,
+) -> Result<(), String> {
+    blocking(move || {
+        let (history, rel) = history_and_rel(&app, &path)?;
+        let rel = versions::path_bytes(&rel);
+        restore::replace_with_version(&history, &rel, version).map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn deleted_files(
+    app: tauri::AppHandle,
+    dir: String,
+) -> Result<Vec<versions::DeletedFile>, String> {
+    blocking(move || {
+        let (history, rel) = history_and_rel(&app, &dir)?;
+        let rel = versions::path_bytes(&rel);
+        let filter = if rel.is_empty() { None } else { Some(rel.as_slice()) };
+        restore::deleted_files(&history, filter).map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn restore_deleted(
+    app: tauri::AppHandle,
+    path: String,
+    fallback_name: String,
+) -> Result<String, String> {
+    blocking(move || {
+        let (history, rel) = history_and_rel(&app, &path)?;
+        let rel = versions::path_bytes(&rel);
+        restore::restore_deleted(&history, &rel, &fallback_name)
+            .map(|path| path.to_string_lossy().to_string())
+            .map_err(|e| e.to_string())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn history_info(
+    app: tauri::AppHandle,
+    root: String,
+) -> Result<versions::HistoryInfo, String> {
+    blocking(move || {
+        let state = app.state::<VersionsState>();
+        let root_path = PathBuf::from(&root);
+        state.open(&root_path).map_err(|e| e.to_string())?;
+        let mut total = versions::HistoryInfo::default();
+        for nested in state.discover_under(&root_path) {
+            if let Ok(history) = state.open(&nested) {
+                if let Ok(info) = history.info() {
+                    total.bytes = total.bytes.saturating_add(info.bytes);
+                    total.versions = total.versions.saturating_add(info.versions);
+                    total.files = total.files.saturating_add(info.files);
+                }
+            }
+        }
+        Ok(total)
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn clear_history(app: tauri::AppHandle, root: String) -> Result<(), String> {
+    blocking(move || {
+        let state = app.state::<VersionsState>();
+        let root_path = PathBuf::from(&root);
+        let Some(history) = state.take(&root_path) else {
+            return Err("This folder does not keep versions.".to_string());
+        };
+        if !history.writable {
+            let _ = state.resume(&root_path);
+            return Err(versions::Error::ReadOnly.to_string());
+        }
+        {
+            let reader = history.reader().map_err(|e| e.to_string())?;
+            index::verify_owner(&reader).map_err(|e| e.to_string())?;
+        }
+        // Fold the WAL in before the directory moves; captures are stopped.
+        let _ = history.checkpoint();
+        // The History stays alive here, so its lock is held through the move.
+        if let Err(error) = trash::delete(&history.dir) {
+            let _ = state.resume(&root_path);
+            return Err(format!("Could not move the version history to the Trash: {error}"));
+        }
+        drop(history);
+        let fresh = History::create(&root_path).map_err(|e| e.to_string())?;
+        let history = state.adopt(fresh);
+        let _ = capture::scan(&history);
+        Ok(())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn stop_keeping_versions(app: tauri::AppHandle, root: String) -> Result<(), String> {
+    blocking(move || {
+        let state = app.state::<VersionsState>();
+        let root_path = PathBuf::from(&root);
+        let Some(history) = state.take(&root_path) else {
+            return Err("This folder does not keep versions.".to_string());
+        };
+        if !history.writable {
+            let _ = state.resume(&root_path);
+            return Err(versions::Error::ReadOnly.to_string());
+        }
+        {
+            let reader = history.reader().map_err(|e| e.to_string())?;
+            index::verify_owner(&reader).map_err(|e| e.to_string())?;
+        }
+        let _ = history.checkpoint();
+        if let Err(error) = trash::delete(&history.dir) {
+            let _ = state.resume(&root_path);
+            return Err(format!("Could not move the version history to the Trash: {error}"));
+        }
+        drop(history);
+        state.forget(&root_path);
+        Ok(())
+    })
+    .await?
+}
+
 #[tauri::command]
 async fn empty_trash(app: tauri::AppHandle) -> Result<(), String> {
     blocking(move || {
@@ -311,6 +725,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            let config_dir = app
+                .path()
+                .app_config_dir()
+                .unwrap_or_else(|_| PathBuf::from("."));
+            app.manage(VersionsState::new(config_dir.join("versioned.json")));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                handle.state::<VersionsState>().startup();
+            });
             // Drop thumbnails nobody has needed for two months.
             if let Some(dir) = thumbnail_dir(app.handle()) {
                 std::thread::spawn(move || thumbnails::prune(&dir, std::time::Duration::from_secs(60 * 86_400)));
@@ -321,7 +744,7 @@ pub fn run() {
             list_dir,
             item_counts,
             fs_ops::make_dir,
-            fs_ops::rename_entry,
+            rename_entry,
             fs_ops::path_exists,
             path_info,
             file_properties,
@@ -349,6 +772,18 @@ pub fn run() {
             forget_recent,
             thumbnail,
             volumes,
+            make_versioned_dir,
+            versioned_root,
+            list_versions,
+            version_count,
+            version_diff,
+            restore_version_copy,
+            replace_with_version,
+            deleted_files,
+            restore_deleted,
+            history_info,
+            clear_history,
+            stop_keeping_versions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -241,3 +241,101 @@ export async function cancelFolderSize(walk: number): Promise<void> {
 export async function thumbnail(path: string, size: number): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("thumbnail", { path, size });
 }
+
+// ---------------------------------------------------------------------------
+// Keep Versions
+// ---------------------------------------------------------------------------
+
+export interface VersionInfo {
+  id: number;
+  size: number;
+  /** Unix seconds, for display. */
+  mtime: number;
+  recorded_at: number;
+  deleted: boolean;
+  current: boolean;
+}
+
+export interface DiffLine {
+  /** ' ', '-' or '+'. */
+  tag: string;
+  text: string;
+}
+
+export type VersionDiff =
+  | { kind: "text"; lines: DiffLine[]; truncated: boolean }
+  | { kind: "same" }
+  | { kind: "binary" }
+  | { kind: "too_large" }
+  | { kind: "deleted" }
+  | { kind: "not_on_disk" };
+
+export interface DeletedFile {
+  path: string;
+  deleted_at: number;
+  size: number;
+}
+
+export interface HistoryInfo {
+  bytes: number;
+  versions: number;
+  files: number;
+}
+
+/** The nearest folder that keeps versions, or null. */
+export async function versionedRoot(path: string): Promise<string | null> {
+  return invoke<string | null>("versioned_root", { path });
+}
+
+/** Create a folder plus its `.versions/` history. Errors leave the folder in place. */
+export async function makeVersionedDir(path: string): Promise<void> {
+  return invoke<void>("make_versioned_dir", { path });
+}
+
+export async function listVersions(
+  path: string,
+  limit?: number,
+  offset?: number
+): Promise<VersionInfo[]> {
+  return invoke<VersionInfo[]>("list_versions", { path, limit, offset });
+}
+
+export async function versionCount(path: string): Promise<number> {
+  return invoke<number>("version_count", { path });
+}
+
+export async function versionDiff(path: string, version: number): Promise<VersionDiff> {
+  return invoke<VersionDiff>("version_diff", { path, version });
+}
+
+export async function restoreVersionCopy(
+  path: string,
+  version: number,
+  name: string
+): Promise<string> {
+  return invoke<string>("restore_version_copy", { path, version, name });
+}
+
+export async function replaceWithVersion(path: string, version: number): Promise<void> {
+  return invoke<void>("replace_with_version", { path, version });
+}
+
+export async function deletedFiles(dir: string): Promise<DeletedFile[]> {
+  return invoke<DeletedFile[]>("deleted_files", { dir });
+}
+
+export async function restoreDeleted(path: string, fallbackName: string): Promise<string> {
+  return invoke<string>("restore_deleted", { path, fallbackName });
+}
+
+export async function historyInfo(root: string): Promise<HistoryInfo> {
+  return invoke<HistoryInfo>("history_info", { root });
+}
+
+export async function clearHistory(root: string): Promise<void> {
+  return invoke<void>("clear_history", { root });
+}
+
+export async function stopKeepingVersions(root: string): Promise<void> {
+  return invoke<void>("stop_keeping_versions", { root });
+}

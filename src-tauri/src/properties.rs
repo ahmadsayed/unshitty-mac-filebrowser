@@ -210,6 +210,9 @@ pub fn folder_size(path: &str, cancelled: impl Fn() -> bool) -> Result<u64, Stri
     while let Some(dir) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy() == crate::versions::VERSIONS_DIR {
+                continue;
+            }
             if cancelled() {
                 return Err("Cancelled".to_string());
             }
