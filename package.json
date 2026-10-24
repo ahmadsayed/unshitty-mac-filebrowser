@@ -9,7 +9,10 @@
     "dev:mock": "MOCK_TAURI=1 vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "crap": "node scripts/crap-gate.mjs",
+    "crap:baseline": "node scripts/crap-gate.mjs --update",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

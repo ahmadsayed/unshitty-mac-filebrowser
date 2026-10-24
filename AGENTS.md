@@ -49,11 +49,25 @@ npx tsc --noEmit            # type-check the frontend
 npm run build               # tsc + vite build
 npm run dev:mock            # UI in a normal browser with a fake filesystem (port 1420)
 cd src-tauri && cargo test  # backend tests
+npm run crap                # CRAP gate (also runs as the pre-commit hook)
+npm run crap:baseline       # accept the current scores into .crap-baseline.json
 ```
 
 Before finishing a change: `npx tsc --noEmit`, `npm run build` and
 `cargo test` must pass. For UI changes, also look at the result in
 `npm run dev:mock`.
+
+**CRAP gate.** `npm install` sets `core.hooksPath` to `.githooks`, whose
+`pre-commit` runs `scripts/crap-gate.mjs` for the languages a commit touches.
+It fails when a function's CRAP score is above 30 and is new or worse than in
+`.crap-baseline.json`. Rust is scored with real coverage, which needs
+`cargo install --locked cargo-llvm-cov cargo-crap` and
+`rustup component add llvm-tools-preview`, and the Rust tests must pass.
+TypeScript has no tests, so its score is complexity alone: keep new frontend
+functions small (cyclomatic complexity 5 or less). Fix a failure by
+simplifying or testing the function; update the baseline only when a score is
+accepted on purpose, and say so in the commit message. Don't bypass the hook
+with `--no-verify`.
 
 ## Environment gotchas
 

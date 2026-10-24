@@ -1,0 +1,5 @@
+#!/bin/sh
+# CRAP gate for every commit (see scripts/crap-gate.mjs). Enabled by
+# `npm install` (the prepare script sets core.hooksPath to .githooks).
+# Skip once with `git commit --no-verify`.
+exec node "$(git rev-parse --show-toplevel)/scripts/crap-gate.mjs" --staged
