@@ -182,8 +182,16 @@ fn drive_size(file: &DriveFile) -> Option<u64> {
     file.size.as_deref().and_then(|size| size.parse().ok())
 }
 
-fn google_doc_refusal(name: &str) -> String {
-    format!("“{name}” is a Google Docs file and can only be copied within Google Drive.")
+/// Why a Drive item has no bytes to download.
+fn not_downloadable(file: &DriveFile) -> String {
+    let name = &file.name;
+    if file.is_shortcut() {
+        format!("“{name}” is a Google Drive shortcut and can only be copied within Google Drive.")
+    } else if file.is_google_doc() {
+        format!("“{name}” is a Google Docs file and can only be copied within Google Drive.")
+    } else {
+        format!("“{name}” can't be downloaded: its owner turned downloads off.")
+    }
 }
 
 pub(crate) fn download_in(
@@ -220,7 +228,7 @@ pub(crate) fn download_in(
         Err(error) => return Err(message(error)),
     };
     if !file.is_dir() && !file.can_download() {
-        return Err(google_doc_refusal(&file.name));
+        return Err(not_downloadable(&file));
     }
 
     let staging = crate::fs_ops::staging_path(to);
@@ -244,7 +252,7 @@ pub(crate) fn download_in(
     }
     match skipped.first() {
         // Everything else was copied; the error names what was left out.
-        Some(name) => Err(google_doc_refusal(name)),
+        Some(reason) => Err(reason.clone()),
         None => Ok(to.to_string_lossy().into_owned()),
     }
 }
@@ -260,8 +268,9 @@ fn download_verified(client: &DriveClient, file: &DriveFile, dest: &Path) -> Res
     Ok(())
 }
 
-/// Download a Drive folder's contents into `dir`. Google-native files are
-/// collected in `skipped`; Drive names become safe, unique local names.
+/// Download a Drive folder's contents into `dir`. Items without bytes
+/// (Google Docs, shortcuts) are skipped, with the reason in `skipped`;
+/// Drive names become safe, unique local names.
 fn download_children(
     client: &DriveClient,
     folder_id: &str,
@@ -270,7 +279,7 @@ fn download_children(
 ) -> Result<(), String> {
     for child in client.list_all(folder_id).map_err(message)? {
         if !child.is_dir() && !child.can_download() {
-            skipped.push(child.name.clone());
+            skipped.push(not_downloadable(&child));
             continue;
         }
         let path = unique_child(dir, &service::safe_name(&child.name));
@@ -571,6 +580,28 @@ mod tests {
         );
         assert!(result.unwrap_err().contains("“Plan” is a Google Docs file"));
         assert_eq!(std::fs::read(target.join("x.txt")).unwrap(), b"hi");
+    }
+
+    #[test]
+    fn a_folder_with_a_shortcut_skips_it_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("Docs");
+        let shortcut =
+            r#"{"id":"k1","name":"Link","mimeType":"application/vnd.google-apps.shortcut"}"#;
+        let (result, log) = run(
+            vec![
+                ok(folder("d1", "Docs")),
+                found(&[shortcut.to_string(), sized("x1", "x.txt", 2)]),
+                bytes(b"hi"),
+            ],
+            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "“Link” is a Google Drive shortcut and can only be copied within Google Drive."
+        );
+        assert_eq!(std::fs::read(target.join("x.txt")).unwrap(), b"hi");
+        assert!(heads(&log).iter().all(|h| !h.contains("/files/k1")));
     }
 
     #[test]

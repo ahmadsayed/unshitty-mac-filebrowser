@@ -174,9 +174,12 @@ impl DriveFile {
             && !self.is_shortcut()
     }
 
+    /// Has bytes to download: not a folder, Google Doc or shortcut, and the
+    /// owner allows downloads.
     pub fn can_download(&self) -> bool {
         !self.is_dir()
             && !self.is_google_doc()
+            && !self.is_shortcut()
             && self
                 .capabilities
                 .as_ref()
