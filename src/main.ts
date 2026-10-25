@@ -2982,19 +2982,52 @@ async function measureBatch(op: Operation, paths: string[], batch: { measuring: 
   setOperationState(op, "working");
 }
 
-/** One item of a batch, reporting into `op`; resolves with the new path. */
+/** How long a finished item waits for its last progress update. */
+const LAST_UPDATE_MS = 1000;
+
+/**
+ * One item of a batch, reporting into `op`; resolves with the new path. The
+ * last update, which holds every byte of the item, can arrive after the
+ * command returned, so a finished item waits briefly for it.
+ */
 async function transferItem(op: Operation, from: string, to: string, overwrite: boolean, moving: boolean): Promise<string> {
   let finished = false;
-  const tracked = { op: op.id, onProgress: (u: ProgressUpdate) => !finished && updateOperation(op, u) };
+  let sawLast = () => {};
+  const last = new Promise<void>((resolve) => (sawLast = resolve));
+  const onProgress = (u: ProgressUpdate) => {
+    if (finished) return;
+    updateOperation(op, u);
+    if (u.done) sawLast();
+  };
+  const tracked = { op: op.id, onProgress };
   try {
-    if (!moving) return await copyEntry(from, to, overwrite, tracked);
-    const moved = await moveEntry(from, to, overwrite, tracked);
-    followMove(from, moved);
-    return moved;
+    const result = moving ? await moveEntry(from, to, overwrite, tracked) : await copyEntry(from, to, overwrite, tracked);
+    await Promise.race([last, new Promise((resolve) => setTimeout(resolve, LAST_UPDATE_MS))]);
+    if (moving) followMove(from, result);
+    return result;
   } finally {
     finished = true;
     finishItem(op);
   }
+}
+
+/** Folders that received items since the last reload, and its timer. */
+const landedIn = new Set<string>();
+let landedReload: ReturnType<typeof setTimeout> | undefined;
+let lastLandedReload = 0;
+
+/** Show finished items in the open folder while the rest copy, at most once a second. */
+function showLanded(destDir: string): void {
+  landedIn.add(destDir);
+  if (landedReload !== undefined) return;
+  const wait = Math.max(0, lastLandedReload + 1000 - Date.now());
+  landedReload = setTimeout(() => {
+    landedReload = undefined;
+    lastLandedReload = Date.now();
+    const open = landedIn.has(location);
+    landedIn.clear();
+    if (open) void reload();
+  }, wait);
 }
 
 async function transferBatch(
@@ -3042,6 +3075,7 @@ async function transferBatch(
 
     try {
       done.push(await transferItem(op, from, to, overwrite, moving));
+      showLanded(destDir);
     } catch (err) {
       // A cancel is not a failure: no toast, finished items stay.
       if (cleanError(err) === CANCELLED) batch.cancelled = true;

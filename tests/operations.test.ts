@@ -155,3 +155,15 @@ test("a waiting operation says so", () => {
   vi.advanceTimersByTime(1000);
   expect(rows()[0].querySelector(".operation-detail")!.textContent).toBe("Waiting…");
 });
+
+test("a progress update keeps the row's elements, so a click in progress isn't lost", () => {
+  vi.useFakeTimers();
+  mountButton();
+  const op = startOperation("Copying “a.txt”", { totalBytes: 100, totalItems: 1, onCancel: () => {} });
+  vi.advanceTimersByTime(1000);
+  const cancel = rows()[0].querySelector(".operation-cancel");
+  updateOperation(op, { bytes: 40, items: 0, total: null, phase: "working", done: false });
+  expect(rows()[0].querySelector(".operation-cancel")).toBe(cancel);
+  expect(rows()[0].querySelector(".operation-detail")!.textContent).toBe("40 bytes of 100 bytes");
+});
+

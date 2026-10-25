@@ -7,7 +7,7 @@ import { $, $$, boot, click, closeOverlays, goTo, item, key, mouse, names, open,
 
 type MockOps = {
   hold(): void; held(): number; step(bytes: number): void; release(): void; reset(): void; failMeasure(fail: boolean): void;
-  holdMeasure(): void;
+  holdMeasure(): void; lateDone(late: boolean): void;
 };
 const ops = () => (globalThis as unknown as { __mockOps: MockOps }).__mockOps;
 const HOME = "/Users/me";
@@ -159,6 +159,31 @@ test("a trash batch shows progress and Cancel keeps the rest", async () => {
   expect(toasts().some((t) => t.includes("moved to trash"))).toBe(true);
 });
 
+test("a finished item counts all its bytes, even when its last update arrives late", async () => {
+  ops().hold();
+  ops().lateDone(true);
+  await copyInto(`${HOME}/Documents`, ["Quarterly report.pdf", "Roadmap.key"], `${HOME}/Pictures`);
+  await waitHeld();
+  ops().release();
+  await waitHeld();
+  await showPopover();
+  // Quarterly report.pdf (2,480,331 bytes) is done; Roadmap.key (9,810,220)
+  // is running.
+  expect(detail()).toBe("2.5 MB of 12.3 MB");
+});
+
+test("each finished item shows up in the open folder while the rest copy", async () => {
+  ops().hold();
+  await copyInto(`${HOME}/Documents`, ["Quarterly report.pdf", "Roadmap.key"], `${HOME}/Downloads`);
+  await waitHeld();
+  ops().release();
+  await waitHeld();
+  // Reloads are limited to one a second, so wait for it like a person would.
+  await vi.waitFor(() => expect(names()).toContain("Quarterly report.pdf"), { timeout: 2000 });
+  expect(names()).not.toContain("Roadmap.key");
+});
+
+// Last: it leaves the app on a remote server.
 test("opening an SSH file shows Opening “name” and can be cancelled", async () => {
   await click($$(".sidebar-row").find((row) => row.textContent?.trim() === "Network")!);
   await settle(10);
