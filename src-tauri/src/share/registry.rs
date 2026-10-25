@@ -18,7 +18,7 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 fn from_hex<const N: usize>(s: &str) -> Option<[u8; N]> {
-    if s.len() != N * 2 || !s.is_ascii() {
+    if s.len() != N * 2 || !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
         return None;
     }
     let mut out = [0u8; N];
@@ -88,23 +88,21 @@ fn same_token(a: &Token, b: &Token) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// Write JSON, then make the file readable by its owner only.
+/// Write JSON so the file is never readable by anyone else, not even briefly.
 fn write_private<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    write_json(path, value)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("Failed to save settings: {e}"))?;
-    }
-    Ok(())
+    crate::config_store::write_json_private(path, value)
 }
 
-fn read_or_default<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> T {
-    std::fs::read(path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+const UNREADABLE: &str = "Sharing settings couldn't be read.";
+
+/// A missing file is empty; anything else that goes wrong is an error, and
+/// the file is never touched, so a later save can't wipe it.
+fn read_or_default<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| UNREADABLE.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+        Err(_) => Err(UNREADABLE.to_string()),
+    }
 }
 
 // ---- types -------------------------------------------------------------
@@ -163,26 +161,24 @@ pub enum Claimed {
 // ---- registry ----------------------------------------------------------
 
 /// Whether a path may be shared at all: a real folder on this computer.
-fn is_local_folder(path: &Path, is_trash: &impl Fn(&Path) -> bool) -> bool {
+/// Returns the canonical path when `path` may be shared.
+fn local_folder(path: &Path, is_trash: &impl Fn(&Path) -> bool) -> Option<PathBuf> {
     let text = path.to_string_lossy();
-    if text.starts_with("share://") || text.starts_with("gdrive://") {
-        return false;
+    if text.starts_with("share://") || text.starts_with("gdrive://") || !path.is_absolute() {
+        return None;
     }
-    if !path.is_absolute() || is_trash(path) {
-        return false;
-    }
-    if path
-        .components()
-        .any(|c| c.as_os_str() == crate::versions::VERSIONS_DIR)
-    {
-        return false;
-    }
-    // A symlink to a folder is not a folder here: shares point at real ones.
-    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
+    // Resolve `..` and symlinks first: every check and the stored path use
+    // what the folder really is, so no spelling can slip past a refusal.
+    let real = path.canonicalize().ok()?;
+    let refused = is_trash(&real)
+        || real
+            .components()
+            .any(|c| c.as_os_str() == crate::versions::VERSIONS_DIR);
+    (!refused && real.is_dir()).then_some(real)
 }
 
 impl Registry {
-    pub fn load(path: &Path) -> Registry {
+    pub fn load(path: &Path) -> Result<Registry, String> {
         read_or_default(path)
     }
 
@@ -199,16 +195,14 @@ impl Registry {
         path: &Path,
         is_trash: impl Fn(&Path) -> bool,
     ) -> Result<ShareId, String> {
-        if !is_local_folder(path, &is_trash) {
-            return Err(ONLY_LOCAL.into());
-        }
+        let path = local_folder(path, &is_trash).ok_or(ONLY_LOCAL)?;
         if let Some(s) = self.shares.iter().find(|s| s.path == path) {
             return Ok(s.id);
         }
         let id = random_id();
         self.shares.push(Share {
             id,
-            path: path.to_path_buf(),
+            path,
             access: Vec::new(),
         });
         Ok(id)
@@ -321,6 +315,7 @@ impl Registry {
         let gone = self.shares.remove(i);
         let mut keys: Vec<iroh::PublicKey> =
             gone.access.iter().flat_map(AccessEntry::keys).collect();
+        keys.sort_by_key(|k| *k.as_bytes());
         keys.dedup();
         keys
     }
@@ -359,20 +354,20 @@ pub struct ReceivedList {
 }
 
 impl ReceivedList {
-    pub fn load(path: &Path) -> ReceivedList {
-        let wire: Vec<ReceivedWire> = read_or_default(path);
+    pub fn load(path: &Path) -> Result<ReceivedList, String> {
+        let wire: Vec<ReceivedWire> = read_or_default(path)?;
         let items = wire
             .into_iter()
-            .filter_map(|w| {
-                Some(Received {
-                    link: ShareLink::decode(&w.link).ok()?,
+            .map(|w| {
+                Ok(Received {
+                    link: ShareLink::decode(&w.link).map_err(|_| UNREADABLE.to_string())?,
                     id: w.id,
                     folder: w.folder,
                     sharer: w.sharer,
                 })
             })
-            .collect();
-        ReceivedList { items }
+            .collect::<Result<_, String>>()?;
+        Ok(ReceivedList { items })
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -585,8 +580,6 @@ mod tests {
             Path::new("gdrive://a/b"),
             Path::new("relative"),
             Path::new("/no/such/folder"),
-            #[cfg(unix)]
-            link.as_path(),
         ] {
             assert_eq!(r.share_folder(bad, is_trash), msg, "{bad:?}");
         }
@@ -639,7 +632,7 @@ mod tests {
             let mode = std::fs::metadata(&file).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
-        let back = Registry::load(&file);
+        let back = Registry::load(&file).unwrap();
         assert_eq!(back.name.as_deref(), Some("Me"));
         assert_eq!(back.shares[0].access[0].token, e.token);
         assert!(back.allowed(&id, &key(1)));
@@ -664,7 +657,7 @@ mod tests {
             .is_ok());
         let file = tmp.path().join("received.json");
         l.save(&file).unwrap();
-        let mut back = ReceivedList::load(&file);
+        let mut back = ReceivedList::load(&file).unwrap();
         assert_eq!(back.items.len(), 2);
         let id = back.items[0].id.clone();
         back.remove(&id);
@@ -679,5 +672,160 @@ mod tests {
                 .unwrap_err(),
             "This is your own shared folder."
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_save_leaves_no_readable_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("shares.json");
+        std::fs::create_dir(&file).unwrap(); // the rename onto a folder fails
+        let (r, _) = setup();
+        assert!(r.save(&file).is_err());
+        let leftover = tmp.path().join("shares.json.tmp");
+        if let Ok(m) = std::fs::metadata(&leftover) {
+            assert_eq!(m.permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_over_a_readable_file_makes_it_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("shares.json");
+        std::fs::write(&file, "{}").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        Registry::default().save(&file).unwrap();
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn two_spellings_of_a_path_give_the_same_share() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("a/x")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("a/b")).unwrap();
+        let mut r = Registry::default();
+        let one = r.share_folder(&tmp.path().join("a/b"), |_| false).unwrap();
+        let two = r
+            .share_folder(&tmp.path().join("a/x/../b"), |_| false)
+            .unwrap();
+        assert_eq!(one, two);
+        assert_eq!(r.shares.len(), 1);
+        assert_eq!(
+            r.shares[0].path,
+            tmp.path().join("a/b").canonicalize().unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_resolves_into_versions_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".versions/inner")).unwrap();
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(tmp.path().join(".versions"), &alias).unwrap();
+        let mut r = Registry::default();
+        assert_eq!(
+            r.share_folder(&alias.join("inner"), |_| false),
+            Err("Only folders on this computer can be shared.".to_string())
+        );
+        // The Trash check sees the resolved path too.
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let via = tmp.path().join("via");
+        std::os::unix::fs::symlink(&real, &via).unwrap();
+        let canon = real.canonicalize().unwrap();
+        assert!(r.share_folder(&via, |p| p == canon).is_err());
+    }
+
+    #[test]
+    fn stop_sharing_lists_each_key_once() {
+        let (mut r, id) = setup();
+        let a = r.create_link(&id, LinkKind::Person, Some("A")).unwrap();
+        let b = r.create_link(&id, LinkKind::Person, Some("B")).unwrap();
+        let c = r.create_link(&id, LinkKind::Person, Some("C")).unwrap();
+        r.claim(&id, &a.token, key(1), ok);
+        r.claim(&id, &b.token, key(2), ok);
+        r.claim(&id, &c.token, key(1), ok);
+        let gone = r.stop_sharing(&id);
+        assert_eq!(gone.len(), 2);
+        assert!(!r.allowed(&id, &key(1)));
+    }
+
+    #[test]
+    fn a_key_with_a_second_link_keeps_access() {
+        let (mut r, id) = setup();
+        let any = r.create_link(&id, LinkKind::Anyone, None).unwrap();
+        let p = r.create_link(&id, LinkKind::Person, Some("A")).unwrap();
+        r.claim(&id, &any.token, key(1), ok);
+        r.claim(&id, &p.token, key(1), ok);
+        assert!(r.remove_access(&id, &p.id).is_empty());
+        assert!(r.allowed(&id, &key(1)));
+    }
+
+    #[test]
+    fn a_removed_anyone_token_is_no_longer_valid() {
+        let (mut r, id) = setup();
+        let any = r.create_link(&id, LinkKind::Anyone, None).unwrap();
+        r.remove_access(&id, &any.id);
+        assert_eq!(
+            r.claim(&id, &any.token, key(1), ok),
+            Claimed::Denied("This link is no longer valid.")
+        );
+    }
+
+    #[test]
+    fn a_failed_save_on_an_anyone_claim_records_no_visitor() {
+        let (mut r, id) = setup();
+        let any = r.create_link(&id, LinkKind::Anyone, None).unwrap();
+        let res = r.claim(&id, &any.token, key(1), |_| Err("disk".into()));
+        assert_eq!(res, Claimed::Denied("Sharing settings couldn't be saved."));
+        assert!(r.shares[0].access[0].visitors.is_empty());
+        assert!(!r.allowed(&id, &key(1)));
+    }
+
+    #[test]
+    fn hex_must_be_lowercase_digits_only() {
+        assert!(from_hex::<2>("00ff").is_some());
+        assert!(from_hex::<2>("00FF").is_none());
+        assert!(from_hex::<2>("+f00").is_none());
+        assert!(from_hex::<2>("-f00").is_none());
+    }
+
+    #[test]
+    fn a_missing_file_loads_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = Registry::load(&tmp.path().join("shares.json")).unwrap();
+        assert!(r.shares.is_empty());
+        let l = ReceivedList::load(&tmp.path().join("received.json")).unwrap();
+        assert!(l.items.is_empty());
+    }
+
+    #[test]
+    fn a_corrupt_file_is_an_error_and_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let msg = "Sharing settings couldn't be read.".to_string();
+        let bad = [
+            "not json".to_string(),
+            r#"{"shares":[{"id":"zz","path":"/a","access":[]}]}"#.to_string(),
+        ];
+        for text in &bad {
+            let f = tmp.path().join("shares.json");
+            std::fs::write(&f, text).unwrap();
+            assert_eq!(Registry::load(&f).unwrap_err(), msg);
+            assert_eq!(std::fs::read_to_string(&f).unwrap(), *text);
+        }
+        let f = tmp.path().join("received.json");
+        let text = r#"[{"id":"a","link":"fbshare1:nonsense","folder":"F","sharer":"S"}]"#;
+        std::fs::write(&f, text).unwrap();
+        assert_eq!(ReceivedList::load(&f).unwrap_err(), msg);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), text);
+        // An unreadable path (a folder) is an error too, not "empty".
+        let dir = tmp.path().join("d");
+        std::fs::create_dir(&dir).unwrap();
+        assert!(Registry::load(&dir).is_err());
     }
 }

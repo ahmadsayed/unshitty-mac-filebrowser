@@ -36,6 +36,43 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("Failed to save settings: {}", e))
 }
 
+/// Like `write_json`, for files that hold secrets: the temp file is created
+/// owner-only (0600) before any data goes in, so the content is never
+/// readable by others, and a failed save leaves no temp file behind.
+pub fn write_json_private<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    use std::io::Write;
+    let fail = |e: std::io::Error| format!("Failed to save settings: {}", e);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("Failed to create config directory: {}", e))?;
+    }
+    let json = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let result = opts
+        .open(&tmp)
+        .and_then(|mut f| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            f.write_all(&json)
+        })
+        .and_then(|_| std::fs::rename(&tmp, path));
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(fail(e));
+    }
+    Ok(())
+}
+
 /// Whether the app can read files that macOS protects behind Full Disk Access.
 /// The per-user TCC database is only readable with that grant. If the check is
 /// inconclusive (file missing, other OS) this says yes, so the user isn't nagged.
