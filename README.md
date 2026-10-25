@@ -138,6 +138,27 @@ Ready-made builds are on the
   application search; the script is
   [`scripts/install-linux-appimage.sh`](scripts/install-linux-appimage.sh).
 
+### Linux GNOME desktop
+
+The AppImage includes WebKitGTK and GTK, so it is about 119 MB but works
+without installing the runtime dependencies. To install it for your user and
+make **File Browser** appear in GNOME search:
+
+```sh
+# Download the 0.4.0 AppImage from the Releases page, then:
+chmod +x scripts/install-linux-appimage.sh
+scripts/install-linux-appimage.sh ~/Downloads/File.Browser_0.4.0_amd64.AppImage
+```
+
+The script installs the AppImage under `~/.local/bin`, extracts its icon, and
+writes `~/.local/share/applications/io.github.ahmadsayed.filebrowser.desktop`
+with the name **File Browser**, file-manager keywords and the correct
+`StartupWMClass`. It then refreshes the desktop and icon caches.
+
+Open GNOME Activities and search for **File Browser**. If it does not appear
+yet, log out and back in once. Full manual steps and the FUSE fallback are in
+[docs/linux-appimage.md](docs/linux-appimage.md).
+
 To use Google Drive, follow [docs/google-drive.md](docs/google-drive.md).
 
 Releases are built by `.github/workflows/release.yml`: pushing a `v*` tag
