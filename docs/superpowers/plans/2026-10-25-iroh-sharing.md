@@ -223,7 +223,7 @@ git commit -m "chore: add iroh and iroh-blobs for folder sharing"
 - Consumes: `Identity` (Task 2), `Tree`, `ContentCache` (Task 3), `Registry` (Task 4), `share::test_endpoint()` (Task 1).
 - Produces (`proto.rs`):
   - `pub const ALPN: &[u8] = b"filebrowser/share/1"; pub const MAX_MESSAGE: usize = 64 * 1024;`
-  - `pub enum Request { Claim { share: ShareId, token: Token }, Root { share: ShareId }, Content { share: ShareId, manifest: Hash, name: String }, Watch { share: ShareId } }`
+  - `pub enum Request { Claim { share: ShareId, token: Token }, Root { share: ShareId }, Content { share: ShareId, root: Hash, names: Vec<String> }, Watch { share: ShareId } }`
   - `pub enum Reply { Ok { folder: String, sharer: String }, Root { root: Hash, folder: String, sharer: String }, Content { hash: Hash, size: u64 }, Changed, Missing, Denied(String), Busy }` — `Missing` answers `Root` and `Content` while the shared folder is gone (Task 10)
   - `pub async fn write_msg<T: Serialize>(send: &mut SendStream, msg: &T) -> Result<(), String>` and `read_msg<T: DeserializeOwned>(recv: &mut RecvStream) -> Result<T, String>` — u32 length prefix, refuse > `MAX_MESSAGE`.
 - Produces (`host.rs`):
@@ -243,7 +243,7 @@ git commit -m "chore: add iroh and iroh-blobs for folder sharing"
 #[tokio::test] async fn claim_then_root_returns_the_tree_root()     // Reply::Root.root == Tree::build(folder).root
 #[tokio::test] async fn root_without_a_claim_is_denied()
 #[tokio::test] async fn content_hashes_a_file_and_it_downloads()    // Content → hash; blobs download of hash → bytes match a 3 MB file
-#[tokio::test] async fn content_refuses_names_outside_the_manifest() // unknown name, "../x", a folder entry, an unpublished manifest → Denied
+#[tokio::test] async fn content_refuses_names_outside_the_manifest() // unknown name, "../x", a folder entry, a root that is neither current nor previous → Denied
 #[tokio::test] async fn content_answers_changed_after_a_modification() // modify file after the Root → Reply::Changed
 #[tokio::test] async fn an_unpublished_hash_is_not_served()          // blobs get of blake3(other file's bytes) → error
 #[tokio::test] async fn share_a_hashes_are_denied_to_a_share_b_visitor()

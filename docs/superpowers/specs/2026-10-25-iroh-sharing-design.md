@@ -81,7 +81,7 @@ default preset (n0's public relays), which only ever carry encrypted traffic.
 
 **D2. Folder snapshots are trees of structure manifests.** Each folder
 becomes one manifest blob listing its entries: name, kind (file / folder),
-size and mtime. A folder entry also carries that subfolder's manifest hash; a
+size and mtime (nanoseconds since the epoch). A folder entry also carries that subfolder's manifest hash; a
 file entry carries **no** content hash. The share's **root hash** therefore
 names the whole tree's structure at one moment, and any add, remove, rename or
 modification (size or mtime) gives a new root. Encoding is canonical (entries
@@ -118,12 +118,12 @@ messages capped at 64 KiB:
 | --- | --- |
 | `Claim{share, token}` | `Ok{folder_name, sharer_name}` or `Denied(reason)` |
 | `Root{share}` | `Ok{root, folder_name, sharer_name}` or `Denied(reason)` |
-| `Content{share, manifest, name}` | `Ok{hash, size}`, `Changed` or `Denied(reason)` |
+| `Content{share, root, names}` | `Ok{hash, size}`, `Changed` or `Denied(reason)` |
 | `Watch{share}` | a stream of new root hashes until the stream closes |
 
-`Content` names a file entry inside a manifest the share has published; the
-sharer resolves it to a path from its own manifest map (never from the
-request), checks size and mtime against the entry, hashes the file (or finds
+`Content` names a root and the entry names leading to one file; the sharer
+resolves the names by walking that root's manifests (the current or previous
+root only) to a path of its own (never one from the request), checks size and mtime against the entry, hashes the file (or finds
 the hash cached), publishes the hash for that share and replies. Manifests and
 file bytes themselves go through the iroh-blobs protocol.
 
@@ -147,13 +147,14 @@ for that share. Remove on the anyone link invalidates its token and every key
 admitted through it. Stop Sharing deletes the whole share.
 
 **D8. Visitors send hashes and entry names, never paths.** A request names a
-published manifest and, for `Content`, one entry name taken from it; the
-sharer looks both up in its own map. There is no path to traverse on the
+published root and, for `Content`, the entry names leading to one file from
+it; the sharer resolves them through its own manifests. There is no path to traverse on the
 wire. The safety rules live in the sharer's manifest builder:
 - Symlinks are followed only when they resolve inside the shared folder.
 - `.versions/` is always excluded.
 - Sockets, FIFOs and device files are excluded.
-- Unreadable items are excluded quietly.
+- Unreadable folders are left out quietly; an unreadable file is listed, and
+  `Content` answers that it can't be read.
 - Hidden files are included; the viewer's setting decides what they see.
 
 On the visitor's side every manifest name is validated before anything is
@@ -377,8 +378,8 @@ GNOME wording; `openDialog`, `openMenu`, `showToast` only.
 - `link.rs`: round trip; garbage, wrong version and truncated text rejected.
 - `registry.rs`: each D6 rule; binding saved before the reply; anyone links
   record visitors.
-- `Content`: an entry name not in the named manifest, a folder entry, and an
-  unpublished manifest are denied; a size or mtime mismatch answers `Changed`.
+- `Content`: an entry name not in the named manifest, a folder entry, and a
+  root that is neither current nor previous are denied; a size or mtime mismatch answers `Changed`.
 - Gate: unpublished hash denied; share A's hash denied to a share-B-only
   visitor; a removed visitor denied on the next request.
 - Recipient name safety: `../x`, `a/b`, empty, `.`, `..` rejected before

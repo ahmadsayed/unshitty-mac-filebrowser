@@ -102,23 +102,27 @@ fn from_wire(w: WireEntry) -> Result<ManifestEntry, String> {
 struct Stored {
     bytes: Vec<u8>,
     manifest: Manifest,
-    /// Folders that produced this manifest (identical folders share one).
-    dirs: Vec<PathBuf>,
 }
 
 pub struct Tree {
     pub root: Hash,
+    previous: Option<Hash>,
     root_dir: PathBuf,
     canon_root: PathBuf,
     cap: usize,
+    /// True once a symlinked folder was followed: subtrees can then change
+    /// without their own path being reported, so nothing is reused.
+    has_links: bool,
+    /// Manifest hash of each real folder, for reusing unchanged siblings.
     by_dir: HashMap<PathBuf, Hash>,
     stored: HashMap<Hash, Stored>,
 }
 
-fn secs(t: std::io::Result<SystemTime>) -> i64 {
+/// Nanoseconds since the epoch (negative before it).
+fn nanos(t: std::io::Result<SystemTime>) -> i64 {
     match t.map(|t| t.duration_since(SystemTime::UNIX_EPOCH)) {
-        Ok(Ok(d)) => d.as_secs() as i64,
-        Ok(Err(e)) => -(e.duration().as_secs() as i64),
+        Ok(Ok(d)) => d.as_nanos() as i64,
+        Ok(Err(e)) => -(e.duration().as_nanos() as i64),
         Err(_) => 0,
     }
 }
@@ -126,6 +130,18 @@ fn secs(t: std::io::Result<SystemTime>) -> i64 {
 fn too_many(folder: &Path) -> String {
     let name = folder.file_name().unwrap_or(folder.as_os_str());
     format!("“{}” has too many items to share.", name.to_string_lossy())
+}
+
+fn valid_name(name: &str) -> bool {
+    !(name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']))
+}
+
+/// How a walk treats folders it already knows.
+#[derive(Clone, Copy, PartialEq)]
+enum Reuse {
+    No,
+    /// Reuse real sibling folders, except this one (just rebuilt).
+    Siblings,
 }
 
 impl Tree {
@@ -137,48 +153,79 @@ impl Tree {
         let canon_root = fs::canonicalize(folder).map_err(|e| e.to_string())?;
         let mut tree = Tree {
             root: Hash::new(b""),
+            previous: None,
             root_dir: folder.to_path_buf(),
             canon_root,
             cap,
+            has_links: false,
             by_dir: HashMap::new(),
             stored: HashMap::new(),
         };
-        tree.root = tree
-            .walk(folder, &mut Vec::new(), false)?
-            .ok_or("Couldn’t read the folder.")?;
+        tree.root = tree.walk_dir(folder, None)?;
         Ok(tree)
     }
 
     /// Rebuilds the folder containing `changed` (or `changed` itself when it
-    /// is a folder) and every ancestor up to the shared folder. Known
-    /// subfolders are reused; unknown ones are walked.
+    /// is a folder) from scratch, then each ancestor up to the shared folder,
+    /// reusing only unchanged real sibling folders.
     pub fn rebuild(&mut self, folder: &Path, changed: &Path) -> Result<(), String> {
-        let mut dir = changed.to_path_buf();
-        while !(dir.is_dir() && dir.starts_with(folder)) {
-            if !dir.pop() || !dir.starts_with(folder) {
-                dir = folder.to_path_buf();
-                break;
-            }
+        let old = self.root;
+        let mut dir = nearest_folder(folder, changed);
+        let mut hash = if self.has_links {
+            self.walk_dir(folder, None)?
+        } else {
+            self.by_dir.retain(|k, _| !k.starts_with(&dir));
+            let h = self.walk_dir(&dir, None)?;
+            self.climb(folder, &mut dir, h)?
+        };
+        std::mem::swap(&mut self.root, &mut hash);
+        if self.root != old {
+            self.previous = Some(old);
         }
-        loop {
-            let hash = self
-                .walk(&dir, &mut Vec::new(), true)?
-                .ok_or("Couldn’t read the folder.")?;
-            if dir == folder {
-                self.root = hash;
-                return Ok(());
-            }
-            dir.pop();
-        }
+        self.prune();
+        Ok(())
     }
 
-    /// Builds the manifest for `dir`. With `reuse`, subfolders already known
-    /// keep their manifest. `None` means the folder can't be read.
+    fn climb(&mut self, folder: &Path, dir: &mut PathBuf, mut hash: Hash) -> Result<Hash, String> {
+        while dir.as_path() != folder {
+            let child = dir.clone();
+            dir.pop();
+            hash = self.walk_dir(dir, Some((&child, hash)))?;
+        }
+        Ok(hash)
+    }
+
+    /// Walks one folder. `done` is a child folder already rebuilt (path and
+    /// manifest); other real folders known from before are reused when set.
+    fn walk_dir(&mut self, dir: &Path, done: Option<(&PathBuf, Hash)>) -> Result<Hash, String> {
+        let mut stack = self.ancestors_of(dir);
+        let reuse = if done.is_some() {
+            Reuse::Siblings
+        } else {
+            Reuse::No
+        };
+        self.walk(dir, &mut stack, reuse, done)?
+            .ok_or_else(|| "Couldn’t read the folder.".to_string())
+    }
+
+    /// Canonical paths of the shared folder's ancestors of `dir`, so loop
+    /// detection agrees between a full build and a partial rebuild.
+    fn ancestors_of(&self, dir: &Path) -> Vec<PathBuf> {
+        dir.ancestors()
+            .skip(1)
+            .take_while(|a| a.starts_with(&self.root_dir))
+            .filter_map(|a| fs::canonicalize(a).ok())
+            .collect()
+    }
+
+    /// Builds the manifest for `dir`. `None` means the folder can't be read
+    /// (or is a loop).
     fn walk(
         &mut self,
         dir: &Path,
         stack: &mut Vec<PathBuf>,
-        reuse: bool,
+        reuse: Reuse,
+        done: Option<(&PathBuf, Hash)>,
     ) -> Result<Option<Hash>, String> {
         let Ok(canon) = fs::canonicalize(dir) else {
             return Ok(None);
@@ -192,7 +239,7 @@ impl Tree {
         stack.push(canon);
         let mut entries = Vec::new();
         for item in rd.flatten() {
-            if let Some(e) = self.entry_for(&item, stack, reuse)? {
+            if let Some(e) = self.entry_for(&item, stack, reuse, done)? {
                 entries.push(e);
             }
         }
@@ -204,7 +251,8 @@ impl Tree {
         &mut self,
         item: &fs::DirEntry,
         stack: &mut Vec<PathBuf>,
-        reuse: bool,
+        reuse: Reuse,
+        done: Option<(&PathBuf, Hash)>,
     ) -> Result<Option<ManifestEntry>, String> {
         let Ok(name) = item.file_name().into_string() else {
             return Ok(None);
@@ -213,19 +261,16 @@ impl Tree {
         if name == VERSIONS_DIR {
             return Ok(None);
         }
-        let Some(meta) = self.visible_meta(&path) else {
+        let Some((meta, linked)) = self.visible_meta(&path) else {
             return Ok(None);
         };
-        let mtime = secs(meta.modified());
+        self.has_links |= linked;
+        let mtime = nanos(meta.modified());
         if meta.is_dir() {
-            let known = if reuse {
-                self.by_dir.get(&path).copied()
-            } else {
-                None
-            };
+            let known = self.known_folder(&path, linked, reuse, done);
             let hash = match known {
                 Some(h) => Some(h),
-                None => self.walk(&path, stack, reuse)?,
+                None => self.walk(&path, stack, reuse, None)?,
             };
             return Ok(hash.map(|h| ManifestEntry {
                 name,
@@ -235,30 +280,47 @@ impl Tree {
                 folder: Some(h),
             }));
         }
-        if meta.is_file() && fs::File::open(&path).is_ok() {
-            return Ok(Some(ManifestEntry {
-                name,
-                kind: Kind::File,
-                size: meta.len(),
-                mtime,
-                folder: None,
-            }));
-        }
-        Ok(None)
+        // Files are never opened here: unreadable ones are still listed.
+        Ok(meta.is_file().then(|| ManifestEntry {
+            name,
+            kind: Kind::File,
+            size: meta.len(),
+            mtime,
+            folder: None,
+        }))
     }
 
-    /// Metadata of what the entry points to; symlinks only when they
-    /// resolve inside the shared folder.
-    fn visible_meta(&self, path: &Path) -> Option<fs::Metadata> {
+    fn known_folder(
+        &self,
+        path: &Path,
+        linked: bool,
+        reuse: Reuse,
+        done: Option<(&PathBuf, Hash)>,
+    ) -> Option<Hash> {
+        if let Some((d, h)) = done {
+            if d == path {
+                return Some(h);
+            }
+        }
+        if reuse == Reuse::Siblings && !linked {
+            return self.by_dir.get(path).copied();
+        }
+        None
+    }
+
+    /// Metadata of what the entry points to (and whether it was reached
+    /// through a symlink); symlinks only when they resolve inside the shared
+    /// folder.
+    fn visible_meta(&self, path: &Path) -> Option<(fs::Metadata, bool)> {
         let link = fs::symlink_metadata(path).ok()?;
         if !link.file_type().is_symlink() {
-            return Some(link);
+            return Some((link, false));
         }
         let target = fs::canonicalize(path).ok()?;
         if !target.starts_with(&self.canon_root) {
             return None;
         }
-        fs::metadata(path).ok()
+        Some((fs::metadata(path).ok()?, true))
     }
 
     fn store(&mut self, dir: &Path, manifest: Manifest) -> Result<Hash, String> {
@@ -267,36 +329,68 @@ impl Tree {
             return Err(too_many(dir));
         }
         let hash = Hash::new(&bytes);
-        let s = self.stored.entry(hash).or_insert_with(|| Stored {
-            bytes,
-            manifest,
-            dirs: Vec::new(),
-        });
-        if !s.dirs.iter().any(|d| d == dir) {
-            s.dirs.push(dir.to_path_buf());
-        }
+        self.stored
+            .entry(hash)
+            .or_insert(Stored { bytes, manifest });
         self.by_dir.insert(dir.to_path_buf(), hash);
         Ok(hash)
+    }
+
+    /// Drops manifests unreachable from the current and previous roots.
+    fn prune(&mut self) {
+        let mut keep = std::collections::HashSet::new();
+        let mut todo: Vec<Hash> = std::iter::once(self.root).chain(self.previous).collect();
+        while let Some(h) = todo.pop() {
+            if let Some(s) = self.stored.get(&h).filter(|_| keep.insert(h)) {
+                todo.extend(s.manifest.entries.iter().filter_map(|e| e.folder));
+            }
+        }
+        self.stored.retain(|h, _| keep.contains(h));
+        let stored = &self.stored;
+        self.by_dir.retain(|_, h| stored.contains_key(h));
     }
 
     pub fn manifest(&self, hash: &Hash) -> Option<&[u8]> {
         self.stored.get(hash).map(|s| s.bytes.as_slice())
     }
 
-    /// The absolute path of `name` within a published manifest.
-    pub fn entry_path(&self, manifest: &Hash, name: &str) -> Option<(PathBuf, &ManifestEntry)> {
-        if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
+    /// Resolves a chain of entry names, starting at the current or previous
+    /// root, to the file's absolute path.
+    pub fn entry_path(&self, root: &Hash, names: &[String]) -> Option<(PathBuf, &ManifestEntry)> {
+        if *root != self.root && Some(*root) != self.previous {
             return None;
         }
-        let s = self.stored.get(manifest)?;
-        let entry = s.manifest.entries.iter().find(|e| e.name == name)?;
-        let dir = s.dirs.iter().find(|d| d.starts_with(&self.root_dir))?;
-        Some((dir.join(name), entry))
+        let mut path = self.root_dir.clone();
+        let mut cur = Some(*root);
+        let mut found = None;
+        for name in names {
+            if !valid_name(name) {
+                return None;
+            }
+            // A file in the middle of the chain leaves `cur` empty.
+            let manifest = &self.stored.get(&cur?)?.manifest;
+            let entry = manifest.entries.iter().find(|e| e.name == *name)?;
+            path.push(name);
+            cur = entry.folder;
+            found = Some(entry);
+        }
+        found.map(|e| (path, e))
     }
 
     pub fn manifests(&self) -> impl Iterator<Item = Hash> + '_ {
         self.stored.keys().copied()
     }
+}
+
+/// The folder to rebuild for a change at `changed`: itself if it is a folder
+/// inside `folder`, otherwise its nearest existing folder ancestor.
+fn nearest_folder(folder: &Path, changed: &Path) -> PathBuf {
+    changed
+        .ancestors()
+        .take_while(|a| a.starts_with(folder))
+        .find(|a| a.is_dir())
+        .unwrap_or(folder)
+        .to_path_buf()
 }
 
 // ---- Content hashes ---------------------------------------------------
@@ -311,7 +405,7 @@ pub struct ContentCache {
 
 fn stat(path: &Path) -> Result<(u64, i64), String> {
     let m = fs::metadata(path).map_err(|e| e.to_string())?;
-    Ok((m.len(), secs(m.modified())))
+    Ok((m.len(), nanos(m.modified())))
 }
 
 impl ContentCache {
@@ -477,20 +571,27 @@ mod tests {
             .status()
             .unwrap();
         assert!(fifo.success());
+        write(&p.join(".hidden"), "h");
         write(&p.join("secret"), "s");
         fs::set_permissions(p.join("secret"), fs::Permissions::from_mode(0o000)).unwrap();
+        write(&p.join("locked/in"), "l");
+        fs::set_permissions(p.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
         let privileged = fs::read(p.join("secret")).is_ok();
         let tree = Tree::build(p).unwrap();
         let n = names(&tree, &tree.root);
         for gone in [".versions", "evil", "pipe"] {
             assert!(!n.contains(&gone.to_string()), "{gone} present");
         }
-        assert!(!privileged && !n.contains(&"secret".to_string()) || privileged);
+        // Unreadable files are listed (the walk opens nothing); unreadable folders are not.
+        assert!(n.contains(&"secret".to_string()));
+        assert!(n.contains(&".hidden".to_string()));
+        assert_eq!(privileged || !n.contains(&"locked".to_string()), true);
         let m = Manifest::decode(tree.manifest(&tree.root).unwrap()).unwrap();
         let good = m.entries.iter().find(|e| e.name == "good").unwrap();
         assert_eq!(good.kind, Kind::Folder);
         assert!(n.contains(&"keep".to_string()));
         fs::set_permissions(p.join("secret"), fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(p.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[cfg(unix)]
@@ -528,18 +629,71 @@ mod tests {
         assert_eq!(err, "“big” has too many items to share.");
     }
 
+    fn v(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn entry_path_resolves_only_names_in_that_manifest() {
         let t = fixture();
         let tree = Tree::build(t.path()).unwrap();
-        let (path, e) = tree.entry_path(&tree.root, "top").unwrap();
+        let (path, e) = tree.entry_path(&tree.root, &v(&["top"])).unwrap();
         assert_eq!((path, e.kind), (t.path().join("top"), Kind::File));
-        let (path, e) = tree.entry_path(&tree.root, "a").unwrap();
+        let (path, e) = tree.entry_path(&tree.root, &v(&["a"])).unwrap();
         assert_eq!((path, e.kind), (t.path().join("a"), Kind::Folder));
-        assert!(tree.entry_path(&tree.root, "nope").is_none());
-        assert!(tree.entry_path(&tree.root, "../x").is_none());
-        assert!(tree.entry_path(&tree.root, "a/b").is_none());
-        assert!(tree.entry_path(&Hash::new(b"unknown"), "top").is_none());
+        let (path, _) = tree.entry_path(&tree.root, &v(&["a", "b", "x"])).unwrap();
+        assert_eq!(path, t.path().join("a/b/x"));
+        for bad in [
+            v(&["nope"]),
+            v(&["../x"]),
+            v(&["a/b"]),
+            v(&[""]),
+            v(&[".."]),
+            v(&["."]),
+            v(&["a", "nope"]),
+            v(&["top", "x"]),
+            v(&[]),
+        ] {
+            assert!(tree.entry_path(&tree.root, &bad).is_none(), "{bad:?}");
+        }
+        assert!(tree
+            .entry_path(&Hash::new(b"unknown"), &v(&["top"]))
+            .is_none());
+    }
+
+    #[test]
+    fn identical_folders_resolve_each_to_its_own_path() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path();
+        for d in ["one", "two"] {
+            write(&p.join(d).join("f"), "same");
+            set_mtime(&p.join(d).join("f"), 7);
+        }
+        let tree = Tree::build(p).unwrap();
+        for d in ["one", "two"] {
+            let (path, _) = tree.entry_path(&tree.root, &v(&[d, "f"])).unwrap();
+            assert_eq!(path, p.join(d).join("f"));
+        }
+    }
+
+    #[test]
+    fn only_the_current_and_previous_roots_resolve() {
+        let t = fixture();
+        let p = t.path();
+        let mut tree = Tree::build(p).unwrap();
+        let r0 = tree.root;
+        fs::rename(p.join("a/b"), p.join("a/d")).unwrap();
+        tree.rebuild(p, &p.join("a/d")).unwrap();
+        let (path, _) = tree.entry_path(&tree.root, &v(&["a", "d", "x"])).unwrap();
+        assert_eq!(path, p.join("a/d/x"));
+        assert!(tree.entry_path(&r0, &v(&["top"])).is_some());
+        write(&p.join("more"), "m");
+        tree.rebuild(p, &p.join("more")).unwrap();
+        assert!(tree.entry_path(&r0, &v(&["top"])).is_none());
+        assert!(tree.manifest(&r0).is_none());
+        let reachable: Vec<Hash> = tree.manifests().collect();
+        assert!(!reachable.contains(&r0));
+        assert!(reachable.contains(&tree.root));
     }
 
     #[test]
@@ -570,6 +724,9 @@ mod tests {
         let (h, size) = cache.hash(&f, None).unwrap().unwrap();
         assert_eq!((h, size), (Hash::new(b"hello"), 5));
         fs::set_permissions(&f, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&f).is_ok() {
+            return; // privileged: removing permission proves nothing
+        }
         let again = cache.hash(&f, None);
         fs::set_permissions(&f, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(again.unwrap(), Some((h, 5)));
@@ -593,6 +750,85 @@ mod tests {
         let mut cache = ContentCache::default();
         cache.between_reads = Some(Box::new(|p| fs::write(p, "hello, changed").unwrap()));
         assert_eq!(cache.hash(&f, None).unwrap(), None);
+    }
+
+    #[test]
+    fn a_file_whose_mtime_changes_while_hashing_is_not_hashed() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("f");
+        write(&f, "hello");
+        let mut cache = ContentCache::default();
+        cache.between_reads = Some(Box::new(|p| set_mtime(p, 42)));
+        assert_eq!(cache.hash(&f, None).unwrap(), None);
+    }
+
+    fn set_mtime_ns(p: &Path, secs: u64, nanos: u32) {
+        let t = SystemTime::UNIX_EPOCH + Duration::new(secs, nanos);
+        fs::File::open(p).unwrap().set_modified(t).unwrap();
+    }
+
+    #[test]
+    fn a_same_second_rewrite_changes_the_root_and_misses_the_cache() {
+        let t = tempfile::tempdir().unwrap();
+        let f = t.path().join("f");
+        write(&f, "aaaa");
+        set_mtime_ns(&f, 1_000, 100);
+        let r0 = Tree::build(t.path()).unwrap().root;
+        let mut cache = ContentCache::default();
+        let (h0, _) = cache.hash(&f, None).unwrap().unwrap();
+        write(&f, "bbbb");
+        set_mtime_ns(&f, 1_000, 200);
+        assert_ne!(r0, Tree::build(t.path()).unwrap().root);
+        let (h1, _) = cache.hash(&f, None).unwrap().unwrap();
+        assert_ne!(h0, h1);
+    }
+
+    #[test]
+    fn rebuild_does_not_reuse_stale_subtrees_of_the_changed_folder() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path();
+        write(&p.join("a/sub/f"), "one");
+        let mut tree = Tree::build(p).unwrap();
+        fs::remove_dir_all(p.join("a")).unwrap();
+        write(&p.join("a/sub/h"), "different");
+        tree.rebuild(p, &p.join("a")).unwrap();
+        assert_eq!(tree.root, Tree::build(p).unwrap().root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rebuild_refreshes_symlinked_folders() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path();
+        write(&p.join("sub/f"), "one");
+        std::os::unix::fs::symlink(p.join("sub"), p.join("good")).unwrap();
+        let mut tree = Tree::build(p).unwrap();
+        write(&p.join("sub/new"), "n");
+        tree.rebuild(p, &p.join("sub/new")).unwrap();
+        assert_eq!(tree.root, Tree::build(p).unwrap().root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rebuild_excludes_links_back_to_the_shared_folder() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path();
+        write(&p.join("keep"), "k");
+        let mut tree = Tree::build(p).unwrap();
+        fs::create_dir(p.join("n")).unwrap();
+        std::os::unix::fs::symlink(p, p.join("n/link")).unwrap();
+        tree.rebuild(p, &p.join("n")).unwrap();
+        let fresh = Tree::build(p).unwrap();
+        assert_eq!(tree.root, fresh.root);
+        let n = Manifest::decode(tree.manifest(&tree.root).unwrap()).unwrap();
+        let n_hash = n
+            .entries
+            .iter()
+            .find(|e| e.name == "n")
+            .unwrap()
+            .folder
+            .unwrap();
+        assert!(names(&tree, &n_hash).is_empty());
     }
 
     #[test]
