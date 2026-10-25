@@ -2,8 +2,9 @@
 
 **Date:** 2026-10-24
 **Status:** M1 (read-only), M2 (writes) and M3 (cross-boundary drag and
-drop) implemented. M4 (shared drives, Drive Trash view, search, multiple
-accounts) is not started.
+drop) implemented; M3's progress and Cancel for transfers came later with
+`2026-10-25-operation-progress-design.md`. M4 (shared drives, Drive Trash
+view, search, multiple accounts) is not started.
 **Tracking:** https://github.com/ahmadsayed/unshitty-mac-filebrowser/issues/12
 **Related:** `2026-10-23-file-browser-design.md` (the app's overall design),
 `2026-10-24-keep-versions-design.md` (version history), `AGENTS.md` (rules every

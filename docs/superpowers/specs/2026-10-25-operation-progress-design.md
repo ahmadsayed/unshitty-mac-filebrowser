@@ -1,7 +1,7 @@
 # Operation Progress — Design
 
 **Date:** 2026-10-25
-**Status:** Design approved in conversation; spec awaiting review.
+**Status:** Implemented (plan `docs/superpowers/plans/2026-10-25-operation-progress.md`).
 **Related:** `2026-10-24-google-drive-design.md` (M3 promised local ↔ Drive
 transfers "with progress" and cancellable downloads; never built),
 `2026-10-25-iroh-sharing-design.md` (planned an "Opening… 45%" toast with

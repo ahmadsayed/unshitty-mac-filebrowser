@@ -52,6 +52,11 @@ files, so the photo thumbnails are placeholders.</sub>
   bits
 - Copy, cut, paste with Replace / Skip / Keep Both on name clashes; replacing
   sends the old item to the Trash, never deletes it
+- An operations button in the header bar, as in GNOME Files: copies, moves,
+  trash batches, Empty Trash and opening Drive, SSH or shared files show a
+  progress bar, "12 MB of 80 MB — 1 minute left" and a Cancel button. A
+  cancelled copy leaves nothing half-written, and a second paste waits for the
+  first instead of being dropped
 - Batch rename for several items: find/replace, prefix and suffix, with a live
   preview and clash checking before anything is renamed
 - Extract archives with Extract Here or Extract to a new folder: zip/jar,
@@ -203,7 +208,9 @@ exact build: after rebuilding, toggle the permission off and on again.
 ## Not supported yet
 
 Folder sharing is read-only: browsing and opening work, but copying files
-out and live refresh are still to come. Undo covers only
+out and live refresh are still to come. Transfers run one at a time and can't
+be paused; on macOS, cancelling a local copy takes effect after the file being
+copied finishes. Undo covers only
 the last Move to Trash; the Trash view shows the home Trash, not the Trash
 folders of other drives. SFTP is read-only and session-only: no upload, rename,
 delete or saved servers, and no SMB/WebDAV browsing. Search matches
