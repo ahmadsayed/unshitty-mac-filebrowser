@@ -1448,57 +1448,16 @@ kbd {
 .app-choice-icon .fc { width: 28px; height: 28px; }
 .app-choice-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ----- Network: SSH/SFTP server list ----- */
-.server-view {
-  position: absolute;
-  inset: 0;
-  overflow-y: auto;
+/* ----- Network: an SSH server's icon, symbolic like GNOME's Network view ----- */
+.server-glyph {
+  width: 100%;
+  height: 100%;
   display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 28px;
-}
-
-.server-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  text-align: center;
+  opacity: 0.8;
 }
-
-.server-empty > .sym { width: 96px; height: 96px; opacity: var(--dim); }
-.server-empty h1 { font-size: 18pt; }
-.server-empty p { max-width: 420px; opacity: var(--dim); line-height: 1.4; }
-
-.server-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-width: 700px;
-  width: 100%;
-  margin: 0 auto;
-}
-
-.server-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  cursor: default;
-}
-
-.server-row:hover, .server-row:focus-visible { background: var(--hover); outline: none; }
-.server-icon { width: 28px; height: 28px; flex-shrink: 0; opacity: 0.8; }
-.server-icon .sym { width: 24px; height: 24px; }
-.server-text { flex: 1; min-width: 0; }
-.server-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.server-detail { font-size: 9pt; opacity: var(--dim); }
-.server-disconnect { min-width: 26px; width: 26px; height: 26px; }
-.server-connect { align-self: center; margin-top: 8px; }
+.server-glyph .sym { width: 62%; height: 62%; }
 
 .connect-dialog { width: min(430px, calc(100vw - 24px)); }
 

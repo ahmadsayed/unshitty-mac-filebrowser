@@ -161,12 +161,14 @@ On the visitor's side every manifest name is validated before anything is
 written (no `/`, empty, `.`, `..`, NUL), with the same rule as Drive
 downloads (`safeLocalName`).
 
-**D9. Link format.** `fbshare1:` + base32 (lowercase, no padding) of a
+**D9. Link format.** `share://` + base32 (lowercase, no padding) of a
 postcard struct: format version, sharer endpoint address (ID, relay URL,
 direct addresses), share ID (16 random bytes), token (32 random bytes), link
 kind, sharer name. The name in the link is a placeholder until the first
 `Root` reply; the sharer's app is the authority. Tokens are stored so Copy
-Link works again later.
+Link works again later. A link shares its scheme with D10's locations and is
+told apart by shape: a ticket is 64 or more base32 characters with nothing
+after it, a received ID is 16 hex characters.
 
 **D10. Recipient paths are `share://<received-id>/<name>/<name>…`.** Names are
 percent-encoded like `gdrive://` names. A path resolves by walking manifests
@@ -315,13 +317,19 @@ GNOME wording; `openDialog`, `openMenu`, `showToast` only.
 
 ### Recipient
 
-- **Network** lists received shares: folder icon with a network emblem; grid
-  label with "Shared by Ahmed" underneath; list columns Name · Shared by ·
-  Status; offline shares dimmed.
-- **Bottom bar:** `[ Paste a share link ] [Connect]`; errors appear inline.
-- **Empty state:** "No Network Locations" — "Paste a share link below to add a
-  shared folder."
-- **Context menu:** Remove from Network (forgets the link only).
+- **Network** lists received shares and connected SSH servers, sorted like
+  any folder (there are no sections): a share has
+  a folder icon with a network emblem and "Shared by Ahmed" under its grid
+  label; a server has a server icon and "SSH server". List columns Name ·
+  Details · Status ("Online"/"Offline"/… or "Connected"); offline shares
+  dimmed.
+- **Bottom bar:** `[ Enter server address or share link ] [Connect]`. A share
+  link is claimed, with errors inline; anything else opens Connect to Server
+  for that address and connects at once.
+- **Empty state:** "No Network Locations" — "Enter a server address or paste a
+  share link below."
+- **Context menu:** Remove from Network (forgets the link only) on a share;
+  Disconnect on a server.
 - **Offline page:** "Ahmed Is Offline" — "Shared folders open while the
   computer sharing them is on and Files is running."
 - **Inside a share:** path bar starts with the share name and network icon;

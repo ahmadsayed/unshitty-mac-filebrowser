@@ -1,7 +1,7 @@
 // Characterization tests for the path-bar rules, including the Drive cases
 // that must not fall back to a local path.
 import { expect, test } from "vitest";
-import { joinCloudPath, joinSharePath, joinSftpPath, isCloudPath, isRemotePath, isShareLink, isSharePath, isSftpPath, resolveTypedPath } from "../src/paths";
+import { joinCloudPath, joinSharePath, joinSftpPath, isCloudPath, isRemotePath, isShareLink, shareTicket, isSharePath, isSftpPath, resolveTypedPath } from "../src/paths";
 
 const HOME = "/Users/me";
 const CLOUD = "gdrive://acct/root~My%20Drive";
@@ -38,10 +38,28 @@ test("joinSharePath encodes names like Drive", () => {
 });
 
 test("share links are recognised with or without angle brackets", () => {
-  expect(isShareLink("fbshare1:aeu73ziw")).toBe(true);
-  expect(isShareLink("  <FBSHARE1:AEU73ZIW>  ")).toBe(true);
-  expect(isShareLink("/Users/me/fbshare1:aeu73ziw")).toBe(false);
+  const ticket = "aeu73ziw".repeat(10);
+  expect(isShareLink(`share://${ticket}`)).toBe(true);
+  expect(isShareLink(`  <SHARE://${ticket.toUpperCase()}>  `)).toBe(true);
+  expect(isShareLink(`share://${ticket}/`)).toBe(true);
+  expect(isShareLink(`/Users/me/share://${ticket}`)).toBe(false);
+});
+
+test("received-share locations are not links", () => {
   expect(isShareLink("share://r1")).toBe(false);
+  expect(isShareLink("share://0123456789abcdef")).toBe(false);
+  expect(isShareLink("share://0123456789abcdef/Photos")).toBe(false);
+  expect(isShareLink(`share://${"a".repeat(70)}/Photos`)).toBe(false);
+  expect(isShareLink("share://")).toBe(false);
+});
+
+test("a link's ticket is the same in either form", () => {
+  const ticket = "aeu73ziw".repeat(10);
+  expect(shareTicket(`share://${ticket}`)).toBe(ticket);
+  expect(shareTicket(`<SHARE://${ticket.toUpperCase()}/>`)).toBe(ticket);
+  expect(shareTicket(`fbshare1:${ticket}`)).toBeNull();
+  expect(shareTicket("share://0123456789abcdef")).toBeNull();
+  expect(shareTicket("hello")).toBeNull();
 });
 
 test("SFTP paths are remote and resolve as absolute locations", () => {

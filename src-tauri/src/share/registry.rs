@@ -400,7 +400,7 @@ impl ReceivedList {
             .iter()
             .any(|r| r.link.addr.id == link.addr.id && r.link.share == link.share)
         {
-            return Err("This folder is already in Shares.".into());
+            return Err("This folder is already in Network.".into());
         }
         let item = Received {
             id: short_id(),
@@ -651,7 +651,7 @@ mod tests {
         assert_eq!(
             l.add(link_for(1, 1), "Photos".into(), "Sara".into(), &me)
                 .unwrap_err(),
-            "This folder is already in Shares."
+            "This folder is already in Network."
         );
         assert!(l
             .add(link_for(1, 2), "B".into(), "Sara".into(), &me)
@@ -820,7 +820,7 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&f).unwrap(), *text);
         }
         let f = tmp.path().join("received.json");
-        let text = r#"[{"id":"a","link":"fbshare1:nonsense","folder":"F","sharer":"S"}]"#;
+        let text = r#"[{"id":"a","link":"share://nonsense","folder":"F","sharer":"S"}]"#;
         std::fs::write(&f, text).unwrap();
         assert_eq!(ReceivedList::load(&f).unwrap_err(), msg);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), text);

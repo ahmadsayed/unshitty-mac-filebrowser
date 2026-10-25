@@ -400,7 +400,7 @@ test("sharing commands create links, receive, go offline and clean up", async ()
     share: info.id,
     kind: "anyone",
   });
-  expect(anyone.link).toMatch(/^fbshare1:/);
+  expect(anyone.link).toMatch(/^share:\/\/[a-z2-7]{64,}$/);
   expect(anyone.entry).toMatchObject({ kind: "anyone", state: "unused" });
   const person = await invoke<Record<string, any>>("create_link", {
     share: info.id,
@@ -412,9 +412,11 @@ test("sharing commands create links, receive, go offline and clean up", async ()
 
   await expect(invoke("add_received", { link: "hello" })).rejects.toMatch(/share link/);
   await expect(invoke("add_received", { link: anyone.link })).rejects.toMatch(/your own shared folder/);
-  const received = await invoke<Record<string, any>>("add_received", { link: "fbshare1:mock-received" });
+  const received = await invoke<Record<string, any>>("add_received", { link: "share://mockreceived" });
   expect(received).toMatchObject({ folder: "Photos", sharer: "Ahmed", status: "online" });
-  await expect(invoke("add_received", { link: "fbshare1:mock-received" })).rejects.toMatch(/already in Shares/);
+  // The same ticket pasted differently is the same share.
+  await expect(invoke("add_received", { link: "<SHARE://MOCKRECEIVED/>" })).rejects.toMatch(/already in Network/);
+  await expect(invoke("add_received", { link: "fbshare1:mockother" })).rejects.toMatch(/share link/);
   expect(await invoke<unknown[]>("list_received")).toHaveLength(1);
 
   const root = await invoke<Array<{ name: string; path: string }>>("list_dir", {

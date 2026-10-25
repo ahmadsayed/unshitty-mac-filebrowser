@@ -1,4 +1,4 @@
-// Shares, the Share dialog and read-only share browsing. The backend is the
+// Received shares in Network, the Share dialog and read-only share browsing. The backend is the
 // in-memory mock; __mockShare changes the fake sharer's state.
 import { beforeAll, expect, test, vi } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
@@ -24,28 +24,34 @@ beforeAll(async () => {
   await key("1", { mod: true });
 });
 
-test("Shares is empty with a paste bar and reports a bad link inline", async () => {
-  resetShareMock();
-  await click(place("Shares"));
-  await settle(10);
-  expect(title()).toBe("Shares");
-  expect($("#view").textContent).toContain("No Shared Folders");
-  expect($("#view").textContent).toContain("Paste a share link to add a folder someone shared with you.");
-  const input = $<HTMLInputElement>(".network-link");
-  expect(input).toBeTruthy();
+/** A link in the real shape: share:// and a ticket of 64+ base32 characters. */
+const link = (tag: string) => `share://${tag.padEnd(64, "a")}`;
 
-  await type(input, "not a link");
+test("Network is empty with an address bar and reports a bad link inline", async () => {
+  resetShareMock();
+  await click(place("Network"));
+  await settle(10);
+  expect(title()).toBe("Network");
+  expect(place("Shares")).toBeUndefined();
+  expect($("#view").textContent).toContain("No Network Locations");
+  expect($("#view").textContent).toContain("Enter a server address or paste a share link below.");
+  const input = $<HTMLInputElement>(".network-link");
+  expect(input.placeholder).toBe("Enter server address or share link");
+
+  await type(input, link("bad"));
   await click($(".network-paste .btn"));
   await settle(10);
   expect($(".network-error").textContent).toContain("This isn't a share link.");
 
-  await type(input, "fbshare1:mock-duplicate");
+  await type(input, link("mockduplicate"));
   await click($(".network-paste .btn"));
   await settle(20);
-  await type($<HTMLInputElement>(".network-link"), "fbshare1:mock-duplicate");
+  expect(names()).toEqual(["Photos"]);
+  expect(toasts().join(" | ")).toContain("Folder added to Network");
+  await type($<HTMLInputElement>(".network-link"), link("mockduplicate"));
   await click($(".network-paste .btn"));
   await settle(20);
-  expect($(".network-error").textContent).toContain("already in Shares");
+  expect($(".network-error").textContent).toContain("already in Network");
 });
 
 test("sharing asks for a name, copies links, and a person link starts unused", async () => {
@@ -72,7 +78,7 @@ test("sharing asks for a name, copies links, and a person link starts unused", a
   expect($(".share-access-list").textContent).toContain("Hasn't opened the link yet");
   const clip = vi.mocked(navigator.clipboard.writeText);
   const anyoneLink = String(clip.mock.calls.at(-1)?.[0]);
-  expect(anyoneLink).toMatch(/^fbshare1:/);
+  expect(anyoneLink).toMatch(/^share:\/\/[a-z2-7]{64,}$/);
 
   await respond("Specific Person…");
   await settle(10);
@@ -90,11 +96,11 @@ test("sharing asks for a name, copies links, and a person link starts unused", a
 
 test("a received share browses read-only and remembers an offline sharer", async () => {
   resetShareMock();
-  const received = await invoke<{ id: string }>("add_received", { link: "fbshare1:mock-received" });
-  await click(place("Shares"));
+  const received = await invoke<{ id: string }>("add_received", { link: link("mockreceived") });
+  await click(place("Network"));
   await settle(20);
   expect(names()).toEqual(["Photos"]);
-  expect($$(".shared-by-cell").map((cell) => cell.textContent)).toEqual(["Ahmed"]);
+  expect($$(".shared-by-cell").map((cell) => cell.textContent)).toEqual(["Shared by Ahmed"]);
 
   await open("Photos");
   await settle(20);
@@ -122,7 +128,7 @@ test("a received share browses read-only and remembers an offline sharer", async
   expect(menuLabels()).not.toContain("Paste");
 
   (globalThis as unknown as { __mockShare: { setOnline(v: boolean): void } }).__mockShare.setOnline(false);
-  await click(place("Shares"));
+  await click(place("Network"));
   await settle(20);
   expect($$(".network-status").map((cell) => cell.textContent)).toEqual(["Offline"]);
   await open("Photos");
@@ -144,8 +150,8 @@ test("Share This Folder… is in the path-bar menu only for local folders", asyn
   expect(menuLabels()).toContain("Share This Folder…");
   await closeOverlays();
 
-  await invoke("add_received", { link: "fbshare1:mock-pathbar" });
-  await click(place("Shares"));
+  await invoke("add_received", { link: link("mockpathbar") });
+  await click(place("Network"));
   await settle(20);
   await open("Photos");
   await settle(20);
@@ -171,13 +177,37 @@ test("pasting your own link opens the local folder", async () => {
   await respond("Copy Link");
   await settle(25);
   const own = String(vi.mocked(navigator.clipboard.writeText).mock.calls.at(-1)?.[0]);
-  expect(own).toMatch(/^fbshare1:own-/);
+  expect(own).toMatch(/^share:\/\/own/);
   await respond("Close");
   await settle(10);
 
-  await click(place("Shares"));
+  await click(place("Network"));
   await settle(20);
   await type($<HTMLInputElement>(".network-link"), own);
+  await click($(".network-paste .btn"));
+  await settle(40);
+  expect(title()).toBe("Documents");
+  expect(toasts().join(" | ")).toContain("This is your own shared folder.");
+});
+
+test("your own link pasted in capitals and brackets still opens the local folder", async () => {
+  resetShareMock();
+  await goTo(HOME);
+  await rightClick(item("Documents"));
+  await chooseMenu("Share…");
+  await settle(10);
+  await type($<HTMLInputElement>("#share-name"), "Ahmed");
+  await respond("Continue");
+  await settle(20);
+  await respond("Copy Link");
+  await settle(25);
+  const own = String(vi.mocked(navigator.clipboard.writeText).mock.calls.at(-1)?.[0]);
+  await respond("Close");
+  await settle(10);
+
+  await click(place("Network"));
+  await settle(20);
+  await type($<HTMLInputElement>(".network-link"), `<${own.toUpperCase()}/>`);
   await click($(".network-paste .btn"));
   await settle(40);
   expect(title()).toBe("Documents");
@@ -187,7 +217,7 @@ test("pasting your own link opens the local folder", async () => {
 test("a share link typed in the path bar opens the share", async () => {
   resetShareMock();
   await goTo(HOME);
-  await goTo("fbshare1:mock-path-entry");
+  await goTo(link("mockpathentry"));
   await settle(30);
   expect(title()).toBe("Photos");
   expect($("#share-subtitle").textContent).toBe("Shared by Ahmed · Read only");
@@ -196,9 +226,9 @@ test("a share link typed in the path bar opens the share", async () => {
 
 test("losing access shows the No Access page", async () => {
   resetShareMock();
-  await invoke("add_received", { link: "fbshare1:mock-noaccess" });
+  await invoke("add_received", { link: link("mocknoaccess") });
   (globalThis as unknown as { __mockShare: { setNoAccess(v: boolean): void } }).__mockShare.setNoAccess(true);
-  await click(place("Shares"));
+  await click(place("Network"));
   await settle(20);
   expect($$(".network-status").map((cell) => cell.textContent)).toEqual(["No access"]);
   await open("Photos");
@@ -208,7 +238,7 @@ test("losing access shows the No Access page", async () => {
   (globalThis as unknown as { __mockShare: { setNoAccess(v: boolean): void } }).__mockShare.setNoAccess(false);
 });
 
-test("Stop Sharing confirms with Cancel as the default, and Remove from Shares forgets it", async () => {
+test("Stop Sharing confirms with Cancel as the default, and Remove from Network forgets it", async () => {
   resetShareMock();
   await goTo(HOME);
   await rightClick(item("Documents"));
@@ -230,12 +260,12 @@ test("Stop Sharing confirms with Cancel as the default, and Remove from Shares f
   await respond("Close");
   await settle(10);
 
-  await invoke("add_received", { link: "fbshare1:mock-remove" });
-  await click(place("Shares"));
+  await invoke("add_received", { link: link("mockremove") });
+  await click(place("Network"));
   await settle(20);
   await rightClick(item("Photos"));
-  await chooseMenu("Remove from Shares");
+  await chooseMenu("Remove from Network");
   await settle(20);
   expect(names()).toEqual([]);
-  expect($("#view").textContent).toContain("No Shared Folders");
+  expect($("#view").textContent).toContain("No Network Locations");
 });

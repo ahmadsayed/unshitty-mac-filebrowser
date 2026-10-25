@@ -20,7 +20,7 @@
 - A person-link binding is written to disk before the `Claim` reply (D6).
 - Limits (D13): manifest ≤ 64 MiB (`MAX_MANIFEST = 64 * 1024 * 1024`), control messages ≤ 64 KiB (`MAX_MESSAGE = 64 * 1024`), ≤ 32 visitor connections (`MAX_VISITORS = 32`), connect timeout 10 s (`CONNECT_TIMEOUT = Duration::from_secs(10)`).
 - Files: `share-key` (0600, locked while sharing), `shares.json`, `received.json` (both 0600) in the app config dir; recipient blob store in the app cache dir, emptied on startup.
-- ALPN `b"filebrowser/share/1"`; link prefix `fbshare1:`; base32 lowercase, no padding.
+- ALPN `b"filebrowser/share/1"`; link prefix `share://`; base32 lowercase, no padding.
 - GNOME wording exactly as the spec's UI and Error handling sections give it (e.g. "This link was already used on another computer.", "This link is no longer valid.", "Ahmed Is Offline").
 - Commands that touch many files or the network are `async fn` in `lib.rs`; file work goes through `blocking(…)`. Never `#[tauri::command(async)]` on a plain fn.
 - Every new Tauri command has a mock in `dev/mock-tauri/core.ts` and a case in `tests/mock-core.test.ts`.
@@ -80,7 +80,7 @@ git commit -m "chore: add iroh and iroh-blobs for folder sharing"
   - `pub type ShareId = [u8; 16]; pub type Token = [u8; 32];`
   - `pub enum LinkKind { Anyone, Person }` (serde)
   - `pub struct ShareLink { pub addr: iroh::EndpointAddr, pub share: ShareId, pub token: Token, pub kind: LinkKind, pub sharer: String }`
-  - `pub const LINK_PREFIX: &str = "fbshare1:";`
+  - `pub const LINK_PREFIX: &str = "share://";`
   - `impl ShareLink { pub fn encode(&self) -> String; pub fn decode(text: &str) -> Result<ShareLink, String> }` — postcard struct with a leading `version: u8 = 1`.
   - `pub fn random_id() -> ShareId; pub fn random_token() -> Token` (via `getrandom`, already a dependency).
 - Produces (`identity.rs`):
@@ -92,9 +92,9 @@ git commit -m "chore: add iroh and iroh-blobs for folder sharing"
 
 ```rust
 // link.rs
-#[test] fn a_link_round_trips()                 // encode → decode equals, starts with "fbshare1:"
-#[test] fn decode_tolerates_chat_wrapping()     // "  <fbshare1:…>\n" decodes to the same link
-#[test] fn decode_rejects_garbage()             // "hello", "fbshare1:!!!", "" → Err("This isn't a share link.")
+#[test] fn a_link_round_trips()                 // encode → decode equals, starts with "share://"
+#[test] fn decode_tolerates_chat_wrapping()     // "  <share://…>\n" decodes to the same link
+#[test] fn decode_rejects_garbage()             // "hello", "share://!!!", "" → Err("This isn't a share link.")
 #[test] fn decode_rejects_a_truncated_link()    // drop the last 10 chars → Err("This isn't a share link.")
 #[test] fn decode_rejects_another_version()     // version byte 2 → Err("This link needs a newer version of Files.")
 // identity.rs
@@ -369,7 +369,7 @@ Rust: `state.rs` test `the_node_starts_only_when_needed` — a fresh `ShareState
 ```ts
 test("Share… asks for your name the first time", …)         // dialog text "People you share with will see this name."; pre-filled
 test("Share… is offered only for local folders", …)         // absent on a file, in Trash, in Drive, in a share
-test("Copy Link copies an anyone link", …)                  // clipboard starts with "fbshare1:"; toast "Link copied"
+test("Copy Link copies an anyone link", …)                  // clipboard starts with "share://"; toast "Link copied"
 test("a person link appears as hasn't opened yet", …)       // "Hasn't opened the link yet"
 test("Stop Sharing confirms with Cancel as the default", …) // Enter → still shared; exact dialog text from the spec
 test("Network is empty with a paste bar", …)                // "No Network Locations", "Paste a share link below to add a shared folder."

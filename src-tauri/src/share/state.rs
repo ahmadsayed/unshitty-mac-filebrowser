@@ -282,7 +282,7 @@ impl ShareState {
             .iter()
             .any(|r| r.link.addr.id == link.addr.id && r.link.share == link.share)
         {
-            return Err("This folder is already in Shares.".into());
+            return Err("This folder is already in Network.".into());
         }
         let node = self.node(versions_hint).await?;
         if link.addr.id == node.host.addr().id {
@@ -329,7 +329,7 @@ impl ShareState {
             .items
             .iter()
             .find(|r| r.id == location.received)
-            .ok_or_else(|| "This folder is no longer in Shares.".to_string())?;
+            .ok_or_else(|| "This folder is no longer in Network.".to_string())?;
         let node = self.node(versions_hint).await?;
         node.guest.list(received, &location, show_hidden).await
     }
@@ -347,7 +347,7 @@ impl ShareState {
             .items
             .iter()
             .find(|r| r.id == location.received)
-            .ok_or_else(|| "This folder is no longer in Shares.".to_string())?;
+            .ok_or_else(|| "This folder is no longer in Network.".to_string())?;
         let name = location
             .names
             .last()
@@ -497,7 +497,7 @@ mod tests {
                 .create_link(&info.id, "anyone", None, no_hint())
                 .await
                 .unwrap();
-            assert!(link.link.starts_with("fbshare1:"));
+            assert!(link.link.starts_with("share://"));
             assert_eq!(
                 host.link(&info.id, &link.entry.id, no_hint()).await.unwrap(),
                 link.link
