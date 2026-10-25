@@ -837,6 +837,97 @@ function addGrain(ctx: OffscreenCanvasRenderingContext2D, w: number, h: number, 
 const DELAY = ((globalThis as Record<string, unknown>).__MOCK_DELAY as number | undefined) ?? 30;
 
 type Args = Record<string, unknown>;
+
+// ---------------------------------------------------------------------------
+// Operation progress (spec 2026-10-25-operation-progress)
+// ---------------------------------------------------------------------------
+
+type MockUpdate = { bytes: number; items: number; total: number | null; phase: "preparing" | "working"; done: boolean };
+
+/** Stand-in for Tauri's `Channel`: the backend calls `onmessage`. */
+export class Channel<T> {
+  onmessage: (message: T) => void = () => {};
+}
+
+type Held = { op: string; channel?: Channel<MockUpdate>; bytes: number; resolve: () => void; reject: (error: string) => void };
+let holding = false;
+let held: Held[] = [];
+let measureFails = false;
+let measureHolding = false;
+const cancelledOps = new Set<string>();
+
+function update(bytes: number, done: boolean): MockUpdate {
+  return { bytes, items: done ? 1 : 0, total: null, phase: "working", done };
+}
+
+/** While tests hold, a long command waits here until released or cancelled. */
+async function progressGate(a: Args): Promise<void> {
+  const op = typeof a.op === "string" ? a.op : "";
+  if (op && cancelledOps.has(op)) throw "Cancelled.";
+  if (!holding) return;
+  const channel = a.onProgress as Channel<MockUpdate> | undefined;
+  await new Promise<void>((resolve, reject) => held.push({ op, channel, bytes: 0, resolve, reject }));
+}
+
+function gated(command: (a: Args) => unknown): (a: Args) => Promise<unknown> {
+  return async (a) => {
+    await progressGate(a);
+    const result = await command(a);
+    (a.onProgress as Channel<MockUpdate> | undefined)?.onmessage(update(0, true));
+    return result;
+  };
+}
+
+function cancelOperation(op: string): void {
+  cancelledOps.add(op);
+  for (const h of held.filter((h) => h.op === op)) h.reject("Cancelled.");
+  held = held.filter((h) => h.op !== op);
+}
+
+function measureNode(node: Node | undefined, total: { bytes: number; items: number }): void {
+  if (!node) return;
+  total.items += 1;
+  if (node.dir) Object.values(node.children).forEach((child) => measureNode(child, total));
+  else total.bytes += node.size;
+}
+
+function measure(paths: string[]): { bytes: number; items: number } {
+  if (measureFails) throw "Could not measure.";
+  const total = { bytes: 0, items: 0 };
+  for (const path of paths) measureNode(lookup(path), total);
+  return total;
+}
+
+(globalThis as Record<string, unknown>).__mockOps = {
+  hold() {
+    holding = true;
+  },
+  held: () => held.length,
+  step(bytes: number) {
+    for (const h of held) {
+      h.bytes += bytes;
+      h.channel?.onmessage(update(h.bytes, false));
+    }
+  },
+  release() {
+    const waiting = held;
+    held = [];
+    waiting.forEach((h) => h.resolve());
+  },
+  failMeasure(fail: boolean) {
+    measureFails = fail;
+  },
+  holdMeasure() {
+    measureHolding = true;
+  },
+  reset() {
+    holding = false;
+    held = [];
+    measureFails = false;
+    measureHolding = false;
+    cancelledOps.clear();
+  },
+};
 const str = (args: Args, key: string) => args[key] as string;
 
 function fileProperties(path: string) {
@@ -1422,7 +1513,17 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   ...SHARE_COMMANDS,
   ...DRIVE_COMMANDS,
   ...VERSION_COMMANDS,
+  measure: async (a) => {
+    if (measureHolding) await new Promise<void>((resolve, reject) => held.push({ op: "", bytes: 0, resolve, reject }));
+    return measure(a.paths as string[]);
+  },
+  cancel_operation: (a) => cancelOperation(str(a, "op")),
 };
+
+// Long commands report progress and can be held by tests (see __mockOps).
+for (const name of ["copy_entry", "move_entry", "trash_entry", "delete_permanently", "empty_trash", "drive_open", "sftp_open", "share_open"]) {
+  COMMANDS[name] = gated(COMMANDS[name]);
+}
 
 function isDriveTransfer(a: Args): boolean {
   return str(a, "from").startsWith("gdrive://") || str(a, "to").startsWith("gdrive://");

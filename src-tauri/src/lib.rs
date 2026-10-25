@@ -3,6 +3,7 @@ mod cloud;
 mod config_store;
 mod fs_ops;
 mod platform;
+mod progress;
 mod properties;
 mod recent;
 mod sftp;
@@ -14,6 +15,8 @@ mod versions;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use progress::ProgressUpdate;
+use tauri::ipc::Channel;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 use cloud::CloudState;
@@ -185,6 +188,76 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| format!("Background task failed: {}", e))
 }
 
+// ---------------------------------------------------------------------------
+// Operation progress (spec 2026-10-25-operation-progress, D3)
+// ---------------------------------------------------------------------------
+
+/// How often a running operation reports its progress.
+const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// One command's part of operation `op`: its progress, registered so
+/// `cancel_operation` reaches it, and a thread streaming it to the frontend.
+struct Tracking {
+    op: String,
+    progress: progress::Progress,
+    stop: std::sync::mpsc::Sender<()>,
+    ticker: std::thread::JoinHandle<()>,
+}
+
+impl Tracking {
+    fn start(app: &tauri::AppHandle, op: &str, channel: Channel<ProgressUpdate>) -> Self {
+        let progress = app.state::<progress::Registry>().register(op);
+        progress.set_phase(progress::Phase::Working);
+        let (stop, stopped) = std::sync::mpsc::channel();
+        let ticker = {
+            let progress = progress.clone();
+            std::thread::spawn(move || {
+                let send = |update| {
+                    let _ = channel.send(update);
+                };
+                progress::ticker(&progress, send, &stopped, PROGRESS_EVERY);
+            })
+        };
+        Tracking {
+            op: op.to_string(),
+            progress,
+            stop,
+            ticker,
+        }
+    }
+
+    /// Stop the ticker (it sends a last update with `done`) and forget `op`.
+    fn finish(self, app: &tauri::AppHandle) {
+        drop(self.stop);
+        let _ = self.ticker.join();
+        app.state::<progress::Registry>().remove(&self.op);
+    }
+}
+
+/// Cancel operation `op`; its current command ends with "Cancelled.".
+#[tauri::command]
+fn cancel_operation(registry: tauri::State<progress::Registry>, op: String) {
+    registry.cancel(&op);
+}
+
+/// The size and item count of `paths` (local and Drive), for a progress total.
+#[tauri::command]
+async fn measure(app: tauri::AppHandle, paths: Vec<String>) -> Result<fs_ops::Measure, String> {
+    blocking(move || {
+        let (drive, local): (Vec<String>, Vec<String>) =
+            paths.into_iter().partition(|path| cloud::is_cloud(path));
+        let local: Vec<PathBuf> = local.into_iter().map(PathBuf::from).collect();
+        let mut total = fs_ops::measure(&local);
+        if !drive.is_empty() {
+            let remote = cloud::transfer::measure(&app.state::<CloudState>(), &drive)?;
+            total.bytes += remote.bytes;
+            total.items += remote.items;
+        }
+        Ok(total)
+    })
+    .await?
+}
+
 #[tauri::command]
 async fn list_dir(
     app: tauri::AppHandle,
@@ -236,9 +309,18 @@ fn sftp_disconnect(app: tauri::AppHandle, id: String) {
 }
 
 #[tauri::command]
-async fn sftp_open(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    let app = app.clone();
-    blocking(move || app.state::<sftp::SftpState>().open(&path)).await?
+async fn sftp_open(
+    app: tauri::AppHandle,
+    path: String,
+    op: String,
+    on_progress: Channel<ProgressUpdate>,
+) -> Result<String, String> {
+    let tracking = Tracking::start(&app, &op, on_progress);
+    let progress = tracking.progress.clone();
+    let state = app.clone();
+    let result = blocking(move || state.state::<sftp::SftpState>().open(&path, &progress)).await;
+    tracking.finish(&app);
+    result?
 }
 
 #[tauri::command]
@@ -456,6 +538,7 @@ async fn drive_transfer(
     to: String,
     overwrite: bool,
     moving: bool,
+    progress: progress::Progress,
 ) -> Result<String, String> {
     blocking(move || {
         let home = home_dir(&app)?;
@@ -466,7 +549,15 @@ async fn drive_transfer(
                 .map(|_| ())
         };
         let state = app.state::<CloudState>();
-        cloud::transfer::dispatch(&state, &from, &to, overwrite, moving, trash_local)
+        cloud::transfer::dispatch(
+            &state,
+            &from,
+            &to,
+            overwrite,
+            moving,
+            &progress,
+            trash_local,
+        )
     })
     .await?
 }
@@ -490,22 +581,31 @@ async fn copy_entry(
     from: String,
     to: String,
     overwrite: bool,
+    op: String,
+    on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
     if let Some(message) = read_only_write(&from, &to) {
         return Err(message.into());
     }
-    if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
-        return drive_transfer(app, from, to, overwrite, false).await;
-    }
-    blocking(move || {
-        let state = app.state::<VersionsState>();
-        let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
-        state.transfer(&from_path, &to_path, Transfer::Copy, || {
-            fs_ops::copy_entry(from, to.clone(), overwrite)
-        })?;
-        Ok(to_path.to_string_lossy().to_string())
-    })
-    .await?
+    let tracking = Tracking::start(&app, &op, on_progress);
+    let progress = tracking.progress.clone();
+    let result = if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
+        drive_transfer(app.clone(), from, to, overwrite, false, progress).await
+    } else {
+        let app = app.clone();
+        blocking(move || {
+            let state = app.state::<VersionsState>();
+            let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
+            state.transfer(&from_path, &to_path, Transfer::Copy, || {
+                fs_ops::copy_entry(from, to.clone(), overwrite, &progress)
+            })?;
+            Ok(to_path.to_string_lossy().to_string())
+        })
+        .await
+        .and_then(|result| result)
+    };
+    tracking.finish(&app);
+    result
 }
 
 #[tauri::command]
@@ -514,22 +614,31 @@ async fn move_entry(
     from: String,
     to: String,
     overwrite: bool,
+    op: String,
+    on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
     if let Some(message) = read_only_write(&from, &to) {
         return Err(message.into());
     }
-    if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
-        return drive_transfer(app, from, to, overwrite, true).await;
-    }
-    blocking(move || {
-        let state = app.state::<VersionsState>();
-        let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
-        state.transfer(&from_path, &to_path, Transfer::Move, || {
-            fs_ops::move_entry(from, to.clone(), overwrite)
-        })?;
-        Ok(to_path.to_string_lossy().to_string())
-    })
-    .await?
+    let tracking = Tracking::start(&app, &op, on_progress);
+    let progress = tracking.progress.clone();
+    let result = if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
+        drive_transfer(app.clone(), from, to, overwrite, true, progress).await
+    } else {
+        let app = app.clone();
+        blocking(move || {
+            let state = app.state::<VersionsState>();
+            let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
+            state.transfer(&from_path, &to_path, Transfer::Move, || {
+                fs_ops::move_entry(from, to.clone(), overwrite, &progress)
+            })?;
+            Ok(to_path.to_string_lossy().to_string())
+        })
+        .await
+        .and_then(|result| result)
+    };
+    tracking.finish(&app);
+    result
 }
 
 #[tauri::command]
@@ -919,12 +1028,17 @@ fn trash_history_dir(dir: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn empty_trash(app: tauri::AppHandle) -> Result<(), String> {
-    blocking(move || {
-        let home = home_dir(&app)?;
-        trash_ops::empty(&trash_ops::home_trash(&home))
-    })
-    .await?
+async fn empty_trash(
+    app: tauri::AppHandle,
+    op: String,
+    on_progress: Channel<ProgressUpdate>,
+) -> Result<(), String> {
+    let tracking = Tracking::start(&app, &op, on_progress);
+    let progress = tracking.progress.clone();
+    let home = home_dir(&app);
+    let result = blocking(move || trash_ops::empty(&trash_ops::home_trash(&home?), &progress)).await;
+    tracking.finish(&app);
+    result?
 }
 
 fn thumbnail_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -1116,16 +1230,23 @@ fn drive_connect_cancel(state: tauri::State<CloudState>, flow_id: String) -> Res
 async fn drive_open(
     app: tauri::AppHandle,
     path: String,
+    op: String,
+    on_progress: Channel<ProgressUpdate>,
 ) -> Result<cloud::service::OpenTarget, String> {
-    blocking(move || {
-        let state = app.state::<CloudState>();
-        let cache = app
+    let tracking = Tracking::start(&app, &op, on_progress);
+    let progress = tracking.progress.clone();
+    let handle = app.clone();
+    let result = blocking(move || {
+        let state = handle.state::<CloudState>();
+        let cache = handle
             .path()
             .app_cache_dir()
             .map_err(|error| error.to_string())?;
-        cloud::service::open(&state, &path, &cache)
+        cloud::service::open(&state, &path, &cache, &progress)
     })
-    .await?
+    .await;
+    tracking.finish(&app);
+    result?
 }
 
 #[tauri::command]
@@ -1254,10 +1375,15 @@ async fn share_open(
     app: tauri::AppHandle,
     state: tauri::State<'_, share::state::ShareState>,
     path: String,
+    op: String,
+    on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
-    state
-        .open(&path, share_versions_hint(&app))
-        .await
+    let tracking = Tracking::start(&app, &op, on_progress);
+    let result = state
+        .open(&path, share_versions_hint(&app), &tracking.progress)
+        .await;
+    tracking.finish(&app);
+    result
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1281,6 +1407,7 @@ pub fn run() {
                 .unwrap_or_else(|_| PathBuf::from("."));
             let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("/"));
             app.manage(VersionsState::new(config_dir.join("versioned.json")));
+            app.manage(progress::Registry::default());
             app.manage(CloudState::new(&config_dir));
             app.manage(sftp::SftpState::new(
                 config_dir.join("sftp_known_hosts"),
@@ -1337,6 +1464,8 @@ pub fn run() {
             new_folder_walk,
             cancel_folder_size,
             copy_entry,
+            cancel_operation,
+            measure,
             move_entry,
             trash_entry,
             trash_info,

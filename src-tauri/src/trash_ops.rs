@@ -21,6 +21,7 @@
 //! Permanent deletion is the one place this app removes files for good, and
 //! only for items inside a Trash folder.
 
+use crate::progress::Progress;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
@@ -431,19 +432,23 @@ pub fn delete_permanently(path: &Path, trash_dir: &Path) -> Result<(), String> {
 /// returns, so on Linux both `files/` and `info/` are emptied.
 /// Returns the error for the first item that couldn't be deleted, after
 /// trying all of them.
-pub fn empty(trash_root: &Path) -> Result<(), String> {
-    let dirs: Vec<PathBuf> = match info_dir_of(&trash_root.join("files")) {
+pub fn empty(trash_root: &Path, progress: &Progress) -> Result<(), String> {
+    let files = trash_root.join("files");
+    // The layout is the one on disk: a Trash without `files/` keeps its
+    // items directly inside, as macOS does.
+    let freedesktop = info_dir_of(&files).filter(|_| files.is_dir());
+    let (items, info) = match freedesktop {
         // freedesktop layout: keep `files/` and `info/` themselves.
-        Some(info) => vec![trash_root.join("files"), info],
-        None => vec![trash_root.to_path_buf()],
+        Some(info) => (files, Some(info)),
+        None => (trash_root.to_path_buf(), None),
     };
     let mut first_error = None;
-    for dir in dirs {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if let Err(e) = remove_tree(&entry.path()) {
+    for entry in fs::read_dir(&items).into_iter().flatten().flatten() {
+        progress.check()?;
+        let path = entry.path();
+        match remove_tree(&path) {
+            Ok(()) => drop_sidecar(&path, &items),
+            Err(e) => {
                 first_error.get_or_insert(format!(
                     "Cannot delete “{}”: {}",
                     entry.file_name().to_string_lossy(),
@@ -451,6 +456,11 @@ pub fn empty(trash_root: &Path) -> Result<(), String> {
                 ));
             }
         }
+        progress.add_item();
+    }
+    // `.trashinfo` files whose item is already gone.
+    for entry in info.iter().flat_map(fs::read_dir).flatten().flatten() {
+        let _ = remove_tree(&entry.path());
     }
     first_error.map_or(Ok(()), Err)
 }
@@ -597,6 +607,7 @@ fn read_record(d: &[u8], mut p: usize, out: &mut Vec<(String, [u8; 4], String)>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::Progress;
     use tempfile::tempdir;
 
     #[test]
@@ -718,7 +729,7 @@ mod tests {
         delete_permanently(&trash.join("link"), &trash).unwrap();
         assert!(target.join("data.txt").exists());
         std::os::unix::fs::symlink(&target, trash.join("link2")).unwrap();
-        empty(&dir.path().join("Trash")).unwrap();
+        empty(&dir.path().join("Trash"), &Progress::default()).unwrap();
         assert!(target.join("data.txt").exists());
     }
 
@@ -732,11 +743,11 @@ mod tests {
         fs::write(trash.join(".DS_Store"), "x").unwrap();
         fs::write(dir.path().join("outside.txt"), "x").unwrap();
 
-        empty(&root).unwrap();
+        empty(&root, &Progress::default()).unwrap();
         assert!(root.exists());
         assert_eq!(fs::read_dir(&trash).unwrap().count(), 0);
         assert!(dir.path().join("outside.txt").exists());
-        empty(&dir.path().join("no-trash-here")).unwrap();
+        empty(&dir.path().join("no-trash-here"), &Progress::default()).unwrap();
     }
 
     #[test]
@@ -1124,7 +1135,7 @@ mod tests {
         fs::write(files.join("a.txt"), "x").unwrap();
         fs::write(info.join("a.txt.trashinfo"), "x").unwrap();
 
-        empty(&root).unwrap();
+        empty(&root, &Progress::default()).unwrap();
         assert!(files.is_dir(), "files/ survives so the Trash still works");
         assert!(info.is_dir(), "info/ survives too");
         assert_eq!(fs::read_dir(&files).unwrap().count(), 0);
@@ -1155,5 +1166,71 @@ mod tests {
             assert!(root.ends_with("Trash"));
             assert!(!root.ends_with("Trash/files"));
         }
+    }
+
+    /// A freedesktop Trash (`files/` + `info/`) holding a, b and c.
+    fn freedesktop_with_three(root: &Path) {
+        fs::create_dir_all(root.join("files")).unwrap();
+        fs::create_dir_all(root.join("info")).unwrap();
+        for name in ["a", "b", "c"] {
+            fs::write(root.join("files").join(name), "x").unwrap();
+            fs::write(root.join("info").join(format!("{name}.trashinfo")), "x").unwrap();
+        }
+    }
+
+    /// A macOS-style Trash (items directly inside) holding a, b and c.
+    fn macos_with_three(root: &Path) {
+        fs::create_dir_all(root).unwrap();
+        for name in ["a", "b", "c"] {
+            fs::write(root.join(name), "x").unwrap();
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn empty_counts_items_freedesktop() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("Trash");
+        freedesktop_with_three(&root);
+        let progress = Progress::default();
+        empty(&root, &progress).unwrap();
+        assert_eq!(progress.snapshot().items, 3);
+        assert_eq!(fs::read_dir(root.join("files")).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(root.join("info")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn empty_counts_items_macos_layout() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join(".Trash");
+        macos_with_three(&root);
+        let progress = Progress::default();
+        empty(&root, &progress).unwrap();
+        assert_eq!(progress.snapshot().items, 3);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn cancelled_empty_keeps_the_rest_freedesktop() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("Trash");
+        freedesktop_with_three(&root);
+        let progress = Progress::default();
+        progress.cancel();
+        assert_eq!(empty(&root, &progress), Err("Cancelled.".to_string()));
+        assert_eq!(fs::read_dir(root.join("files")).unwrap().count(), 3);
+        assert_eq!(fs::read_dir(root.join("info")).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn cancelled_empty_keeps_the_rest_macos_layout() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join(".Trash");
+        macos_with_three(&root);
+        let progress = Progress::default();
+        progress.cancel();
+        assert_eq!(empty(&root, &progress), Err("Cancelled.".to_string()));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 3);
     }
 }

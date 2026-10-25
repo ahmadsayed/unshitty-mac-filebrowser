@@ -7,6 +7,8 @@ use std::io::Cursor;
 use std::path::Path;
 use std::time::Duration;
 
+use crate::progress::{CANCELLED, Progress, copy_counted, is_cancel};
+
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -47,6 +49,8 @@ pub enum DriveError {
     RateLimited,
     Unavailable(String),
     Parse(String),
+    /// The operation was cancelled (spec: operation progress D2).
+    Cancelled,
 }
 
 impl DriveError {
@@ -63,6 +67,7 @@ impl DriveError {
             DriveError::RateLimited => "Google Drive is temporarily unavailable. Try again.".into(),
             DriveError::Unavailable(message) => format!("Google Drive is unavailable: {message}"),
             DriveError::Parse(_) => "Invalid response from Google Drive.".into(),
+            DriveError::Cancelled => CANCELLED.into(),
         }
     }
 
@@ -386,7 +391,9 @@ impl<'a> DriveClient<'a> {
         )
     }
 
-    pub fn download(&self, id: &str, dest: &Path) -> Result<(), DriveError> {
+    /// Stream a file's bytes to `dest`, counting them and stopping between
+    /// slices when `progress` is cancelled.
+    pub fn download(&self, id: &str, dest: &Path, progress: &Progress) -> Result<(), DriveError> {
         let url = format!("{}/files/{}", self.base, id);
         let mut response = self.send(|| {
             self.http
@@ -396,8 +403,13 @@ impl<'a> DriveClient<'a> {
         })?;
         let mut file = std::fs::File::create(dest)
             .map_err(|error| DriveError::Unavailable(error.to_string()))?;
-        std::io::copy(&mut response, &mut file)
-            .map_err(|error| DriveError::Unavailable(error.to_string()))?;
+        copy_counted(&mut response, &mut file, progress).map_err(|error| {
+            if is_cancel(&error) {
+                DriveError::Cancelled
+            } else {
+                DriveError::Unavailable(error.to_string())
+            }
+        })?;
         Ok(())
     }
 
@@ -487,6 +499,7 @@ impl<'a> DriveClient<'a> {
         parent_id: &str,
         name: &str,
         local: &Path,
+        progress: &Progress,
     ) -> Result<DriveFile, DriveError> {
         let io = |error: std::io::Error| DriveError::Unavailable(error.to_string());
         let size = std::fs::metadata(local).map_err(io)?.len();
@@ -515,6 +528,10 @@ impl<'a> DriveClient<'a> {
         let mut offset = 0u64;
         let mut stalls = 0;
         loop {
+            // A cancel abandons the session; Drive creates nothing.
+            if progress.is_cancelled() {
+                return Err(DriveError::Cancelled);
+            }
             let end = (offset + CHUNK as u64).min(size);
             let chunk = read_chunk(&mut file, offset, (end - offset) as usize).map_err(io)?;
             let range = if size == 0 {
@@ -532,6 +549,7 @@ impl<'a> DriveClient<'a> {
                 |status| status == 308,
             )?;
             if response.status().as_u16() != 308 {
+                progress.add_bytes(size.saturating_sub(offset));
                 let body = response
                     .text()
                     .map_err(|error| DriveError::Parse(error.to_string()))?;
@@ -547,6 +565,7 @@ impl<'a> DriveClient<'a> {
             // Progress or give up: a server that never accepts bytes must not
             // keep us looping.
             stalls = if next > offset { 0 } else { stalls + 1 };
+            progress.add_bytes(next.saturating_sub(offset));
             if stalls >= ATTEMPTS {
                 return Err(DriveError::Unavailable(
                     "the upload made no progress".into(),
@@ -689,6 +708,7 @@ pub fn thumbnail_url(link: &str, size: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::Progress;
     use crate::cloud::test_server::{json, serve};
 
     fn client(base: &str) -> DriveClient<'_> {
@@ -860,7 +880,7 @@ mod tests {
         )]);
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("out.bin");
-        client(&base).download("f1", &dest).unwrap();
+        client(&base).download("f1", &dest, &Progress::default()).unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"hello drive");
         server.join().unwrap();
     }
@@ -1024,7 +1044,7 @@ mod tests {
             Reply::json(200, FILE),
         ]);
         let (_dir, path) = local_file(b"hello");
-        let file = client(&base).upload("p1", "up.bin", &path).unwrap();
+        let file = client(&base).upload("p1", "up.bin", &path, &Progress::default()).unwrap();
         server.join().unwrap();
         assert_eq!(file.id, "new");
         let log = log.lock().unwrap();
@@ -1054,7 +1074,7 @@ mod tests {
             Reply::json(200, FILE),
         ]);
         let (_dir, path) = local_file(&bytes);
-        client(&base).upload("p1", "up.bin", &path).unwrap();
+        client(&base).upload("p1", "up.bin", &path, &Progress::default()).unwrap();
         server.join().unwrap();
         let log = log.lock().unwrap();
         assert!(
@@ -1079,7 +1099,7 @@ mod tests {
             Reply::json(200, FILE),
         ]);
         let (_dir, path) = local_file(b"");
-        client(&base).upload("p1", "empty", &path).unwrap();
+        client(&base).upload("p1", "empty", &path, &Progress::default()).unwrap();
         server.join().unwrap();
         assert!(
             log.lock().unwrap()[1]
@@ -1098,7 +1118,7 @@ mod tests {
             (base, server)
         };
         let (_dir, path) = local_file(b"hello");
-        assert!(client(&base).upload("p1", "up.bin", &path).is_err());
+        assert!(client(&base).upload("p1", "up.bin", &path, &Progress::default()).is_err());
         server.join().unwrap();
     }
 
@@ -1125,5 +1145,33 @@ mod tests {
     fn thumbnails_get_one_size_suffix() {
         assert_eq!(thumbnail_url("https://x/y=s220", 256), "https://x/y=s256");
         assert_eq!(thumbnail_url("https://x/y", 2000), "https://x/y=s1024");
+    }
+
+    #[test]
+    fn download_counts_bytes() {
+        let body = vec![5u8; 2 * 1024 * 1024 + 3];
+        let (base, server) = serve(vec![(200, body.clone(), "application/octet-stream")]);
+        let dir = tempfile::tempdir().unwrap();
+        let progress = Progress::default();
+        client(&base)
+            .download("f1", &dir.path().join("out.bin"), &progress)
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(progress.snapshot().bytes, body.len() as u64);
+    }
+
+    #[test]
+    fn upload_counts_chunks() {
+        let size = CHUNK + 10;
+        let (base, _log, server) = serve_replies(vec![
+            Reply::json(200, "").header("Location", "{base}/session/1"),
+            Reply::json(308, "").header("Range", "bytes=0-262143"),
+            Reply::json(200, FILE),
+        ]);
+        let (_dir, path) = local_file(&vec![1u8; size]);
+        let progress = Progress::default();
+        client(&base).upload("p1", "up.bin", &path, &progress).unwrap();
+        server.join().unwrap();
+        assert_eq!(progress.snapshot().bytes, size as u64);
     }
 }

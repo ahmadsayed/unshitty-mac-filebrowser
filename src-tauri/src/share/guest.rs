@@ -5,6 +5,7 @@
 //! is shown; nothing here writes a sharer's name to disk (the caller picks
 //! the staging path a download goes to).
 
+use crate::progress::{CANCELLED, Progress};
 use super::host::INVALID;
 use super::link::ShareLink;
 use super::location::{ShareLocation, safe_name};
@@ -85,12 +86,15 @@ enum Fail {
     Stopped,
     /// A name on the way no longer exists.
     Gone(String),
+    /// The operation was cancelled.
+    Cancelled,
     Other(String),
 }
 
 /// The words for a failure; `who` is the sharer's name.
 fn describe(fail: Fail, who: &str) -> String {
     match fail {
+        Fail::Cancelled => CANCELLED.into(),
         Fail::Offline => format!("{who} is offline."),
         Fail::Version => format!(
             "{who}'s Files app uses a different sharing version. \
@@ -262,11 +266,12 @@ impl Guest {
         r: &Received,
         loc: &ShareLocation,
         dest: &Path,
+        progress: &Progress,
     ) -> Result<(), String> {
         if dest.symlink_metadata().is_ok() {
             return Err(EXISTS.into());
         }
-        self.download(r, loc, dest)
+        self.download(r, loc, dest, progress)
             .await
             .map_err(|f| self.say(r, f))
     }
@@ -430,7 +435,16 @@ impl Guest {
 
     /// Resolve the file from the current root, ask for its content, fetch it
     /// verified and export it to `dest`.
-    async fn download(&self, r: &Received, loc: &ShareLocation, dest: &Path) -> Result<(), Fail> {
+    async fn download(
+        &self,
+        r: &Received,
+        loc: &ShareLocation,
+        dest: &Path,
+        progress: &Progress,
+    ) -> Result<(), Fail> {
+        if progress.is_cancelled() {
+            return Err(Fail::Cancelled);
+        }
         let (name, parents) = loc
             .names
             .split_last()
@@ -455,7 +469,8 @@ impl Guest {
         if size != expected {
             return Err(Fail::Changed);
         }
-        match self.download_content(addr, hash, dest, expected).await {
+        progress.set_total(expected);
+        match self.download_content(addr, hash, dest, expected, progress).await {
             Ok(()) => Ok(()),
             Err(fail) => {
                 let _ = std::fs::remove_file(dest);
@@ -482,6 +497,7 @@ impl Guest {
         hash: Hash,
         dest: &Path,
         expected: u64,
+        progress: &Progress,
     ) -> Result<(), Fail> {
         let dir = self.next_download_dir();
         std::fs::create_dir_all(&dir).map_err(|e| Fail::Other(e.to_string()))?;
@@ -494,7 +510,8 @@ impl Guest {
         };
         let downloader = Downloader::new_with_opts(&store, &self.endpoint, pool);
         let outcome = async {
-            download_with_progress(&downloader, hash, addr).await?;
+            download_with_progress(&downloader, hash, addr, progress).await?;
+            progress.set_bytes(expected);
             let actual = store
                 .blobs()
                 .observe(hash)
@@ -535,23 +552,37 @@ impl Guest {
     }
 }
 
-/// Stream a blob to completion, failing when no progress arrives for 30 s (G2).
+/// How often a quiet download checks for a cancel.
+const CANCEL_POLL: Duration = Duration::from_millis(100);
+
+/// Stream a blob to completion, failing when no progress arrives for 30 s
+/// (G2), reporting bytes and stopping when `progress` is cancelled.
 async fn download_with_progress(
     downloader: &Downloader,
     hash: Hash,
     addr: &EndpointAddr,
+    progress: &Progress,
 ) -> Result<(), Fail> {
-    let progress = downloader.download(hash, Some(addr.id));
-    let mut stream = progress.stream().await.map_err(|_| Fail::Offline)?;
+    let download = downloader.download(hash, Some(addr.id));
+    let mut stream = download.stream().await.map_err(|_| Fail::Offline)?;
+    let mut quiet_since = tokio::time::Instant::now();
     loop {
-        match tokio::time::timeout(CONTENT_STALL, stream.next()).await {
+        if progress.is_cancelled() {
+            return Err(Fail::Cancelled);
+        }
+        match tokio::time::timeout(CANCEL_POLL, stream.next()).await {
             Ok(None) => return Ok(()),
             // Let the caller ask Root: a live control connection means the
             // file likely changed; a dead one is reported as offline.
             Ok(Some(DownloadProgressItem::Error(_))) => return Err(Fail::Offline),
             Ok(Some(DownloadProgressItem::DownloadError)) => return Err(Fail::Changed),
-            Ok(Some(_)) => {}
-            Err(_) => return Err(Fail::Stopped),
+            Ok(Some(DownloadProgressItem::Progress(bytes))) => {
+                progress.set_bytes(bytes);
+                quiet_since = tokio::time::Instant::now();
+            }
+            Ok(Some(_)) => quiet_since = tokio::time::Instant::now(),
+            Err(_) if quiet_since.elapsed() >= CONTENT_STALL => return Err(Fail::Stopped),
+            Err(_) => {}
         }
     }
 }
@@ -784,17 +815,17 @@ mod tests {
             let dest = out.join(".big.bin.part");
             assert!(!dest.exists());
             let loc = top().child("big.bin");
-            s.guest.fetch(&s.r, &loc, &dest).await.unwrap();
+            s.guest.fetch(&s.r, &loc, &dest, &Progress::default()).await.unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), data);
 
             let missing = out.join(".nope.part");
-            let got = s.guest.fetch(&s.r, &top().child("nope"), &missing).await;
+            let got = s.guest.fetch(&s.r, &top().child("nope"), &missing, &Progress::default()).await;
             assert_eq!(got, Err("“nope” no longer exists.".to_string()));
             assert!(!missing.exists());
 
             std::fs::write(s.folder.join("a.txt"), b"hello, changed").unwrap();
             let changed = out.join(".a.txt.part");
-            let got = s.guest.fetch(&s.r, &top().child("a.txt"), &changed).await;
+            let got = s.guest.fetch(&s.r, &top().child("a.txt"), &changed, &Progress::default()).await;
             assert_eq!(
                 got,
                 Err("The file changed while downloading. Try again.".to_string())
@@ -846,7 +877,7 @@ mod tests {
 
             assert!(
                 s.guest
-                    .fetch(&s.r, &top().child("a.txt"), &dest)
+                    .fetch(&s.r, &top().child("a.txt"), &dest, &Progress::default())
                     .await
                     .is_err()
             );

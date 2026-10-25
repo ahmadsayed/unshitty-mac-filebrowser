@@ -339,6 +339,7 @@ impl ShareState {
         &self,
         path: &str,
         versions_hint: VersionsHint,
+        progress: &crate::progress::Progress,
     ) -> Result<String, String> {
         let location = ShareLocation::parse(path)
             .ok_or_else(|| "This isn't a share location.".to_string())?;
@@ -360,7 +361,7 @@ impl ShareState {
             .join(unique_dir());
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let dest = dir.join(name);
-        if let Err(error) = node.guest.fetch(received, &location, &dest).await {
+        if let Err(error) = node.guest.fetch(received, &location, &dest, progress).await {
             let _ = fs::remove_dir_all(&dir);
             return Err(error);
         }
@@ -523,11 +524,23 @@ mod tests {
                 root.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(),
                 vec!["a.txt"]
             );
-            let opened = guest
-                .open(&format!("share://{}/a.txt", received.id), no_hint())
-                .await
-                .unwrap();
+            let progress = crate::progress::Progress::default();
+            let file = format!("share://{}/a.txt", received.id);
+            let opened = guest.open(&file, no_hint(), &progress).await.unwrap();
             assert_eq!(std::fs::read(&opened).unwrap(), b"hi");
+            // Opening reports the file's size as the total and every byte.
+            let update = progress.snapshot();
+            assert_eq!((update.total, update.bytes), (Some(2), 2));
+            // A cancelled open fails with "Cancelled." and leaves no folder.
+            let cancelled = crate::progress::Progress::default();
+            cancelled.cancel();
+            let opens = tmp.path().join("guest-cache/share-open");
+            let before = std::fs::read_dir(&opens).unwrap().count();
+            assert_eq!(
+                guest.open(&file, no_hint(), &cancelled).await.unwrap_err(),
+                "Cancelled."
+            );
+            assert_eq!(std::fs::read_dir(&opens).unwrap().count(), before);
 
             guest.remove_received(&received.id).unwrap();
             assert!(guest.received(no_hint()).await.unwrap().is_empty());
