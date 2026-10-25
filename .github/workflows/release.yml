@@ -1,0 +1,160 @@
+# Build File Browser for macOS and Linux.
+#
+# - Push a tag like `v0.4.0`: checks that the tag matches the app version,
+#   runs the tests, builds both platforms and creates a *draft* GitHub
+#   Release with the packages attached. Review it, then publish.
+# - Run manually (Actions → Release → Run workflow), or open a pull request
+#   that changes this file: tests and builds the same packages as
+#   downloadable workflow artifacts, without creating a release, even when
+#   a manual run is started on a tag.
+#
+# Only the release job can write to the repository, and it runs only for a
+# pushed tag. Actions are pinned to commits; the comment names the version.
+#
+# Nothing secret is needed: Google Drive users bring their own OAuth client
+# (docs/google-drive.md). macOS builds are ad-hoc signed, not notarized.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths: [".github/workflows/release.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Check the tag matches the app version
+        if: github.event_name == 'push'
+        run: |
+          for version in \
+            "$(jq -r .version src-tauri/tauri.conf.json)" \
+            "$(jq -r .version package.json)" \
+            "$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml)"; do
+            if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match version $version in tauri.conf.json, package.json or Cargo.toml."
+              exit 1
+            fi
+          done
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libssl-dev libxdo-dev librsvg2-dev libayatana-appindicator3-dev
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: src-tauri
+
+      # package-lock.json is git-ignored on purpose (see AGENTS.md).
+      - name: Install npm packages
+        run: npm install --package-lock=false
+
+      - name: Type-check and build the frontend
+        run: |
+          npx tsc --noEmit
+          npm run build
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Backend tests
+        working-directory: src-tauri
+        run: cargo test
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            # One app for Apple Silicon and Intel Macs.
+            args: --target universal-apple-darwin --bundles app,dmg
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - platform: ubuntu-22.04
+            args: ""
+            rust-targets: ""
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libssl-dev libxdo-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install npm packages
+        run: npm install --package-lock=false
+
+      - name: Build
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      - name: Keep the packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: file-browser-${{ matrix.platform }}
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  release:
+    # A pushed tag only: a manual run on a tag ref builds but never releases.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES: |
+            See the README for what's new and how to install.
+
+            **macOS:** the app isn't notarized. After copying it to Applications, run
+            `xattr -dr com.apple.quarantine "/Applications/File Browser.app"` once,
+            or right-click it and choose Open.
+
+            **Google Drive:** follow docs/google-drive.md to add your own OAuth client.
+        run: |
+          gh release create "$GITHUB_REF_NAME" packages/* \
+            --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "File Browser $GITHUB_REF_NAME" --notes "$NOTES"
