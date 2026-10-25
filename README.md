@@ -140,7 +140,7 @@ Ready-made builds are on the
 
 ### Linux GNOME desktop
 
-The AppImage includes WebKitGTK and GTK, so it is about 119 MB but works
+The AppImage includes WebKitGTK and GTK, so it is about 90–120 MB but works
 without installing the runtime dependencies. To install it for your user and
 make **File Browser** appear in GNOME search:
 

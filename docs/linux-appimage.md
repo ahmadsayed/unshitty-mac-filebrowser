@@ -1,9 +1,9 @@
 # Linux AppImage and GNOME launcher
 
 The Linux AppImage is portable: it bundles WebKitGTK, GTK and the codecs it
-needs, so it is about 119 MB (331 MB unpacked). If you only use this machine,
-the `.rpm`/`.deb` or the release binary is smaller, because it can use the
-system WebKitGTK.
+needs, so it is about 90–120 MB depending on the build (around 331 MB unpacked).
+If you only use this machine, the `.rpm`/`.deb` or the release binary is smaller,
+because it can use the system WebKitGTK.
 
 ## Install
 

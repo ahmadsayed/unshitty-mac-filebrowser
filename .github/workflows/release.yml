@@ -153,8 +153,17 @@ jobs:
             `xattr -dr com.apple.quarantine "/Applications/File Browser.app"` once,
             or right-click it and choose Open.
 
+            **Linux:** use the `.deb`, `.rpm` or portable AppImage. For the AppImage
+            and GNOME application search, follow docs/linux-appimage.md or run:
+
+            ```sh
+            chmod +x install-linux-appimage.sh
+            ./install-linux-appimage.sh ./File.Browser_<version>_amd64.AppImage
+            ```
+
             **Google Drive:** follow docs/google-drive.md to add your own OAuth client.
         run: |
-          gh release create "$GITHUB_REF_NAME" packages/* \
+          mapfile -d '' assets < <(find packages -type f -print0)
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
             --title "File Browser $GITHUB_REF_NAME" --notes "$NOTES"
