@@ -79,20 +79,29 @@ The endpoint binds only when there is at least one share or received share;
 with neither, nothing touches the network. Relays and discovery use iroh's
 default preset (n0's public relays), which only ever carry encrypted traffic.
 
-**D2. Folder snapshots are trees of manifests.** Each folder becomes one
-manifest blob listing its entries: name, kind (file / folder), size, mtime and
-content hash. A folder entry's hash is that subfolder's manifest hash. The
-share's **root hash** names the whole folder at one moment. Encoding is
-canonical (entries sorted by name bytes, fixed field order, postcard), so the
-same folder always yields the same hash.
+**D2. Folder snapshots are trees of structure manifests.** Each folder
+becomes one manifest blob listing its entries: name, kind (file / folder),
+size and mtime. A folder entry also carries that subfolder's manifest hash; a
+file entry carries **no** content hash. The share's **root hash** therefore
+names the whole tree's structure at one moment, and any add, remove, rename or
+modification (size or mtime) gives a new root. Encoding is canonical (entries
+sorted by name bytes, fixed field order, postcard), so the same structure
+always yields the same hash, whatever has been hashed so far.
 
-**D3. Manifests are built lazily and cached.** A folder's manifest is built
-when someone browses it. File hashes are cached by (path, size, mtime); inside
-a versioned folder they come from the Keep Versions index. A file is hashed
-only when its size and mtime are equal before and after reading; otherwise it
-is retried shortly and listed once stable. Every change gives a new root;
-roots are not stored as a chain in v1, but nothing prevents it later
-(history browsing, sharing a past version).
+**D3. Structure is walked eagerly; content is hashed lazily.** (User's
+choice, 2026-10-25, resolving eager tree hashes against lazy browsing.) When
+sharing starts, the sharer walks the folder — a directory walk like
+Properties' folder size, no file reads — and builds every manifest; after a
+change only the changed folder and its ancestors are rebuilt. A file's
+content is hashed only when a visitor first asks for it (`Content`, D5).
+Content hashes are cached on the sharer by (path, size, mtime); inside a
+versioned folder they come from the Keep Versions index, which hashes the same
+way. A file is hashed only when its size and mtime are equal before and after
+reading; otherwise `Content` answers "changed". Roots are not stored as a
+chain in v1, but nothing prevents it later (history browsing, sharing a past
+version). A very large tree (around a million entries) takes noticeable time
+and memory to walk when sharing starts; the Share dialog shows "Preparing…"
+until the first root exists.
 
 **D4. Content is served by reference.** The sharer serves file bytes from the
 file itself, not from a copy inside a blob store. Before serving, the sharer
@@ -109,10 +118,14 @@ messages capped at 64 KiB:
 | --- | --- |
 | `Claim{share, token}` | `Ok{folder_name, sharer_name}` or `Denied(reason)` |
 | `Root{share}` | `Ok{root, folder_name, sharer_name}` or `Denied(reason)` |
+| `Content{share, manifest, name}` | `Ok{hash, size}`, `Changed` or `Denied(reason)` |
 | `Watch{share}` | a stream of new root hashes until the stream closes |
 
-Everything else — manifests and file content — goes through the iroh-blobs
-protocol.
+`Content` names a file entry inside a manifest the share has published; the
+sharer resolves it to a path from its own manifest map (never from the
+request), checks size and mtime against the entry, hashes the file (or finds
+the hash cached), publishes the hash for that share and replies. Manifests and
+file bytes themselves go through the iroh-blobs protocol.
 
 **D6. Claim rules.**
 - Anyone link, token matches: the visitor's key is recorded under that link.
@@ -126,14 +139,17 @@ protocol.
 **D7. Access is checked on every request; revoke is immediate.** The blobs
 provider's events gate both connections (the key must have access to at
 least one share) and requests (the hash must be published by a share the key
-can access — a manifest it built or a file hash listed in one). Each share
+can access — one of its manifests, or a content hash it returned from
+`Content`). Each share
 has its own published-hash set, so access to share A never opens share B.
 Remove on a person deletes their entry, saves, and closes their connections
 for that share. Remove on the anyone link invalidates its token and every key
 admitted through it. Stop Sharing deletes the whole share.
 
-**D8. Visitors send hashes, never paths.** There is no path to traverse on
-the wire. The safety rules live in the sharer's manifest builder:
+**D8. Visitors send hashes and entry names, never paths.** A request names a
+published manifest and, for `Content`, one entry name taken from it; the
+sharer looks both up in its own map. There is no path to traverse on the
+wire. The safety rules live in the sharer's manifest builder:
 - Symlinks are followed only when they resolve inside the shared folder.
 - `.versions/` is always excluded.
 - Sockets, FIFOs and device files are excluded.
@@ -191,7 +207,7 @@ Platform-neutral plain functions, testable without Tauri; only `lib.rs` uses
 | Module | Responsibility |
 | --- | --- |
 | `identity.rs` | Load or create `share-key` (0600), lock it, display name |
-| `manifest.rs` | Manifest format and canonical encoding, lazy builder with the D8 exclusions, hash cache |
+| `manifest.rs` | Manifest format and canonical encoding, the tree builder with the D8 exclusions and incremental rebuild, content-hash cache |
 | `registry.rs` | `shares.json` (shares, links, bindings) and `received.json` (received shares); claim rules (D6) |
 | `host.rs` | Endpoint + router, the blobs provider and its gate (D7), the control protocol (D5), the folder watcher that rebuilds manifests and pushes roots |
 | `guest.rs` | Connect, claim, root, watch with reconnect backoff, manifest walk (D10), downloads (D11) |
@@ -252,14 +268,18 @@ Recipient:
 2. Open Network → `Root` for each received share → online or offline.
 3. Browse `share://…` → fetch the root manifest, then each manifest down the
    path (cached in memory by hash) → render as a normal listing.
-4. Open a file → download its blob, verified → export to the app cache → open.
+4. Open a file → `Content` gives its hash → download the blob, verified →
+   export to the app cache → open.
 5. Copy out → staged download → rename into place (D11).
 6. `Watch` pushes a root → `share-root-changed` → the view refreshes; only
    changed manifests are fetched again.
 
 Sharer:
-- A request arrives → the gate checks the key and the hash (D7) → the blob is
-  served from the file (D4).
+- Sharing starts → walk the folder and build every manifest (D3) → the first
+  root exists.
+- `Content` arrives → resolve, check, hash or reuse the cached hash → publish.
+- A blobs request arrives → the gate checks the key and the hash (D7) → the
+  blob is served from the file (D4).
 - The watcher sees a change → rebuilds that folder's manifest and its
   parents' → pushes the new root to watchers.
 
@@ -348,14 +368,17 @@ GNOME wording; `openDialog`, `openMenu`, `showToast` only.
 ## Testing
 
 **Rust unit tests (no network):**
-- `manifest.rs`: same folder → same hash regardless of order; a changed name,
-  size, mtime or content changes the hash of that folder and its parents only;
+- `manifest.rs`: same folder → same hash regardless of order and of which
+  files were hashed; a changed name, size or mtime changes the hash of that
+  folder and its parents only;
   exclusions (symlink out, symlink in kept, `.versions/`, FIFO, unreadable);
   hash cache hit and miss; size cap.
 - The Keep Versions hash of some bytes equals their iroh-blobs hash.
 - `link.rs`: round trip; garbage, wrong version and truncated text rejected.
 - `registry.rs`: each D6 rule; binding saved before the reply; anyone links
   record visitors.
+- `Content`: an entry name not in the named manifest, a folder entry, and an
+  unpublished manifest are denied; a size or mtime mismatch answers `Changed`.
 - Gate: unpublished hash denied; share A's hash denied to a share-B-only
   visitor; a removed visitor denied on the next request.
 - Recipient name safety: `../x`, `a/b`, empty, `.`, `..` rejected before
