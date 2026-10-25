@@ -1198,7 +1198,7 @@ function shareStatusPage(kind: "offline" | "no-access" | "missing"): string {
 
 /** The local folder a link belongs to, when the link is one of this machine's own. */
 async function ownSharePath(link: string): Promise<string | null> {
-  // By ticket, not text: the link may be in the older fbshare1: form.
+  // By ticket, not text: the paste may differ in case, brackets or a slash.
   const ticket = shareTicket(link);
   for (const summary of await listShares().catch(() => [])) {
     const info = await shareInfo(summary.path).catch(() => null);

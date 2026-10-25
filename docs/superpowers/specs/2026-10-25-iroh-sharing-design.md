@@ -168,8 +168,7 @@ kind, sharer name. The name in the link is a placeholder until the first
 `Root` reply; the sharer's app is the authority. Tokens are stored so Copy
 Link works again later. A link shares its scheme with D10's locations and is
 told apart by shape: a ticket is 64 or more base32 characters with nothing
-after it, a received ID is 16 hex characters. Links made before the switch
-start with `fbshare1:` and still decode.
+after it, a received ID is 16 hex characters.
 
 **D10. Recipient paths are `share://<received-id>/<name>/<name>…`.** Names are
 percent-encoded like `gdrive://` names. A path resolves by walking manifests

@@ -25,20 +25,19 @@ export function isSftpPath(path: string): boolean {
 /**
  * Received shares live at `share://<16-character id>/…`; a share link is
  * `share://` followed by its whole ticket: 64 or more base32 characters and
- * nothing after them. Links made before that start with `fbshare1:`.
+ * nothing after them.
  */
 const LINK_TICKET = /^[a-z2-7]{64,}\/?$/;
 
 /**
- * The ticket inside a share link, lowercased, from either form and with or
- * without the `<…>` people paste; null when `text` isn't a link. Two links
- * to the same share have the same ticket whatever their form.
+ * The ticket inside a share link, lowercased, with or without the `<…>` and
+ * trailing slash people paste; null when `text` isn't a link. Two links to
+ * the same share have the same ticket however they were pasted.
  */
 export function shareTicket(text: string): string | null {
   let link = text.trim();
   if (link.startsWith("<") && link.endsWith(">")) link = link.slice(1, -1).trim();
   link = link.toLowerCase();
-  if (link.startsWith("fbshare1:")) return link.slice("fbshare1:".length);
   if (!link.startsWith(SHARE_PREFIX)) return null;
   const ticket = link.slice(SHARE_PREFIX.length);
   return LINK_TICKET.test(ticket) ? ticket.replace(/\/$/, "") : null;

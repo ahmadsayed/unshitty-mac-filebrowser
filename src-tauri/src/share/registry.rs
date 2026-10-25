@@ -820,7 +820,7 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&f).unwrap(), *text);
         }
         let f = tmp.path().join("received.json");
-        let text = r#"[{"id":"a","link":"fbshare1:nonsense","folder":"F","sharer":"S"}]"#;
+        let text = r#"[{"id":"a","link":"share://nonsense","folder":"F","sharer":"S"}]"#;
         std::fs::write(&f, text).unwrap();
         assert_eq!(ReceivedList::load(&f).unwrap_err(), msg);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), text);

@@ -77,7 +77,7 @@ files, so the photo thumbnails are placeholders.</sub>
 - **Folder Sharing (Experimental):** share a local folder read-only with an
   “Anyone with the link” or “Specific person” `share://` link; received shares
   appear in Network with who shared them and whether they're online, an offline
-  page and read-only menus. Older `fbshare1:` links still work. Copying files
+  page and read-only menus. Copying files
   out of a share and live refresh are still to come
 - Properties (right-click or ⌘I): type, size (folders are summed in the
   background), location, modified/accessed/created dates, permissions, symlink

@@ -57,15 +57,9 @@ test("a link's ticket is the same in either form", () => {
   const ticket = "aeu73ziw".repeat(10);
   expect(shareTicket(`share://${ticket}`)).toBe(ticket);
   expect(shareTicket(`<SHARE://${ticket.toUpperCase()}/>`)).toBe(ticket);
-  expect(shareTicket(`fbshare1:${ticket}`)).toBe(ticket);
+  expect(shareTicket(`fbshare1:${ticket}`)).toBeNull();
   expect(shareTicket("share://0123456789abcdef")).toBeNull();
   expect(shareTicket("hello")).toBeNull();
-});
-
-test("links made before share:// still work", () => {
-  expect(isShareLink("fbshare1:aeu73ziw")).toBe(true);
-  expect(isShareLink("  <FBSHARE1:AEU73ZIW>  ")).toBe(true);
-  expect(isShareLink("/Users/me/fbshare1:aeu73ziw")).toBe(false);
 });
 
 test("SFTP paths are remote and resolve as absolute locations", () => {

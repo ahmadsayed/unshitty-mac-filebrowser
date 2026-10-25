@@ -12,8 +12,6 @@ pub type Token = [u8; 32];
 /// received share opens at; the frontend tells them apart by length, since a
 /// ticket is always far longer than a 16-character id.
 pub const LINK_PREFIX: &str = "share://";
-/// What links started with before `share://`; still accepted.
-const LEGACY_PREFIX: &str = "fbshare1:";
 const VERSION: u8 = 1;
 const NOT_A_LINK: &str = "This isn't a share link.";
 
@@ -70,11 +68,8 @@ impl ShareLink {
             t = inner.trim();
         }
         let t = t.to_ascii_lowercase();
-        let body = t
-            .strip_prefix(LINK_PREFIX)
-            .map(|body| body.strip_suffix('/').unwrap_or(body))
-            .or_else(|| t.strip_prefix(LEGACY_PREFIX))
-            .ok_or(NOT_A_LINK)?;
+        let body = t.strip_prefix(LINK_PREFIX).ok_or(NOT_A_LINK)?;
+        let body = body.strip_suffix('/').unwrap_or(body);
         let bytes = B32.decode(body.as_bytes()).map_err(|_| NOT_A_LINK)?;
         match bytes.first() {
             None => return Err(NOT_A_LINK.into()),
@@ -150,13 +145,12 @@ mod tests {
     }
 
     #[test]
-    fn links_made_before_share_scheme_still_decode() {
-        let l = sample();
-        let ticket = l.encode().strip_prefix("share://").unwrap().to_string();
-        assert_eq!(ShareLink::decode(&format!("fbshare1:{ticket}")).unwrap(), l);
+    fn only_share_links_decode() {
+        let text = sample().encode();
+        let ticket = text.strip_prefix("share://").unwrap();
         assert_eq!(
-            ShareLink::decode(&format!("FBSHARE1:{}", ticket.to_uppercase())).unwrap(),
-            l
+            ShareLink::decode(&format!("fbshare1:{ticket}")),
+            Err("This isn't a share link.".to_string())
         );
     }
 
@@ -179,7 +173,7 @@ mod tests {
     fn decode_rejects_garbage() {
         for t in [
             "hello",
-            "fbshare1:!!!",
+            "fbshare1:aeu73ziw",
             "share://!!!",
             "share://0123456789abcdef",
             "share://",

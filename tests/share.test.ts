@@ -38,7 +38,7 @@ test("Network is empty with an address bar and reports a bad link inline", async
   const input = $<HTMLInputElement>(".network-link");
   expect(input.placeholder).toBe("Enter server address or share link");
 
-  await type(input, "fbshare1:!!!");
+  await type(input, link("bad"));
   await click($(".network-paste .btn"));
   await settle(10);
   expect($(".network-error").textContent).toContain("This isn't a share link.");
@@ -190,7 +190,7 @@ test("pasting your own link opens the local folder", async () => {
   expect(toasts().join(" | ")).toContain("This is your own shared folder.");
 });
 
-test("your own link in the older fbshare1: form still opens the local folder", async () => {
+test("your own link pasted in capitals and brackets still opens the local folder", async () => {
   resetShareMock();
   await goTo(HOME);
   await rightClick(item("Documents"));
@@ -207,7 +207,7 @@ test("your own link in the older fbshare1: form still opens the local folder", a
 
   await click(place("Network"));
   await settle(20);
-  await type($<HTMLInputElement>(".network-link"), `<${own.replace("share://", "FBSHARE1:").toUpperCase()}>`);
+  await type($<HTMLInputElement>(".network-link"), `<${own.toUpperCase()}/>`);
   await click($(".network-paste .btn"));
   await settle(40);
   expect(title()).toBe("Documents");
@@ -268,13 +268,4 @@ test("Stop Sharing confirms with Cancel as the default, and Remove from Network 
   await settle(20);
   expect(names()).toEqual([]);
   expect($("#view").textContent).toContain("No Network Locations");
-});
-
-test("a link made before share:// still adds the share", async () => {
-  resetShareMock();
-  await goTo(HOME);
-  await goTo("fbshare1:mock-legacy");
-  await settle(30);
-  expect(title()).toBe("Photos");
-  expect($("#share-subtitle").textContent).toBe("Shared by Ahmed · Read only");
 });

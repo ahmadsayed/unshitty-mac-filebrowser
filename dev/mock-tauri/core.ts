@@ -437,9 +437,9 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     let link = str(a, "link").trim();
     if (link.startsWith("<") && link.endsWith(">")) link = link.slice(1, -1).trim();
     link = link.toLowerCase();
-    const ticket = link.startsWith("share://") ? link.slice("share://".length).replace(/\/$/, "")
-      : link.startsWith("fbshare1:") ? link.slice("fbshare1:".length) : null;
-    if (!ticket || !/^[a-z0-9-]+$/.test(ticket)) throw "This isn't a share link.";
+    const ticket = link.startsWith("share://") ? link.slice("share://".length).replace(/\/$/, "") : null;
+    // A ticket starting "bad" stands for one that doesn't decode.
+    if (!ticket || !/^[a-z0-9-]+$/.test(ticket) || ticket.startsWith("bad")) throw "This isn't a share link.";
     if (ticket.startsWith("own")) throw "This is your own shared folder.";
     if (mockReceived.some((item) => item.ticket === ticket)) {
       throw "This folder is already in Network.";
