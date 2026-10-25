@@ -71,6 +71,20 @@ export async function extractArchive(
   return invoke<ExtractResult>("extract_archive", { path, dest, create });
 }
 
+/** Open another File Browser window at `path` (home when omitted). */
+export async function newWindow(path?: string): Promise<void> {
+  return invoke<void>("new_window", { path: path ?? null });
+}
+
+/** Create a zip/tar.gz/tar.xz archive of `paths`; never replaces an existing file. */
+export async function compressArchive(
+  paths: string[],
+  dest: string,
+  format: "zip" | "tar.gz" | "tar.xz"
+): Promise<void> {
+  return invoke<void>("compress_archive", { paths, dest, format });
+}
+
 /** A mounted volume, as the sidebar lists it. */
 export interface Volume {
   name: string;
@@ -444,6 +458,21 @@ export async function fileProperties(path: string, showHidden: boolean): Promise
 /** Change the read/write/execute bits; `mode` is the low nine bits. */
 export async function setPermissions(path: string, mode: number): Promise<void> {
   return invoke<void>("set_permissions", { path, mode });
+}
+
+/** Create a symlink beside an item and return its path. */
+export async function createSymlink(path: string): Promise<string> {
+  return invoke<string>("create_symlink", { path });
+}
+
+/** Create an empty file; the backend refuses to replace one. */
+export async function createFile(path: string): Promise<void> {
+  return invoke<void>("create_file", { path });
+}
+
+/** Files in the user's Templates folder, for New Document. */
+export async function listTemplates(): Promise<Entry[]> {
+  return invoke<Entry[]>("list_templates");
 }
 
 /** Rename several items in place; the backend checks them all first. */

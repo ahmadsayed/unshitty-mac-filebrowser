@@ -3,6 +3,11 @@ import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desk
 import {
   listDir, searchDir, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntry, pathExists,
   extractArchive,
+  newWindow,
+  createSymlink,
+  createFile,
+  listTemplates,
+  compressArchive,
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
   trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, fileProperties, folderSize,
@@ -533,6 +538,13 @@ function cycleTab(delta: number): void {
   if (tabs.length <= 1) return;
   const next = (activeTab + delta + tabs.length) % tabs.length;
   void switchTab(next);
+}
+
+/** Another top-level window at the current place. */
+function openNewWindow(): void {
+  newWindow(location || undefined).catch((err) =>
+    showToast(`Could not open a new window: ${cleanError(err)}`)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1885,6 +1897,205 @@ function openLocationItem(single: Entry | null): MenuItem {
   return { label: "Open Item Location", disabled: !single, action: () => single && openItemLocation(single) };
 }
 
+/** Duplicate every local selected item beside itself. */
+async function duplicateSelection(): Promise<void> {
+  const sel = selectedEntries().filter((entry) => !isCloud(entry.path) && !isSharePath(entry.path));
+  if (sel.length === 0) return;
+  let last = "";
+  let done = 0;
+  for (const entry of sel) {
+    const dir = parentOf(entry.path);
+    const name = await freeCopyName(dir, entry.name, entry.is_dir);
+    const dest = joinPath(dir, name);
+    try {
+      await copyEntry(entry.path, dest, false);
+      last = dest;
+      done += 1;
+    } catch (err) {
+      showToast(`Could not duplicate “${entry.name}”: ${cleanError(err)}`);
+    }
+  }
+  if (done === 0) return;
+  await reload(last ? [last] : undefined);
+  showToast(`Duplicated ${done} ${done === 1 ? "item" : "items"}`);
+}
+
+async function createLinkFor(entry: Entry): Promise<void> {
+  try {
+    const dest = await createSymlink(entry.path);
+    await reload([dest]);
+    showToast("Link created");
+  } catch (err) {
+    showToast(`Could not create the link: ${cleanError(err)}`);
+  }
+}
+
+/** "Notes", "Notes 2", … while keeping the extension. */
+async function freeDocumentName(dir: string, name: string): Promise<string> {
+  const dot = name.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  for (let n = 1; ; n++) {
+    const candidate = `${stem}${n === 1 ? "" : ` ${n}`}${ext}`;
+    if (!(await pathExists(joinPath(dir, candidate)))) return candidate;
+  }
+}
+
+/** New Document: an empty text file or a copy of a file from ~/Templates. */
+async function showNewDocumentDialog(): Promise<void> {
+  if (isPseudo(location) || isReadOnlyLocation(location) || listingError !== null) return;
+  const extra = document.createElement("div");
+  extra.className = "app-list";
+  const loading = document.createElement("p");
+  loading.className = "app-loading";
+  loading.textContent = "Loading templates…";
+  const message = document.createElement("div");
+  message.className = "field-message";
+  extra.append(loading, message);
+
+  const dialog = openDialog({
+    heading: "New Document",
+    body: "Choose a template from your Templates folder.",
+    extra,
+    className: "open-with-dialog",
+    responses: [{ id: "cancel", label: "Cancel" }],
+    defaultResponse: "cancel",
+    closeResponse: "cancel",
+  });
+
+  const create = async (name: string, make: (dest: string) => Promise<void>) => {
+    const dest = joinPath(location, name);
+    try {
+      await make(dest);
+      dialog.close();
+      await reload([dest]);
+      showToast(`Created “${name}”`);
+    } catch (err) {
+      message.textContent = cleanError(err);
+    }
+  };
+  const addChoice = (label: string, action: () => void) => {
+    const button = document.createElement("button");
+    button.className = "app-choice";
+    const icon = document.createElement("span");
+    icon.className = "app-choice-icon";
+    icon.innerHTML = entryIcon(
+      { name: label, path: "", is_dir: false, size: 0, modified: 0, is_hidden: false, is_symlink: false },
+      "plain"
+    );
+    const text = document.createElement("span");
+    text.className = "app-choice-name";
+    text.textContent = label;
+    button.append(icon, text);
+    button.addEventListener("click", action);
+    extra.insertBefore(button, message);
+  };
+
+  addChoice("Empty Text File", () =>
+    void (async () => {
+      const name = await freeDocumentName(location, "Untitled.txt");
+      await create(name, (dest) => createFile(dest));
+    })()
+  );
+
+  try {
+    const templates = (await listTemplates()).filter((entry) => !entry.is_dir);
+    loading.remove();
+    for (const template of templates) {
+      addChoice(template.name, () =>
+        void (async () => {
+          const name = await freeDocumentName(location, template.name);
+          await create(name, async (dest) => {
+            await copyEntry(template.path, dest, false);
+          });
+        })()
+      );
+    }
+  } catch (err) {
+    if (extra.isConnected) loading.textContent = `Could not read templates: ${cleanError(err)}`;
+  }
+}
+
+/** Compress the selection into a new zip/tar.gz/tar.xz beside it. */
+function showCompressDialog(sel: Entry[]): void {
+  if (sel.length === 0 || sel.some((entry) => isCloud(entry.path) || isSharePath(entry.path))) return;
+  const dirs = new Set(sel.map((entry) => parentOf(entry.path)));
+  if (dirs.size !== 1) {
+    showToast("Compress works inside one folder.");
+    return;
+  }
+  const dir = [...dirs][0];
+  const stem = sel.length === 1 ? archiveStem(sel[0].name) : "Archive";
+  const extra = document.createElement("div");
+  extra.className = "compress-fields";
+  extra.innerHTML =
+    `<label>Archive name<input class="entry" id="compress-name" type="text" spellcheck="false" /></label>` +
+    `<label>Format<select class="entry" id="compress-format">` +
+    `<option value="zip">ZIP (.zip)</option><option value="tar.gz">Tar GZip (.tar.gz)</option>` +
+    `<option value="tar.xz">Tar XZ (.tar.xz)</option></select></label>` +
+    `<div class="field-message"></div>`;
+  const nameInput = extra.querySelector<HTMLInputElement>("#compress-name")!;
+  const formatInput = extra.querySelector<HTMLSelectElement>("#compress-format")!;
+  const message = extra.querySelector<HTMLElement>(".field-message")!;
+  const extensions: Record<string, string> = { zip: ".zip", "tar.gz": ".tar.gz", "tar.xz": ".tar.xz" };
+  let extension = ".zip";
+  nameInput.value = `${stem}${extension}`;
+
+  let dialog: ReturnType<typeof openDialog>;
+  const validate = () => {
+    const name = nameInput.value.trim();
+    let error = "";
+    if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\0")) {
+      error = "A name can't be empty or contain “/”.";
+    } else if (entries.some((entry) => parentOf(entry.path) === dir && entry.name === name)) {
+      error = `A file named “${name}” already exists.`;
+    }
+    message.textContent = error;
+    dialog.setResponseEnabled("compress", !error);
+    return error ? null : name;
+  };
+  nameInput.addEventListener("input", validate);
+  formatInput.addEventListener("change", () => {
+    const next = extensions[formatInput.value] ?? ".zip";
+    if (nameInput.value.endsWith(extension)) {
+      nameInput.value = nameInput.value.slice(0, -extension.length) + next;
+    }
+    extension = next;
+    validate();
+  });
+  dialog = openDialog({
+    heading: `Compress ${sel.length} ${sel.length === 1 ? "Item" : "Items"}`,
+    extra,
+    className: "compress-dialog",
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "compress", label: "Compress", style: "suggested" },
+    ],
+    defaultResponse: "compress",
+    closeResponse: "cancel",
+    onResponse: (id) => {
+      if (id !== "compress") return;
+      const name = validate();
+      if (!name) return false;
+      const format = formatInput.value as "zip" | "tar.gz" | "tar.xz";
+      void (async () => {
+        try {
+          await compressArchive(sel.map((entry) => entry.path), joinPath(dir, name), format);
+          dialog.close();
+          await reload([joinPath(dir, name)]);
+          showToast(`Created “${name}”`);
+        } catch (err) {
+          message.textContent = cleanError(err);
+        }
+      })();
+      return false;
+    },
+  });
+  validate();
+  const dot = nameInput.value.lastIndexOf(".");
+  nameInput.setSelectionRange(0, dot > 0 ? dot : nameInput.value.length);
+  nameInput.focus();
+}
+
 /** Preview and Open With for a single local file. */
 function previewAndOpenWithItems(single: Entry | null): MenuItem[] {
   const file = single && !single.is_dir && !isCloud(single.path) && !isSharePath(single.path) ? single : null;
@@ -2008,6 +2219,9 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
     { separator: true },
     ...cutCopyItems(),
     ...(intoFolder ? [{ label: "Paste Into Folder", disabled: !clipboard, action: () => paste(intoFolder.path) }] : []),
+    { label: "Duplicate", action: () => void duplicateSelection() },
+    { label: "Create Link", disabled: !single, action: () => single && void createLinkFor(single) },
+    { label: "Compress…", action: () => showCompressDialog(sel) },
     { separator: true },
     { label: "Rename…", disabled: !renameable, action: () => (sel.length > 1 ? showBatchRename(sel) : single && startRename(single)) },
     starMenuItem(sel),
@@ -2053,6 +2267,7 @@ function openBackgroundMenu(at: Anchor): void {
   }
   openMenu(at, [
     { label: "New Folder…", action: promptNewFolder },
+    { label: "New Document…", action: () => void showNewDocumentDialog() },
     { label: "Share This Folder…", action: () => showShareDialogForPath(location) },
     { separator: true },
     { label: "Paste", disabled: !clipboard, action: () => paste(location) },
@@ -2094,6 +2309,7 @@ function openLocationMenu(anchor: HTMLElement): void {
   }
   openMenu(anchor, [
     { label: "New Folder…", disabled: !real, action: promptNewFolder },
+    ...(real ? [{ label: "New Document…" as const, action: () => void showNewDocumentDialog() }] : []),
     ...(real ? [bookmarkMenuItem(location), { label: "Share This Folder…" as const, action: () => showShareDialogForPath(location) }] : []),
     { separator: true },
     { label: "Copy Location", disabled: !real, action: copyLocation },
@@ -2119,6 +2335,7 @@ function openViewMenu(anchor: HTMLElement): void {
 
 function openMainMenu(anchor: HTMLElement): void {
   openMenu(anchor, [
+    { label: "New Window", action: () => void openNewWindow() },
     { label: "New Tab", action: () => void newTab() },
     { label: "Close Tab", disabled: tabs.length <= 1, action: () => void closeTab(activeTab) },
     { separator: true },
@@ -2839,6 +3056,7 @@ interface DragState {
   devices: Map<string, number>;
   springTimer: number;
   scrollTimer: number;
+  nativeStarted: boolean;
 }
 
 let drag: DragState | null = null;
@@ -2896,6 +3114,7 @@ function beginDrag(e: MouseEvent): void {
     devices: new Map(),
     springTimer: 0,
     scrollTimer: window.setInterval(autoScrollDuringDrag, 50),
+    nativeStarted: false,
   };
   deviceMap(paths).then((m) => {
     if (drag?.paths === paths) for (const [k, v] of m) drag.devices.set(k, v);
@@ -2905,7 +3124,32 @@ function beginDrag(e: MouseEvent): void {
   window.addEventListener("mouseup", onDragEnd);
   window.addEventListener("keydown", onDragKey, true);
   window.addEventListener("keyup", onDragKey, true);
+  document.documentElement.addEventListener("mouseleave", onDragLeaveWindow);
   updateDrag();
+}
+
+/** A 1×1 transparent PNG, the drag image for native drag-out. */
+const DRAG_IMAGE =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z1ZkAAAAASUVORK5CYII=";
+
+/** Start a native file drag when the pointer leaves the window. */
+function onDragLeaveWindow(): void {
+  if (!drag || drag.nativeStarted) return;
+  const paths = drag.paths.filter((path) => !isCloud(path) && !isSharePath(path));
+  if (paths.length === 0) return;
+  drag.nativeStarted = true;
+  endDrag(false);
+  startNativeDrag(paths);
+}
+
+function startNativeDrag(paths: string[]): void {
+  const api = (window as unknown as {
+    __TAURI__?: { drag?: { startDrag?: (options: unknown) => Promise<void> } };
+  }).__TAURI__?.drag;
+  if (!api?.startDrag) return;
+  api
+    .startDrag({ item: paths, icon: DRAG_IMAGE, mode: "copy" })
+    .catch((err) => showToast(`Could not drag out: ${cleanError(err)}`));
 }
 
 function onDragMove(e: MouseEvent): void {
@@ -2985,6 +3229,7 @@ function endDrag(drop: boolean): void {
   window.removeEventListener("mouseup", onDragEnd);
   window.removeEventListener("keydown", onDragKey, true);
   window.removeEventListener("keyup", onDragKey, true);
+  document.documentElement.removeEventListener("mouseleave", onDragLeaveWindow);
   d.ghost.remove();
   document.documentElement.classList.remove("dragging");
   document.documentElement.style.cursor = "";
@@ -3590,7 +3835,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
   ["Navigation", [
     ["Back", "Alt+←"], ["Forward", "Alt+→"], ["Parent folder", "Alt+↑"], ["Home folder", "Alt+Home"],
     ["Enter location", `${MOD}L`], ["Search", `${MOD}F`], ["Reload", `${MOD}R`],
-    ["New tab", `${MOD}T`], ["Close tab", `${MOD}W`], ["Next / previous tab", "Ctrl+Page Down / Page Up"],
+    ["New window", `${MOD}N`], ["New tab", `${MOD}T`], ["Close tab", `${MOD}W`], ["Next / previous tab", "Ctrl+Page Down / Page Up"],
   ]],
   ["View", [
     ["List view", `${MOD}1`], ["Grid view", `${MOD}2`], ["Zoom in / out", `${MOD}+ / ${MOD}−, Ctrl + wheel, pinch`],
@@ -3769,6 +4014,7 @@ const plainMod = (k: Keys, key: string) => k.mod && !k.shift && k.key === key;
 const ANYWHERE_SHORTCUTS: Shortcut[] = [
   [(k) => plainMod(k, "l"), () => openPathEntry()],
   [(k) => plainMod(k, "f"), () => openSearch()],
+  [(k) => plainMod(k, "n"), () => void openNewWindow()],
   [(k) => plainMod(k, "t"), () => void newTab()],
   [(k) => plainMod(k, "w"), () => void closeTab(activeTab)],
   [(k) => k.ctrl && k.raw === "PageDown", () => cycleTab(1)],
@@ -4566,7 +4812,12 @@ async function init(): Promise<void> {
   // if the command fails.
   trashPath = await trashDir().catch(() => (home ? joinPath(home, ".Trash") : ""));
   await buildSidebar();
-  await navigate(home || "/", { history: "none" });
+  const requested = new URLSearchParams(window.location.search).get("path");
+  const initial =
+    requested && (requested.startsWith("/") || isPseudo(requested) || isCloud(requested) || isSharePath(requested))
+      ? requested
+      : home || "/";
+  await navigate(initial, { history: "none" });
   tabs.push(tabSnapshot());
   activeTab = 0;
   renderTabbar();

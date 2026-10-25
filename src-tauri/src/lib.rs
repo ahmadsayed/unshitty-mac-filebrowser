@@ -12,7 +12,8 @@ mod versions;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::Manager;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 use cloud::CloudState;
 use versions::history::History;
@@ -210,6 +211,36 @@ async fn extract_archive(
 }
 
 #[tauri::command]
+async fn compress_archive(paths: Vec<String>, dest: String, format: String) -> Result<(), String> {
+    blocking(move || archive::compress_archive(paths, dest, format)).await?
+}
+
+static WINDOW_SEQ: AtomicU64 = AtomicU64::new(1);
+
+#[tauri::command]
+async fn new_window(app: tauri::AppHandle, path: Option<String>) -> Result<(), String> {
+    let label = format!("files-{}", WINDOW_SEQ.fetch_add(1, Ordering::Relaxed));
+    let url = match path.filter(|path| !path.is_empty()) {
+        Some(path) => {
+            let encoded = percent_encoding::utf8_percent_encode(
+                &path,
+                percent_encoding::NON_ALPHANUMERIC,
+            );
+            WebviewUrl::App(format!("index.html?path={encoded}").into())
+        }
+        None => WebviewUrl::App("index.html".into()),
+    };
+    WebviewWindowBuilder::new(&app, label, url)
+        .title("Files")
+        .inner_size(1100.0, 720.0)
+        .min_inner_size(640.0, 420.0)
+        .focused(true)
+        .build()
+        .map(|_| ())
+        .map_err(|e| format!("Could not open a new window: {e}"))
+}
+
+#[tauri::command]
 async fn list_apps() -> Result<Vec<platform::AppChoice>, String> {
     blocking(platform::applications).await
 }
@@ -232,6 +263,27 @@ async fn rename_many(items: Vec<fs_ops::RenameItem>) -> Result<(), String> {
 #[tauri::command]
 async fn set_permissions(path: String, mode: u32) -> Result<(), String> {
     blocking(move || fs_ops::set_permissions(path, mode)).await?
+}
+
+#[tauri::command]
+async fn create_symlink(path: String) -> Result<String, String> {
+    blocking(move || fs_ops::create_link(path)).await?
+}
+
+#[tauri::command]
+async fn create_file(path: String) -> Result<(), String> {
+    blocking(move || fs_ops::create_file(path)).await?
+}
+
+#[tauri::command]
+async fn list_templates(app: tauri::AppHandle) -> Result<Vec<fs_ops::Entry>, String> {
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    let dir = home.join("Templates");
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let path = dir.to_string_lossy().to_string();
+    blocking(move || fs_ops::list_dir(path, false)).await?
 }
 
 #[tauri::command]
@@ -1151,6 +1203,7 @@ pub fn run() {
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_drag::init())
         .setup(|app| {
             let config_dir = share::identity::config_dir_override().unwrap_or_else(|| {
                 app.path()
@@ -1189,11 +1242,16 @@ pub fn run() {
             list_dir,
             search_dir,
             extract_archive,
+            compress_archive,
+            new_window,
             list_apps,
             open_with,
             preview_text,
             rename_many,
             set_permissions,
+            create_symlink,
+            create_file,
+            list_templates,
             item_counts,
             make_dir,
             rename_entry,

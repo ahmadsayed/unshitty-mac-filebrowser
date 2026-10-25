@@ -22,7 +22,7 @@ const place = (label: string) => $$(".sidebar-row").find((r) => r.textContent?.t
 test("a file's menu in a folder", async () => {
   await goTo(HOME);
   await rightClick(item("main.rs"));
-  expect(menuLabels()).toEqual(["Open", "Preview", "Open With…", "Cut", "Copy", "Rename…", "Star", "Move to Trash", "Properties"]);
+  expect(menuLabels()).toEqual(["Open", "Preview", "Open With…", "Cut", "Copy", "Duplicate", "Create Link", "Compress…", "Rename…", "Star", "Move to Trash", "Properties"]);
   await closeOverlays();
 });
 
@@ -50,7 +50,7 @@ test("several items: Rename and Properties are disabled", async () => {
   await key("a", { mod: true });
   await rightClick(item(names()[0]));
   const disabled = $$(".popover .menu-item:disabled").map((b) => b.textContent);
-  expect(disabled).toEqual(["Preview", "Open With…", "Properties"]);
+  expect(disabled).toEqual(["Preview", "Open With…", "Create Link", "Properties"]);
   await chooseMenu("Star");
   await rightClick(item(names()[0]));
   expect(menuLabels()).toContain("Unstar");
@@ -114,7 +114,7 @@ test("restoring onto an existing item reports it", async () => {
 test("the background menu", async () => {
   await goTo(HOME);
   await rightClick($("#view"));
-  expect(menuLabels()).toEqual(["New Folder…", "Share This Folder…", "Paste", "Select All"]);
+  expect(menuLabels()).toEqual(["New Folder…", "New Document…", "Share This Folder…", "Paste", "Select All"]);
   await chooseMenu("Select All");
   expect(selectedNames().length).toBe(names().length);
   await key("Escape");

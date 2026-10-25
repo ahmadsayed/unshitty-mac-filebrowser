@@ -134,6 +134,56 @@ pub fn set_permissions(path: String, mode: u32) -> Result<(), String> {    if mo
     }
 }
 
+/// Create an empty file, refusing to replace anything.
+pub fn create_file(path: String) -> Result<(), String> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map(|_| ())
+        .map_err(|e| format!("Could not create the file: {e}"))
+}
+
+/// Create a symlink beside `path`, named "Link to <name>" (or a numbered
+/// variant), pointing at the original absolute path.
+pub fn create_link(path: String) -> Result<String, String> {
+    let src = Path::new(&path);
+    let parent = src
+        .parent()
+        .ok_or_else(|| "This item has no parent folder.".to_string())?;
+    let name = src
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .ok_or_else(|| "This item has no name.".to_string())?;
+    if std::fs::symlink_metadata(src).is_err() {
+        return Err(format!("“{name}” no longer exists."));
+    }
+
+    for n in 1..=10_000 {
+        let label = if n == 1 {
+            format!("Link to {name}")
+        } else {
+            format!("Link to {name} {n}")
+        };
+        let dest = parent.join(&label);
+        if std::fs::symlink_metadata(&dest).is_ok() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(src, &dest)
+                .map_err(|e| format!("Could not create the link: {e}"))?;
+            return Ok(dest.to_string_lossy().to_string());
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = dest;
+            return Err("Creating links is not supported on this platform.".into());
+        }
+    }
+    Err("Could not find a free name for the link.".into())
+}
+
 #[derive(Debug, Serialize)]
 pub struct TextPreview {
     pub text: String,
@@ -669,6 +719,30 @@ mod tests {
         let err = rename_many(vec![RenameItem { from: p("x.txt"), to: p("../moved.txt") }])
             .unwrap_err();
         assert!(err.contains("only be renamed"));
+    }
+
+    #[test]
+    fn empty_files_are_created_but_never_replaced() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("new.txt");
+        create_file(file.to_string_lossy().to_string()).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "");
+        assert!(create_file(file.to_string_lossy().to_string()).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creating_links_uses_free_names() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        fs::write(&file, "x").unwrap();
+        let first = create_link(file.to_string_lossy().to_string()).unwrap();
+        assert_eq!(Path::new(&first).file_name().unwrap(), "Link to a.txt");
+        assert_eq!(fs::read_link(&first).unwrap(), file);
+
+        let second = create_link(file.to_string_lossy().to_string()).unwrap();
+        assert_eq!(Path::new(&second).file_name().unwrap(), "Link to a.txt 2");
     }
 
     #[cfg(unix)]

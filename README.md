@@ -44,8 +44,8 @@ files, so the photo thumbnails are placeholders.</sub>
 - Grid and list views, sorting (A–Z, Z–A, modified, size, type), hidden files
   toggle; icon size by ⌘+/⌘−, Ctrl + wheel, or a trackpad pinch
 - Path bar with breadcrumbs; ⌘L to type a location; tabs (⌘T/⌘W) and Ctrl+Page
-  Up/Down to switch; type anywhere to search recursively in the current folder
-  (names, capped at 1,000 results)
+  Up/Down to switch; ⌘N opens another window; type anywhere to search
+  recursively in the current folder (names, capped at 1,000 results)
 - Space previews text files and image/document thumbnails; Escape closes
 - Open With… lists the installed applications (macOS `.app` bundles, Linux
   `.desktop` entries); Properties → Permissions… changes the read/write/execute
@@ -57,6 +57,10 @@ files, so the photo thumbnails are placeholders.</sub>
 - Extract archives with Extract Here or Extract to a new folder: zip/jar,
   tar, tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, and single-file
   gz/bz2/xz/zst; existing files are never overwritten
+- Duplicate, Create Link and Compress… (zip, tar.gz or tar.xz); New Document
+  copies a file from ~/Templates or creates an empty text file
+- Dragging an item out of the window starts a native file drag, so it can be
+  dropped on Finder, the desktop or another application
 - Drag and drop: drag items onto a folder, a sidebar entry or a path-bar
   segment; hovering a folder opens it. Same disk moves, another disk copies;
   hold ⌥ to copy or ⌘ to move. Dropping on Trash trashes. Files dragged in from
@@ -176,13 +180,12 @@ exact build: after rebuilding, toggle the permission off and on again.
 Network folder sharing is read-only: browsing and opening work, but copying files
 out, live refresh and the Shared sidebar row are still to come. Undo covers only
 the last Move to Trash; the Trash view shows the home Trash, not the Trash
-folders of other drives; there is no dragging files out of the app into Finder
-or other apps and no SMB / SFTP / WebDAV browsing. Search matches file names
-only and is not a disk-wide content index. Preview covers text and thumbnails,
-not GNOME Sushi-style document or video playback. Open With lists installed
-applications but cannot set a new default handler. There are no Nautilus
-extensions, duplicate/link creation or templates yet, and archive extraction
-covers the formats listed above (not 7z, rar, deb, rpm or pkg).
+folders of other drives; there is no SMB / SFTP / WebDAV browsing. Search matches
+file names only and is not a disk-wide content index. Preview covers text and
+thumbnails, not GNOME Sushi-style document or video playback. Open With lists
+installed applications but cannot set a new default handler. There are no
+Nautilus extensions yet; archive extraction and creation cover the formats listed
+above (not 7z, rar, deb, rpm or pkg).
 
 Google Drive has no shared drives, no Shared with me, no view of Drive's
 Trash (restore there, or use Undo right after Move to Trash), and no

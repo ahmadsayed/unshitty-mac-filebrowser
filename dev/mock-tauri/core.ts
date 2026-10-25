@@ -58,6 +58,7 @@ const tree: Record<string, Node> = {
       Movies: d({ "Holiday.mov": f(1_220_448_301, 90 * day) }),
       Music: d({ ...files("Track", 4, "flac") }),
       Pictures: d({ ...files("IMG_20", 6, "heic"), Screenshots: d(files("Screenshot", 3, "png")), Camera: d(files("DSC", 400, "jpg")) }),
+      Templates: d({ "Letter.odt": f(0, 10 * day), "Budget.ods": f(0, 10 * day) }),
       Public: d(),
       "Empty folder": d({}, 30 * day),
       "a-very-long-folder-name-that-needs-to-wrap-onto-two-lines": d(),
@@ -1177,6 +1178,45 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     target.children["extracted.txt"] = f(5, 0);
     return { path: dest, files: 1, folders: 0, skipped: 0 };
   },
+  new_window: () => {
+    const globals = globalThis as unknown as { __mockNewWindows?: number };
+    globals.__mockNewWindows = (globals.__mockNewWindows ?? 0) + 1;
+  },
+  create_symlink: (a) => {
+    const path = str(a, "path");
+    const node = lookup(path);
+    if (!node) throw "This item no longer exists.";
+    const [parent, name] = parentAndName(path);
+    if (!parent?.dir) throw "This item has no parent folder.";
+    for (let n = 1; ; n++) {
+      const label = n === 1 ? `Link to ${name}` : `Link to ${name} ${n}`;
+      if (parent.children[label]) continue;
+      parent.children[label] = { ...structuredClone(node), link: true };
+      return `${path.slice(0, path.lastIndexOf("/"))}/${label}`;
+    }
+  },
+  compress_archive: (a) => {
+    const dest = str(a, "dest");
+    const paths = a.paths as string[];
+    if (!paths.length) throw "Choose at least one item.";
+    if (!/\.(zip|tar\.gz|tar\.xz)$/i.test(dest)) throw "That archive format isn't supported yet.";
+    for (const path of paths) {
+      const node = lookup(path);
+      if (!node) throw "An item no longer exists.";
+    }
+    const [parent, name] = parentAndName(dest);
+    if (!parent?.dir) throw "The destination folder no longer exists.";
+    if (parent.children[name]) throw `A file named “${name}” already exists.`;
+    parent.children[name] = f(1024, 0);
+  },
+  create_file: (a) => {
+    const path = str(a, "path");
+    const [parent, name] = parentAndName(path);
+    if (!parent?.dir) throw "The destination folder no longer exists.";
+    if (parent.children[name]) throw "Could not create the file: File exists (os error 17)";
+    parent.children[name] = f(0, 0);
+  },
+  list_templates: () => list("/Users/me/Templates", false),
   preview_text: (a) => {
     const path = str(a, "path");
     const node = lookup(path);

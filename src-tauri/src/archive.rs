@@ -5,8 +5,10 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use zip::write::SimpleFileOptions;
+use zip::ZipWriter;
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct ExtractResult {
@@ -28,6 +30,22 @@ enum Format {
     Bz2,
     Xz,
     Zst,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CreateFormat {
+    Zip,
+    TarGz,
+    TarXz,
+}
+
+fn create_format(value: &str) -> Result<CreateFormat, String> {
+    match value {
+        "zip" => Ok(CreateFormat::Zip),
+        "tar.gz" => Ok(CreateFormat::TarGz),
+        "tar.xz" => Ok(CreateFormat::TarXz),
+        _ => Err("That archive format isn't supported yet.".into()),
+    }
 }
 
 #[derive(Debug)]
@@ -361,6 +379,213 @@ fn extract_entries(
     extract_single(single_reader(src, format)?, dest, plan, result)
 }
 
+#[cfg(unix)]
+fn file_mode(meta: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o777
+}
+
+#[cfg(not(unix))]
+fn file_mode(_meta: &fs::Metadata) -> u32 {
+    0o644
+}
+
+fn sorted_children(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    paths
+}
+
+fn add_zip_path(
+    writer: &mut ZipWriter<File>,
+    path: &Path,
+    rel: &Path,
+) -> Result<(), String> {
+    let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    let name = rel.to_string_lossy().replace('\\', "/");
+    if meta.is_dir() {
+        writer
+            .add_directory(
+                format!("{name}/"),
+                SimpleFileOptions::default().unix_permissions(0o755),
+            )
+            .map_err(|e| format!("Could not add “{name}”: {e}"))?;
+        for child in sorted_children(path) {
+            let Some(child_name) = child.file_name() else {
+                continue;
+            };
+            if child_name == crate::versions::VERSIONS_DIR {
+                continue;
+            }
+            add_zip_path(writer, &child, &rel.join(child_name))?;
+        }
+    } else if meta.is_file() {
+        writer
+            .start_file(
+                name.clone(),
+                SimpleFileOptions::default()
+                    .unix_permissions(file_mode(&meta))
+                    .large_file(meta.len() > u32::MAX as u64),
+            )
+            .map_err(|e| format!("Could not add “{name}”: {e}"))?;
+        let mut file = File::open(path).map_err(|e| e.to_string())?;
+        io::copy(&mut file, writer).map_err(|e| format!("Could not add “{name}”: {e}"))?;
+    }
+    Ok(())
+}
+
+fn add_tar_path<W: Write>(
+    builder: &mut tar::Builder<W>,
+    path: &Path,
+    rel: &Path,
+) -> Result<(), String> {
+    let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    if meta.is_dir() {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_mode(0o755);
+        header.set_size(0);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, rel, io::empty())
+            .map_err(|e| format!("Could not add “{}”: {e}", rel.display()))?;
+        for child in sorted_children(path) {
+            let Some(child_name) = child.file_name() else {
+                continue;
+            };
+            if child_name == crate::versions::VERSIONS_DIR {
+                continue;
+            }
+            add_tar_path(builder, &child, &rel.join(child_name))?;
+        }
+    } else if meta.is_file() {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_mode(file_mode(&meta));
+        header.set_size(meta.len());
+        header.set_cksum();
+        let file = File::open(path).map_err(|e| e.to_string())?;
+        builder
+            .append_data(&mut header, rel, file)
+            .map_err(|e| format!("Could not add “{}”: {e}", rel.display()))?;
+    }
+    Ok(())
+}
+
+fn write_archive(
+    temp: &Path,
+    paths: &[String],
+    format: CreateFormat,
+) -> Result<(), String> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temp)
+        .map_err(|e| format!("Could not create the archive: {e}"))?;
+    match format {
+        CreateFormat::Zip => {
+            let mut writer = ZipWriter::new(file);
+            for path in paths {
+                let source = Path::new(path);
+                let name = source
+                    .file_name()
+                    .ok_or_else(|| "An item has no name.".to_string())?;
+                add_zip_path(&mut writer, source, Path::new(name))?;
+            }
+            writer.finish().map_err(|e| e.to_string())?;
+        }
+        CreateFormat::TarGz => {
+            let encoder =
+                flate2::write::GzEncoder::new(file, flate2::Compression::default());
+            let mut builder = tar::Builder::new(encoder);
+            add_tar_paths(&mut builder, paths)?;
+            builder
+                .into_inner()
+                .map_err(|e| e.to_string())?
+                .finish()
+                .map_err(|e| e.to_string())?;
+        }
+        CreateFormat::TarXz => {
+            let encoder = xz2::write::XzEncoder::new(file, 6);
+            let mut builder = tar::Builder::new(encoder);
+            add_tar_paths(&mut builder, paths)?;
+            builder
+                .into_inner()
+                .map_err(|e| e.to_string())?
+                .finish()
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn add_tar_paths<W: Write>(builder: &mut tar::Builder<W>, paths: &[String]) -> Result<(), String> {
+    for path in paths {
+        let source = Path::new(path);
+        let name = source
+            .file_name()
+            .ok_or_else(|| "An item has no name.".to_string())?;
+        add_tar_path(builder, source, Path::new(name))?;
+    }
+    Ok(())
+}
+
+/// Create an archive of `paths` at `dest`. The archive is built beside the
+/// destination and linked into place, so an existing file is never replaced.
+pub fn compress_archive(paths: Vec<String>, dest: String, format: String) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("Choose at least one item.".into());
+    }
+    let format = create_format(&format)?;
+    let dest = PathBuf::from(dest);
+    let parent = dest
+        .parent()
+        .ok_or_else(|| "The archive has no destination folder.".to_string())?;
+    if !parent.is_dir() {
+        return Err("The destination folder no longer exists.".into());
+    }
+    let name = dest
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .ok_or_else(|| "The archive needs a name.".to_string())?;
+    if fs::symlink_metadata(&dest).is_ok() {
+        return Err(format!("A file named “{name}” already exists."));
+    }
+
+    let mut temp = None;
+    for n in 0..1000 {
+        let candidate = parent.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
+        if fs::symlink_metadata(&candidate).is_err() {
+            temp = Some(candidate);
+            break;
+        }
+    }
+    let temp = temp.ok_or_else(|| "Could not find a temporary name.".to_string())?;
+
+    if let Err(e) = write_archive(&temp, &paths, format) {
+        let _ = fs::remove_file(&temp);
+        return Err(e);
+    }
+    if let Err(e) = fs::hard_link(&temp, &dest) {
+        let _ = fs::remove_file(&temp);
+        if fs::symlink_metadata(&dest).is_ok() {
+            return Err(format!("A file named “{name}” already exists."));
+        }
+        return Err(format!("Could not finish the archive: {e}"));
+    }
+    let _ = fs::remove_file(&temp);
+    Ok(())
+}
+
 /// Extract `path` into `dest`. When `create` is true the destination may be
 /// missing and is created first. Existing files are never replaced.
 pub fn extract_archive(path: String, dest: String, create: bool) -> Result<ExtractResult, String> {
@@ -602,8 +827,49 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_archives_are_refused() {
+    fn compression_round_trips_for_each_format_and_never_overwrites() {
         let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        fs::create_dir_all(source.join("folder")).unwrap();
+        fs::write(source.join("a.txt"), "one").unwrap();
+        fs::write(source.join("folder/b.txt"), "two").unwrap();
+        let paths = vec![
+            source.join("a.txt").to_string_lossy().to_string(),
+            source.join("folder").to_string_lossy().to_string(),
+        ];
+
+        for (suffix, format) in [(".zip", "zip"), (".tar.gz", "tar.gz"), (".tar.xz", "tar.xz")] {
+            let archive = dir.path().join(format!("archive{suffix}"));
+            compress_archive(
+                paths.clone(),
+                archive.to_string_lossy().to_string(),
+                format.into(),
+            )
+            .unwrap();
+            let out = dir.path().join(format!("out{suffix}"));
+            extract_archive(
+                archive.to_string_lossy().to_string(),
+                out.to_string_lossy().to_string(),
+                true,
+            )
+            .unwrap();
+            assert_eq!(fs::read_to_string(out.join("a.txt")).unwrap(), "one");
+            assert_eq!(fs::read_to_string(out.join("folder/b.txt")).unwrap(), "two");
+
+            assert!(compress_archive(
+                paths.clone(),
+                archive.to_string_lossy().to_string(),
+                format.into(),
+            )
+            .is_err());
+            assert_eq!(fs::read_to_string(out.join("a.txt")).unwrap(), "one");
+        }
+
+        assert!(compress_archive(paths, dir.path().join("x.7z").to_string_lossy().to_string(), "7z".into()).is_err());
+    }
+
+    #[test]
+    fn unsupported_archives_are_refused() {        let dir = tempdir().unwrap();
         let archive = dir.path().join("a.7z");
         fs::write(&archive, b"not really").unwrap();
         assert!(extract_archive(

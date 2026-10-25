@@ -1382,7 +1382,41 @@ kbd {
 
 .open-with-dialog { width: min(380px, calc(100vw - 24px)); }
 
-.app-list {
+.compress-dialog { width: min(400px, calc(100vw - 24px)); }
+
+.compress-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.compress-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 9pt;
+  font-weight: 600;
+  opacity: var(--dim);
+}
+
+.compress-fields input,
+.compress-fields select {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--view-bg);
+  color: var(--view-fg);
+  font: inherit;
+  font-size: 10pt;
+  opacity: 1;
+}
+
+.compress-fields input:focus,
+.compress-fields select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}.app-list {
   max-height: 300px;
   overflow-y: auto;
 }
