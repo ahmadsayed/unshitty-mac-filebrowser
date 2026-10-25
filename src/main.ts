@@ -1,14 +1,17 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
-  listDir, makeDir, renameEntry, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntry, pathExists,
+  listDir, searchDir, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntry, pathExists,
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
   trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, fileProperties, folderSize,
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
+  previewText, thumbnail,
+  listApps, openWith,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
   driveClientStatus, driveClientSet, driveClientClear,
   openExternal,
+  setPermissions,
   shareIdentity, setShareName, shareFolder, shareInfo, listShares, createShareLink,
   shareLinkFor, removeShareAccess, stopSharing, addReceived, listReceived, removeReceived,
   type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
@@ -86,12 +89,36 @@ const selected = new Set<string>();
 let anchorIndex = -1;
 let cursorIndex = -1;
 let searchQuery: string | null = null;
+/** Recursive search results; null means filter the current folder in memory. */
+let searchResults: Entry[] | null = null;
+let searchTimer = 0;
+let searchSeq = 0;
+/** Cap on recursive results, so a broad query can't build an endless view. */
+const SEARCH_LIMIT = 1000;
 
 const counts = new Map<string, number | null>();
 /** Folders whose summary said they keep versions; drives the version badge. */
 const versionedFolders = new Set<string>();
 let backStack: string[] = [];
 let forwardStack: string[] = [];
+
+/** A tab's navigation state. The active tab's live state lives in the globals above. */
+interface TabState {
+  location: string;
+  back: string[];
+  forward: string[];
+  selected: string[];
+  anchorIndex: number;
+  cursorIndex: number;
+  searchQuery: string | null;
+  searchText: string;
+  scrollTop: number;
+}
+
+let tabs: TabState[] = [];
+let activeTab = -1;
+/** Serialises tab switches so two async restores can't race. */
+let tabBusy = false;
 
 /** Files copied or cut, waiting to be pasted. */
 let clipboard: { paths: string[]; dirs: Set<string>; mode: "copy" | "cut" } | null = null;
@@ -138,6 +165,10 @@ let searchbarEl: HTMLElement;
 let searchEntry: HTMLInputElement;
 let floatingBar: HTMLElement;
 let shareSubtitle: HTMLElement;
+let tabbar: HTMLElement;
+let previewLayer: HTMLElement;
+let previewName: HTMLElement;
+let previewBody: HTMLElement;
 
 // SECURITY: escape HTML entities in user-derived strings before innerHTML insertion
 export function escapeHtml(text: string): string {
@@ -255,7 +286,7 @@ function hasEntries(loc: string): boolean {
 
 /** Views of items from many folders, which get a Location column. */
 function showsWhere(): boolean {
-  return location === RECENT || location === STARRED || location === trashPath;
+  return location === RECENT || location === STARRED || location === trashPath || searchQuery !== null;
 }
 
 /** The entries shown at `loc`. */
@@ -325,8 +356,182 @@ function fold(s: string): string {
 
 function computeShown(): void {
   const q = searchQuery ? fold(searchQuery.trim()) : "";
-  const list = q ? entries.filter((e) => fold(e.name).includes(q)) : entries;
+  const fromResults = q && searchResults !== null;
+  const list = !q ? entries : fromResults ? searchResults! : entries.filter((e) => fold(e.name).includes(q));
   shown = [...list].sort(compareEntries);
+}
+
+// ---------------------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------------------
+
+function tabSnapshot(): TabState {
+  return {
+    location,
+    back: [...backStack],
+    forward: [...forwardStack],
+    selected: [...selected],
+    anchorIndex,
+    cursorIndex,
+    searchQuery,
+    searchText: searchEntry?.value ?? "",
+    scrollTop: scrollEl?.scrollTop ?? 0,
+  };
+}
+
+function saveActiveTab(): void {
+  if (activeTab < 0 || !tabs[activeTab]) return;
+  tabs[activeTab] = tabSnapshot();
+}
+
+function tabTitle(tab: TabState): string {
+  if (isPseudo(tab.location)) {
+    return PSEUDO[tab.location.slice(PSEUDO_PREFIX.length) as Pseudo].label;
+  }
+  return locationName(tab.location) || "Files";
+}
+
+/** Draw the tab strip, showing it only when a second tab exists. */
+function renderTabbar(): void {
+  if (!tabbar) return;
+  tabbar.hidden = tabs.length <= 1;
+  if (tabs.length <= 1) {
+    tabbar.replaceChildren();
+    return;
+  }
+  const next = document.createDocumentFragment();
+  tabs.forEach((tab, i) => {
+    const el = document.createElement("div");
+    el.className = `tab${i === activeTab ? " active" : ""}`;
+    el.dataset.tab = String(i);
+    el.setAttribute("role", "tab");
+    el.setAttribute("aria-selected", String(i === activeTab));
+    el.tabIndex = i === activeTab ? 0 : -1;
+    el.title = tabTitle(tab);
+    const title = document.createElement("span");
+    title.className = "tab-title";
+    title.textContent = tabTitle(tab);
+    const close = document.createElement("button");
+    close.className = "flat-btn tab-close";
+    close.innerHTML = sym("window-close");
+    close.title = "Close Tab";
+    close.setAttribute("aria-label", "Close Tab");
+    close.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void closeTab(i);
+    });
+    el.append(title, close);
+    el.addEventListener("click", () => void switchTab(i));
+    el.addEventListener("auxclick", (event) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
+      void closeTab(i);
+    });
+    next.appendChild(el);
+  });
+  const add = document.createElement("button");
+  add.className = "flat-btn tab-add";
+  add.textContent = "+";
+  add.title = "New Tab";
+  add.setAttribute("aria-label", "New Tab");
+  add.addEventListener("click", () => void newTab());
+  next.appendChild(add);
+  tabbar.replaceChildren(next);
+}
+
+/** Restore a saved tab into the live view. */
+async function restoreTab(tab: TabState): Promise<void> {
+  const ok = await navigate(tab.location, { history: "none" });
+  if (!ok) return;
+  backStack = [...tab.back];
+  forwardStack = [...tab.forward];
+  selected.clear();
+  const paths = new Set(entries.map((entry) => entry.path));
+  for (const path of tab.selected) if (paths.has(path)) selected.add(path);
+  const last = shown.length - 1;
+  anchorIndex = last < 0 ? -1 : Math.min(tab.anchorIndex, last);
+  cursorIndex = last < 0 ? -1 : Math.min(tab.cursorIndex, last);
+  if (tab.searchQuery !== null) {
+    searchQuery = tab.searchQuery;
+    searchEntry.value = tab.searchText;
+    pathbarEl.hidden = true;
+    searchbarEl.hidden = false;
+    $("#btn-search").classList.add("open");
+    renderView();
+    const filteredLast = shown.length - 1;
+    anchorIndex = filteredLast < 0 ? -1 : Math.min(tab.anchorIndex, filteredLast);
+    cursorIndex = filteredLast < 0 ? -1 : Math.min(tab.cursorIndex, filteredLast);
+  }
+  updateSelection();
+  updateNavButtons();
+  renderTabbar();
+  scrollEl.scrollTop = tab.scrollTop;
+}
+
+async function switchTab(index: number): Promise<void> {
+  if (tabBusy || index === activeTab || index < 0 || index >= tabs.length) return;
+  tabBusy = true;
+  try {
+    saveActiveTab();
+    activeTab = index;
+    await restoreTab(tabs[index]);
+  } finally {
+    tabBusy = false;
+  }
+}
+
+/** Open a new tab at the current folder, with a clean history and selection. */
+async function newTab(): Promise<void> {
+  if (tabBusy) return;
+  saveActiveTab();
+  tabs.push({
+    location,
+    back: [],
+    forward: [],
+    selected: [],
+    anchorIndex: -1,
+    cursorIndex: -1,
+    searchQuery: null,
+    searchText: "",
+    scrollTop: 0,
+  });
+  activeTab = tabs.length - 1;
+  if (searchQuery !== null) closeSearch(false);
+  backStack = [];
+  forwardStack = [];
+  selected.clear();
+  anchorIndex = cursorIndex = -1;
+  renderView();
+  updateNavButtons();
+  updateSelection();
+  renderTabbar();
+  scrollEl.scrollTop = 0;
+  viewEl.focus({ preventScroll: true });
+}
+
+async function closeTab(index = activeTab): Promise<void> {
+  if (tabBusy || tabs.length <= 1 || index < 0 || index >= tabs.length) return;
+  const wasActive = index === activeTab;
+  if (!wasActive) saveActiveTab();
+  const nextActive = index < activeTab ? activeTab - 1 : wasActive ? Math.min(index, tabs.length - 2) : activeTab;
+  tabs.splice(index, 1);
+  activeTab = nextActive;
+  if (!wasActive) {
+    renderTabbar();
+    return;
+  }
+  tabBusy = true;
+  try {
+    await restoreTab(tabs[activeTab]);
+  } finally {
+    tabBusy = false;
+  }
+}
+
+function cycleTab(delta: number): void {
+  if (tabs.length <= 1) return;
+  const next = (activeTab + delta + tabs.length) % tabs.length;
+  void switchTab(next);
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +544,7 @@ function computeShown(): void {
  */
 async function navigate(loc: string, opts: { history?: "push" | "none"; select?: string } = {}): Promise<boolean> {
   if (searchQuery !== null) closeSearch(false);
+  closePreview();
 
   // Started now so it runs alongside the listing instead of after it.
   const rootLookup = lookupVersionedRoot(loc);
@@ -382,6 +588,8 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   if (opts.select) selected.add(opts.select);
 
   document.title = locationName(loc);
+  if (activeTab >= 0 && tabs[activeTab]) tabs[activeTab].location = loc;
+  renderTabbar();
   updateNavButtons();
   updateSidebarSelection();
   buildPathbar();
@@ -425,6 +633,7 @@ async function reload(select?: string[]): Promise<void> {
   if (select?.[0]) revealPath(select[0]);
   versionedRootPath = await lookupVersionedRoot(location);
   updateShareSubtitle();
+  if (searchQuery !== null) onSearchInput();
 }
 
 /** "Shared by Ahmed · Read only" under the path bar. */
@@ -670,6 +879,9 @@ function openSearch(initial = ""): void {
 function closeSearch(rerender = true): void {
   if (searchQuery === null) return;
   searchQuery = null;
+  searchResults = null;
+  searchSeq += 1;
+  clearTimeout(searchTimer);
   searchEntry.value = "";
   searchbarEl.hidden = true;
   pathbarEl.hidden = false;
@@ -680,17 +892,51 @@ function closeSearch(rerender = true): void {
   }
 }
 
+/** Recursive name search is for local folders; pseudo, Drive and shares filter in place. */
+function canSearchRecursively(): boolean {
+  return !isPseudo(location) && !isCloud(location) && !isSharePath(location) && !inTrash();
+}
+
+function selectFirstMatch(): void {
+  if (!searchQuery || shown.length === 0) return;
+  selected.clear();
+  selected.add(shown[0].path);
+  cursorIndex = anchorIndex = 0;
+  updateSelection();
+}
+
 function onSearchInput(): void {
   searchQuery = searchEntry.value;
   anchorIndex = cursorIndex = -1;
-  renderView();
-  // Like GNOME Files, the first match is selected so Enter opens it.
-  if (searchQuery && shown.length) {
-    selected.clear();
-    selected.add(shown[0].path);
-    cursorIndex = anchorIndex = 0;
-    updateSelection();
+  searchResults = null;
+  searchSeq += 1;
+  clearTimeout(searchTimer);
+  const query = searchQuery.trim();
+  const seq = searchSeq;
+  if (query && canSearchRecursively()) {
+    // Wait for a pause, then replace the quick local matches with the
+    // recursive backend results.
+    searchTimer = window.setTimeout(() => {
+      if (seq !== searchSeq || searchQuery === null) return;
+      const at = location;
+      searchDir(at, query, prefs.showHidden, SEARCH_LIMIT)
+        .then((results) => {
+          if (seq !== searchSeq || searchQuery === null || location !== at) return;
+          searchResults = results;
+          renderView();
+          selectFirstMatch();
+        })
+        .catch((err) => {
+          if (seq !== searchSeq || searchQuery === null) return;
+          searchResults = [];
+          renderView();
+          showToast(`Could not search: ${cleanError(err)}`);
+        });
+    }, 160);
   }
+  renderView();
+  // Like GNOME Files, the first local match is selected while search runs.
+  selectFirstMatch();
 }
 
 // ---------------------------------------------------------------------------
@@ -1690,8 +1936,13 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
   const intoFolder = single?.is_dir && !isAppBundle(single) ? single : null;
   const app = single && isAppBundle(single) ? single : null;
   const shareable = intoFolder && !isCloud(intoFolder.path) && !isSharePath(intoFolder.path) && !inTrash();
+  const renameable = sel.length > 1 || !!single;
   return [
     { label: "Open", action: activateSelection },
+    { label: "Preview", disabled: !single || single.is_dir, action: () => single && void showPreview(single) },
+    ...(single && !single.is_dir && !isCloud(single.path) && !isSharePath(single.path)
+      ? [{ label: "Open With…", action: () => void showOpenWith(single) }]
+      : []),
     ...(app ? [{ label: "Show Package Contents", action: () => navigate(app.path) }] : []),
     ...(intoFolder ? [bookmarkMenuItem(intoFolder.path)] : []),
     ...(shareable ? [{ label: "Share…", action: () => void showShareDialog(intoFolder) }] : []),
@@ -1699,7 +1950,7 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
     ...cutCopyItems(),
     ...(intoFolder ? [{ label: "Paste Into Folder", disabled: !clipboard, action: () => paste(intoFolder.path) }] : []),
     { separator: true },
-    { label: "Rename…", disabled: !single, action: () => single && startRename(single) },
+    { label: "Rename…", disabled: !renameable, action: () => (sel.length > 1 ? showBatchRename(sel) : single && startRename(single)) },
     starMenuItem(sel),
     { separator: true },
     { label: "Move to Trash", action: trashSelection },
@@ -1809,6 +2060,9 @@ function openViewMenu(anchor: HTMLElement): void {
 
 function openMainMenu(anchor: HTMLElement): void {
   openMenu(anchor, [
+    { label: "New Tab", action: () => void newTab() },
+    { label: "Close Tab", disabled: tabs.length <= 1, action: () => void closeTab(activeTab) },
+    { separator: true },
     { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
     { label: "Show Thumbnails", check: prefs.showThumbnails, action: toggleThumbnails },
     { separator: true },
@@ -1854,6 +2108,80 @@ function propertyRow(label: string, value: string, title = ""): HTMLElement {
   if (title) text.title = title;
   row.append(key, text);
   return row;
+}
+
+/** Pick the nine read/write/execute bits, then apply them to `path`. */
+function showPermissionsDialog(path: string, mode: number, onSaved: () => void): void {
+  const extra = document.createElement("div");
+  const matrix = document.createElement("div");
+  matrix.className = "perm-grid";
+  const heads = ["", "Owner", "Group", "Others"];
+  heads.forEach((head) => {
+    const cell = document.createElement("span");
+    cell.className = "perm-head";
+    cell.textContent = head;
+    matrix.appendChild(cell);
+  });
+  const triples = [
+    ["Read", [0o400, 0o040, 0o004]],
+    ["Write", [0o200, 0o020, 0o002]],
+    ["Execute", [0o100, 0o010, 0o001]],
+  ] as const;
+  for (const [label, bits] of triples) {
+    const cell = document.createElement("span");
+    cell.className = "perm-label";
+    cell.textContent = label;
+    matrix.appendChild(cell);
+    bits.forEach((bit, i) => {
+      const wrapper = document.createElement("label");
+      wrapper.className = "perm-check";
+      wrapper.title = `${label} for ${heads[i + 1].toLowerCase()}`;
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.dataset.bit = String(bit);
+      input.checked = (mode & bit) !== 0;
+      input.setAttribute("aria-label", wrapper.title);
+      wrapper.appendChild(input);
+      matrix.appendChild(wrapper);
+    });
+  }
+  const message = document.createElement("div");
+  message.className = "field-message perm-message";
+  extra.append(matrix, message);
+
+  let dialog: ReturnType<typeof openDialog>;
+  const apply = async () => {
+    let next = 0;
+    extra.querySelectorAll<HTMLInputElement>("input[data-bit]").forEach((input) => {
+      if (input.checked) next |= Number(input.dataset.bit);
+    });
+    try {
+      await setPermissions(path, next);
+      dialog.close();
+      showToast("Permissions changed");
+      onSaved();
+    } catch (err) {
+      message.textContent = cleanError(err);
+    }
+  };
+
+  dialog = openDialog({
+    heading: "Permissions",
+    body: "Choose what the owner, group and others can do.",
+    extra,
+    className: "permissions-dialog",
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "change", label: "Change", style: "suggested" },
+    ],
+    defaultResponse: "change",
+    closeResponse: "cancel",
+    onResponse: (id) => {
+      if (id !== "change") return;
+      void apply();
+      return false;
+    },
+  });
 }
 
 /**
@@ -1931,14 +2259,26 @@ async function showProperties(entry: Entry): Promise<void> {
 
   // Closing the dialog stops the size walk, which can take minutes on Home.
   const walk = sizeValue ? await newFolderWalk().catch(() => 0) : 0;
+  const canChangePermissions = !isCloud(info.path) && !isSharePath(info.path);
   const propertiesDialog = openDialog({
     heading: "Properties",
     className: "properties-dialog",
     extra,
-    responses: [{ id: "close", label: "Close" }],
+    responses: [
+      ...(canChangePermissions ? [{ id: "permissions", label: "Permissions…" }] : []),
+      { id: "close", label: "Close" },
+    ],
     defaultResponse: "close",
     closeResponse: "close",
-    onResponse: () => {
+    onResponse: (id) => {
+      if (id === "permissions") {
+        showPermissionsDialog(info.path, parseInt(info.octal, 8) & 0o777, () => {
+          if (walk) cancelFolderSize(walk).catch(() => {});
+          propertiesDialog.close();
+          void showProperties(entry);
+        });
+        return false;
+      }
       if (walk) cancelFolderSize(walk).catch(() => {});
     },
   });
@@ -2743,6 +3083,146 @@ function showValidation(v: Validation, entry: HTMLElement, message: HTMLElement)
 // Rename (popover anchored to the item, as in GNOME Files)
 // ---------------------------------------------------------------------------
 
+/** Rename several items in one folder with find/replace, prefix and suffix. */
+function showBatchRename(sel: Entry[]): void {
+  if (sel.length < 2) {
+    if (sel[0]) startRename(sel[0]);
+    return;
+  }
+  if (sel.some((entry) => parentOf(entry.path) !== location)) {
+    showToast("Batch rename works inside one folder.");
+    return;
+  }
+  const selectedPaths = new Set(sel.map((entry) => entry.path));
+  const extra = document.createElement("div");
+  extra.className = "batch-rename";
+  extra.innerHTML =
+    `<div class="batch-fields">` +
+    `<label>Find<input class="entry" id="batch-find" type="text" spellcheck="false" /></label>` +
+    `<label>Replace with<input class="entry" id="batch-replace" type="text" spellcheck="false" /></label>` +
+    `<label>Add prefix<input class="entry" id="batch-prefix" type="text" spellcheck="false" /></label>` +
+    `<label>Add suffix<input class="entry" id="batch-suffix" type="text" spellcheck="false" /></label>` +
+    `</div><div class="batch-preview"></div><div class="field-message"></div>`;
+  const field = <T extends HTMLInputElement>(id: string) => extra.querySelector<T>(`#${id}`)!;
+  const find = field("batch-find");
+  const replace = field("batch-replace");
+  const prefix = field("batch-prefix");
+  const suffix = field("batch-suffix");
+  const preview = extra.querySelector<HTMLElement>(".batch-preview")!;
+  const message = extra.querySelector<HTMLElement>(".field-message")!;
+
+  const names = () => {
+    const findText = find.value;
+    return sel.map((entry) => {
+      let name = entry.name;
+      if (findText) name = name.split(findText).join(replace.value);
+      if (prefix.value) name = prefix.value + name;
+      if (suffix.value) {
+        if (entry.is_dir) name += suffix.value;
+        else {
+          const dot = name.lastIndexOf(".");
+          name = dot > 0 ? `${name.slice(0, dot)}${suffix.value}${name.slice(dot)}` : name + suffix.value;
+        }
+      }
+      return { entry, name };
+    });
+  };
+
+  let dialog: ReturnType<typeof openDialog>;
+  const validate = () => {
+    const pairs = names();
+    const current = new Set(sel.map((entry) => entry.name.toLowerCase()));
+    const changed = pairs.filter(({ entry, name }) => name !== entry.name);
+    const seen = new Set<string>();
+    let error = "";
+    for (const { entry, name } of pairs) {
+      if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\0")) {
+        error = "A name can't be empty or contain “/”.";
+        break;
+      }
+      const lower = name.toLowerCase();
+      if (seen.has(lower)) {
+        error = "Two items would have the same name.";
+        break;
+      }
+      seen.add(lower);
+      if (lower !== entry.name.toLowerCase() && current.has(lower)) {
+        error = "Renaming would overwrite another selected item.";
+        break;
+      }
+      const clash = entries.find(
+        (other) => !selectedPaths.has(other.path) && other.name.toLowerCase() === lower
+      );
+      if (lower !== entry.name.toLowerCase() && clash) {
+        error = `A file or folder named “${name}” already exists.`;
+        break;
+      }
+    }
+    message.textContent = error;
+    preview.replaceChildren();
+    if (!error) {
+      for (const { entry, name } of pairs.slice(0, 8)) {
+        const row = document.createElement("div");
+        row.className = "batch-preview-row";
+        const before = document.createElement("span");
+        before.className = "batch-old";
+        before.textContent = entry.name;
+        const arrow = document.createElement("span");
+        arrow.className = "batch-arrow";
+        arrow.textContent = "→";
+        const after = document.createElement("span");
+        after.className = "batch-new";
+        after.textContent = name;
+        row.append(before, arrow, after);
+        preview.appendChild(row);
+      }
+      if (pairs.length > 8) {
+        const more = document.createElement("div");
+        more.className = "batch-more";
+        more.textContent = `and ${pairs.length - 8} more`;
+        preview.appendChild(more);
+      }
+    }
+    const ok = !error && changed.length > 0;
+    dialog.setResponseEnabled("rename", ok);
+    return ok ? changed : null;
+  };
+
+  const inputs = [find, replace, prefix, suffix];
+  inputs.forEach((input) => input.addEventListener("input", validate));
+
+  dialog = openDialog({
+    heading: `Rename ${sel.length} Items`,
+    body: "Leave a field empty to skip it.",
+    extra,
+    className: "batch-rename-dialog",
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "rename", label: "Rename", style: "suggested" },
+    ],
+    defaultResponse: "rename",
+    closeResponse: "cancel",
+    onResponse: (id) => {
+      if (id !== "rename") return;
+      const changed = validate();
+      if (!changed) return false;
+      void (async () => {
+        try {
+          await renameMany(changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) })));
+          dialog.close();
+          showToast(`Renamed ${changed.length} ${changed.length === 1 ? "item" : "items"}`);
+          await reload();
+        } catch (err) {
+          message.textContent = cleanError(err);
+        }
+      })();
+      return false;
+    },
+  });
+  validate();
+  find.focus();
+}
+
 function startRename(entry: Entry): void {
   // Recent and Starred mix folders, so the name-clash check wouldn't work there.
   if (isPseudo(location) || isReadOnlyLocation(entry.path)) return;
@@ -2872,6 +3352,178 @@ function promptNewFolder(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Preview (Space)
+// ---------------------------------------------------------------------------
+
+let previewUrl: string | null = null;
+let previewSeq = 0;
+
+function closePreview(): void {
+  if (!previewLayer) return;
+  previewSeq += 1;
+  previewLayer.hidden = true;
+  previewBody.replaceChildren();
+  previewName.textContent = "";
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = null;
+}
+
+function previewEmpty(entry: Entry, text: string): void {
+  const box = document.createElement("div");
+  box.className = "preview-empty";
+  const icon = document.createElement("div");
+  icon.innerHTML = entryIcon(entry, folderKind(entry));
+  const label = document.createElement("p");
+  label.textContent = text;
+  box.append(icon, label);
+  previewBody.appendChild(box);
+}
+
+async function showPreview(entry: Entry): Promise<void> {
+  if (!previewLayer) return;
+  closePreview();
+  const seq = previewSeq;
+  previewLayer.hidden = false;
+  previewName.textContent = entry.name;
+  previewBody.replaceChildren();
+
+  if (isCloud(entry.path) || isSharePath(entry.path)) {
+    previewEmpty(entry, "Preview isn't available for remote items.");
+    return;
+  }
+  if (entry.is_dir) {
+    previewEmpty(entry, "Folder");
+    return;
+  }
+  await previewEntry(entry, seq, fileKind(entry.name));
+}
+
+function previewStale(seq: number): boolean {
+  return seq !== previewSeq || Boolean(previewLayer.hidden);
+}
+
+async function previewEntry(entry: Entry, seq: number, kind: FileKind): Promise<void> {
+  if (kind === "text" || kind === "code") return previewTextEntry(entry, seq);
+  if (THUMB_KINDS.has(kind)) return previewThumbnailEntry(entry, seq);
+  previewEmpty(entry, "No preview available.");
+}
+
+async function previewTextEntry(entry: Entry, seq: number): Promise<void> {
+  try {
+    const result = await previewText(entry.path, 200_000);
+    if (previewStale(seq)) return;
+    const pre = document.createElement("pre");
+    pre.textContent = result.text + (result.truncated ? "\n…" : "");
+    previewBody.appendChild(pre);
+  } catch {
+    if (previewStale(seq)) return;
+    previewEmpty(entry, "No preview available.");
+  }
+}
+
+async function previewThumbnailEntry(entry: Entry, seq: number): Promise<void> {
+  try {
+    const bytes = await thumbnail(entry.path, 1024);
+    if (previewStale(seq)) return;
+    if (!bytes.byteLength) {
+      previewEmpty(entry, "No preview available.");
+      return;
+    }
+    previewUrl = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+    const image = document.createElement("img");
+    image.src = previewUrl;
+    image.alt = entry.name;
+    previewBody.appendChild(image);
+  } catch {
+    if (previewStale(seq)) return;
+    previewEmpty(entry, "No preview available.");
+  }
+}
+
+function togglePreview(): void {
+  if (!previewLayer) return;
+  if (!previewLayer.hidden) {
+    closePreview();
+    return;
+  }
+  const sel = selectedEntries();
+  if (sel.length === 1) void showPreview(sel[0]);
+}
+
+/** A list of installed applications for "Open With…". */
+function showOpenWith(entry: Entry): void {
+  const extra = document.createElement("div");
+  extra.className = "app-list";
+  const loading = document.createElement("p");
+  loading.className = "app-loading";
+  loading.textContent = "Loading applications…";
+  const message = document.createElement("div");
+  message.className = "field-message";
+  extra.append(loading, message);
+
+  const dialog = openDialog({
+    heading: `Open “${entry.name}” With`,
+    extra,
+    className: "open-with-dialog",
+    responses: [{ id: "cancel", label: "Cancel" }],
+    defaultResponse: "cancel",
+    closeResponse: "cancel",
+  });
+
+  void listApps()
+    .then((apps) => {
+      if (!extra.isConnected) return;
+      loading.remove();
+      if (apps.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "app-loading";
+        empty.textContent = "No applications found.";
+        extra.prepend(empty);
+        return;
+      }
+      for (const app of apps) {
+        const button = document.createElement("button");
+        button.className = "app-choice";
+        const icon = document.createElement("span");
+        icon.className = "app-choice-icon";
+        icon.innerHTML = entryIcon(
+          {
+            name: `${app.name}.app`,
+            path: "",
+            is_dir: true,
+            size: 0,
+            modified: 0,
+            is_hidden: false,
+            is_symlink: false,
+          },
+          "plain"
+        );
+        const label = document.createElement("span");
+        label.className = "app-choice-name";
+        label.textContent = app.name;
+        button.append(icon, label);
+        button.addEventListener("click", () => {
+          button.disabled = true;
+          openWith(entry.path, app.id)
+            .then(() => {
+              dialog.close();
+              if (!isCloud(entry.path) && !isSharePath(entry.path)) addRecent(entry.path).catch(() => {});
+            })
+            .catch((err) => {
+              button.disabled = false;
+              message.textContent = cleanError(err);
+            });
+        });
+        extra.insertBefore(button, message);
+      }
+    })
+    .catch((err) => {
+      if (!extra.isConnected) return;
+      loading.textContent = `Could not list applications: ${cleanError(err)}`;
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Keyboard shortcuts + about
 // ---------------------------------------------------------------------------
 
@@ -2879,13 +3531,14 @@ const SHORTCUTS: [string, [string, string][]][] = [
   ["Navigation", [
     ["Back", "Alt+←"], ["Forward", "Alt+→"], ["Parent folder", "Alt+↑"], ["Home folder", "Alt+Home"],
     ["Enter location", `${MOD}L`], ["Search", `${MOD}F`], ["Reload", `${MOD}R`],
+    ["New tab", `${MOD}T`], ["Close tab", `${MOD}W`], ["Next / previous tab", "Ctrl+Page Down / Page Up"],
   ]],
   ["View", [
     ["List view", `${MOD}1`], ["Grid view", `${MOD}2`], ["Zoom in / out", `${MOD}+ / ${MOD}−, Ctrl + wheel, pinch`],
     ["Reset zoom", `${MOD}0`], ["Show hidden files", isMac ? "⇧⌘." : "Ctrl+H"],
   ]],
   ["Files", [
-    ["Open", "Enter"], ["Rename", "F2"], ["New folder", isMac ? "⇧⌘N" : "Shift+Ctrl+N"], ["Select all", `${MOD}A`],
+    ["Open", "Enter"], ["Preview", "Space"], ["Rename", "F2"], ["New folder", isMac ? "⇧⌘N" : "Shift+Ctrl+N"], ["Select all", `${MOD}A`],
     ["Copy / Cut / Paste", `${MOD}C / ${MOD}X / ${MOD}V`], ["Move to Trash", isMac ? "⌘⌫ or Delete" : "Delete"], ["Undo Move to Trash", `${MOD}Z`],
     ["Properties", `${MOD}I`], ["Cancel cut", "Esc"], ["Bookmark this folder", `${MOD}D`],
   ]],
@@ -2999,7 +3652,8 @@ const VIEW_KEYS: Record<string, (k: ViewKey) => boolean> = {
     return true;
   },
   Escape: () => {
-    if (searchQuery !== null) closeSearch();
+    if (!previewLayer?.hidden) closePreview();
+    else if (searchQuery !== null) closeSearch();
     else if (!cancelCut()) clearSelection();
     return true;
   },
@@ -3009,7 +3663,11 @@ const VIEW_KEYS: Record<string, (k: ViewKey) => boolean> = {
     else goBack();
     return true;
   },
-  " ": (k) => (toggleCursorItem(k), true),
+  " ": (k) => {
+    if (k.mod) toggleCursorItem(k);
+    else togglePreview();
+    return true;
+  },
 };
 
 function onViewKeyDown(e: KeyboardEvent): void {
@@ -3052,6 +3710,10 @@ const plainMod = (k: Keys, key: string) => k.mod && !k.shift && k.key === key;
 const ANYWHERE_SHORTCUTS: Shortcut[] = [
   [(k) => plainMod(k, "l"), () => openPathEntry()],
   [(k) => plainMod(k, "f"), () => openSearch()],
+  [(k) => plainMod(k, "t"), () => void newTab()],
+  [(k) => plainMod(k, "w"), () => void closeTab(activeTab)],
+  [(k) => k.ctrl && k.raw === "PageDown", () => cycleTab(1)],
+  [(k) => k.ctrl && k.raw === "PageUp", () => cycleTab(-1)],
   [(k) => k.mod && k.shift && k.key === "n", promptNewFolder],
   [(k) => plainMod(k, "d") && !isPseudo(location), () => setBookmarked(location, !pins.includes(location))],
   [(k) => (k.mod && k.shift && (k.raw === "." || k.raw === ">")) || (k.ctrl && !k.shift && k.key === "h"), toggleHidden],
@@ -3720,6 +4382,15 @@ async function init(): Promise<void> {
   searchEntry = $<HTMLInputElement>("#search-entry");
   floatingBar = $("#floating-bar");
   shareSubtitle = $("#share-subtitle");
+  tabbar = $("#tabbar");
+  previewLayer = $("#preview-layer");
+  previewName = $("#preview-name");
+  previewBody = $("#preview-body");
+  $("#preview-close").innerHTML = sym("window-close");
+  $("#preview-close").addEventListener("click", closePreview);
+  previewLayer.addEventListener("click", (event) => {
+    if (event.target === previewLayer) closePreview();
+  });
 
   // Static icons
   $("#btn-search").innerHTML = sym("system-search");
@@ -3837,6 +4508,9 @@ async function init(): Promise<void> {
   trashPath = await trashDir().catch(() => (home ? joinPath(home, ".Trash") : ""));
   await buildSidebar();
   await navigate(home || "/", { history: "none" });
+  tabs.push(tabSnapshot());
+  activeTab = 0;
+  renderTabbar();
   initExternalDrops();
   await initAccessBanner();
 }

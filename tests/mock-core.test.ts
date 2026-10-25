@@ -330,8 +330,35 @@ test("the mock Drive refuses like the backend on failure paths", async () => {
   expect(await names(DRIVE)).toContain("Documents");
 });
 
-test("sharing commands create links, receive, go offline and clean up", async () => {
-  const mock = (globalThis as unknown as { __mockShare: { setOnline(v: boolean): void; reset(): void } }).__mockShare;
+test("permissions can be read and changed", async () => {
+  const path = `${HOME}/Desktop/todo.txt`;
+  await invoke("set_permissions", { path, mode: 0o600 });
+  const props = await invoke<Record<string, unknown>>("file_properties", { path, showHidden: false });
+  expect(props).toMatchObject({ octal: "600", mode: "-rw-------", others: "None" });
+  await expect(invoke("set_permissions", { path, mode: 0o1000 })).rejects.toMatch(/Invalid permissions/);
+});
+
+test("search_dir walks subfolders and respects hidden files", async () => {
+  const found = await invoke<Array<{ name: string; path: string }>>("search_dir", {
+    path: HOME,
+    query: "README",
+    showHidden: false,
+    limit: 20,
+  });
+  expect(found.map((entry) => entry.path)).toContain(
+    `${HOME}/Documents/Projects/unshitty-mac-filebrowser/README.md`,
+  );
+
+  const hidden = await invoke<Array<{ name: string }>>("search_dir", {
+    path: HOME,
+    query: ".DS_Store",
+    showHidden: false,
+    limit: 20,
+  });
+  expect(hidden).toHaveLength(0);
+});
+
+test("sharing commands create links, receive, go offline and clean up", async () => {  const mock = (globalThis as unknown as { __mockShare: { setOnline(v: boolean): void; reset(): void } }).__mockShare;
   mock.reset();
   expect(await invoke("share_identity")).toEqual({ name: null });
   await invoke("set_share_name", { name: "Ahmed" });

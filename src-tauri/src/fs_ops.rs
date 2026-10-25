@@ -1,4 +1,6 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub fn make_dir(path: String) -> Result<(), String> {
@@ -109,6 +111,176 @@ fn make_entry(entry_path: &Path, name: String) -> Option<Entry> {
 // the window or other commands.
 pub fn list_dir(path: String, show_hidden: bool) -> Result<Vec<Entry>, String> {
     read_entries(Path::new(&path), show_hidden)
+}
+
+/// Change the three permission triples, keeping any setuid/setgid/sticky bits.
+pub fn set_permissions(path: String, mode: u32) -> Result<(), String> {    if mode & !0o777 != 0 {
+        return Err("Invalid permissions.".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&path)
+            .map_err(|e| format!("Failed to read permissions: {e}"))?;
+        let mut permissions = meta.permissions();
+        permissions.set_mode((permissions.mode() & 0o7000) | mode);
+        std::fs::set_permissions(&path, permissions)
+            .map_err(|e| format!("Failed to change permissions: {e}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Err("Changing permissions is not supported on this platform.".into())
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct TextPreview {
+    pub text: String,
+    pub truncated: bool,
+}
+
+/// Read the start of a UTF-8 text file for the preview panel.
+pub fn preview_text(path: String, limit: usize) -> Result<TextPreview, String> {
+    let limit = limit.clamp(1, 1_048_576);
+    let mut file =
+        std::fs::File::open(&path).map_err(|e| format!("Failed to open file: {e}"))?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Failed to read file: {e}"))?;
+    let truncated = bytes.len() > limit;
+    bytes.truncate(limit);
+    let text = String::from_utf8(bytes)
+        .map_err(|_| "This file can't be previewed as text.".to_string())?;
+    Ok(TextPreview { text, truncated })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RenameItem {
+    pub from: String,
+    pub to: String,
+}
+
+/// Rename several items in place, all or nothing. Every target is checked
+/// before the first rename; if one still fails, the completed renames are
+/// rolled back.
+pub fn rename_many(items: Vec<RenameItem>) -> Result<(), String> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let mut seen_from = HashSet::new();
+    let mut seen_to = HashSet::new();
+    let mut work: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+    for item in items {
+        let from = PathBuf::from(&item.from);
+        let to = PathBuf::from(&item.to);
+        if from == to {
+            continue;
+        }
+        if from.parent() != to.parent() {
+            return Err("Items can only be renamed, not moved.".into());
+        }
+        if to.file_name().is_none() {
+            return Err("A name can't be empty.".into());
+        }
+        if std::fs::symlink_metadata(&from).is_err() {
+            return Err(format!("“{}” no longer exists.", item.from));
+        }
+        if !seen_from.insert(from.clone()) || !seen_to.insert(to.clone()) {
+            return Err("Two items would have the same name.".into());
+        }
+        if std::fs::symlink_metadata(&to).is_ok() && !same_file(&from, &to) {
+            let name = to.file_name().unwrap_or_default().to_string_lossy();
+            return Err(format!("A file or folder named “{name}” already exists."));
+        }
+        work.push((from, to));
+    }
+
+    let mut done: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for (from, to) in work {
+        if let Err(e) = std::fs::rename(&from, &to) {
+            for (old_from, old_to) in done.iter().rev() {
+                let _ = std::fs::rename(old_to, old_from);
+            }
+            return Err(format!("Failed to rename “{}”: {e}", from.display()));
+        }
+        done.push((from, to));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(ma), Ok(mb)) => ma.dev() == mb.dev() && ma.ino() == mb.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_file(_a: &Path, _b: &Path) -> bool {
+    false
+}
+
+/// Recursively find entries whose name contains `query`, case-insensitively.
+/// Symlinked folders are returned but not descended into, so a link loop can't
+/// make search run forever; unreadable subfolders are skipped. Stops after
+/// `limit` results (the UI asks for a bounded number).
+pub fn search_dir(
+    path: String,
+    query: String,
+    show_hidden: bool,
+    limit: usize,
+) -> Result<Vec<Entry>, String> {
+    let root = Path::new(&path);
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    let mut out = Vec::new();
+    let mut scanned = 0usize;
+    const MAX_SCANNED: usize = 100_000;
+
+    while let Some(dir) = stack.pop() {
+        let read_dir = match std::fs::read_dir(&dir) {
+            Ok(read_dir) => read_dir,
+            Err(e) if dir == root => {
+                return Err(format!("Failed to read directory: {e}"));
+            }
+            Err(_) => continue,
+        };
+        for item in read_dir.flatten() {
+            if out.len() >= limit || scanned >= MAX_SCANNED {
+                return Ok(out);
+            }
+            scanned += 1;
+            let name = item.file_name().to_string_lossy().to_string();
+            if name == crate::versions::VERSIONS_DIR {
+                continue;
+            }
+            if name.starts_with('.') && !show_hidden {
+                continue;
+            }
+            let child = item.path();
+            let Some(entry) = make_entry(&child, name.clone()) else {
+                continue;
+            };
+            let descend = entry.is_dir && !entry.is_symlink;
+            if name.to_lowercase().contains(&needle) {
+                out.push(entry);
+            }
+            if descend {
+                stack.push(child);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// What the "N items" column needs about a folder: how many entries it has,
@@ -398,6 +570,122 @@ mod tests {
         );
         assert_eq!(entries_for(&paths, true).len(), 3);
         assert_eq!(entries_for(&paths, false)[0].size, 5);
+    }
+
+    #[test]
+    fn search_is_recursive_and_skips_hidden_or_internal_folders() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Alpha.txt"), "a").unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/alpha-two.txt"), "b").unwrap();
+        fs::create_dir(dir.path().join("sub/deeper")).unwrap();
+        fs::write(dir.path().join("sub/deeper/ALPHA-three.txt"), "c").unwrap();
+        fs::create_dir(dir.path().join(".hidden")).unwrap();
+        fs::write(dir.path().join(".hidden/alpha-secret.txt"), "d").unwrap();
+        fs::create_dir(dir.path().join(".versions")).unwrap();
+        fs::write(dir.path().join(".versions/alpha-old.txt"), "e").unwrap();
+
+        let mut names: Vec<String> = search_dir(
+            dir.path().to_string_lossy().to_string(),
+            "alpha".into(),
+            false,
+            100,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            ["ALPHA-three.txt", "Alpha.txt", "alpha-two.txt"]
+        );
+
+        let with_hidden = search_dir(
+            dir.path().to_string_lossy().to_string(),
+            "alpha".into(),
+            true,
+            100,
+        )
+        .unwrap();
+        assert!(with_hidden.iter().any(|e| e.name == "alpha-secret.txt"));
+        assert!(!with_hidden.iter().any(|e| e.name == "alpha-old.txt"));
+    }
+
+    #[test]
+    fn search_stops_at_the_limit() {        let dir = tempdir().unwrap();
+        for i in 0..20 {
+            fs::write(dir.path().join(format!("match-{i}.txt")), "x").unwrap();
+        }
+        let found = search_dir(
+            dir.path().to_string_lossy().to_string(),
+            "match".into(),
+            false,
+            5,
+        )
+        .unwrap();
+        assert_eq!(found.len(), 5);
+    }
+
+    #[test]
+    fn text_preview_stops_at_the_limit_and_rejects_binary() {
+        let dir = tempdir().unwrap();
+        let text = dir.path().join("a.txt");
+        fs::write(&text, "hello world").unwrap();
+        let preview = preview_text(text.to_string_lossy().to_string(), 5).unwrap();
+        assert_eq!(preview.text, "hello");
+        assert!(preview.truncated);
+
+        let binary = dir.path().join("a.bin");
+        fs::write(&binary, [0xff, 0xfe, 0xfd]).unwrap();
+        assert!(preview_text(binary.to_string_lossy().to_string(), 10).is_err());
+    }
+
+    #[test]
+    fn batch_rename_is_all_or_nothing() {
+        let dir = tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "taken.txt"] {
+            fs::write(dir.path().join(name), name).unwrap();
+        }
+        let p = |name: &str| dir.path().join(name).to_string_lossy().to_string();
+        rename_many(vec![
+            RenameItem { from: p("a.txt"), to: p("x.txt") },
+            RenameItem { from: p("b.txt"), to: p("y.txt") },
+        ])
+        .unwrap();
+        assert!(dir.path().join("x.txt").exists());
+        assert!(dir.path().join("y.txt").exists());
+        assert!(!dir.path().join("a.txt").exists());
+
+        let err = rename_many(vec![
+            RenameItem { from: p("x.txt"), to: p("z.txt") },
+            RenameItem { from: p("y.txt"), to: p("taken.txt") },
+        ])
+        .unwrap_err();
+        assert!(err.contains("already exists"));
+        assert!(dir.path().join("x.txt").exists());
+        assert!(dir.path().join("y.txt").exists());
+
+        let err = rename_many(vec![RenameItem { from: p("x.txt"), to: p("../moved.txt") }])
+            .unwrap_err();
+        assert!(err.contains("only be renamed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn permissions_can_be_changed_and_refuse_unknown_bits() {        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        fs::write(&file, "x").unwrap();
+
+        set_permissions(file.to_string_lossy().to_string(), 0o600).unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+
+        set_permissions(file.to_string_lossy().to_string(), 0o755).unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o755);
+
+        assert!(set_permissions(file.to_string_lossy().to_string(), 0o1000).is_err());
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o755);
     }
 
     #[test]

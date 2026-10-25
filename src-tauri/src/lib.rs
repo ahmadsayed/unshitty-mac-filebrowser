@@ -190,6 +190,41 @@ async fn list_dir(
 }
 
 #[tauri::command]
+async fn search_dir(
+    path: String,
+    query: String,
+    show_hidden: bool,
+    limit: usize,
+) -> Result<Vec<fs_ops::Entry>, String> {
+    blocking(move || fs_ops::search_dir(path, query, show_hidden, limit)).await?
+}
+
+#[tauri::command]
+async fn list_apps() -> Result<Vec<platform::AppChoice>, String> {
+    blocking(platform::applications).await
+}
+
+#[tauri::command]
+async fn open_with(path: String, app: String) -> Result<(), String> {
+    blocking(move || platform::open_with(&path, &app)).await?
+}
+
+#[tauri::command]
+async fn preview_text(path: String, limit: usize) -> Result<fs_ops::TextPreview, String> {
+    blocking(move || fs_ops::preview_text(path, limit)).await?
+}
+
+#[tauri::command]
+async fn rename_many(items: Vec<fs_ops::RenameItem>) -> Result<(), String> {
+    blocking(move || fs_ops::rename_many(items)).await?
+}
+
+#[tauri::command]
+async fn set_permissions(path: String, mode: u32) -> Result<(), String> {
+    blocking(move || fs_ops::set_permissions(path, mode)).await?
+}
+
+#[tauri::command]
 async fn item_counts(
     paths: Vec<String>,
     show_hidden: bool,
@@ -1142,6 +1177,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_dir,
+            search_dir,
+            list_apps,
+            open_with,
+            preview_text,
+            rename_many,
+            set_permissions,
             item_counts,
             make_dir,
             rename_entry,

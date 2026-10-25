@@ -48,6 +48,188 @@ pub struct Volume {
     pub path: String,
 }
 
+/// An application offered by "Open With…".
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AppChoice {
+    pub name: String,
+    /// macOS: the `.app` path; Linux: the `.desktop` file path.
+    pub id: String,
+}
+
+/// Every application that can be offered by "Open With…".
+pub fn applications() -> Vec<AppChoice> {
+    let mut apps = if IS_MACOS {
+        mac_applications()
+    } else if cfg!(target_os = "linux") {
+        linux_applications()
+    } else {
+        Vec::new()
+    };
+    apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    apps.dedup_by(|a, b| a.id == b.id);
+    apps
+}
+
+fn mac_applications() -> Vec<AppChoice> {
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join("Applications"));
+    }
+    let mut apps = Vec::new();
+    for root in roots {
+        collect_apps(&root, &mut apps, 0);
+    }
+    apps
+}
+
+fn collect_apps(dir: &Path, apps: &mut Vec<AppChoice>, depth: usize) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) == Some("app") {
+            let label = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| name.clone());
+            apps.push(AppChoice {
+                name: label,
+                id: path.to_string_lossy().to_string(),
+            });
+        } else if depth == 0 && name == "Utilities" && path.is_dir() {
+            collect_apps(&path, apps, depth + 1);
+        }
+    }
+}
+
+fn linux_applications() -> Vec<AppChoice> {
+    let mut apps = Vec::new();
+    for dir in linux_app_dirs() {
+        apps.extend(apps_in_dir(&dir));
+    }
+    apps
+}
+
+fn linux_app_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(&home).join(".local/share/applications"));
+        dirs.push(PathBuf::from(home).join(".local/share/flatpak/exports/share/applications"));
+    }
+    let data_dirs = std::env::var("XDG_DATA_DIRS")
+        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+    for dir in data_dirs.split(':').filter(|dir| !dir.is_empty()) {
+        dirs.push(PathBuf::from(dir).join("applications"));
+    }
+    dirs.push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
+    dirs
+}
+
+fn apps_in_dir(dir: &Path) -> Vec<AppChoice> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("desktop"))
+        .filter_map(|path| desktop_app(&path))
+        .collect()
+}
+
+/// Parse the parts of a `.desktop` file that matter for Open With.
+fn desktop_app(path: &Path) -> Option<AppChoice> {
+    let text = fs::read_to_string(path).ok()?;
+    let mut name = None;
+    let mut kind = None;
+    let mut hidden = false;
+    let mut in_entry = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("Name=") {
+            name = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("Type=") {
+            kind = Some(value.trim().to_string());
+        } else if line == "NoDisplay=true" || line == "Hidden=true" {
+            hidden = true;
+        }
+    }
+    if hidden || kind.as_deref() != Some("Application") {
+        return None;
+    }
+    let name = name.filter(|name| !name.is_empty())?;
+    Some(AppChoice {
+        name,
+        id: path.to_string_lossy().to_string(),
+    })
+}
+
+/// Launch `path` with the chosen application.
+pub fn open_with(path: &str, app: &str) -> Result<(), String> {
+    if IS_MACOS {
+        mac_open_with(path, app)
+    } else if cfg!(target_os = "linux") {
+        linux_open_with(path, app)
+    } else {
+        Err("Open With is not supported on this platform.".into())
+    }
+}
+
+fn mac_open_with(path: &str, app: &str) -> Result<(), String> {
+    let app_path = Path::new(app);
+    if !app_path.is_dir() {
+        return Err("That application is no longer available.".into());
+    }
+    std::process::Command::new("open")
+        .arg("-a")
+        .arg(app_path)
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not open with that application: {e}"))
+}
+
+fn linux_open_with(path: &str, app: &str) -> Result<(), String> {
+    let desktop = Path::new(app);
+    if !desktop.is_file() {
+        return Err("That application is no longer available.".into());
+    }
+    if std::process::Command::new("gio")
+        .arg("launch")
+        .arg(desktop)
+        .arg(path)
+        .spawn()
+        .is_ok()
+    {
+        return Ok(());
+    }
+    let id = desktop
+        .file_name()
+        .map(|name| name.to_string_lossy().trim_end_matches(".desktop").to_string())
+        .unwrap_or_default();
+    std::process::Command::new("gtk-launch")
+        .arg(id)
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not open with that application: {e}"))
+}
+
 /// Folders that hold mounted volumes on this platform.
 ///
 /// macOS puts them all in `/Volumes`. Linux has no single place: udisks2
@@ -230,6 +412,67 @@ mod tests {
         } else {
             assert!(WEBVIEW_ENV.is_empty());
         }
+    }
+
+    #[test]
+    fn mac_app_collection_finds_utilities_and_skips_hidden() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("TextEdit.app")).unwrap();
+        fs::create_dir_all(dir.path().join("Utilities/Calculator.app")).unwrap();
+        fs::create_dir_all(dir.path().join(".Hidden.app")).unwrap();
+        fs::write(dir.path().join("notes.txt"), "x").unwrap();
+        let mut apps = Vec::new();
+        collect_apps(dir.path(), &mut apps, 0);
+        let mut names: Vec<&str> = apps.iter().map(|app| app.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["Calculator", "TextEdit"]);
+    }
+
+    #[test]
+    fn apps_in_dir_reads_desktop_entries() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("editor.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Editor\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("hidden.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Hidden\nHidden=true\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("readme.txt"), "x").unwrap();
+        let names: Vec<String> = apps_in_dir(dir.path()).into_iter().map(|app| app.name).collect();
+        assert_eq!(names, ["Editor"]);
+    }
+
+    #[test]
+    fn open_with_rejects_a_missing_application() {
+        assert!(open_with("/tmp/file.txt", "/no/such/application").is_err());
+    }
+
+    #[test]
+    fn desktop_app_parses_names_and_skips_hidden_entries() {
+        let dir = tempdir().unwrap();
+        let app = dir.path().join("editor.desktop");
+        fs::write(
+            &app,
+            "[Desktop Entry]\nType=Application\nName=Text Editor\nName[de]=Texteditor\nExec=editor %f\n",
+        )
+        .unwrap();
+        assert_eq!(desktop_app(&app).unwrap().name, "Text Editor");
+
+        let hidden = dir.path().join("hidden.desktop");
+        fs::write(
+            &hidden,
+            "[Desktop Entry]\nType=Application\nName=Hidden App\nNoDisplay=true\n",
+        )
+        .unwrap();
+        assert!(desktop_app(&hidden).is_none());
+
+        let wrong = dir.path().join("link.desktop");
+        fs::write(&wrong, "[Desktop Entry]\nType=Link\nName=A Link\n").unwrap();
+        assert!(desktop_app(&wrong).is_none());
     }
 
     #[test]

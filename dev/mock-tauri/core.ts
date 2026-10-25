@@ -575,6 +575,31 @@ function list(path: string, showHidden: boolean): Entry[] {
     }));
 }
 
+/** Recursive name search, bounded like the Rust command. */
+function search(path: string, query: string, showHidden: boolean, limit: number): Entry[] {
+  const node = lookup(path);
+  if (!node || !node.dir) throw `Failed to read directory: No such file or directory (os error 2)`;
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  const out: Entry[] = [];
+  const stack = [path.replace(/\/$/, "")];
+  while (stack.length && out.length < limit) {
+    const dir = stack.pop()!;
+    let entries: Entry[];
+    try {
+      entries = list(dir, showHidden);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (out.length >= limit) break;
+      if (entry.name.toLowerCase().includes(needle)) out.push(entry);
+      if (entry.is_dir && !entry.is_symlink) stack.push(entry.path);
+    }
+  }
+  return out;
+}
+
 function parentAndName(path: string): [Node | undefined, string] {
   const i = path.lastIndexOf("/");
   return [lookup(path.slice(0, i) || "/"), path.slice(i + 1)];
@@ -734,6 +759,7 @@ function fileProperties(path: string) {
   if (!node) throw "Could not read properties: No such file or directory (os error 2)";
   const i = path.lastIndexOf("/");
   const isDir = node.dir;
+  const mode = mockMode(path);
   return {
     name: path.slice(i + 1) || path,
     path,
@@ -746,12 +772,50 @@ function fileProperties(path: string) {
     modified: node.modified,
     accessed: node.modified,
     created: node.modified - 100 * day,
-    mode: isDir ? "drwxr-xr-x" : node.link ? "lrwxrwxrwx" : "-rw-r--r--",
-    octal: isDir ? "755" : "644",
-    owner: isDir ? "Create and delete files" : "Read and write",
-    group: isDir ? "Access files" : "Read-only",
-    others: isDir ? "Access files" : "Read-only",
+    mode: mockModeString(mode, isDir, !!node.link),
+    octal: mockOctal(mode),
+    owner: mockAccessLabel(mode, 6, isDir),
+    group: mockAccessLabel(mode, 3, isDir),
+    others: mockAccessLabel(mode, 0, isDir),
   };
+}
+
+const mockModes = new Map<string, number>();
+
+function mockMode(path: string): number {
+  const known = mockModes.get(path);
+  if (known !== undefined) return known;
+  return lookup(path)?.dir ? 0o755 : 0o644;
+}
+
+function mockModeString(mode: number, isDir: boolean, isLink: boolean): string {
+  if (isLink) return "lrwxrwxrwx";
+  const triple = (shift: number) => {
+    const bits = (mode >> shift) & 7;
+    return `${bits & 4 ? "r" : "-"}${bits & 2 ? "w" : "-"}${bits & 1 ? "x" : "-"}`;
+  };
+  return `${isDir ? "d" : "-"}${triple(6)}${triple(3)}${triple(0)}`;
+}
+
+function mockOctal(mode: number): string {
+  const special = mode & 0o7000;
+  const low = mode & 0o777;
+  return special ? (special | low).toString(8).padStart(4, "0") : low.toString(8).padStart(3, "0");
+}
+
+function mockAccessLabel(mode: number, shift: number, isDir: boolean): string {
+  const bits = (mode >> shift) & 7;
+  if (isDir) {
+    if (bits === 7) return "Create and delete files";
+    if (bits === 5) return "Access files";
+    return bits === 0 ? "None" : "Access files";
+  }
+  if (bits === 6) return "Read and write";
+  if (bits === 5) return "Read and execute";
+  if (bits === 4) return "Read-only";
+  if (bits === 2) return "Write-only";
+  if (bits === 1) return "Execute";
+  return bits === 0 ? "None" : "Custom";
 }
 
 function makeDir(path: string): void {
@@ -825,6 +889,33 @@ function renameEntry(from: string, to: string): void {
   if (toParent.children[toName]) throw `Target already exists: ${to}`;
   toParent.children[toName] = fromParent.children[fromName];
   delete fromParent.children[fromName];
+}
+
+function renameMany(items: Array<{ from: string; to: string }>): void {
+  const work: Array<{ from: string; to: string }> = [];
+  const seenTo = new Set<string>();
+  for (const item of items) {
+    const [fromParent, fromName] = parentAndName(item.from);
+    const [toParent, toName] = parentAndName(item.to);
+    if (!fromParent?.dir || !fromParent.children[fromName]) throw `“${item.from}” no longer exists.`;
+    if (fromParent !== toParent) throw "Items can only be renamed, not moved.";
+    if (!toName) throw "A name can't be empty.";
+    if (item.from === item.to) continue;
+    if (seenTo.has(item.to)) throw "Two items would have the same name.";
+    seenTo.add(item.to);
+    if (toParent.children[toName]) throw `A file or folder named “${toName}” already exists.`;
+    work.push(item);
+  }
+  const done: Array<{ from: string; to: string }> = [];
+  for (const item of work) {
+    try {
+      renameEntry(item.from, item.to);
+      done.push(item);
+    } catch (err) {
+      for (const back of done.reverse()) renameEntry(back.to, back.from);
+      throw err;
+    }
+  }
 }
 
 function folderSummary(path: string, showHidden: boolean): { count: number; versioned: boolean } | null {
@@ -1044,6 +1135,13 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     if (path.startsWith("share://")) return listShare(path);
     return path.startsWith("gdrive://") ? listDrive(path) : list(path, a.showHidden as boolean);
   },
+  search_dir: (a) =>
+    search(
+      str(a, "path"),
+      str(a, "query"),
+      a.showHidden as boolean,
+      a.limit as number,
+    ),
   item_counts: (a) =>
     (a.paths as string[]).map((path) =>
       path.startsWith("gdrive://") || path.startsWith("share://")
@@ -1054,6 +1152,30 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     const path = str(a, "path");
     if (path.startsWith("share://")) return shareProperties(path);
     return path.startsWith("gdrive://") ? driveProperties(path) : fileProperties(path);
+  },
+  set_permissions: (a) => {
+    const path = str(a, "path");
+    if (!lookup(path)) throw "Failed to read permissions: No such file or directory (os error 2)";
+    const mode = Number(a.mode);
+    if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) throw "Invalid permissions.";
+    mockModes.set(path, mode);
+  },
+  preview_text: (a) => {
+    const path = str(a, "path");
+    const node = lookup(path);
+    if (!node || node.dir) throw "This file can't be previewed as text.";
+    const limit = Math.max(1, Math.min(1_048_576, Number(a.limit)));
+    const text = `Preview of ${path}\n\nThis is sample text from the mock filesystem.\n`;
+    return { text: text.slice(0, limit), truncated: text.length > limit };
+  },
+  list_apps: () => [
+    { name: "TextEdit", id: "/Applications/TextEdit.app" },
+    { name: "Preview", id: "/Applications/Preview.app" },
+    { name: "Visual Studio Code", id: "/Applications/Visual Studio Code.app" },
+  ],
+  open_with: (a) => {
+    if (!lookup(str(a, "path"))) throw "No such file or directory";
+    return undefined;
   },
   new_folder_walk: () => ++mockWalks,
   cancel_folder_size: () => undefined,
@@ -1125,6 +1247,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     renameEntry(from, to);
     return to;
   },
+  rename_many: (a) => renameMany(a.items as Array<{ from: string; to: string }>),
   ...SHARE_COMMANDS,
   ...DRIVE_COMMANDS,
   ...VERSION_COMMANDS,

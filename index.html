@@ -59,6 +59,9 @@
           </div>
         </header>
 
+        <!-- Tabs, shown once there is more than one -->
+        <div class="tabbar" id="tabbar" role="tablist" aria-label="Tabs" hidden></div>
+
         <!-- AdwBanner: shown on macOS until Full Disk Access is granted or dismissed -->
         <div class="banner" id="fda-banner" role="status" hidden>
           <span class="banner-title">To show every folder, allow “File Browser” Full Disk Access, then restart it.</span>
@@ -74,6 +77,15 @@
           </div>
           <div class="rubberband" id="rubberband" hidden></div>
           <div class="floating-bar" id="floating-bar" hidden></div>
+          <div class="preview-layer" id="preview-layer" hidden>
+            <div class="preview-panel" role="dialog" aria-label="Preview">
+              <div class="preview-head">
+                <span class="preview-name" id="preview-name"></span>
+                <button class="flat-btn preview-close" id="preview-close" title="Close Preview" aria-label="Close Preview"></button>
+              </div>
+              <div class="preview-body" id="preview-body"></div>
+            </div>
+          </div>
           <div class="toast-overlay" id="toast-overlay" aria-live="polite"></div>
         </div>
       </main>

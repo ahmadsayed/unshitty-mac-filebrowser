@@ -45,6 +45,16 @@ export async function listDir(
   return invoke<Entry[]>("list_dir", { path, showHidden });
 }
 
+/** Recursively find entries whose name contains `query`. */
+export async function searchDir(
+  path: string,
+  query: string,
+  showHidden: boolean,
+  limit: number
+): Promise<Entry[]> {
+  return invoke<Entry[]>("search_dir", { path, query, showHidden, limit });
+}
+
 /** A mounted volume, as the sidebar lists it. */
 export interface Volume {
   name: string;
@@ -413,6 +423,42 @@ export interface FileProperties {
 /** Metadata for the Properties dialog. */
 export async function fileProperties(path: string, showHidden: boolean): Promise<FileProperties> {
   return invoke<FileProperties>("file_properties", { path, showHidden });
+}
+
+/** Change the read/write/execute bits; `mode` is the low nine bits. */
+export async function setPermissions(path: string, mode: number): Promise<void> {
+  return invoke<void>("set_permissions", { path, mode });
+}
+
+/** Rename several items in place; the backend checks them all first. */
+export async function renameMany(items: { from: string; to: string }[]): Promise<void> {
+  return invoke<void>("rename_many", { items });
+}
+
+export interface TextPreview {
+  text: string;
+  truncated: boolean;
+}
+
+/** The beginning of a text file, for the preview panel. */
+export async function previewText(path: string, limit: number): Promise<TextPreview> {
+  return invoke<TextPreview>("preview_text", { path, limit });
+}
+
+export interface AppChoice {
+  name: string;
+  /** macOS: the `.app` path; Linux: the `.desktop` file path. */
+  id: string;
+}
+
+/** Applications offered by Open With. */
+export async function listApps(): Promise<AppChoice[]> {
+  return invoke<AppChoice[]>("list_apps");
+}
+
+/** Open a local file with a chosen application. */
+export async function openWith(path: string, app: string): Promise<void> {
+  return invoke<void>("open_with", { path, app });
 }
 
 /** Total size of every file inside a folder, recursively; `walk` names it for `cancelFolderSize`. */

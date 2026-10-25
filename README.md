@@ -43,10 +43,17 @@ files, so the photo thumbnails are placeholders.</sub>
   menus, dialogs, toasts and banners
 - Grid and list views, sorting (A–Z, Z–A, modified, size, type), hidden files
   toggle; icon size by ⌘+/⌘−, Ctrl + wheel, or a trackpad pinch
-- Path bar with breadcrumbs; ⌘L to type a location; type anywhere to filter the
-  current folder
+- Path bar with breadcrumbs; ⌘L to type a location; tabs (⌘T/⌘W) and Ctrl+Page
+  Up/Down to switch; type anywhere to search recursively in the current folder
+  (names, capped at 1,000 results)
+- Space previews text files and image/document thumbnails; Escape closes
+- Open With… lists the installed applications (macOS `.app` bundles, Linux
+  `.desktop` entries); Properties → Permissions… changes the read/write/execute
+  bits
 - Copy, cut, paste with Replace / Skip / Keep Both on name clashes; replacing
   sends the old item to the Trash, never deletes it
+- Batch rename for several items: find/replace, prefix and suffix, with a live
+  preview and clash checking before anything is renamed
 - Drag and drop: drag items onto a folder, a sidebar entry or a path-bar
   segment; hovering a folder opens it. Same disk moves, another disk copies;
   hold ⌥ to copy or ⌘ to move. Dropping on Trash trashes. Files dragged in from
@@ -54,6 +61,10 @@ files, so the photo thumbnails are placeholders.</sub>
 - Thumbnails for images (HEIC too), videos, PDFs and office documents, made by
   macOS Quick Look and cached on disk; toggle with "Show Thumbnails" in the menu
 - Rename, new folder, Move to Trash with an **Undo** button in the toast (or ⌘Z)
+- **Folder Sharing (Experimental):** share a local folder read-only with an
+  “Anyone with the link” or “Specific person” link; received shares appear under
+  Network with Shared by / Status, an offline page and read-only menus. Copying
+  files out of a share and live refresh are still to come
 - Properties (right-click or ⌘I): type, size (folders are summed in the
   background), location, modified/accessed/created dates, permissions, symlink
   target and folder contents
@@ -159,10 +170,15 @@ exact build: after rebuilding, toggle the permission off and on again.
 
 ## Not supported yet
 
-Network is a placeholder; Undo covers only the last Move to Trash; the Trash
-view shows the home Trash, not the Trash folders of other drives; there is no
-dragging files out of the app into Finder or other apps, no tabs, and no
-disk-wide search.
+Network folder sharing is read-only: browsing and opening work, but copying files
+out, live refresh and the Shared sidebar row are still to come. Undo covers only
+the last Move to Trash; the Trash view shows the home Trash, not the Trash
+folders of other drives; there is no dragging files out of the app into Finder
+or other apps and no SMB / SFTP / WebDAV browsing. Search matches file names
+only and is not a disk-wide content index. Preview covers text and thumbnails,
+not GNOME Sushi-style document or video playback. Open With lists installed
+applications but cannot set a new default handler. There are no Nautilus
+extensions, archive extraction, duplicate/link creation or templates yet.
 
 Google Drive has no shared drives, no Shared with me, no view of Drive's
 Trash (restore there, or use Undo right after Move to Trash), and no
