@@ -102,7 +102,8 @@ Ready-made builds are on the
 To use Google Drive, follow [docs/google-drive.md](docs/google-drive.md).
 
 Releases are built by `.github/workflows/release.yml`: pushing a `v*` tag
-drafts a release with the packages; publishing it is a manual step.
+that matches the app version runs the tests, then drafts a release with the
+packages; publishing it is a manual step.
 
 ## Build and run
 
