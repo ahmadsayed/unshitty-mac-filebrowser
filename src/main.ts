@@ -278,6 +278,11 @@ function isReadOnlyLocation(path: string): boolean {
   return isSharePath(path) || isSftpPath(path);
 }
 
+/** A path on this machine or a mounted volume, not a place or a remote. */
+function isLocalLocation(path: string): boolean {
+  return !isPseudo(path) && !isCloud(path) && !isReadOnlyLocation(path);
+}
+
 function shareStatusLabel(status: Entry["shareStatus"]): string {
   switch (status) {
     case "online":
@@ -676,8 +681,17 @@ async function reload(select?: string[]): Promise<void> {
     sharePage = null;
   } catch (err) {
     entries = [];
-    if (isSharePath(location)) sharePage = "offline";
-    else listingError = cleanError(err);
+    if (isSharePath(location)) {
+      sharePage = "offline";
+    } else if (isLocalLocation(location) && isMissingPathError(err)) {
+      // The folder went away under us: a cancelled copy deletes the folder it
+      // was writing, and the view can still be showing it. Go to its parent
+      // rather than stranding the view on an error page.
+      if (await navigate(parentOf(location), { history: "none" })) return;
+      listingError = cleanError(err);
+    } else {
+      listingError = cleanError(err);
+    }
   }
   const keep = select ?? [...selected];
   selected.clear();
@@ -739,6 +753,11 @@ function openSettingsSafely(): void {
 function cleanError(err: unknown): string {
   // "Failed to read directory: Permission denied (os error 13)" → "Permission denied"
   return String(err).replace(/^[^:]*:\s*/, "").replace(/\s*\(os error \d+\)$/, "");
+}
+
+/** True for ENOENT: the path was removed, not merely unreadable. */
+function isMissingPathError(err: unknown): boolean {
+  return /no such file or directory/i.test(String(err));
 }
 
 function goBack(): void {
