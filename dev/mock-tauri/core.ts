@@ -373,7 +373,7 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     if (!link.startsWith("fbshare1:")) throw "This isn't a share link.";
     if (link.startsWith("fbshare1:own")) throw "This is your own shared folder.";
     if (mockReceived.some((item) => item.link === link)) {
-      throw "This folder is already in Network.";
+      throw "This folder is already in Shares.";
     }
     const item = {
       id: `r${mockReceived.length + 1}`,

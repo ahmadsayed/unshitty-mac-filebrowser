@@ -70,7 +70,7 @@ files, so the photo thumbnails are placeholders.</sub>
 - Rename, new folder, Move to Trash with an **Undo** button in the toast (or ⌘Z)
 - **Folder Sharing (Experimental):** share a local folder read-only with an
   “Anyone with the link” or “Specific person” link; received shares appear under
-  Network with Shared by / Status, an offline page and read-only menus. Copying
+  Shares with Shared by / Status, an offline page and read-only menus. Copying
   files out of a share and live refresh are still to come
 - Properties (right-click or ⌘I): type, size (folders are summed in the
   background), location, modified/accessed/created dates, permissions, symlink
@@ -177,8 +177,8 @@ exact build: after rebuilding, toggle the permission off and on again.
 
 ## Not supported yet
 
-Network folder sharing is read-only: browsing and opening work, but copying files
-out, live refresh and the Shared sidebar row are still to come. Undo covers only
+Folder sharing in Shares is read-only: browsing and opening work, but copying files
+out and live refresh are still to come. Undo covers only
 the last Move to Trash; the Trash view shows the home Trash, not the Trash
 folders of other drives; there is no SMB / SFTP / WebDAV browsing. Search matches
 file names only and is not a disk-wide content index. Preview covers text and

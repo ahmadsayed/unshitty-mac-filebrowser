@@ -70,12 +70,12 @@ function savePrefs(): void {
 // State
 // ---------------------------------------------------------------------------
 
-/** Sidebar places that aren't folders. Recent and Starred list items from anywhere; Network is a placeholder. */
+/** Sidebar places that aren't folders. Recent and Starred list items from anywhere; Shares lists iroh shares. */
 type Pseudo = "recent" | "starred" | "network";
 const PSEUDO: Record<Pseudo, { label: string; icon: string; title: string; text: string }> = {
   recent: { label: "Recent", icon: "document-open-recent", title: "No Recent Files", text: "" },
   starred: { label: "Starred", icon: "starred", title: "Starred files will appear here", text: "" },
-  network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Paste a share link below to add a shared folder." },
+  network: { label: "Shares", icon: "network-workgroup", title: "No Shared Folders", text: "Paste a share link to add a folder someone shared with you." },
 };
 const PSEUDO_PREFIX = "pseudo:";
 const RECENT = `${PSEUDO_PREFIX}recent`;
@@ -139,7 +139,7 @@ const fixedSidebarPaths = new Set<string>();
 
 let home = "";
 let trashPath = "";
-/** Received shares, as the Network view lists them. */
+/** Received shares, as the Shares view lists them. */
 let networkShares: ReceivedShare[] = [];
 /** Local folders shared by this machine, for menus/emblems. */
 let sharedFolders: ShareSummary[] = [];
@@ -224,7 +224,7 @@ function receivedFor(path: string): ReceivedShare | undefined {
   return networkShares.find((share) => share.id === shareIdOf(path));
 }
 
-/** What the Network view lists: one folder entry per received share. */
+/** What the Shares view lists: one folder entry per received share. */
 function networkEntries(): Entry[] {
   return networkShares.map((share) => ({
     name: share.folder,
@@ -759,7 +759,7 @@ function crumbsFor(loc: string): Crumb[] {
   if (isSharePath(loc)) {
     const parts = loc.slice(SHARE_PREFIX.length).split("/").filter(Boolean);
     const id = parts.shift() ?? "";
-    if (!id) return [{ label: "Network", path: NETWORK, icon: "network-workgroup" }];
+    if (!id) return [{ label: "Shares", path: NETWORK, icon: "network-workgroup" }];
     const received = receivedFor(loc);
     const crumbs: Crumb[] = [
       { label: received?.folder || "Shared Folder", path: `${SHARE_PREFIX}${id}`, icon: "network-workgroup" },
@@ -844,7 +844,7 @@ async function submitPathEntry(): Promise<void> {
       return;
     }
     closePathEntry();
-    if (result.added) showToast("Folder added to Network");
+    if (result.added) showToast("Folder added to Shares");
     else showToast("This is your own shared folder.");
     await navigate(result.path);
     return;
@@ -1096,7 +1096,7 @@ function renderNetworkPaste(overlay: Element): void {
         return;
       }
       await reload();
-      showToast("Folder added to Network");
+      showToast("Folder added to Shares");
     } finally {
       button.disabled = false;
     }
@@ -1854,14 +1854,14 @@ function networkItemMenu(single: Entry | null): MenuItem[] {
     { label: "Copy Location", disabled: !single, action: copyLocation },
     { separator: true },
     {
-      label: "Remove from Network",
+      label: "Remove from Shares",
       disabled: !id,
       action: () => {
         removeReceived(id)
           .then(async () => {
             await refreshShares();
             await reload([]);
-            showToast("Removed from Network");
+            showToast("Removed from Shares");
           })
           .catch((err) => showToast(`Could not remove the share: ${cleanError(err)}`));
       },
@@ -4613,7 +4613,7 @@ async function buildSidebar(): Promise<void> {
   if (home) sidebarRow(places, "Home", "user-home", home);
   sidebarRow(places, "Recent", "document-open-recent", RECENT);
   sidebarRow(places, "Starred", "starred", STARRED);
-  sidebarRow(places, "Network", "network-workgroup", NETWORK);
+  sidebarRow(places, "Shares", "network-workgroup", NETWORK);
   const driveRow = sidebarRow(
     places,
     "Google Drive",
