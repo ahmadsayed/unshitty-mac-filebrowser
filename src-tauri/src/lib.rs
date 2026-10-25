@@ -931,7 +931,7 @@ fn trash_history_dir(dir: &Path) -> Result<(), String> {
 async fn empty_trash(app: tauri::AppHandle) -> Result<(), String> {
     blocking(move || {
         let home = home_dir(&app)?;
-        trash_ops::empty(&trash_ops::home_trash(&home))
+        trash_ops::empty(&trash_ops::home_trash(&home), &progress::Progress::default())
     })
     .await?
 }
