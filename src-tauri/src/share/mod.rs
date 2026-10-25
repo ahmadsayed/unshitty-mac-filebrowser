@@ -1,15 +1,26 @@
 //! Read-only folder sharing over iroh.
 
+pub mod host;
 pub mod identity;
 pub mod link;
 pub mod manifest;
+pub mod proto;
 pub mod registry;
 
 #[cfg(test)]
 pub(crate) async fn test_endpoint() -> iroh::Endpoint {
+    let mut raw = [0u8; 32];
+    getrandom::fill(&mut raw).expect("system randomness");
+    test_endpoint_for(iroh::SecretKey::from_bytes(&raw)).await
+}
+
+/// A loopback endpoint with a given key (a host must use its identity's).
+#[cfg(test)]
+pub(crate) async fn test_endpoint_for(key: iroh::SecretKey) -> iroh::Endpoint {
     use iroh::endpoint::presets;
     // Minimal preset: no relays, no discovery. Loopback only.
     iroh::Endpoint::builder(presets::Minimal)
+        .secret_key(key)
         .alpns(vec![iroh_blobs::ALPN.to_vec()])
         .bind_addr("127.0.0.1:0")
         .expect("valid loopback address")

@@ -400,10 +400,11 @@ fn nearest_folder(folder: &Path, changed: &Path) -> PathBuf {
 pub struct ContentCache {
     known: HashMap<PathBuf, (u64, i64, Hash)>,
     #[cfg(test)]
-    between_reads: Option<Box<dyn FnMut(&Path)>>,
+    between_reads: Option<Box<dyn FnMut(&Path) + Send>>,
 }
 
-fn stat(path: &Path) -> Result<(u64, i64), String> {
+/// Size and mtime (nanoseconds) of a file, following symlinks.
+pub(crate) fn stat(path: &Path) -> Result<(u64, i64), String> {
     let m = fs::metadata(path).map_err(|e| e.to_string())?;
     Ok((m.len(), nanos(m.modified())))
 }
