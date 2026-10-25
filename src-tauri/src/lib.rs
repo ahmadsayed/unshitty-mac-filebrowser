@@ -467,7 +467,15 @@ async fn drive_transfer(
                 .map(|_| ())
         };
         let state = app.state::<CloudState>();
-        cloud::transfer::dispatch(&state, &from, &to, overwrite, moving, trash_local)
+        cloud::transfer::dispatch(
+            &state,
+            &from,
+            &to,
+            overwrite,
+            moving,
+            &progress::Progress::default(),
+            trash_local,
+        )
     })
     .await?
 }
@@ -1124,7 +1132,7 @@ async fn drive_open(
             .path()
             .app_cache_dir()
             .map_err(|error| error.to_string())?;
-        cloud::service::open(&state, &path, &cache)
+        cloud::service::open(&state, &path, &cache, &progress::Progress::default())
     })
     .await?
 }

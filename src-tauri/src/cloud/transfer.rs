@@ -18,6 +18,8 @@ use crate::cloud::CloudState;
 use crate::cloud::drive::{DriveClient, DriveError, DriveFile, FileChange};
 use crate::cloud::service;
 use crate::cloud::write::{self, Ctx, message};
+use crate::fs_ops::Measure;
+use crate::progress::Progress;
 
 const UPLOAD_SUFFIX: &str = ".filebrowser-upload";
 
@@ -26,8 +28,9 @@ pub fn upload(
     from: &Path,
     to: &str,
     overwrite: bool,
+    progress: &Progress,
 ) -> Result<String, String> {
-    write::live(state, |c| upload_in(c, from, to, overwrite))
+    write::live_with(state, progress, |c| upload_in(c, from, to, overwrite))
 }
 
 pub fn download(
@@ -35,8 +38,42 @@ pub fn download(
     from: &str,
     to: &Path,
     overwrite: bool,
+    progress: &Progress,
 ) -> Result<String, String> {
-    write::live(state, |c| download_in(c, from, to, overwrite))
+    write::live_with(state, progress, |c| download_in(c, from, to, overwrite))
+}
+
+/// Total size and item count of Drive items, for an operation's progress.
+pub fn measure(state: &CloudState, paths: &[String]) -> Result<Measure, String> {
+    write::live(state, |c| measure_in(c, paths))
+}
+
+pub(crate) fn measure_in(c: &Ctx, paths: &[String]) -> Result<Measure, String> {
+    let mut total = Measure::default();
+    for path in paths {
+        let location = service::drive_location(path)?;
+        let id = location
+            .file_id()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| "This Google Drive item has no id.".to_string())?;
+        let client = write::client(c, &location.account)?;
+        let file = client.get(id).map_err(message)?;
+        measure_file(&client, &file, &mut total)?;
+    }
+    Ok(total)
+}
+
+/// Google Docs and shortcuts count as items without bytes.
+fn measure_file(client: &DriveClient, file: &DriveFile, total: &mut Measure) -> Result<(), String> {
+    total.items += 1;
+    if file.is_dir() {
+        for child in client.list_all(&file.id).map_err(message)? {
+            measure_file(client, &child, total)?;
+        }
+    } else {
+        total.bytes += drive_size(file).unwrap_or(0);
+    }
+    Ok(())
 }
 
 /// Copy or move between any two locations where at least one is in Drive.
@@ -47,9 +84,10 @@ pub fn dispatch(
     to: &str,
     overwrite: bool,
     moving: bool,
+    progress: &Progress,
     trash_local: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<String, String> {
-    write::live(state, |c| {
+    write::live_with(state, progress, |c| {
         dispatch_in(c, from, to, overwrite, moving, trash_local)
     })
 }
@@ -101,13 +139,15 @@ pub(crate) fn upload_in(c: &Ctx, from: &Path, to: &str, overwrite: bool) -> Resu
         let folder = client
             .create_folder(&parent_id, &staged_name)
             .map_err(message)?;
-        if let Err(error) = upload_children(&client, from, &folder.id, &mut skipped) {
+        let uploaded = upload_children(&client, from, &folder.id, &mut skipped, &c.progress);
+        if let Err(error) = uploaded {
             let _ = client.update(&folder.id, &FileChange::trash(true));
             return Err(error);
         }
+        c.progress.add_item();
         folder
     } else {
-        upload_verified(&client, &parent_id, &staged_name, from)?
+        upload_verified(&client, &parent_id, &staged_name, from, &c.progress)?
     };
     let uploaded = if staged_name == name {
         parent.child(&staged.id, &staged.name).to_uri()
@@ -130,15 +170,19 @@ fn upload_verified(
     parent_id: &str,
     name: &str,
     local: &Path,
+    progress: &Progress,
 ) -> Result<DriveFile, String> {
     let expected = std::fs::metadata(local)
         .map_err(|error| error.to_string())?
         .len();
-    let uploaded = client.upload(parent_id, name, local).map_err(message)?;
+    let uploaded = client
+        .upload(parent_id, name, local, progress)
+        .map_err(message)?;
     if drive_size(&uploaded) != Some(expected) {
         let _ = client.update(&uploaded.id, &FileChange::trash(true));
         return Err("The upload to Google Drive was incomplete.".into());
     }
+    progress.add_item();
     Ok(uploaded)
 }
 
@@ -150,6 +194,7 @@ fn upload_children(
     dir: &Path,
     parent_id: &str,
     skipped: &mut Vec<String>,
+    progress: &Progress,
 ) -> Result<(), String> {
     let mut children = Vec::new();
     for entry in std::fs::read_dir(dir).map_err(|error| error.to_string())? {
@@ -160,6 +205,7 @@ fn upload_children(
     }
     children.sort_by_key(|entry| entry.file_name());
     for entry in children {
+        progress.check()?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
@@ -168,9 +214,10 @@ fn upload_children(
         };
         if meta.is_dir() {
             let folder = client.create_folder(parent_id, &name).map_err(message)?;
-            upload_children(client, &path, &folder.id, skipped)?;
+            upload_children(client, &path, &folder.id, skipped, progress)?;
+            progress.add_item();
         } else if meta.is_file() {
-            upload_verified(client, parent_id, &name, &path)?;
+            upload_verified(client, parent_id, &name, &path, progress)?;
         } else {
             skipped.push(name);
         }
@@ -236,9 +283,12 @@ pub(crate) fn download_in(
     let result = if file.is_dir() {
         std::fs::create_dir(&staging)
             .map_err(|error| error.to_string())
-            .and_then(|()| download_children(&client, &file.id, &staging, &mut skipped))
+            .and_then(|()| {
+                download_children(&client, &file.id, &staging, &mut skipped, &c.progress)
+            })
+            .map(|()| c.progress.add_item())
     } else {
-        download_verified(&client, &file, &staging)
+        download_verified(&client, &file, &staging, &c.progress)
     };
     if let Err(error) = result {
         let _ = crate::fs_ops::remove_any(&staging);
@@ -258,13 +308,19 @@ pub(crate) fn download_in(
 }
 
 /// Download one file to `dest` and check its size against Drive's.
-fn download_verified(client: &DriveClient, file: &DriveFile, dest: &Path) -> Result<(), String> {
-    client.download(&file.id, dest).map_err(message)?;
+fn download_verified(
+    client: &DriveClient,
+    file: &DriveFile,
+    dest: &Path,
+    progress: &Progress,
+) -> Result<(), String> {
+    client.download(&file.id, dest, progress).map_err(message)?;
     let written = std::fs::metadata(dest).map(|meta| meta.len()).ok();
     if drive_size(file).is_some_and(|size| Some(size) != written) {
         let _ = std::fs::remove_file(dest);
         return Err("The download from Google Drive was incomplete.".into());
     }
+    progress.add_item();
     Ok(())
 }
 
@@ -276,8 +332,10 @@ fn download_children(
     folder_id: &str,
     dir: &Path,
     skipped: &mut Vec<String>,
+    progress: &Progress,
 ) -> Result<(), String> {
     for child in client.list_all(folder_id).map_err(message)? {
+        progress.check()?;
         if !child.is_dir() && !child.can_download() {
             skipped.push(not_downloadable(&child));
             continue;
@@ -285,9 +343,10 @@ fn download_children(
         let path = unique_child(dir, &service::safe_name(&child.name));
         if child.is_dir() {
             std::fs::create_dir(&path).map_err(|error| error.to_string())?;
-            download_children(client, &child.id, &path, skipped)?;
+            download_children(client, &child.id, &path, skipped, progress)?;
+            progress.add_item();
         } else {
-            download_verified(client, &child, &path)?;
+            download_verified(client, &child, &path, progress)?;
         }
     }
     Ok(())
@@ -349,7 +408,55 @@ pub(crate) fn move_down_in(
 mod tests {
     use super::*;
     use crate::cloud::test_server::Reply;
-    use crate::cloud::write::tests::{ROOT, file, folder, found, heads, ok, run};
+    use crate::cloud::write::tests::{ROOT, file, folder, found, heads, ok, run, run_with};
+    use crate::progress::Progress;
+
+    fn cancelled() -> Progress {
+        let progress = Progress::default();
+        progress.cancel();
+        progress
+    }
+
+    #[test]
+    fn cancelled_download_leaves_no_staging_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("a.txt");
+        let (result, _) = run_with(
+            vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")],
+            &cancelled(),
+            |c| download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false),
+        );
+        assert_eq!(result.unwrap_err(), "Cancelled.");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn cancelled_upload_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = local(&dir, "a.txt", b"hello");
+        let (result, log) = run_with(vec![found(&[]), session()], &cancelled(), |c| {
+            upload_in(c, &source, &format!("{ROOT}/~a.txt"), false)
+        });
+        assert_eq!(result.unwrap_err(), "Cancelled.");
+        assert!(heads(&log).iter().all(|head| !head.starts_with("PUT ")));
+        assert_eq!(std::fs::read(&source).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn measure_sums_drive_sizes_and_counts_docs() {
+        let doc = format!(r#"{{"id":"g1","name":"Plan","mimeType":"{DOC}"}}"#);
+        let (result, _) = run(
+            vec![ok(folder("d1", "Docs")), found(&[sized("x1", "x.txt", 100), doc])],
+            |c| measure_in(c, &[format!("{ROOT}/d1~Docs")]),
+        );
+        assert_eq!(
+            result.unwrap(),
+            crate::fs_ops::Measure {
+                bytes: 100,
+                items: 3
+            }
+        );
+    }
 
     const DOC: &str = "application/vnd.google-apps.document";
 

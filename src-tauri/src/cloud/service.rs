@@ -3,6 +3,7 @@
 //! touches the network runs on a blocking thread; the frontend simply sees
 //! `Entry` values with a `cloud` field.
 
+use crate::progress::Progress;
 use std::path::Path;
 
 use chrono::DateTime;
@@ -410,8 +411,13 @@ pub enum OpenTarget {
 
 /// Materialize a read-only snapshot for the default app, or return the web
 /// URL for a Google-native document.
-pub fn open(state: &CloudState, path: &str, cache_dir: &Path) -> Result<OpenTarget, String> {
-    open_with(state, path, cache_dir, API_BASE, &google_refresh(state))
+pub fn open(
+    state: &CloudState,
+    path: &str,
+    cache_dir: &Path,
+    progress: &Progress,
+) -> Result<OpenTarget, String> {
+    open_with(state, path, cache_dir, API_BASE, &google_refresh(state), progress)
 }
 
 fn open_with(
@@ -420,6 +426,7 @@ fn open_with(
     cache_dir: &Path,
     base: &str,
     refresh: Refresh,
+    progress: &Progress,
 ) -> Result<OpenTarget, String> {
     let drive = drive_location(path)?;
     let id = drive
@@ -463,8 +470,13 @@ fn open_with(
 
     let part = dest.with_extension("part");
     let _ = std::fs::remove_file(&part);
+    if let Some(size) = file.size.as_deref().and_then(|size| size.parse().ok()) {
+        progress.set_total(size);
+    }
     let result = authorized_with(state, &drive.account, base, refresh, |client| {
-        client.download(&id, &part)
+        // A retry after a refreshed sign-in counts from zero again.
+        progress.set_bytes(0);
+        client.download(&id, &part, progress)
     });
     if let Err(error) = result {
         let _ = std::fs::remove_file(&part);
@@ -564,6 +576,7 @@ pub(crate) fn safe_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::Progress;
     use crate::cloud::accounts::Accounts;
     use crate::cloud::drive::Capabilities;
     use crate::cloud::oauth::SCOPE_READONLY;
@@ -1093,6 +1106,7 @@ mod tests {
             cache.path(),
             &base,
             &fake_refresh,
+            &Progress::default(),
         )
         .unwrap();
         match target {
@@ -1122,6 +1136,7 @@ mod tests {
             cache.path(),
             &base,
             &fake_refresh,
+            &Progress::default(),
         )
         .unwrap();
         match target {
@@ -1148,9 +1163,39 @@ mod tests {
             cache.path(),
             &base,
             &fake_refresh,
+            &Progress::default(),
         )
         .unwrap_err();
         assert!(error.contains("navigating"));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn open_sets_total_and_counts_bytes() {
+        let (base, server) = serve(vec![
+            (
+                200,
+                json(
+                    r#"{"id":"f1","name":"hello.txt","mimeType":"text/plain","size":"5","modifiedTime":"2026-10-24T17:52:03Z","capabilities":{"canDownload":true}}"#,
+                ),
+                "application/json",
+            ),
+            (200, b"hello".to_vec(), "application/octet-stream"),
+        ]);
+        let cache = tempdir().unwrap();
+        let (state, _dir) = test_state(valid_token());
+        let progress = Progress::default();
+        open_with(
+            &state,
+            "gdrive://acct/root~My%20Drive/f1~hello.txt",
+            cache.path(),
+            &base,
+            &fake_refresh,
+            &progress,
+        )
+        .unwrap();
+        server.join().unwrap();
+        let update = progress.snapshot();
+        assert_eq!((update.total, update.bytes), (Some(5), 5));
     }
 }

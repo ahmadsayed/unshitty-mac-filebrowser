@@ -10,21 +10,34 @@ use crate::cloud::CloudState;
 use crate::cloud::drive::{API_BASE, DriveClient, DriveError, DriveFile, FileChange};
 use crate::cloud::location::DriveLocation;
 use crate::cloud::service::{self, Refresh};
+use crate::progress::Progress;
 
 /// Where requests go and how tokens refresh; tests point it at a fake server.
 pub(crate) struct Ctx<'a> {
     pub(crate) state: &'a CloudState,
     pub(crate) base: &'a str,
     pub(crate) refresh: Refresh<'a>,
+    /// Where copies count bytes and items, and check for a cancel.
+    pub(crate) progress: Progress,
 }
 
 /// Run `work` with a production context.
 pub(crate) fn live<T>(state: &CloudState, work: impl FnOnce(&Ctx) -> T) -> T {
+    live_with(state, &Progress::default(), work)
+}
+
+/// `live`, reporting to `progress`.
+pub(crate) fn live_with<T>(
+    state: &CloudState,
+    progress: &Progress,
+    work: impl FnOnce(&Ctx) -> T,
+) -> T {
     let refresh = service::google_refresh(state);
     work(&Ctx {
         state,
         base: API_BASE,
         refresh: &refresh,
+        progress: progress.clone(),
     })
 }
 
@@ -237,16 +250,19 @@ pub(crate) fn copy_in(c: &Ctx, from: &str, to: &str, overwrite: bool) -> Result<
             .client
             .create_folder(&t.target_parent_id, &staged_name)
             .map_err(message)?;
-        if let Err(error) = copy_children(&t.client, &t.source.id, &staged.id, &staged.id) {
+        let copied = copy_children(&t.client, &t.source.id, &staged.id, &staged.id, &c.progress);
+        if let Err(error) = copied {
             let _ = t.client.update(&staged.id, &FileChange::trash(true));
             return Err(message(error));
         }
         staged
     } else {
+        c.progress.check()?;
         t.client
             .copy_file(&t.source.id, &t.target_parent_id, &staged_name)
             .map_err(message)?
     };
+    c.progress.add_item();
     if staged_name == t.name {
         return Ok(t.target_parent.child(&staged.id, &staged.name).to_uri());
     }
@@ -302,22 +318,29 @@ pub(crate) fn finish_staged(
 /// only files, so folders are recreated. `staged` (the copy being built) is
 /// skipped: when the target lies inside the source, the walk meets it, and
 /// copying it would never end.
+/// Copy a folder's contents server-side, counting each item and stopping
+/// before the next one when cancelled.
 fn copy_children(
     client: &DriveClient,
     from: &str,
     to: &str,
     staged: &str,
+    progress: &Progress,
 ) -> Result<(), DriveError> {
     for child in client.list_all(from)? {
         if child.id == staged {
             continue;
         }
+        if progress.is_cancelled() {
+            return Err(DriveError::Cancelled);
+        }
         if child.is_dir() {
             let folder = client.create_folder(to, &child.name)?;
-            copy_children(client, &child.id, &folder.id, staged)?;
+            copy_children(client, &child.id, &folder.id, staged, progress)?;
         } else {
             client.copy_file(&child.id, to, &child.name)?;
         }
+        progress.add_item();
     }
     Ok(())
 }
@@ -370,6 +393,7 @@ pub(crate) fn move_in(c: &Ctx, from: &str, to: &str, overwrite: bool) -> Result<
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::progress::Progress;
     use crate::cloud::accounts::{Accounts, DriveAccount};
     use crate::cloud::client::ClientStore;
     use crate::cloud::oauth::SCOPE_FULL;
@@ -411,6 +435,7 @@ pub(crate) mod tests {
             state,
             base,
             refresh: &no_refresh,
+            progress: Progress::default(),
         }
     }
 
@@ -431,11 +456,48 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn run<T>(replies: Vec<Reply>, work: impl FnOnce(&Ctx) -> T) -> (T, Log) {
+        run_with(replies, &Progress::default(), work)
+    }
+
+    /// `run` with the operation reporting to `progress`.
+    pub(crate) fn run_with<T>(
+        replies: Vec<Reply>,
+        progress: &Progress,
+        work: impl FnOnce(&Ctx) -> T,
+    ) -> (T, Log) {
         let (base, log, server) = serve_replies(replies);
         let (state, _dir) = state();
-        let result = work(&ctx(&state, &base));
+        let mut c = ctx(&state, &base);
+        c.progress = progress.clone();
+        let result = work(&c);
         server.join().unwrap();
         (result, log)
+    }
+
+    #[test]
+    fn drive_copy_counts_items() {
+        let progress = Progress::default();
+        let (result, _) = run_with(
+            vec![
+                ok(folder("d1", "Docs")),
+                found(&[]),
+                ok(folder("s1", ".Docs.filebrowser-copy")),
+                found(&[file("c", "x.txt")]),
+                ok(file("c2", "x.txt")),
+                ok(folder("s1", "Docs")),
+            ],
+            &progress,
+            |c| {
+                copy_in(
+                    c,
+                    &format!("{ROOT}/d1~Docs"),
+                    &format!("{ROOT}/p2~Other/~Docs"),
+                    false,
+                )
+            },
+        );
+        result.unwrap();
+        assert_eq!(progress.snapshot().items, 2);
     }
 
     pub(crate) fn heads(log: &Log) -> Vec<String> {
