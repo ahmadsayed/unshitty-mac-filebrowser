@@ -9,6 +9,9 @@ import { formatSize } from "./format";
 import { sym } from "./icons";
 import { openPopover, type PopoverHandle } from "./ui";
 
+/** The error a cancelled command ends with; a cancel, not a failure. */
+export const CANCELLED = "Cancelled.";
+
 export type OpKind = "copy" | "move" | "trash" | "delete" | "empty" | "open";
 export type OpState = "waiting" | "preparing" | "working" | "cancelling";
 

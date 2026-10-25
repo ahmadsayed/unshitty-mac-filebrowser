@@ -1,4 +1,4 @@
-import { initOperationsButton } from "./operations";
+import { CANCELLED, endOperation, finishItem, initOperationsButton, opTitle, setOperationState, startOperation, updateOperation, type Operation, type ProgressUpdate } from "./operations";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
@@ -13,7 +13,7 @@ import {
   type SftpServer,
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
-  trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, fileProperties, folderSize,
+  trashInfo, restoreEntry, deletePermanently, emptyTrash, cancelOperation, measure, listVolumes, trashDir, fileProperties, folderSize,
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
   previewText, thumbnail,
   listApps, openWith,
@@ -31,7 +31,7 @@ import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
-import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
+import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -1840,11 +1840,21 @@ function activate(entry: Entry): void {
 }
 
 async function openEntry(entry: Entry): Promise<void> {
+  // Remote files download first, so they show as an operation (spec D6).
+  const op = isRemotePath(entry.path)
+    ? startOperation(opTitle("open", [entry.name]), {
+      totalItems: 1,
+      onCancel: () => void cancelOperation(op!.id).catch(() => {}),
+    })
+    : null;
+  if (op) setOperationState(op, "working");
   try {
-    await openFile(entry.path);
+    await openFile(entry.path, op ? { op: op.id, onProgress: (u) => updateOperation(op, u) } : undefined);
   } catch (err) {
-    showToast(`Could not open “${entry.name}”: ${cleanError(err)}`);
+    if (cleanError(err) !== CANCELLED) showToast(`Could not open “${entry.name}”: ${cleanError(err)}`);
     return;
+  } finally {
+    if (op) endOperation(op);
   }
   if (isCloud(entry.path) && !entry.cloud?.is_google_doc && !cloudOpenNoticeShown) {
     cloudOpenNoticeShown = true;
@@ -2915,25 +2925,85 @@ async function freeCopyName(dir: string, name: string, isDir: boolean): Promise<
   }
 }
 
-let transferring = false;
+/** Transfers run one at a time; a new one waits behind this (spec D8). */
+let transferChain: Promise<unknown> = Promise.resolve();
+let transfersRunning = 0;
+
+/** Wording and totals for a transfer batch's operation row. */
+function transferOperation(paths: string[], moving: boolean, destDir: string, cancel: () => void): Operation {
+  const title = opTitle(moving ? "move" : "copy", paths.map(basename), basename(destDir));
+  return startOperation(title, { totalItems: paths.length, onCancel: cancel, waiting: transfersRunning > 0 });
+}
 
 /**
  * Copy or move `paths` into `destDir`, asking about name clashes. Shared by
  * paste and drag and drop; `move(path)` says whether that item is moved.
+ * Batches queue behind each other and show in the operations popover.
  * Resolves true when every item was handled (none failed, nothing cancelled).
  */
 async function runTransfer(paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string): Promise<boolean> {
-  if (transferring || isPseudo(destDir)) return false;
-  transferring = true;
-  let progressShown = false;
+  if (isPseudo(destDir)) return false;
+  const batch = { cancelled: false, started: false };
+  const op = transferOperation(paths, paths.some(move), destDir, () => {
+    batch.cancelled = true;
+    // A batch still waiting in the queue just leaves it.
+    if (!batch.started) endOperation(op);
+    else void cancelOperation(op.id).catch(() => {});
+  });
+  const run = transferChain.then(async () => {
+    if (batch.cancelled) return false;
+    batch.started = true;
+    transfersRunning++;
+    try {
+      return await transferBatch(paths, dirs, move, destDir, op, batch);
+    } finally {
+      transfersRunning--;
+      endOperation(op);
+    }
+  });
+  transferChain = run.catch(() => {});
+  return run;
+}
 
+/** Measure the batch for its progress total; items only when that fails. */
+async function measureBatch(op: Operation, paths: string[]): Promise<void> {
+  setOperationState(op, "preparing");
+  try {
+    const measured = await measure(paths);
+    op.totalBytes = measured.bytes || null;
+    op.totalItems = measured.items || paths.length;
+  } catch {
+    op.totalBytes = null;
+  }
+  setOperationState(op, "working");
+}
+
+/** One item of a batch, reporting into `op`; resolves with the new path. */
+async function transferItem(op: Operation, from: string, to: string, overwrite: boolean, moving: boolean): Promise<string> {
+  let finished = false;
+  const tracked = { op: op.id, onProgress: (u: ProgressUpdate) => !finished && updateOperation(op, u) };
+  try {
+    if (!moving) return await copyEntry(from, to, overwrite, tracked);
+    const moved = await moveEntry(from, to, overwrite, tracked);
+    followMove(from, moved);
+    return moved;
+  } finally {
+    finished = true;
+    finishItem(op);
+  }
+}
+
+async function transferBatch(
+  paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string,
+  op: Operation, batch: { cancelled: boolean },
+): Promise<boolean> {
+  await measureBatch(op, paths);
   const done: string[] = [];
   const errors: string[] = [];
   let anyMove = false;
-  let cancelled = false;
   let applyToAll: ConflictChoice | null = null;
 
-  for (let i = 0; i < paths.length; i++) {
+  for (let i = 0; i < paths.length && !batch.cancelled; i++) {
     const from = paths[i];
     // A Drive name can be "a/b" or "..": locally it must stay one plain name.
     const name = isCloud(from) && !isCloud(destDir) ? safeLocalName(basename(from)) : basename(from);
@@ -2958,7 +3028,7 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
         if (answer.all) applyToAll = choice;
       }
       if (choice === "cancel") {
-        cancelled = true;
+        batch.cancelled = true;
         break;
       }
       if (choice === "skip") continue;
@@ -2966,35 +3036,22 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
       else overwrite = true;
     }
 
-    // Only a slow transfer gets a progress toast, never one waiting on the dialog.
-    const slow = setTimeout(() => {
-      progressShown = true;
-      showToast(`${moving ? "Moving" : "Copying"} “${name}”…`, { timeout: 600_000 });
-    }, 600);
     try {
-      if (moving) {
-        const moved = await moveEntry(from, to, overwrite);
-        followMove(from, moved);
-        done.push(moved);
-      } else {
-        done.push(await copyEntry(from, to, overwrite));
-      }
+      done.push(await transferItem(op, from, to, overwrite, moving));
     } catch (err) {
-      errors.push(`“${name}”: ${cleanError(err)}`);
+      // A cancel is not a failure: no toast, finished items stay.
+      if (cleanError(err) === CANCELLED) batch.cancelled = true;
+      else errors.push(`“${name}”: ${cleanError(err)}`);
     }
-    clearTimeout(slow);
   }
 
-  transferring = false;
   const verb = anyMove ? "move" : "copy";
   if (errors.length) {
     showToast(errors.length === 1 ? `Could not ${verb} ${errors[0]}` : `Could not ${verb} ${errors.length} items. ${errors[0]}`);
-  } else if (progressShown) {
-    document.querySelectorAll(".toast").forEach((t) => t.remove());
   }
   if (destDir === location) await reload(done.length ? done : undefined);
   else await reload();
-  return !cancelled && errors.length === 0;
+  return !batch.cancelled && errors.length === 0;
 }
 
 async function paste(destDir: string): Promise<void> {
@@ -3030,12 +3087,27 @@ function trashOrDelete(): void {
 /** The last Move to Trash, for Undo: where each item went and came from. */
 let lastTrashed: { trashed: string; origin: string }[] = [];
 
+/** An operation counted in items, cancelled between them by the caller. */
+function itemOperation(kind: "trash" | "delete", names: string[]): { op: Operation; cancelled: boolean } {
+  const batch = { cancelled: false } as { op: Operation; cancelled: boolean };
+  batch.op = startOperation(opTitle(kind, names), {
+    totalItems: names.length,
+    onCancel: () => {
+      batch.cancelled = true;
+    },
+  });
+  setOperationState(batch.op, "working");
+  return batch;
+}
+
 async function trashPaths(paths: string[]): Promise<void> {
   if (paths.length === 0) return;
   const errors: string[] = [];
   const undoable: { trashed: string; origin: string }[] = [];
   let done = 0;
+  const batch = itemOperation("trash", paths.map(basename));
   for (const p of paths) {
+    if (batch.cancelled) break;
     try {
       const trashed = await trashEntry(p);
       if (trashed) undoable.push({ trashed, origin: p });
@@ -3043,7 +3115,9 @@ async function trashPaths(paths: string[]): Promise<void> {
     } catch (err) {
       errors.push(`“${basename(p)}”: ${cleanError(err)}`);
     }
+    finishItem(batch.op);
   }
+  endOperation(batch.op);
   if (clipboard) {
     clipboard.paths = clipboard.paths.filter((p) => !paths.includes(p));
     if (clipboard.paths.length === 0) clipboard = null;
@@ -3111,13 +3185,17 @@ function confirmDeletePermanently(sel: Entry[]): void {
 
 async function deleteEntries(sel: Entry[]): Promise<void> {
   const errors: string[] = [];
+  const batch = itemOperation("delete", sel.map((e) => e.name));
   for (const e of sel) {
+    if (batch.cancelled) break;
     try {
       await deletePermanently(e.path);
     } catch (err) {
       errors.push(`“${e.name}”: ${cleanError(err)}`);
     }
+    finishItem(batch.op);
   }
+  endOperation(batch.op);
   if (errors.length) showToast(`Could not delete ${errors[0]}`);
   await reload([]);
 }
@@ -3139,11 +3217,18 @@ function confirmEmptyTrash(): void {
 }
 
 async function runEmptyTrash(): Promise<void> {
+  const count = trashPath ? (await listDir(trashPath, true).catch(() => [])).length : 0;
+  const op = startOperation(opTitle("empty", []), {
+    totalItems: count,
+    onCancel: () => void cancelOperation(op.id).catch(() => {}),
+  });
+  setOperationState(op, "working");
   try {
-    await emptyTrash();
+    await emptyTrash({ op: op.id, onProgress: (u) => updateOperation(op, u) });
   } catch (err) {
-    showToast(`Could not empty the Trash: ${cleanError(err)}`);
+    if (cleanError(err) !== CANCELLED) showToast(`Could not empty the Trash: ${cleanError(err)}`);
   }
+  endOperation(op);
   lastTrashed = [];
   if (inTrash()) {
     if (location === trashPath) await reload([]);

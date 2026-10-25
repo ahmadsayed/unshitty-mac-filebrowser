@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import type { ProgressUpdate } from "./operations";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 
 export interface Entry {
@@ -324,13 +325,36 @@ export async function pathExists(path: string): Promise<boolean> {
  * Copy `from` to `to`, recursively for folders. With `overwrite`, an existing
  * `to` is moved to the Trash and replaced; otherwise an existing `to` is an error.
  */
-export async function copyEntry(from: string, to: string, overwrite: boolean): Promise<string> {
-  return invoke<string>("copy_entry", { from, to, overwrite });
+/** Progress for one long command: an operation id and where updates go. */
+export interface Tracked {
+  op: string;
+  onProgress?: (update: ProgressUpdate) => void;
+}
+
+/** The arguments a long command takes for its operation (spec D3). */
+function trackedArgs(tracked?: Tracked): { op: string; onProgress: Channel<ProgressUpdate> } {
+  const channel = new Channel<ProgressUpdate>();
+  if (tracked?.onProgress) channel.onmessage = tracked.onProgress;
+  return { op: tracked?.op ?? "", onProgress: channel };
+}
+
+export async function copyEntry(from: string, to: string, overwrite: boolean, tracked?: Tracked): Promise<string> {
+  return invoke<string>("copy_entry", { from, to, overwrite, ...trackedArgs(tracked) });
+}
+
+/** Stop operation `op`; its running command ends with "Cancelled.". */
+export async function cancelOperation(op: string): Promise<void> {
+  return invoke<void>("cancel_operation", { op });
+}
+
+/** Total size and item count of `paths`, for an operation's progress. */
+export async function measure(paths: string[]): Promise<{ bytes: number; items: number }> {
+  return invoke<{ bytes: number; items: number }>("measure", { paths });
 }
 
 /** Move `from` to `to`; same conflict rules as `copyEntry`. */
-export async function moveEntry(from: string, to: string, overwrite: boolean): Promise<string> {
-  return invoke<string>("move_entry", { from, to, overwrite });
+export async function moveEntry(from: string, to: string, overwrite: boolean, tracked?: Tracked): Promise<string> {
+  return invoke<string>("move_entry", { from, to, overwrite, ...trackedArgs(tracked) });
 }
 
 /** Move `path` to the Trash. Resolves with its path in the Trash when known (for Undo). */
@@ -359,8 +383,8 @@ export async function deletePermanently(path: string): Promise<void> {
 }
 
 /** Delete everything in the Trash. */
-export async function emptyTrash(): Promise<void> {
-  return invoke<void>("empty_trash");
+export async function emptyTrash(tracked?: Tracked): Promise<void> {
+  return invoke<void>("empty_trash", trackedArgs(tracked));
 }
 
 /**
@@ -401,16 +425,16 @@ export async function starredFiles(showHidden: boolean): Promise<Entry[]> {
 }
 
 /** Open a file (or an .app bundle) with its default macOS application. */
-export async function openFile(path: string): Promise<void> {
+export async function openFile(path: string, tracked?: Tracked): Promise<void> {
   if (path.startsWith("gdrive://")) {
-    const target = await invoke<DriveOpenTarget>("drive_open", { path });
+    const target = await invoke<DriveOpenTarget>("drive_open", { path, ...trackedArgs(tracked) });
     return target.kind === "url" ? openUrl(target.url) : openPath(target.path);
   }
   if (path.startsWith("share://")) {
-    return openPath(await invoke<string>("share_open", { path }));
+    return openPath(await invoke<string>("share_open", { path, ...trackedArgs(tracked) }));
   }
   if (path.startsWith("sftp://")) {
-    return openPath(await invoke<string>("sftp_open", { path }));
+    return openPath(await invoke<string>("sftp_open", { path, ...trackedArgs(tracked) }));
   }
   return openPath(path);
 }

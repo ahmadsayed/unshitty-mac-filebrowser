@@ -1,7 +1,7 @@
 // Characterization tests for the in-memory backend in dev/mock-tauri/core.ts:
 // every command it serves, including its errors.
-import { expect, test } from "vitest";
-import { invoke } from "../dev/mock-tauri/core";
+import { expect, test, vi } from "vitest";
+import { Channel, invoke } from "../dev/mock-tauri/core";
 
 const HOME = "/Users/me";
 type Entry = { name: string; path: string; is_dir: boolean; size: number; is_hidden: boolean };
@@ -447,3 +447,46 @@ test("sharing commands create links, receive, go offline and clean up", async ()
 test("unknown commands are reported", async () => {
   await expect(invoke("nope")).rejects.toMatch(/unknown command nope/);
 });
+
+type MockOps = { hold(): void; held(): number; step(bytes: number): void; release(): void; reset(): void };
+const mockOps = () => (globalThis as unknown as { __mockOps: MockOps }).__mockOps;
+
+test("measure sums files and folders like the backend", async () => {
+  const measured = await invoke("measure", { paths: [`${HOME}/Desktop/todo.txt`, `${HOME}/Documents/Projects`] });
+  // todo.txt, and Projects with unshitty-mac-filebrowser, its README.md and website.
+  expect(measured).toEqual({ bytes: 312 + 2_200, items: 5 });
+});
+
+test("a held copy reports through its channel, and cancel_operation stops it", async () => {
+  mockOps().hold();
+  const seen: Array<{ bytes: number; done: boolean }> = [];
+  const channel = new Channel<{ bytes: number; done: boolean }>();
+  channel.onmessage = (update) => seen.push(update);
+  const copying = invoke("copy_entry", {
+    from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/Public/todo.txt`, overwrite: false, op: "op-a", onProgress: channel,
+  });
+  await vi.waitFor(() => expect(mockOps().held()).toBe(1));
+  mockOps().step(100);
+  expect(seen.at(-1)).toMatchObject({ bytes: 100, done: false });
+  await invoke("cancel_operation", { op: "op-a" });
+  await expect(copying).rejects.toBe("Cancelled.");
+  expect(await namesIn(`${HOME}/Public`)).toEqual([]);
+  mockOps().reset();
+});
+
+test("a released copy finishes and sends a done update", async () => {
+  mockOps().hold();
+  const seen: Array<{ done: boolean }> = [];
+  const channel = new Channel<{ done: boolean }>();
+  channel.onmessage = (update) => seen.push(update);
+  const copying = invoke("copy_entry", {
+    from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/Public/todo.txt`, overwrite: false, op: "op-b", onProgress: channel,
+  });
+  await vi.waitFor(() => expect(mockOps().held()).toBe(1));
+  mockOps().release();
+  await copying;
+  expect(seen.at(-1)).toMatchObject({ done: true });
+  expect(await namesIn(`${HOME}/Public`)).toEqual(["todo.txt"]);
+  mockOps().reset();
+});
+
