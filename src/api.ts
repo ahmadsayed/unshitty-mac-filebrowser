@@ -17,6 +17,10 @@ export interface Entry {
   trashed?: number;
   /** Present only for a Google Drive entry. */
   cloud?: CloudEntry;
+  /** Network view: who shared this folder. */
+  sharer?: string;
+  /** Network view: whether the sharer is reachable. */
+  shareStatus?: "online" | "offline" | "no-access" | "missing";
 }
 
 /** Drive-specific fields on an `Entry`; local entries omit them. */

@@ -9,14 +9,17 @@ import {
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
   driveClientStatus, driveClientSet, driveClientClear,
   openExternal,
-  type Entry, type DriveAccount,
+  shareIdentity, setShareName, shareFolder, shareInfo, listShares, createShareLink,
+  shareLinkFor, removeShareAccess, stopSharing, addReceived, listReceived, removeReceived,
+  type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
+  type AccessEntry,
 } from "./api";
 import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
-import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, joinCloudPath, resolveTypedPath, safeLocalName } from "./paths";
+import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -63,11 +66,12 @@ type Pseudo = "recent" | "starred" | "network";
 const PSEUDO: Record<Pseudo, { label: string; icon: string; title: string; text: string }> = {
   recent: { label: "Recent", icon: "document-open-recent", title: "No Recent Files", text: "" },
   starred: { label: "Starred", icon: "starred", title: "Starred files will appear here", text: "" },
-  network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Network locations aren't supported yet." },
+  network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Paste a share link below to add a shared folder." },
 };
 const PSEUDO_PREFIX = "pseudo:";
 const RECENT = `${PSEUDO_PREFIX}recent`;
 const STARRED = `${PSEUDO_PREFIX}starred`;
+const NETWORK = `${PSEUDO_PREFIX}network`;
 
 /** Current location: an absolute path, or "pseudo:<name>". */
 let location = "";
@@ -102,6 +106,12 @@ const fixedSidebarPaths = new Set<string>();
 
 let home = "";
 let trashPath = "";
+/** Received shares, as the Network view lists them. */
+let networkShares: ReceivedShare[] = [];
+/** Local folders shared by this machine, for menus/emblems. */
+let sharedFolders: ShareSummary[] = [];
+/** Why a share path cannot be listed (offline, no access, moved). */
+let sharePage: "offline" | "no-access" | "missing" | null = null;
 /** The connected Google account, if any. */
 let driveAccount: DriveAccount | null = null;
 let cloudOpenNoticeShown = false;
@@ -127,6 +137,7 @@ let pathEntry: HTMLInputElement;
 let searchbarEl: HTMLElement;
 let searchEntry: HTMLInputElement;
 let floatingBar: HTMLElement;
+let shareSubtitle: HTMLElement;
 
 // SECURITY: escape HTML entities in user-derived strings before innerHTML insertion
 export function escapeHtml(text: string): string {
@@ -142,6 +153,14 @@ function basename(path: string): string {
     const segment = path.replace(/\/+$/, "").split("/").pop() ?? "";
     return cloudSegmentName(segment) || "My Drive";
   }
+  if (isSharePath(path)) {
+    const segment = path.slice(SHARE_PREFIX.length).split("/").filter(Boolean).pop() ?? "";
+    try {
+      return decodeURIComponent(segment) || "Shared Folder";
+    } catch {
+      return segment || "Shared Folder";
+    }
+  }
   return path.replace(/\/+$/, "").split("/").pop() || "/";
 }
 
@@ -151,8 +170,56 @@ function parentOf(path: string): string {
     const slash = trimmed.lastIndexOf("/");
     return slash > "gdrive://".length ? trimmed.slice(0, slash) : trimmed;
   }
+  if (isSharePath(path)) {
+    const rest = path.slice(SHARE_PREFIX.length).split("/").filter(Boolean);
+    rest.pop();
+    return rest.length ? `${SHARE_PREFIX}${rest.join("/")}` : NETWORK;
+  }
   const p = path.replace(/\/+$/, "").replace(/\/[^/]*$/, "");
   return p || "/";
+}
+
+function shareIdOf(path: string): string {
+  return path.slice(SHARE_PREFIX.length).split("/")[0] ?? "";
+}
+
+function receivedFor(path: string): ReceivedShare | undefined {
+  return networkShares.find((share) => share.id === shareIdOf(path));
+}
+
+/** What the Network view lists: one folder entry per received share. */
+function networkEntries(): Entry[] {
+  return networkShares.map((share) => ({
+    name: share.folder,
+    path: `${SHARE_PREFIX}${share.id}`,
+    is_dir: true,
+    size: 0,
+    modified: 0,
+    is_hidden: false,
+    is_symlink: false,
+    sharer: share.sharer,
+    shareStatus: share.status,
+  }));
+}
+
+/** Shared folders are read only: no New Folder, Paste, Rename, Trash or drops. */
+function isReadOnlyLocation(path: string): boolean {
+  return isSharePath(path);
+}
+
+function shareStatusLabel(status: Entry["shareStatus"]): string {
+  switch (status) {
+    case "online":
+      return "Online";
+    case "offline":
+      return "Offline";
+    case "no-access":
+      return "No access";
+    case "missing":
+      return "Missing";
+    default:
+      return "";
+  }
 }
 
 /** The display name inside a `<file-id>~<encoded name>` segment. */
@@ -181,9 +248,9 @@ function isPseudo(loc: string): loc is `pseudo:${Pseudo}` {
   return loc.startsWith(PSEUDO_PREFIX);
 }
 
-/** Pseudo locations that list entries (Recent, Starred). */
+/** Pseudo locations that list entries (Recent, Starred, Network). */
 function hasEntries(loc: string): boolean {
-  return !isPseudo(loc) || loc === RECENT || loc === STARRED;
+  return !isPseudo(loc) || loc === RECENT || loc === STARRED || loc === NETWORK;
 }
 
 /** Views of items from many folders, which get a Location column. */
@@ -195,6 +262,7 @@ function showsWhere(): boolean {
 async function listLocation(loc: string): Promise<Entry[]> {
   if (loc === RECENT) return recentFiles(prefs.showHidden);
   if (loc === STARRED) return starredFiles(prefs.showHidden);
+  if (loc === NETWORK) return networkEntries();
   if (isPseudo(loc)) return [];
   const list = await listDir(loc, prefs.showHidden);
   if (loc === trashPath && list.length) {
@@ -209,6 +277,11 @@ function locationName(loc: string): string {
   if (isPseudo(loc)) return PSEUDO[loc.slice(PSEUDO_PREFIX.length) as Pseudo].label;
   if (loc === home) return "Home";
   if (loc === trashPath) return "Trash";
+  if (isSharePath(loc)) {
+    // The root's label is the sharer's folder name (the id is opaque).
+    const parts = loc.slice(SHARE_PREFIX.length).split("/").filter(Boolean);
+    return parts.length <= 1 ? receivedFor(loc)?.folder || basename(loc) : basename(loc);
+  }
   return basename(loc);
 }
 
@@ -271,15 +344,23 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   const rootLookup = lookupVersionedRoot(loc);
   let next: Entry[] = [];
   let error: string | null = null;
-  if (hasEntries(loc)) {
+  let page: typeof sharePage = null;
+  if (loc === NETWORK) await refreshShares();
+  const shared = isSharePath(loc) ? receivedFor(loc) : undefined;
+  if (shared && shared.status !== "online") {
+    page = shared.status;
+  } else if (hasEntries(loc)) {
     try {
       next = await listLocation(loc);
     } catch (err) {
-      if (location) {
+      if (isSharePath(loc)) {
+        page = receivedFor(loc)?.status === "no-access" ? "no-access" : "offline";
+      } else if (location) {
         showAccessError(basename(loc), cleanError(err));
         return false;
+      } else {
+        error = cleanError(err);
       }
-      error = cleanError(err);
     }
   }
 
@@ -289,6 +370,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   }
 
   location = loc;
+  sharePage = page;
   versionedRootPath = await rootLookup;
   entries = next;
   listingError = error;
@@ -303,6 +385,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   updateNavButtons();
   updateSidebarSelection();
   buildPathbar();
+  updateShareSubtitle();
   renderView();
   scrollEl.scrollTop = 0;
   if (opts.select) revealPath(opts.select);
@@ -313,12 +396,24 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
 /** Re-list the current folder, keeping the selection where possible. */
 async function reload(select?: string[]): Promise<void> {
   if (!hasEntries(location)) return;
+  if (isSharePath(location) || location === NETWORK) await refreshShares();
+  if (isSharePath(location)) {
+    const received = receivedFor(location);
+    if (received && received.status !== "online") {
+      entries = [];
+      sharePage = received.status;
+      renderView();
+      return;
+    }
+  }
   try {
     entries = await listLocation(location);
     listingError = null;
+    sharePage = null;
   } catch (err) {
     entries = [];
-    listingError = cleanError(err);
+    if (isSharePath(location)) sharePage = "offline";
+    else listingError = cleanError(err);
   }
   const keep = select ?? [...selected];
   selected.clear();
@@ -329,11 +424,30 @@ async function reload(select?: string[]): Promise<void> {
   scrollEl.scrollTop = top;
   if (select?.[0]) revealPath(select[0]);
   versionedRootPath = await lookupVersionedRoot(location);
+  updateShareSubtitle();
+}
+
+/** "Shared by Ahmed · Read only" under the path bar. */
+function updateShareSubtitle(): void {
+  if (!shareSubtitle) return;
+  const received = isSharePath(location) ? receivedFor(location) : undefined;
+  shareSubtitle.hidden = !received;
+  shareSubtitle.textContent = received ? `Shared by ${received.sharer} · Read only` : "";
+}
+
+/** Refresh the received and locally shared folders. */
+async function refreshShares(): Promise<void> {
+  const [received, shared] = await Promise.all([
+    listReceived().catch(() => []),
+    listShares().catch(() => []),
+  ]);
+  networkShares = received;
+  sharedFolders = shared;
 }
 
 /** The folder that keeps versions for `loc`, if any (never for Trash or Recent). */
 function lookupVersionedRoot(loc: string): Promise<string | null> {
-  if (isCloud(loc) || isPseudo(loc) || (!!trashPath && loc === trashPath)) return Promise.resolve(null);
+  if (isCloud(loc) || isSharePath(loc) || isPseudo(loc) || (!!trashPath && loc === trashPath)) return Promise.resolve(null);
   return versionedRoot(loc).catch(() => null);
 }
 
@@ -418,6 +532,27 @@ function crumbsFor(loc: string): Crumb[] {
       crumbs.push({ label: cloudSegmentName(segment) || "My Drive", path: base });
     }
     crumbs[0] = { ...crumbs[0], icon: "network-workgroup" };
+    return crumbs;
+  }
+  if (isSharePath(loc)) {
+    const parts = loc.slice(SHARE_PREFIX.length).split("/").filter(Boolean);
+    const id = parts.shift() ?? "";
+    if (!id) return [{ label: "Network", path: NETWORK, icon: "network-workgroup" }];
+    const received = receivedFor(loc);
+    const crumbs: Crumb[] = [
+      { label: received?.folder || "Shared Folder", path: `${SHARE_PREFIX}${id}`, icon: "network-workgroup" },
+    ];
+    let base = `${SHARE_PREFIX}${id}`;
+    for (const segment of parts) {
+      base += `/${segment}`;
+      let label = segment;
+      try {
+        label = decodeURIComponent(segment);
+      } catch {
+        /* keep the encoded name */
+      }
+      crumbs.push({ label, path: base });
+    }
     return crumbs;
   }
   if (trashPath && (loc === trashPath || loc.startsWith(trashPath + "/"))) {
@@ -565,7 +700,9 @@ function renderView(): void {
   windowRange = { start: 0, end: -1 };
   const pseudo = isPseudo(location) ? PSEUDO[location.slice(PSEUDO_PREFIX.length) as Pseudo] : null;
 
-  if (pseudo && (!hasEntries(location) || (shown.length === 0 && !searchQuery))) {
+  if (sharePage) {
+    viewEl.innerHTML = shareStatusPage(sharePage);
+  } else if (pseudo && (!hasEntries(location) || (shown.length === 0 && !searchQuery))) {
     viewEl.innerHTML = statusPage(pseudo.icon, pseudo.title, pseudo.text);
   } else if (listingError !== null) {
     viewEl.innerHTML = statusPage("dialog-error", "Unable to Access Location", listingError);
@@ -584,9 +721,101 @@ function renderView(): void {
     // Sorting by size needs every folder's count; otherwise only visible rows ask.
     if (prefs.sortKey === "size") requestCounts(shown.filter((e) => e.is_dir).map((e) => e.path), true);
   }
+  const overlay = viewEl.closest(".view-overlay") ?? viewEl;
+  overlay.querySelector(".network-paste")?.remove();
+  document.body.classList.toggle("network-view", location === NETWORK);
+  if (location === NETWORK) renderNetworkPaste(overlay);
   relayout();
   updateViewButtons();
   updateFloatingBar();
+}
+
+function shareStatusPage(kind: "offline" | "no-access" | "missing"): string {
+  const received = receivedFor(location);
+  const who = received?.sharer || "The sharer";
+  switch (kind) {
+    case "offline":
+      return statusPage(
+        "network-workgroup",
+        `${who} Is Offline`,
+        "Shared folders open while the computer sharing them is on and Files is running."
+      );
+    case "no-access":
+      return statusPage(
+        "dialog-error",
+        "No Access",
+        `${who} stopped sharing this folder with you.`
+      );
+    case "missing":
+      return statusPage(
+        "dialog-error",
+        "Not Available",
+        "The shared folder was moved or deleted."
+      );
+  }
+}
+
+/** The local folder a link belongs to, when the link is one of this machine's own. */
+async function ownSharePath(link: string): Promise<string | null> {
+  for (const summary of await listShares().catch(() => [])) {
+    const info = await shareInfo(summary.path).catch(() => null);
+    if (!info) continue;
+    for (const access of info.access) {
+      const candidate = await shareLinkFor(info.id, access.id).catch(() => "");
+      if (candidate.trim() === link) return info.path;
+    }
+  }
+  return null;
+}
+
+function renderNetworkPaste(overlay: Element): void {
+  const bar = document.createElement("div");
+  bar.className = "network-paste";
+  const input = document.createElement("input");
+  input.className = "network-link";
+  input.type = "text";
+  input.placeholder = "Paste a share link";
+  input.setAttribute("aria-label", "Share link");
+  const button = document.createElement("button");
+  button.className = "btn suggested";
+  button.textContent = "Connect";
+  const error = document.createElement("span");
+  error.className = "network-error";
+  bar.append(input, button, error);
+
+  const connect = async () => {
+    const link = input.value.trim();
+    if (!link) return;
+    button.disabled = true;
+    error.textContent = "";
+    try {
+      await addReceived(link);
+      await refreshShares();
+      await reload();
+      showToast("Folder added to Network");
+    } catch (err) {
+      const message = cleanError(err);
+      if (/your own shared folder/i.test(message)) {
+        const local = await ownSharePath(link);
+        if (local) {
+          showToast(message);
+          await navigate(local);
+          return;
+        }
+      }
+      error.textContent = message;
+    } finally {
+      button.disabled = false;
+    }
+  };
+  button.addEventListener("click", () => void connect());
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void connect();
+    }
+  });
+  overlay.appendChild(bar);
 }
 
 function statusPage(icon: string, title: string, text: string): string {
@@ -595,11 +824,15 @@ function statusPage(icon: string, title: string, text: string): string {
 
 function itemClasses(e: Entry, i: number): string {
   const cut = clipboard?.mode === "cut" && clipboard.paths.includes(e.path);
-  return (e.is_hidden ? " hidden-entry" : "") + (cut ? " cut" : "") +
+  const offline = e.shareStatus === "offline" || e.shareStatus === "no-access" || e.shareStatus === "missing";
+  return (e.is_hidden ? " hidden-entry" : "") + (cut ? " cut" : "") + (offline ? " offline" : "") +
     (selected.has(e.path) ? " selected" : "") + (i === cursorIndex ? " cursor" : "");
 }
 
 function listHeaderHtml(): string {
+  if (location === NETWORK) {
+    return `<div class="list-header network"><span>Name</span><span>Shared by</span><span>Status</span><span></span></div>`;
+  }
   const col = (key: SortKey, label: string) => {
     const active = prefs.sortKey === key;
     // The arrow shows the visual direction: name ascends A→Z, size/date descend.
@@ -623,9 +856,19 @@ function itemHtml(i: number): string {
   const cls = itemClasses(e, i);
   const sel = selected.has(e.path);
   if (prefs.view === "grid") {
+    const shared = location === NETWORK && e.sharer
+      ? `<div class="shared-by">Shared by ${escapeHtml(e.sharer)}</div>`
+      : "";
     return `<div class="grid-item item${cls}" data-index="${i}" role="option" aria-selected="${sel}" title="${escapeHtml(e.name)}" ${pos}>` +
       `<div class="icon">${iconHtml(e)}</div>` +
-      `<div class="name">${escapeHtml(e.name)}</div></div>`;
+      `<div class="name">${escapeHtml(e.name)}</div>${shared}</div>`;
+  }
+  if (location === NETWORK) {
+    return `<div class="list-row item network${cls}" data-index="${i}" role="option" aria-selected="${sel}" ${pos}>` +
+      `<div class="name-cell"><div class="icon">${iconHtml(e)}</div><span class="name">${escapeHtml(e.name)}</span></div>` +
+      `<span class="meta shared-by-cell">${escapeHtml(e.sharer ?? "")}</span>` +
+      `<span class="meta network-status ${escapeHtml(e.shareStatus ?? "")}">${escapeHtml(shareStatusLabel(e.shareStatus))}</span>` +
+      `<span></span></div>`;
   }
   const date = location === RECENT ? e.used ?? e.modified : e.trashed ?? e.modified;
   // In the Trash, the location is where the item came from.
@@ -684,7 +927,12 @@ function iconHtml(e: Entry): string {
       return `<img class="thumb" src="${url}" alt="" draggable="false">${link}`;
     }
   }
-  return entryIcon(e, folderKind(e), versionedFolders.has(e.path));
+  const icon = entryIcon(e, folderKind(e), versionedFolders.has(e.path));
+  if (location === NETWORK) return `${icon}<span class="emblem">${sym("network-workgroup")}</span>`;
+  if (sharedFolders.some((share) => share.path === e.path)) {
+    return `${icon}<span class="emblem">${sym("network-workgroup")}</span>`;
+  }
+  return icon;
 }
 
 /** Request thumbnails for the rendered items; queued ones scrolled away are dropped. */
@@ -757,7 +1005,8 @@ function computeLayout(): void {
     const cols = Math.max(1, Math.floor((inner + GRID_GAP) / (icon + 36 + GRID_GAP)));
     const itemW = Math.floor((inner - GRID_GAP * (cols - 1)) / cols);
     // icon + gap + two lines of label + padding; a selected item grows to show its full name.
-    const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9);
+    // Network adds one line for "Shared by …".
+    const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9 + (location === NETWORK ? lineH : 0));
     layout = { cols, itemW, itemH, gap: GRID_GAP, padX: GRID_PAD, padY: GRID_PAD, bodyTop: 0 };
   } else {
     const itemH = Math.max(LIST_SIZES[prefs.listZoom] + 12, 34);
@@ -968,7 +1217,8 @@ function updateViewButtons(): void {
 const countsInFlight = new Set<string>();
 async function requestCounts(paths: string[], resortWhenDone: boolean): Promise<void> {
   const loc = location;
-  const pending = paths.filter((p) => !counts.has(p) && !countsInFlight.has(p));
+  // Remote items have no local item count; Drive returns null, Network has no size cell.
+  const pending = paths.filter((p) => !isCloud(p) && !isSharePath(p) && !counts.has(p) && !countsInFlight.has(p));
   if (pending.length === 0) return;
   pending.forEach((p) => countsInFlight.add(p));
   for (let i = 0; i < pending.length; i += 400) {
@@ -1000,7 +1250,8 @@ function rememberSummary(path: string, summary: FolderSummary | null): void {
 function patchCounts(): void {
   viewEl.querySelectorAll<HTMLElement>(".list-row").forEach((row) => {
     const e = shown[Number(row.dataset.index)];
-    if (e?.is_dir) row.querySelector(".size")!.textContent = sizeText(e);
+    const cell = row.querySelector(".size");
+    if (e?.is_dir && cell) cell.textContent = sizeText(e);
   });
   updateFloatingBar();
 }
@@ -1126,7 +1377,7 @@ async function openEntry(entry: Entry): Promise<void> {
     cloudOpenNoticeShown = true;
     showToast("Opened a local copy. Changes are not uploaded to Google Drive.");
   }
-  if (!isAppBundle(entry) && !isCloud(entry.path)) addRecent(entry.path).catch(() => {});
+  if (!isAppBundle(entry) && !isCloud(entry.path) && !isSharePath(entry.path)) addRecent(entry.path).catch(() => {});
 }
 
 /** Enter / Open: one item activates; several open every file (folders can't all be shown). */
@@ -1285,9 +1536,44 @@ function openItemMenu(at: Anchor): void {
     location === RECENT ? recentItemMenu(sel, single)
     : inTrash() ? trashItemMenu(sel, single)
     : location === STARRED ? starredItemMenu(sel, single)
+    : location === NETWORK ? networkItemMenu(single)
+    : isReadOnlyLocation(location) ? shareItemMenu(single)
     : sel.every((entry) => entry.cloud) ? cloudItemMenu(single)
     : folderItemMenu(sel, single);
   openMenu(at, items);
+}
+
+/** Read-only actions for a received share. Copy out arrives in Task 9. */
+function shareItemMenu(single: Entry | null): MenuItem[] {
+  return [
+    { label: "Open", action: activateSelection },
+    { label: "Copy", disabled: true },
+    { label: "Copy Location", disabled: !single, action: copyLocation },
+    propertiesMenuItem(single),
+  ];
+}
+
+/** A received share in the Network list: open it or forget it. */
+function networkItemMenu(single: Entry | null): MenuItem[] {
+  const id = single ? shareIdOf(single.path) : "";
+  return [
+    { label: "Open", action: activateSelection },
+    { label: "Copy Location", disabled: !single, action: copyLocation },
+    { separator: true },
+    {
+      label: "Remove from Network",
+      disabled: !id,
+      action: () => {
+        removeReceived(id)
+          .then(async () => {
+            await refreshShares();
+            await reload([]);
+            showToast("Removed from Network");
+          })
+          .catch((err) => showToast(`Could not remove the share: ${cleanError(err)}`));
+      },
+    },
+  ];
 }
 
 /** Drive items: no stars, versions or permanent delete (spec "Menus"). */
@@ -1369,10 +1655,12 @@ function starredItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
 function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
   const intoFolder = single?.is_dir && !isAppBundle(single) ? single : null;
   const app = single && isAppBundle(single) ? single : null;
+  const shareable = intoFolder && !isCloud(intoFolder.path) && !isSharePath(intoFolder.path) && !inTrash();
   return [
     { label: "Open", action: activateSelection },
     ...(app ? [{ label: "Show Package Contents", action: () => navigate(app.path) }] : []),
     ...(intoFolder ? [bookmarkMenuItem(intoFolder.path)] : []),
+    ...(shareable ? [{ label: "Share…", action: () => void showShareDialog(intoFolder) }] : []),
     { separator: true },
     ...cutCopyItems(),
     ...(intoFolder ? [{ label: "Paste Into Folder", disabled: !clipboard, action: () => paste(intoFolder.path) }] : []),
@@ -1400,6 +1688,15 @@ function openBackgroundMenu(at: Anchor): void {
     ]);
     return;
   }
+  if (isReadOnlyLocation(location)) {
+    openMenu(at, [
+      { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
+      { label: "Reload", action: () => void reload() },
+      { separator: true },
+      { label: "Select All", action: selectAll },
+    ]);
+    return;
+  }
   if (isCloud(location)) {
     openMenu(at, [
       { label: "New Folder…", action: promptNewFolder },
@@ -1412,6 +1709,7 @@ function openBackgroundMenu(at: Anchor): void {
   }
   openMenu(at, [
     { label: "New Folder…", action: promptNewFolder },
+    { label: "Share This Folder…", action: () => showShareDialogForPath(location) },
     { separator: true },
     { label: "Paste", disabled: !clipboard, action: () => paste(location) },
     ...(versionedRootPath
@@ -1431,6 +1729,15 @@ function openLocationMenu(anchor: HTMLElement): void {
     ]);
     return;
   }
+  if (isReadOnlyLocation(location)) {
+    openMenu(anchor, [
+      { label: "Copy Location", action: copyLocation },
+      { label: "Reload", action: () => void reload() },
+      { separator: true },
+      { label: "Select All", disabled: !hasEntries(location), action: selectAll },
+    ]);
+    return;
+  }
   if (isCloud(location)) {
     openMenu(anchor, [
       { label: "New Folder…", action: promptNewFolder },
@@ -1443,7 +1750,7 @@ function openLocationMenu(anchor: HTMLElement): void {
   }
   openMenu(anchor, [
     { label: "New Folder…", disabled: !real, action: promptNewFolder },
-    ...(real ? [bookmarkMenuItem(location)] : []),
+    ...(real ? [bookmarkMenuItem(location), { label: "Share This Folder…" as const, action: () => showShareDialogForPath(location) }] : []),
     { separator: true },
     { label: "Copy Location", disabled: !real, action: copyLocation },
     { label: "Paste", disabled: !real || !clipboard, action: () => paste(location) },
@@ -1688,6 +1995,10 @@ async function copyLocation(): Promise<void> {
 function setClipboard(mode: "copy" | "cut"): void {
   const sel = selectedEntries();
   if (sel.length === 0) return;
+  if (sel.some((entry) => isSharePath(entry.path))) {
+    showToast("Copying out of a shared folder comes next.");
+    return;
+  }
   clipboard = { paths: sel.map((e) => e.path), dirs: new Set(sel.filter((e) => e.is_dir).map((e) => e.path)), mode };
   // Paths also go to the system clipboard as text, handy for terminals.
   navigator.clipboard?.writeText(clipboard.paths.join("\n")).catch(() => {});
@@ -1832,6 +2143,10 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
 }
 
 async function paste(destDir: string): Promise<void> {
+  if (isReadOnlyLocation(destDir)) {
+    showToast("Shared folders are read only.");
+    return;
+  }
   if (!clipboard) return;
   const { paths, dirs, mode } = clipboard;
   const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir);
@@ -1847,7 +2162,7 @@ function inTrash(): boolean {
 }
 
 async function trashSelection(): Promise<void> {
-  if (inTrash()) return;
+  if (inTrash() || isReadOnlyLocation(location)) return;
   await trashPaths(selectedEntries().map((e) => e.path));
 }
 
@@ -2030,6 +2345,7 @@ function volumeRoot(path: string): string {
 /** The operation a drop would do, or null if it would do nothing useful. */
 function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, devices?: Map<string, number>): DropOp | null {
   const dir = target.dir;
+  if (isReadOnlyLocation(dir) || sources.some(isSharePath)) return null;
   // Into itself or its own subfolder: refused.
   if (sources.some((src) => dir === src || dir.startsWith(src + "/"))) return null;
   // Drive items go to Drive's Trash with Move to Trash, not the app's Trash.
@@ -2121,6 +2437,10 @@ function armDrag(start: MouseEvent): void {
 function beginDrag(e: MouseEvent): void {
   const sel = selectedEntries();
   if (sel.length === 0) return;
+  if (sel.some((entry) => isSharePath(entry.path))) {
+    showToast("Copying out of a shared folder comes next.");
+    return;
+  }
   cancelPendingNarrow();
   const ghost = document.createElement("div");
   ghost.className = "drag-ghost";
@@ -2391,7 +2711,7 @@ function showValidation(v: Validation, entry: HTMLElement, message: HTMLElement)
 
 function startRename(entry: Entry): void {
   // Recent and Starred mix folders, so the name-clash check wouldn't work there.
-  if (isPseudo(location)) return;
+  if (isPseudo(location) || isReadOnlyLocation(entry.path)) return;
   const index = shown.findIndex((e) => e.path === entry.path);
   if (index < 0) return;
   scrollToIndex(index);
@@ -2456,7 +2776,7 @@ function startRename(entry: Entry): void {
 // ---------------------------------------------------------------------------
 
 function promptNewFolder(): void {
-  if (isPseudo(location) || listingError !== null) return;
+  if (isPseudo(location) || isReadOnlyLocation(location) || listingError !== null) return;
   const inside = !!versionedRootPath;
   // Keep Versions never applies to Drive (spec D9).
   const versionsRow = isCloud(location)
@@ -2791,7 +3111,298 @@ function updateSidebarSelection(): void {
 const DRIVE_GUIDE_URL =
   "https://github.com/ahmadsayed/unshitty-mac-filebrowser/blob/main/docs/google-drive.md";
 
-/** Connect Google Drive, asking for the user's OAuth client first if needed. */
+/** Ask for the name visitors see, the first time sharing is used. */
+async function ensureShareName(): Promise<boolean> {
+  try {
+    const identity = await shareIdentity();
+    if (identity.name) return true;
+  } catch (err) {
+    showToast(`Could not read sharing settings: ${cleanError(err)}`);
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    const extra = document.createElement("div");
+    extra.innerHTML =
+      `<div class="entry-row"><label for="share-name">Your name</label>` +
+      `<input id="share-name" class="entry" type="text" spellcheck="false" /></div>` +
+      `<div class="field-message"></div>`;
+    const input = extra.querySelector<HTMLInputElement>("#share-name")!;
+    const message = extra.querySelector<HTMLElement>(".field-message")!;
+    // Pre-filled with the account name, as the spec asks (D12).
+    const account = home && home !== "/" ? basename(home) : "";
+    input.value = account;
+    let dialog: ReturnType<typeof openDialog>;
+
+    const save = async () => {
+      const name = input.value.trim();
+      if (!name) {
+        message.textContent = "Enter a name.";
+        return;
+      }
+      try {
+        await setShareName(name);
+        resolve(true);
+        dialog.close();
+      } catch (err) {
+        message.textContent = cleanError(err);
+      }
+    };
+
+    input.addEventListener("input", () => dialog.setResponseEnabled("save", !!input.value.trim()));
+    dialog = openDialog({
+      heading: "What name should people see?",
+      body: "People you share with will see this name.",
+      extra,
+      responses: [
+        { id: "cancel", label: "Cancel" },
+        { id: "save", label: "Continue", style: "suggested" },
+      ],
+      defaultResponse: "save",
+      closeResponse: "cancel",
+      onResponse: (id) => {
+        if (id !== "save") {
+          resolve(false);
+          return;
+        }
+        void save();
+        return false;
+      },
+    });
+    dialog.setResponseEnabled("save", !!input.value.trim());
+  });
+}
+
+function accessState(entry: AccessEntry): string {
+  switch (entry.state) {
+    case "unused":
+      return "Hasn't opened the link yet";
+    case "online":
+      return "Online";
+    case "offline":
+      return "Offline";
+  }
+}
+
+function shareAccessHtml(info: ShareInfo): string {
+  if (!info.access.length) {
+    return `<p class="share-empty">No links yet. Copy a link to let someone in.</p>`;
+  }
+  return info.access
+    .map((entry) => {
+      const name = entry.kind === "anyone" ? "Anyone with the link" : entry.name || "Specific person";
+      const visitors = entry.kind === "anyone" && entry.visitors
+        ? ` · ${entry.visitors} ${entry.visitors === 1 ? "computer" : "computers"}`
+        : "";
+      return `<div class="share-access-row">` +
+        `<div><div class="share-access-name">${escapeHtml(name)}</div>` +
+        `<div class="share-access-state">${escapeHtml(accessState(entry) + visitors)}</div></div>` +
+        `<button class="flat-btn share-remove" data-remove="${escapeHtml(entry.id)}" ` +
+        `title="Remove access" aria-label="Remove access">${sym("window-close")}</button></div>`;
+    })
+    .join("");
+}
+
+/** The Share dialog for a local folder (and, later, Manage Sharing). */
+async function showShareDialog(entry: Entry): Promise<void> {
+  if (!entry.is_dir || isReadOnlyLocation(entry.path) || isCloud(entry.path) || inTrash()) return;
+  if (!(await ensureShareName())) return;
+
+  // A big folder takes a moment to walk and hash, so say so instead of
+  // leaving the menu action looking ignored.
+  const preparing = openDialog({
+    heading: `Share “${entry.name}”`,
+    body: "Preparing…",
+    responses: [],
+    closeResponse: "cancel",
+  });
+  let info: ShareInfo;
+  try {
+    info = await shareFolder(entry.path);
+  } catch (err) {
+    preparing.close();
+    showToast(`Could not share “${entry.name}”: ${cleanError(err)}`);
+    return;
+  }
+  preparing.close();
+
+  const extra = document.createElement("div");
+  extra.className = "share-access-list";
+  const render = () => {
+    extra.innerHTML = shareAccessHtml(info);
+  };
+  render();
+
+  let dialog: ReturnType<typeof openDialog>;
+  const copyToClipboard = async (link: string) => {
+    try {
+      await navigator.clipboard.writeText(link);
+      showToast("Link copied");
+    } catch (err) {
+      showToast(`Could not copy the link: ${cleanError(err)}`);
+    }
+  };
+  const copyAnyone = async () => {
+    let link: string;
+    try {
+      let entry = info.access.find((access) => access.kind === "anyone");
+      if (entry) {
+        link = await shareLinkFor(info.id, entry.id);
+      } else {
+        const made = await createShareLink(info.id, "anyone");
+        entry = made.entry;
+        info.access.push(entry);
+        link = made.link;
+      }
+      render();
+    } catch (err) {
+      showToast(`Could not create the link: ${cleanError(err)}`);
+      return;
+    }
+    await copyToClipboard(link);
+  };
+
+  const addPerson = async () => {
+    const person = await promptPersonName();
+    if (!person) return;
+    let link: string;
+    try {
+      const made = await createShareLink(info.id, "person", person);
+      info.access.push(made.entry);
+      render();
+      link = made.link;
+    } catch (err) {
+      showToast(`Could not create the link: ${cleanError(err)}`);
+      return;
+    }
+    await copyToClipboard(link);
+  };
+
+  const confirmStop = () => {
+    openDialog({
+      heading: `Stop sharing “${entry.name}”?`,
+      body: "People you shared it with will no longer be able to open it.",
+      responses: [
+        { id: "cancel", label: "Cancel" },
+        { id: "stop", label: "Stop Sharing", style: "destructive" },
+      ],
+      defaultResponse: "cancel",
+      closeResponse: "cancel",
+      onResponse: (id) => {
+        if (id !== "stop") return;
+            stopSharing(info.id)
+          .then(async () => {
+            dialog.close();
+            await refreshShares();
+            renderWindow(true);
+            showToast("Stopped sharing");
+          })
+          .catch((err) => showToast(`Could not stop sharing: ${cleanError(err)}`));
+      },
+    });
+  };
+
+  extra.addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLElement>("[data-remove]");
+    if (!button?.dataset.remove) return;
+    const id = button.dataset.remove;
+    removeShareAccess(info.id, id)
+      .then(() => {
+        info.access = info.access.filter((entry) => entry.id !== id);
+        render();
+        showToast("Access removed");
+        void refreshShares();
+      })
+      .catch((err) => showToast(`Could not remove access: ${cleanError(err)}`));
+  });
+
+  dialog = openDialog({
+    heading: `Share “${entry.name}”`,
+    body: "Who can open this folder. People you share with can open it read-only.",
+    extra,
+    className: "share-dialog",
+    responses: [
+      { id: "anyone", label: "Copy Link" },
+      { id: "person", label: "Specific Person…" },
+      { id: "stop", label: "Stop Sharing…", style: "destructive" },
+      { id: "close", label: "Close" },
+    ],
+    defaultResponse: "close",
+    closeResponse: "close",
+    onResponse: async (id) => {
+      if (id === "anyone") {
+        await copyAnyone();
+        void refreshShares().then(() => renderWindow(true));
+        return false;
+      }
+      if (id === "person") {
+        await addPerson();
+        void refreshShares().then(() => renderWindow(true));
+        return false;
+      }
+      if (id === "stop") {
+        confirmStop();
+        return false;
+      }
+    },
+  });
+}
+
+function showShareDialogForPath(path: string): void {
+  void showShareDialog({
+    name: basename(path),
+    path,
+    is_dir: true,
+    size: 0,
+    modified: 0,
+    is_hidden: false,
+    is_symlink: false,
+  });
+}
+
+function promptPersonName(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const extra = document.createElement("div");
+    extra.innerHTML =
+      `<div class="entry-row"><label for="share-person">Person's name</label>` +
+      `<input id="share-person" class="entry" type="text" spellcheck="false" /></div>` +
+      `<div class="field-message"></div>`;
+    const input = extra.querySelector<HTMLInputElement>("#share-person")!;
+    const message = extra.querySelector<HTMLElement>(".field-message")!;
+    let dialog: ReturnType<typeof openDialog>;
+    const create = () => {
+      const name = input.value.trim();
+      if (!name) {
+        message.textContent = "Enter a name.";
+        return;
+      }
+      resolve(name);
+      dialog.close();
+    };
+    input.addEventListener("input", () => dialog.setResponseEnabled("create", !!input.value.trim()));
+    dialog = openDialog({
+      heading: "Share With a Specific Person",
+      body: "Give the link to this person. It works on the first computer that opens it.",
+      extra,
+      responses: [
+        { id: "cancel", label: "Cancel" },
+        { id: "create", label: "Create Link", style: "suggested" },
+      ],
+      defaultResponse: "create",
+      closeResponse: "cancel",
+      onResponse: (id) => {
+        if (id !== "create") {
+          resolve(null);
+          return;
+        }
+        create();
+        return false;
+      },
+    });
+    dialog.setResponseEnabled("create", false);
+  });
+}
+
 async function connectDrive(): Promise<void> {
   const status = await driveClientStatus().catch(() => null);
   if (status?.configured) openConnectDialog();
@@ -2988,6 +3599,7 @@ async function buildSidebar(): Promise<void> {
   } catch {
     driveAccount = null;
   }
+  await refreshShares();
 
   const tryDir = async (fn: () => Promise<string>) => {
     try {
@@ -3000,7 +3612,7 @@ async function buildSidebar(): Promise<void> {
   if (home) sidebarRow(places, "Home", "user-home", home);
   sidebarRow(places, "Recent", "document-open-recent", RECENT);
   sidebarRow(places, "Starred", "starred", STARRED);
-  sidebarRow(places, "Network", "network-workgroup", `${PSEUDO_PREFIX}network`);
+  sidebarRow(places, "Network", "network-workgroup", NETWORK);
   const driveRow = sidebarRow(
     places,
     "Google Drive",
@@ -3073,6 +3685,7 @@ async function init(): Promise<void> {
   searchbarEl = $("#searchbar");
   searchEntry = $<HTMLInputElement>("#search-entry");
   floatingBar = $("#floating-bar");
+  shareSubtitle = $("#share-subtitle");
 
   // Static icons
   $("#btn-search").innerHTML = sym("system-search");

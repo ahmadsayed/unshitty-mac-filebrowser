@@ -356,9 +356,10 @@ test("sharing commands create links, receive, go offline and clean up", async ()
   expect(await invoke("share_link", { share: info.id, entry: person.entry.id })).toBe(person.link);
 
   await expect(invoke("add_received", { link: "hello" })).rejects.toMatch(/share link/);
-  const received = await invoke<Record<string, any>>("add_received", { link: anyone.link });
+  await expect(invoke("add_received", { link: anyone.link })).rejects.toMatch(/your own shared folder/);
+  const received = await invoke<Record<string, any>>("add_received", { link: "fbshare1:mock-received" });
   expect(received).toMatchObject({ folder: "Photos", sharer: "Ahmed", status: "online" });
-  await expect(invoke("add_received", { link: anyone.link })).rejects.toMatch(/already in Network/);
+  await expect(invoke("add_received", { link: "fbshare1:mock-received" })).rejects.toMatch(/already in Network/);
   expect(await invoke<unknown[]>("list_received")).toHaveLength(1);
 
   const root = await invoke<Array<{ name: string; path: string }>>("list_dir", {

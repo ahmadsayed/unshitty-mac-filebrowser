@@ -114,7 +114,7 @@ test("restoring onto an existing item reports it", async () => {
 test("the background menu", async () => {
   await goTo(HOME);
   await rightClick($("#view"));
-  expect(menuLabels()).toEqual(["New Folder…", "Paste", "Select All"]);
+  expect(menuLabels()).toEqual(["New Folder…", "Share This Folder…", "Paste", "Select All"]);
   await chooseMenu("Select All");
   expect(selectedNames().length).toBe(names().length);
   await key("Escape");

@@ -1503,3 +1503,138 @@ kbd {
 }
 
 .list-row .thumb { border-radius: 2px; }
+
+/* ----- Folder sharing (Network, Share dialog) ----- */
+
+.share-subtitle {
+  flex-shrink: 0;
+  padding: 0 18px 8px;
+  font-size: 9pt;
+  opacity: var(--dim);
+}
+
+/* The Network paste bar sits at the bottom of the view, above the floating
+   selection bar. */
+.network-paste {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(560px, calc(100% - 48px));
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--card-bg);
+  box-shadow: var(--popover-shadow);
+}
+
+.network-link {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--view-bg);
+  color: var(--view-fg);
+  font: inherit;
+}
+
+.network-link:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.network-error {
+  max-width: 180px;
+  color: var(--destructive);
+  font-size: 9pt;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Keep toasts clear of the Network paste bar. */
+.network-view .toast-overlay {
+  bottom: 82px;
+}
+
+.grid-item .shared-by {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 8.5pt;
+  opacity: var(--dim);
+}
+
+.list-header.network,
+.list-row.network {
+  grid-template-columns: minmax(0, 1fr) 150px 100px 28px;
+}
+
+.list-row.network .network-status {
+  opacity: var(--dim);
+}
+
+.list-row.network .network-status.offline,
+.list-row.network .network-status.no-access,
+.list-row.network .network-status.missing,
+.grid-item.offline {
+  opacity: var(--dim);
+}
+
+/* The Share dialog needs room for its four actions. */
+.share-dialog {
+  width: min(560px, calc(100vw - 24px));
+}
+
+.share-dialog .dialog-responses {
+  flex-wrap: wrap;
+}
+
+.share-dialog .dialog-extra {
+  min-width: min(420px, 70vw);
+}
+
+.share-access-list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.share-empty {
+  padding: 10px 0;
+  opacity: var(--dim);
+}
+
+.share-access-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--shade);
+}
+
+.share-access-row:last-child {
+  border-bottom: none;
+}
+
+.share-access-row > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.share-access-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-access-state {
+  font-size: 9pt;
+  opacity: var(--dim);
+}

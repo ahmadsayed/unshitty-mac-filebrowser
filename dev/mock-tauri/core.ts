@@ -348,7 +348,7 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
       link: "",
       bound: false,
     };
-    entry.link = `fbshare1:mock-${share.id}-${entry.id}`;
+    entry.link = `fbshare1:own-${share.id}-${entry.id}`;
     share.access.push(entry);
     return { link: entry.link, entry: accessView(entry) };
   },
