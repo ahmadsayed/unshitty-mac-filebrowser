@@ -19,7 +19,7 @@ import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
-import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath } from "./paths";
+import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isShareLink, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -613,6 +613,20 @@ function closePathEntry(): void {
 }
 
 async function submitPathEntry(): Promise<void> {
+  const raw = pathEntry.value.trim();
+  if (isShareLink(raw)) {
+    const result = await resolveShareLink(raw);
+    if ("error" in result) {
+      showToast(result.error);
+      pathEntry.focus();
+      return;
+    }
+    closePathEntry();
+    if (result.added) showToast("Folder added to Network");
+    else showToast("This is your own shared folder.");
+    await navigate(result.path);
+    return;
+  }
   const resolved = resolveTypedPath(pathEntry.value, location, home);
   if (resolved.error) {
     showToast(resolved.error);
@@ -768,6 +782,29 @@ async function ownSharePath(link: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * Add a pasted link to Network (or find its local folder when it is our own
+ * link) and return the location to open. Errors are returned, not toasted, so
+ * the Network paste bar can show them inline.
+ */
+async function resolveShareLink(
+  text: string
+): Promise<{ path: string; added: boolean } | { error: string }> {
+  const link = text.trim();
+  try {
+    const received = await addReceived(link);
+    await refreshShares();
+    return { path: `${SHARE_PREFIX}${received.id}`, added: true };
+  } catch (err) {
+    const message = cleanError(err);
+    if (/your own shared folder/i.test(message)) {
+      const local = await ownSharePath(link);
+      if (local) return { path: local, added: false };
+    }
+    return { error: message };
+  }
+}
+
 function renderNetworkPaste(overlay: Element): void {
   const bar = document.createElement("div");
   bar.className = "network-paste";
@@ -789,21 +826,18 @@ function renderNetworkPaste(overlay: Element): void {
     button.disabled = true;
     error.textContent = "";
     try {
-      await addReceived(link);
-      await refreshShares();
+      const result = await resolveShareLink(link);
+      if ("error" in result) {
+        error.textContent = result.error;
+        return;
+      }
+      if (!result.added) {
+        showToast("This is your own shared folder.");
+        await navigate(result.path);
+        return;
+      }
       await reload();
       showToast("Folder added to Network");
-    } catch (err) {
-      const message = cleanError(err);
-      if (/your own shared folder/i.test(message)) {
-        const local = await ownSharePath(link);
-        if (local) {
-          showToast(message);
-          await navigate(local);
-          return;
-        }
-      }
-      error.textContent = message;
     } finally {
       button.disabled = false;
     }

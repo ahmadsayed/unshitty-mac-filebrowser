@@ -15,6 +15,13 @@ export function isSharePath(path: string): boolean {
   return path.startsWith(SHARE_PREFIX);
 }
 
+/** A link from Share (also accepts the `<fbshare1:…>` form people paste). */
+export function isShareLink(text: string): boolean {
+  let link = text.trim();
+  if (link.startsWith("<") && link.endsWith(">")) link = link.slice(1, -1).trim();
+  return link.toLowerCase().startsWith("fbshare1:");
+}
+
 /** Drive and received shares are both remote, but they are different things. */
 export function isRemotePath(path: string): boolean {
   return isCloudPath(path) || isSharePath(path);

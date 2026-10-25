@@ -184,6 +184,16 @@ test("pasting your own link opens the local folder", async () => {
   expect(toasts().join(" | ")).toContain("This is your own shared folder.");
 });
 
+test("a share link typed in the path bar opens the share", async () => {
+  resetShareMock();
+  await goTo(HOME);
+  await goTo("fbshare1:mock-path-entry");
+  await settle(30);
+  expect(title()).toBe("Photos");
+  expect($("#share-subtitle").textContent).toBe("Shared by Ahmed · Read only");
+  expect(names()).toEqual(["Photos", "hello.txt"]);
+});
+
 test("losing access shows the No Access page", async () => {
   resetShareMock();
   await invoke("add_received", { link: "fbshare1:mock-noaccess" });

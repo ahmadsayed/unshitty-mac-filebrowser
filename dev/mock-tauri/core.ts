@@ -366,7 +366,9 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     mockShares = mockShares.filter((item) => item.id !== str(a, "share"));
   },
   add_received: (a) => {
-    const link = str(a, "link").trim();
+    let link = str(a, "link").trim();
+    if (link.startsWith("<") && link.endsWith(">")) link = link.slice(1, -1).trim();
+    link = link.toLowerCase();
     if (!link.startsWith("fbshare1:")) throw "This isn't a share link.";
     if (link.startsWith("fbshare1:own")) throw "This is your own shared folder.";
     if (mockReceived.some((item) => item.link === link)) {

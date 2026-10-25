@@ -1,7 +1,7 @@
 // Characterization tests for the path-bar rules, including the Drive cases
 // that must not fall back to a local path.
 import { expect, test } from "vitest";
-import { joinCloudPath, joinSharePath, isCloudPath, isRemotePath, isSharePath, resolveTypedPath } from "../src/paths";
+import { joinCloudPath, joinSharePath, isCloudPath, isRemotePath, isShareLink, isSharePath, resolveTypedPath } from "../src/paths";
 
 const HOME = "/Users/me";
 const CLOUD = "gdrive://acct/root~My%20Drive";
@@ -35,6 +35,13 @@ test("share paths are remote but not Drive", () => {
 test("joinSharePath encodes names like Drive", () => {
   expect(joinSharePath("share://r1", "a b")).toBe("share://r1/a%20b");
   expect(joinSharePath("share://r1/", "a~b")).toBe("share://r1/a%7Eb");
+});
+
+test("share links are recognised with or without angle brackets", () => {
+  expect(isShareLink("fbshare1:aeu73ziw")).toBe(true);
+  expect(isShareLink("  <FBSHARE1:AEU73ZIW>  ")).toBe(true);
+  expect(isShareLink("/Users/me/fbshare1:aeu73ziw")).toBe(false);
+  expect(isShareLink("share://r1")).toBe(false);
 });
 
 test("pasted Drive links become locations for the current account", () => {
