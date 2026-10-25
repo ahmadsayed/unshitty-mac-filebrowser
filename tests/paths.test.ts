@@ -38,10 +38,25 @@ test("joinSharePath encodes names like Drive", () => {
 });
 
 test("share links are recognised with or without angle brackets", () => {
+  const ticket = "aeu73ziw".repeat(10);
+  expect(isShareLink(`share://${ticket}`)).toBe(true);
+  expect(isShareLink(`  <SHARE://${ticket.toUpperCase()}>  `)).toBe(true);
+  expect(isShareLink(`share://${ticket}/`)).toBe(true);
+  expect(isShareLink(`/Users/me/share://${ticket}`)).toBe(false);
+});
+
+test("received-share locations are not links", () => {
+  expect(isShareLink("share://r1")).toBe(false);
+  expect(isShareLink("share://0123456789abcdef")).toBe(false);
+  expect(isShareLink("share://0123456789abcdef/Photos")).toBe(false);
+  expect(isShareLink(`share://${"a".repeat(70)}/Photos`)).toBe(false);
+  expect(isShareLink("share://")).toBe(false);
+});
+
+test("links made before share:// still work", () => {
   expect(isShareLink("fbshare1:aeu73ziw")).toBe(true);
   expect(isShareLink("  <FBSHARE1:AEU73ZIW>  ")).toBe(true);
   expect(isShareLink("/Users/me/fbshare1:aeu73ziw")).toBe(false);
-  expect(isShareLink("share://r1")).toBe(false);
 });
 
 test("SFTP paths are remote and resolve as absolute locations", () => {

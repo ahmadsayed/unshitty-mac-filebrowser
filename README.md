@@ -68,14 +68,17 @@ files, so the photo thumbnails are placeholders.</sub>
 - Thumbnails for images (HEIC too), videos, PDFs and office documents, made by
   macOS Quick Look and cached on disk; toggle with "Show Thumbnails" in the menu
 - Rename, new folder, Move to Trash with an **Undo** button in the toast (or ⌘Z)
-- **Network (Experimental):** connect to an SSH/SFTP server as `user@host`.
-  SSH agent and `~/.ssh` keys are tried first, then a session-only password;
-  unknown host keys need explicit confirmation and are remembered. Browsing is
-  read-only, and opening a file downloads a temporary copy
+- **Network (Experimental):** one place for remote locations. Its address bar
+  takes an SSH/SFTP server (`user@host` or `sftp://user@host`) or a
+  `share://` link someone sent you. For SSH, the agent and `~/.ssh` keys are
+  tried first, then a session-only password; unknown host keys need explicit
+  confirmation and are remembered. Browsing is read-only, and opening a file
+  downloads a temporary copy
 - **Folder Sharing (Experimental):** share a local folder read-only with an
-  “Anyone with the link” or “Specific person” link; received shares appear under
-  Shares with Shared by / Status, an offline page and read-only menus. Copying
-  files out of a share and live refresh are still to come
+  “Anyone with the link” or “Specific person” `share://` link; received shares
+  appear in Network with who shared them and whether they're online, an offline
+  page and read-only menus. Older `fbshare1:` links still work. Copying files
+  out of a share and live refresh are still to come
 - Properties (right-click or ⌘I): type, size (folders are summed in the
   background), location, modified/accessed/created dates, permissions, symlink
   target and folder contents
@@ -199,7 +202,7 @@ exact build: after rebuilding, toggle the permission off and on again.
 
 ## Not supported yet
 
-Folder sharing in Shares is read-only: browsing and opening work, but copying files
+Folder sharing is read-only: browsing and opening work, but copying files
 out and live refresh are still to come. Undo covers only
 the last Move to Trash; the Trash view shows the home Trash, not the Trash
 folders of other drives. SFTP is read-only and session-only: no upload, rename,

@@ -72,18 +72,16 @@ function savePrefs(): void {
 // State
 // ---------------------------------------------------------------------------
 
-/** Sidebar places that aren't folders. Recent and Starred list items from anywhere; Shares lists iroh shares. */
-type Pseudo = "recent" | "starred" | "shares" | "network";
+/** Sidebar places that aren't folders. Recent and Starred list items from anywhere; Network lists received shares and SSH servers. */
+type Pseudo = "recent" | "starred" | "network";
 const PSEUDO: Record<Pseudo, { label: string; icon: string; title: string; text: string }> = {
   recent: { label: "Recent", icon: "document-open-recent", title: "No Recent Files", text: "" },
   starred: { label: "Starred", icon: "starred", title: "Starred files will appear here", text: "" },
-  shares: { label: "Shares", icon: "network-workgroup", title: "No Shared Folders", text: "Paste a share link to add a folder someone shared with you." },
-  network: { label: "Network", icon: "network-workgroup", title: "No Servers", text: "Connect to an SSH server to browse its files." },
+  network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Enter a server address or paste a share link below." },
 };
 const PSEUDO_PREFIX = "pseudo:";
 const RECENT = `${PSEUDO_PREFIX}recent`;
 const STARRED = `${PSEUDO_PREFIX}starred`;
-const SHARES = `${PSEUDO_PREFIX}shares`;
 const NETWORK = `${PSEUDO_PREFIX}network`;
 
 /** Current location: an absolute path, or "pseudo:<name>". */
@@ -143,7 +141,7 @@ const fixedSidebarPaths = new Set<string>();
 
 let home = "";
 let trashPath = "";
-/** Received shares, as the Shares view lists them. */
+/** Received shares, as Network lists them. */
 let networkShares: ReceivedShare[] = [];
 /** Active SSH/SFTP connections, as the Network view lists them. */
 let sftpServerList: SftpServer[] = [];
@@ -226,7 +224,7 @@ function parentOf(path: string): string {
   if (isSharePath(path)) {
     const rest = path.slice(SHARE_PREFIX.length).split("/").filter(Boolean);
     rest.pop();
-    return rest.length ? `${SHARE_PREFIX}${rest.join("/")}` : SHARES;
+    return rest.length ? `${SHARE_PREFIX}${rest.join("/")}` : NETWORK;
   }
   if (isSftpPath(path)) {
     const rest = path.slice(SFTP_PREFIX.length).split("/").filter(Boolean);
@@ -245,19 +243,33 @@ function receivedFor(path: string): ReceivedShare | undefined {
   return networkShares.find((share) => share.id === shareIdOf(path));
 }
 
-/** What the Shares view lists: one folder entry per received share. */
+/** What Network lists: one folder entry per received share, then one per connected server. */
 function networkEntries(): Entry[] {
-  return networkShares.map((share) => ({
+  const place = { is_dir: true, size: 0, modified: 0, is_hidden: false, is_symlink: false };
+  const shares: Entry[] = networkShares.map((share) => ({
+    ...place,
     name: share.folder,
     path: `${SHARE_PREFIX}${share.id}`,
-    is_dir: true,
-    size: 0,
-    modified: 0,
-    is_hidden: false,
-    is_symlink: false,
     sharer: share.sharer,
     shareStatus: share.status,
   }));
+  const servers: Entry[] = sftpServerList.map((server) => ({ ...place, name: server.label, path: server.url }));
+  return [...shares, ...servers];
+}
+
+/** The SSH server a Network entry stands for. */
+function serverFor(entry: Entry): SftpServer | undefined {
+  return isSftpPath(entry.path) ? sftpServerList.find((server) => server.url === entry.path) : undefined;
+}
+
+/** Network's second line: who shared a folder, or what kind of server it is. */
+function networkDetail(entry: Entry): string {
+  return isSftpPath(entry.path) ? "SSH server" : entry.sharer ? `Shared by ${entry.sharer}` : "";
+}
+
+function networkStatus(entry: Entry): { cls: string; label: string } {
+  if (isSftpPath(entry.path)) return { cls: "online", label: "Connected" };
+  return { cls: entry.shareStatus ?? "", label: shareStatusLabel(entry.shareStatus) };
 }
 
 /** Shared folders are read only: no New Folder, Paste, Rename, Trash or drops. */
@@ -309,7 +321,7 @@ function isPseudo(loc: string): loc is `pseudo:${Pseudo}` {
 
 /** Pseudo locations that list entries (Recent, Starred, Network). */
 function hasEntries(loc: string): boolean {
-  return !isPseudo(loc) || loc === RECENT || loc === STARRED || loc === SHARES || loc === NETWORK;
+  return !isPseudo(loc) || loc === RECENT || loc === STARRED || loc === NETWORK;
 }
 
 /** Views of items from many folders, which get a Location column. */
@@ -321,8 +333,7 @@ function showsWhere(): boolean {
 async function listLocation(loc: string): Promise<Entry[]> {
   if (loc === RECENT) return recentFiles(prefs.showHidden);
   if (loc === STARRED) return starredFiles(prefs.showHidden);
-  if (loc === SHARES) return networkEntries();
-  if (loc === NETWORK) return [];
+  if (loc === NETWORK) return networkEntries();
   if (isPseudo(loc)) return [];
   const list = await listDir(loc, prefs.showHidden);
   if (loc === trashPath && list.length) {
@@ -588,8 +599,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   let next: Entry[] = [];
   let error: string | null = null;
   let page: typeof sharePage = null;
-  if (loc === SHARES) await refreshShares();
-  if (loc === NETWORK) await refreshSftpServers();
+  if (loc === NETWORK) await Promise.all([refreshShares(), refreshSftpServers()]);
   const shared = isSharePath(loc) ? receivedFor(loc) : undefined;
   if (shared && shared.status !== "online") {
     page = shared.status;
@@ -642,7 +652,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
 /** Re-list the current folder, keeping the selection where possible. */
 async function reload(select?: string[]): Promise<void> {
   if (!hasEntries(location)) return;
-  if (isSharePath(location) || location === SHARES) await refreshShares();
+  if (isSharePath(location) || location === NETWORK) await refreshShares();
   if (location === NETWORK) await refreshSftpServers();
   if (isSharePath(location)) {
     const received = receivedFor(location);
@@ -795,7 +805,7 @@ function crumbsFor(loc: string): Crumb[] {
   if (isSharePath(loc)) {
     const parts = loc.slice(SHARE_PREFIX.length).split("/").filter(Boolean);
     const id = parts.shift() ?? "";
-    if (!id) return [{ label: "Shares", path: SHARES, icon: "network-workgroup" }];
+    if (!id) return [{ label: "Network", path: NETWORK, icon: "network-workgroup" }];
     const received = receivedFor(loc);
     const crumbs: Crumb[] = [
       { label: received?.folder || "Shared Folder", path: `${SHARE_PREFIX}${id}`, icon: "network-workgroup" },
@@ -900,7 +910,7 @@ async function submitPathEntry(): Promise<void> {
       return;
     }
     closePathEntry();
-    if (result.added) showToast("Folder added to Shares");
+    if (result.added) showToast("Folder added to Network");
     else showToast("This is your own shared folder.");
     await navigate(result.path);
     return;
@@ -1057,83 +1067,18 @@ function renderView(): void {
   }
   const overlay = viewEl.closest(".view-overlay") ?? viewEl;
   overlay.querySelector(".network-paste")?.remove();
-  document.body.classList.toggle("network-view", location === SHARES);
-  if (location === NETWORK) {
-    renderNetworkServers();
-    updateViewButtons();
-    updateFloatingBar();
-    return;
-  }
-  if (location === SHARES) renderNetworkPaste(overlay);
+  document.body.classList.toggle("network-view", location === NETWORK);
+  if (location === NETWORK) renderNetworkPaste(overlay);
   relayout();
   updateViewButtons();
   updateFloatingBar();
-}
-
-function renderNetworkServers(): void {
-  const wrap = document.createElement("div");
-  wrap.className = "server-view";
-  if (sftpServerList.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "server-empty";
-    empty.innerHTML = `${sym("network-workgroup")}<h1>No Servers</h1>` +
-      `<p>Connect to an SSH server to browse its files.</p>`;
-    wrap.appendChild(empty);
-  } else {
-    const list = document.createElement("div");
-    list.className = "server-list";
-    for (const server of sftpServerList) {
-      const row = document.createElement("div");
-      row.className = "server-row";
-      row.tabIndex = 0;
-      row.title = server.url;
-      const icon = document.createElement("span");
-      icon.className = "server-icon";
-      icon.innerHTML = sym("network-workgroup");
-      const text = document.createElement("div");
-      text.className = "server-text";
-      const name = document.createElement("div");
-      name.className = "server-name";
-      name.textContent = server.label;
-      const detail = document.createElement("div");
-      detail.className = "server-detail";
-      detail.textContent = "SSH · Connected";
-      text.append(name, detail);
-      const disconnect = document.createElement("button");
-      disconnect.className = "flat-btn server-disconnect";
-      disconnect.title = "Disconnect";
-      disconnect.setAttribute("aria-label", `Disconnect ${server.label}`);
-      disconnect.innerHTML = sym("window-close");
-      disconnect.addEventListener("click", (event) => {
-        event.stopPropagation();
-        void disconnectServer(server);
-      });
-      row.append(icon, text, disconnect);
-      const open = () => void navigate(server.url);
-      row.addEventListener("click", open);
-      row.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          open();
-        }
-      });
-      list.appendChild(row);
-    }
-    wrap.appendChild(list);
-  }
-  const connect = document.createElement("button");
-  connect.className = "btn suggested server-connect";
-  connect.textContent = "Connect to Server…";
-  connect.addEventListener("click", () => showConnectServerDialog());
-  wrap.appendChild(connect);
-  viewEl.replaceChildren(wrap);
 }
 
 async function disconnectServer(server: SftpServer): Promise<void> {
   try {
     await sftpDisconnect(server.id);
     await refreshSftpServers();
-    renderView();
+    await reload([]);
     showToast(`Disconnected from ${server.label}`);
   } catch (err) {
     showToast(`Could not disconnect: ${cleanError(err)}`);
@@ -1141,7 +1086,7 @@ async function disconnectServer(server: SftpServer): Promise<void> {
 }
 
 /** SSH/SFTP connection dialog, including host-key trust and password fallback. */
-function showConnectServerDialog(prefill = ""): void {
+function showConnectServerDialog(prefill = "", connectNow = false): void {
   const extra = document.createElement("div");
   extra.className = "connect-fields";
   extra.innerHTML =
@@ -1223,6 +1168,7 @@ function showConnectServerDialog(prefill = ""): void {
     },
   });
   serverInput.focus();
+  if (connectNow && prefill) void attempt(false);
 }
 
 function shareStatusPage(kind: "offline" | "no-access" | "missing"): string {
@@ -1292,8 +1238,9 @@ function renderNetworkPaste(overlay: Element): void {
   const input = document.createElement("input");
   input.className = "network-link";
   input.type = "text";
-  input.placeholder = "Paste a share link";
-  input.setAttribute("aria-label", "Share link");
+  input.placeholder = "Enter server address or share link";
+  input.spellcheck = false;
+  input.setAttribute("aria-label", "Server address or share link");
   const button = document.createElement("button");
   button.className = "btn suggested";
   button.textContent = "Connect";
@@ -1304,6 +1251,12 @@ function renderNetworkPaste(overlay: Element): void {
   const connect = async () => {
     const link = input.value.trim();
     if (!link) return;
+    error.textContent = "";
+    if (!isShareLink(link)) {
+      // Anything else is a server address; the dialog asks for what it needs.
+      showConnectServerDialog(link, true);
+      return;
+    }
     button.disabled = true;
     error.textContent = "";
     try {
@@ -1317,8 +1270,9 @@ function renderNetworkPaste(overlay: Element): void {
         await navigate(result.path);
         return;
       }
+      input.value = "";
       await reload();
-      showToast("Folder added to Shares");
+      showToast("Folder added to Network");
     } finally {
       button.disabled = false;
     }
@@ -1345,8 +1299,8 @@ function itemClasses(e: Entry, i: number): string {
 }
 
 function listHeaderHtml(): string {
-  if (location === SHARES) {
-    return `<div class="list-header network"><span>Name</span><span>Shared by</span><span>Status</span><span></span></div>`;
+  if (location === NETWORK) {
+    return `<div class="list-header network"><span>Name</span><span>Details</span><span>Status</span><span></span></div>`;
   }
   const col = (key: SortKey, label: string) => {
     const active = prefs.sortKey === key;
@@ -1371,18 +1325,18 @@ function itemHtml(i: number): string {
   const cls = itemClasses(e, i);
   const sel = selected.has(e.path);
   if (prefs.view === "grid") {
-    const shared = location === SHARES && e.sharer
-      ? `<div class="shared-by">Shared by ${escapeHtml(e.sharer)}</div>`
-      : "";
+    const detail = location === NETWORK ? networkDetail(e) : "";
+    const shared = detail ? `<div class="shared-by">${escapeHtml(detail)}</div>` : "";
     return `<div class="grid-item item${cls}" data-index="${i}" role="option" aria-selected="${sel}" title="${escapeHtml(e.name)}" ${pos}>` +
       `<div class="icon">${iconHtml(e)}</div>` +
       `<div class="name">${escapeHtml(e.name)}</div>${shared}</div>`;
   }
-  if (location === SHARES) {
+  if (location === NETWORK) {
+    const status = networkStatus(e);
     return `<div class="list-row item network${cls}" data-index="${i}" role="option" aria-selected="${sel}" ${pos}>` +
       `<div class="name-cell"><div class="icon">${iconHtml(e)}</div><span class="name">${escapeHtml(e.name)}</span></div>` +
-      `<span class="meta shared-by-cell">${escapeHtml(e.sharer ?? "")}</span>` +
-      `<span class="meta network-status ${escapeHtml(e.shareStatus ?? "")}">${escapeHtml(shareStatusLabel(e.shareStatus))}</span>` +
+      `<span class="meta shared-by-cell">${escapeHtml(networkDetail(e))}</span>` +
+      `<span class="meta network-status ${escapeHtml(status.cls)}">${escapeHtml(status.label)}</span>` +
       `<span></span></div>`;
   }
   const date = location === RECENT ? e.used ?? e.modified : e.trashed ?? e.modified;
@@ -1443,7 +1397,8 @@ function iconHtml(e: Entry): string {
     }
   }
   const icon = entryIcon(e, folderKind(e), versionedFolders.has(e.path));
-  if (location === SHARES) return `${icon}<span class="emblem">${sym("network-workgroup")}</span>`;
+  if (location === NETWORK && isSftpPath(e.path)) return `<span class="server-glyph">${sym("network-server")}</span>`;
+  if (location === NETWORK) return `${icon}<span class="emblem">${sym("network-workgroup")}</span>`;
   if (sharedFolders.some((share) => share.path === e.path)) {
     return `${icon}<span class="emblem">${sym("network-workgroup")}</span>`;
   }
@@ -1521,7 +1476,7 @@ function computeLayout(): void {
     const itemW = Math.floor((inner - GRID_GAP * (cols - 1)) / cols);
     // icon + gap + two lines of label + padding; a selected item grows to show its full name.
     // Network adds one line for "Shared by …".
-    const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9 + (location === SHARES ? lineH : 0));
+    const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9 + (location === NETWORK ? lineH : 0));
     layout = { cols, itemW, itemH, gap: GRID_GAP, padX: GRID_PAD, padY: GRID_PAD, bodyTop: 0 };
   } else {
     const itemH = Math.max(LIST_SIZES[prefs.listZoom] + 12, 34);
@@ -2051,7 +2006,7 @@ function openItemMenu(at: Anchor): void {
     location === RECENT ? recentItemMenu(sel, single)
     : inTrash() ? trashItemMenu(sel, single)
     : location === STARRED ? starredItemMenu(sel, single)
-    : location === SHARES ? networkItemMenu(single)
+    : location === NETWORK ? networkItemMenu(single)
     : isReadOnlyLocation(location) ? shareItemMenu(single)
     : sel.every((entry) => entry.cloud) ? cloudItemMenu(single)
     : folderItemMenu(sel, single);
@@ -2068,22 +2023,31 @@ function shareItemMenu(single: Entry | null): MenuItem[] {
   ];
 }
 
-/** A received share in the Network list: open it or forget it. */
+/** A Network item: open a received share or forget it; open a server or disconnect it. */
 function networkItemMenu(single: Entry | null): MenuItem[] {
-  const id = single ? shareIdOf(single.path) : "";
+  const server = single ? serverFor(single) : undefined;
+  if (server) {
+    return [
+      { label: "Open", action: activateSelection },
+      { label: "Copy Location", action: copyLocation },
+      { separator: true },
+      { label: "Disconnect", action: () => void disconnectServer(server) },
+    ];
+  }
+  const id = single && isSharePath(single.path) ? shareIdOf(single.path) : "";
   return [
     { label: "Open", action: activateSelection },
     { label: "Copy Location", disabled: !single, action: copyLocation },
     { separator: true },
     {
-      label: "Remove from Shares",
+      label: "Remove from Network",
       disabled: !id,
       action: () => {
         removeReceived(id)
           .then(async () => {
             await refreshShares();
             await reload([]);
-            showToast("Removed from Shares");
+            showToast("Removed from Network");
           })
           .catch((err) => showToast(`Could not remove the share: ${cleanError(err)}`));
       },
@@ -2457,9 +2421,12 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
 
 function openBackgroundMenu(at: Anchor): void {
   if (isPseudo(location)) {
-    const items: MenuItem[] = location === NETWORK
-      ? [{ label: "Connect to Server…", action: () => showConnectServerDialog() }]
-      : [{ label: "Select All", action: selectAll }];
+    const items: MenuItem[] = [
+      ...(location === NETWORK
+        ? [{ label: "Connect to Server…", action: () => showConnectServerDialog() }, { separator: true as const }]
+        : []),
+      { label: "Select All", action: selectAll },
+    ];
     openMenu(at, items);
     return;
   }
@@ -4848,7 +4815,6 @@ async function buildSidebar(): Promise<void> {
   if (home) sidebarRow(places, "Home", "user-home", home);
   sidebarRow(places, "Recent", "document-open-recent", RECENT);
   sidebarRow(places, "Starred", "starred", STARRED);
-  sidebarRow(places, "Shares", "network-workgroup", SHARES);
   sidebarRow(places, "Network", "network-workgroup", NETWORK);
   const driveRow = sidebarRow(
     places,

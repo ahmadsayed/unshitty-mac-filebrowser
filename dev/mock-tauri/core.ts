@@ -258,7 +258,18 @@ function listSftp(path: string): Entry[] {
 }
 
 // ---------------------------------------------------------------------------
-// A fake received share and sharer, for the Shares preview.
+/**
+ * A link in the real shape, `share://` + 64 or more base32 characters, so the
+ * frontend tells it from a received share's `share://<id>` location. `tag`
+ * keeps own links recognisable ("own…") and each link distinct.
+ */
+function mockLink(tag: string): string {
+  const b32 = "abcdefghijklmnopqrstuvwxyz234567";
+  const ticket = [...tag.toLowerCase()].map((c) => (b32.includes(c) ? c : b32[c.charCodeAt(0) % 32])).join("");
+  return `share://${ticket.padEnd(64, "a")}`;
+}
+
+// A fake received share and sharer, for the Network preview.
 // ---------------------------------------------------------------------------
 
 const SHARE_FILES: Record<string, { name: string; isDir: boolean; size: number }[]> = {
@@ -275,7 +286,7 @@ let mockShares: Array<{
   path: string;
   access: Array<{ id: string; kind: "anyone" | "person"; name: string; link: string; bound: boolean }>;
 }> = [];
-let mockReceived: Array<{ id: string; link: string; folder: string; sharer: string }> = [];
+let mockReceived: Array<{ id: string; link: string; ticket: string; folder: string; sharer: string }> = [];
 let mockShareSeq = 0;
 let mockLinkSeq = 0;
 let mockSharersOnline = true;
@@ -405,7 +416,7 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
       link: "",
       bound: false,
     };
-    entry.link = `fbshare1:own-${share.id}-${entry.id}`;
+    entry.link = mockLink(`own${share.id}${entry.id}`);
     share.access.push(entry);
     return { link: entry.link, entry: accessView(entry) };
   },
@@ -426,14 +437,17 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     let link = str(a, "link").trim();
     if (link.startsWith("<") && link.endsWith(">")) link = link.slice(1, -1).trim();
     link = link.toLowerCase();
-    if (!link.startsWith("fbshare1:")) throw "This isn't a share link.";
-    if (link.startsWith("fbshare1:own")) throw "This is your own shared folder.";
-    if (mockReceived.some((item) => item.link === link)) {
-      throw "This folder is already in Shares.";
+    const ticket = link.startsWith("share://") ? link.slice("share://".length).replace(/\/$/, "")
+      : link.startsWith("fbshare1:") ? link.slice("fbshare1:".length) : null;
+    if (!ticket || !/^[a-z0-9-]+$/.test(ticket)) throw "This isn't a share link.";
+    if (ticket.startsWith("own")) throw "This is your own shared folder.";
+    if (mockReceived.some((item) => item.ticket === ticket)) {
+      throw "This folder is already in Network.";
     }
     const item = {
       id: `r${mockReceived.length + 1}`,
       link,
+      ticket,
       folder: "Photos",
       sharer: "Ahmed",
     };

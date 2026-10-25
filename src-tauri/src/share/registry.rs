@@ -400,7 +400,7 @@ impl ReceivedList {
             .iter()
             .any(|r| r.link.addr.id == link.addr.id && r.link.share == link.share)
         {
-            return Err("This folder is already in Shares.".into());
+            return Err("This folder is already in Network.".into());
         }
         let item = Received {
             id: short_id(),
@@ -651,7 +651,7 @@ mod tests {
         assert_eq!(
             l.add(link_for(1, 1), "Photos".into(), "Sara".into(), &me)
                 .unwrap_err(),
-            "This folder is already in Shares."
+            "This folder is already in Network."
         );
         assert!(l
             .add(link_for(1, 2), "B".into(), "Sara".into(), &me)

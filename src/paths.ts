@@ -22,11 +22,20 @@ export function isSftpPath(path: string): boolean {
   return path.startsWith(SFTP_PREFIX);
 }
 
-/** A link from Share (also accepts the `<fbshare1:…>` form people paste). */
+/**
+ * Received shares live at `share://<16-character id>/…`; a share link is
+ * `share://` followed by its whole ticket: 64 or more base32 characters and
+ * nothing after them. Links made before that start with `fbshare1:`.
+ */
+const LINK_TICKET = /^[a-z2-7]{64,}\/?$/;
+
+/** A link from Share (also accepts the `<share://…>` form people paste). */
 export function isShareLink(text: string): boolean {
   let link = text.trim();
   if (link.startsWith("<") && link.endsWith(">")) link = link.slice(1, -1).trim();
-  return link.toLowerCase().startsWith("fbshare1:");
+  link = link.toLowerCase();
+  if (link.startsWith("fbshare1:")) return true;
+  return link.startsWith(SHARE_PREFIX) && LINK_TICKET.test(link.slice(SHARE_PREFIX.length));
 }
 
 /** Drive, received shares and SFTP are all remote, but different things. */

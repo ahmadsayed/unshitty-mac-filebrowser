@@ -8,7 +8,12 @@ use std::sync::LazyLock;
 pub type ShareId = [u8; 16];
 pub type Token = [u8; 32];
 
-pub const LINK_PREFIX: &str = "fbshare1:";
+/// Links read `share://<ticket>`, like the `share://<id>/…` locations a
+/// received share opens at; the frontend tells them apart by length, since a
+/// ticket is always far longer than a 16-character id.
+pub const LINK_PREFIX: &str = "share://";
+/// What links started with before `share://`; still accepted.
+const LEGACY_PREFIX: &str = "fbshare1:";
 const VERSION: u8 = 1;
 const NOT_A_LINK: &str = "This isn't a share link.";
 
@@ -64,10 +69,13 @@ impl ShareLink {
         if let Some(inner) = t.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
             t = inner.trim();
         }
-        let body = t.strip_prefix(LINK_PREFIX).ok_or(NOT_A_LINK)?;
-        let bytes = B32
-            .decode(body.to_ascii_lowercase().as_bytes())
-            .map_err(|_| NOT_A_LINK)?;
+        let t = t.to_ascii_lowercase();
+        let body = t
+            .strip_prefix(LINK_PREFIX)
+            .map(|body| body.strip_suffix('/').unwrap_or(body))
+            .or_else(|| t.strip_prefix(LEGACY_PREFIX))
+            .ok_or(NOT_A_LINK)?;
+        let bytes = B32.decode(body.as_bytes()).map_err(|_| NOT_A_LINK)?;
         match bytes.first() {
             None => return Err(NOT_A_LINK.into()),
             Some(&v) if v != VERSION => {
@@ -119,8 +127,45 @@ mod tests {
     fn a_link_round_trips() {
         let l = sample();
         let text = l.encode();
-        assert!(text.starts_with("fbshare1:"));
+        assert!(text.starts_with("share://"));
         assert_eq!(ShareLink::decode(&text).unwrap(), l);
+    }
+
+    /// The frontend takes `share://` + 64 or more base32 characters for a
+    /// link and anything shorter for a received share's location.
+    #[test]
+    fn a_link_is_far_longer_than_a_received_id() {
+        let text = sample().encode();
+        let ticket = text.strip_prefix("share://").unwrap();
+        assert!(
+            ticket.len() >= 64,
+            "ticket is only {} characters",
+            ticket.len()
+        );
+        assert!(
+            ticket
+                .bytes()
+                .all(|b| b"abcdefghijklmnopqrstuvwxyz234567".contains(&b))
+        );
+    }
+
+    #[test]
+    fn links_made_before_share_scheme_still_decode() {
+        let l = sample();
+        let ticket = l.encode().strip_prefix("share://").unwrap().to_string();
+        assert_eq!(ShareLink::decode(&format!("fbshare1:{ticket}")).unwrap(), l);
+        assert_eq!(
+            ShareLink::decode(&format!("FBSHARE1:{}", ticket.to_uppercase())).unwrap(),
+            l
+        );
+    }
+
+    #[test]
+    fn decode_accepts_a_trailing_slash_and_any_case() {
+        let l = sample();
+        let text = l.encode();
+        assert_eq!(ShareLink::decode(&format!("{text}/")).unwrap(), l);
+        assert_eq!(ShareLink::decode(&text.to_uppercase()).unwrap(), l);
     }
 
     #[test]
@@ -132,7 +177,14 @@ mod tests {
 
     #[test]
     fn decode_rejects_garbage() {
-        for t in ["hello", "fbshare1:!!!", ""] {
+        for t in [
+            "hello",
+            "fbshare1:!!!",
+            "share://!!!",
+            "share://0123456789abcdef",
+            "share://",
+            "",
+        ] {
             assert_eq!(
                 ShareLink::decode(t),
                 Err("This isn't a share link.".to_string())
