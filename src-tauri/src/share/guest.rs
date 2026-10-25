@@ -12,20 +12,26 @@ use super::manifest::{Kind, MAX_MANIFEST, Manifest, ManifestEntry};
 use super::proto::{self, Reply, Request, read_within, write_msg};
 use super::registry::Received;
 use crate::fs_ops::Entry;
+use bao_tree::ChunkNum;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::{
     ConnectError, ConnectingError, Connection, ConnectionError, TransportErrorCode,
 };
 use iroh::{EndpointAddr, EndpointId};
 use iroh_blobs::Hash;
-use iroh_blobs::api::downloader::Downloader;
+use iroh_blobs::api::downloader::{
+    DownloadOptions, DownloadProgressItem, Downloader, SplitStrategy,
+};
+use iroh_blobs::protocol::{ChunkRanges, GetRequest};
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::util::connection_pool;
+use n0_future::StreamExt;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long reaching the sharer may take before it counts as offline (D13).
 #[cfg(not(test))]
@@ -36,13 +42,21 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long the sharer may take to hash a file for `Content`.
 const CONTENT_WAIT: Duration = Duration::from_secs(10 * 60);
 
+/// Content downloads fail when no progress arrives for this long (G2).
+const CONTENT_STALL: Duration = Duration::from_secs(30);
+
+/// One MiB, for the manifest timeout (G2).
+const MIB: u64 = 1024 * 1024;
+
+/// The encoded manifest cache is cleared above this (G4).
+const MANIFEST_CACHE_LIMIT: usize = 2 * MAX_MANIFEST;
+
 /// TLS alert 120, `no_application_protocol`: the sharer speaks another ALPN.
 const NO_APPLICATION_PROTOCOL: u8 = 120;
 
 const CHANGED: &str = "The file changed while downloading. Try again.";
 const MISSING: &str = "The shared folder was moved or deleted.";
 const UNEXPECTED: &str = "The other side sent an unexpected reply.";
-const BAD_MANIFEST: &str = "The shared folder's listing couldn't be read.";
 const NOT_A_FILE: &str = "Only files can be downloaded.";
 const EXISTS: &str = "A file with that name already exists.";
 
@@ -65,6 +79,10 @@ enum Fail {
     Denied(String),
     Missing,
     Changed,
+    /// The manifest was too large, didn't verify, or didn't decode (G1/G5).
+    BadManifest,
+    /// The sharer accepted the connection but stopped making progress (G2).
+    Stopped,
     /// A name on the way no longer exists.
     Gone(String),
     Other(String),
@@ -85,6 +103,8 @@ fn describe(fail: Fail, who: &str) -> String {
         Fail::Denied(why) | Fail::Other(why) => why,
         Fail::Missing => MISSING.into(),
         Fail::Changed => CHANGED.into(),
+        Fail::BadManifest => format!("{who}'s shared folder couldn't be read."),
+        Fail::Stopped => format!("{who} stopped responding."),
         Fail::Gone(name) => format!("“{name}” no longer exists."),
     }
 }
@@ -164,9 +184,12 @@ pub struct Guest {
     store: FsStore,
     downloader: Downloader,
     lookup: MemoryLookup,
+    /// Where per-download stores are staged (removed after export, G3).
+    cache_dir: PathBuf,
     /// At most one control connection per sharer.
     conns: Mutex<HashMap<EndpointId, Connection>>,
-    manifests: Mutex<HashMap<Hash, Arc<Manifest>>>,
+    /// Encoded manifest cache, bounded by `MANIFEST_CACHE_LIMIT` (G4).
+    manifests: Mutex<HashMap<Hash, (Arc<Manifest>, usize)>>,
     /// The sharer's name from the latest `Root` reply, by received id.
     sharers: Mutex<HashMap<String, String>>,
 }
@@ -190,6 +213,7 @@ impl Guest {
             store,
             downloader,
             lookup,
+            cache_dir,
             conns: Mutex::default(),
             manifests: Mutex::default(),
             sharers: Mutex::default(),
@@ -262,7 +286,10 @@ impl Guest {
             return Ok((c, true));
         }
         self.lookup.add_endpoint_info(addr.clone());
-        let conn = self.endpoint.connect(addr.clone(), proto::ALPN).await;
+        let dial = self.endpoint.connect(addr.clone(), proto::ALPN);
+        let conn = tokio::time::timeout(CONNECT_TIMEOUT, dial)
+            .await
+            .map_err(|_| Fail::Offline)?;
         let conn = conn.map_err(|e| connect_fail(&e))?;
         lock(&self.conns).insert(addr.id, conn.clone());
         Ok((conn, false))
@@ -314,21 +341,65 @@ impl Guest {
 
     // ---- manifests and content
 
-    /// A manifest by hash: from memory, or downloaded and decoded.
+    /// A manifest by hash: from memory, or downloaded and decoded. The
+    /// verified size is probed first, so an oversized manifest is refused
+    /// before its body is fetched (G1).
     async fn manifest(&self, addr: &EndpointAddr, hash: Hash) -> Result<Arc<Manifest>, Fail> {
-        if let Some(m) = lock(&self.manifests).get(&hash).cloned() {
-            return Ok(m);
+        if let Some((m, _)) = lock(&self.manifests).get(&hash) {
+            return Ok(m.clone());
         }
-        let got = self.downloader.download(hash, Some(addr.id)).await;
-        got.map_err(|_| Fail::Offline)?;
-        let bytes = self.store.blobs().get_bytes(hash).await;
-        let bytes = bytes.map_err(|_| Fail::Other(BAD_MANIFEST.into()))?;
-        if bytes.len() > MAX_MANIFEST {
-            return Err(Fail::Other(BAD_MANIFEST.into()));
+        let size = self.blob_size(addr, hash).await?;
+        if size > MAX_MANIFEST as u64 {
+            return Err(Fail::BadManifest);
         }
-        let m = Arc::new(Manifest::decode(&bytes).map_err(|_| Fail::Other(BAD_MANIFEST.into()))?);
-        lock(&self.manifests).insert(hash, m.clone());
+
+        let wait = CONNECT_TIMEOUT + Duration::from_secs(size.div_ceil(MIB));
+        match tokio::time::timeout(wait, self.downloader.download(hash, Some(addr.id))).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err(Fail::BadManifest),
+            Err(_) => return Err(Fail::Stopped),
+        }
+        let bytes = self
+            .store
+            .blobs()
+            .get_bytes(hash)
+            .await
+            .map_err(|_| Fail::BadManifest)?;
+        if bytes.len() as u64 != size || bytes.len() > MAX_MANIFEST {
+            return Err(Fail::BadManifest);
+        }
+        let m = Arc::new(Manifest::decode(&bytes).map_err(|_| Fail::BadManifest)?);
+
+        let encoded = bytes.len();
+        let mut cache = lock(&self.manifests);
+        let total: usize = cache.values().map(|(_, len)| *len).sum();
+        if total.saturating_add(encoded) > MANIFEST_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(hash, (m.clone(), encoded));
         Ok(m)
+    }
+
+    /// The verified size of a blob, learned from a one-chunk ranged get
+    /// (the outboard root carries the full size). G1.
+    async fn blob_size(&self, addr: &EndpointAddr, hash: Hash) -> Result<u64, Fail> {
+        let request = GetRequest::blob_ranges(hash, ChunkRanges::from(ChunkNum(0)..ChunkNum(1)));
+        let options = DownloadOptions::new(request, Some(addr.id), SplitStrategy::None);
+        let probe = self.downloader.download_with_opts(options);
+        match tokio::time::timeout(CONNECT_TIMEOUT, probe).await {
+            Ok(Ok(())) => {}
+            // The sharer answered Root, so the control side is alive; a
+            // refused or unavailable manifest is a read failure, not offline.
+            Ok(Err(_)) => return Err(Fail::BadManifest),
+            Err(_) => return Err(Fail::Stopped),
+        }
+        let bitfield = self
+            .store
+            .blobs()
+            .observe(hash)
+            .await
+            .map_err(|_| Fail::BadManifest)?;
+        Ok(bitfield.size())
     }
 
     /// The manifest of the folder `names` lead to from `root`.
@@ -368,35 +439,141 @@ impl Guest {
         let root = self.root(r).await?;
         let folder = self.folder_at(addr, root, parents).await?;
         let found = folder.entries.iter().find(|e| e.name == *name);
-        found
+        let entry = found
             .filter(|e| e.kind == Kind::File)
             .ok_or_else(|| Fail::Gone(name.clone()))?;
+        let expected = entry.size;
         let req = Request::Content {
             share: r.link.share,
             root,
             names: loc.names.clone(),
         };
-        let hash = match self.ask(addr, &req, CONTENT_WAIT).await? {
-            Reply::Content { hash, .. } => hash,
+        let (hash, size) = match self.ask(addr, &req, CONTENT_WAIT).await? {
+            Reply::Content { hash, size } => (hash, size),
             other => return Err(refusal(other)),
         };
-        if self.downloader.download(hash, Some(addr.id)).await.is_err() {
-            // Still reachable: the sharer stopped serving it, so it changed.
-            return Err(self.root(r).await.map_or_else(|f| f, |_| Fail::Changed));
+        if size != expected {
+            return Err(Fail::Changed);
         }
-        self.export(hash, dest).await
-    }
-
-    /// Copy a complete blob out to `dest`, removing a partial copy.
-    async fn export(&self, hash: Hash, dest: &Path) -> Result<(), Fail> {
-        match self.store.blobs().export(hash, dest).await {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                std::fs::remove_file(dest).ok();
-                Err(Fail::Other(e.to_string()))
+        match self.download_content(addr, hash, dest, expected).await {
+            Ok(()) => Ok(()),
+            Err(fail) => {
+                let _ = std::fs::remove_file(dest);
+                match fail {
+                    // The sharer still answers Root: the file stopped being
+                    // served, which in this protocol means it changed. A stall
+                    // keeps its own "stopped responding" message (G2).
+                    Fail::Offline => match self.root(r).await {
+                        Ok(_) => Err(Fail::Changed),
+                        Err(root_fail) => Err(root_fail),
+                    },
+                    other => Err(other),
+                }
             }
         }
     }
+
+    /// Download into a per-download store, verify the size, export it, and
+    /// remove the store (G3). `dest` is created with `create_new`, so nothing
+    /// is ever overwritten; a failure removes it.
+    async fn download_content(
+        &self,
+        addr: &EndpointAddr,
+        hash: Hash,
+        dest: &Path,
+        expected: u64,
+    ) -> Result<(), Fail> {
+        let dir = self.next_download_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| Fail::Other(e.to_string()))?;
+        let store = FsStore::load(&dir)
+            .await
+            .map_err(|e| Fail::Other(e.to_string()))?;
+        let pool = connection_pool::Options {
+            connect_timeout: CONNECT_TIMEOUT,
+            ..Default::default()
+        };
+        let downloader = Downloader::new_with_opts(&store, &self.endpoint, pool);
+        let outcome = async {
+            download_with_progress(&downloader, hash, addr).await?;
+            let actual = store
+                .blobs()
+                .observe(hash)
+                .await
+                .map_err(|_| Fail::BadManifest)?
+                .size();
+            if actual != expected {
+                return Err(Fail::Changed);
+            }
+            let exported = dir.join("export");
+            store
+                .blobs()
+                .export(hash, &exported)
+                .await
+                .map_err(|e| Fail::Other(e.to_string()))?;
+            copy_new(&exported, dest).map_err(Fail::Other)
+        }
+        .await;
+        drop(downloader);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+        if outcome.is_err() {
+            let _ = std::fs::remove_file(dest);
+        }
+        outcome
+    }
+
+    fn next_download_dir(&self) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        self.cache_dir
+            .join("share-store")
+            .join(format!("dl-{now:x}-{n:x}"))
+    }
+}
+
+/// Stream a blob to completion, failing when no progress arrives for 30 s (G2).
+async fn download_with_progress(
+    downloader: &Downloader,
+    hash: Hash,
+    addr: &EndpointAddr,
+) -> Result<(), Fail> {
+    let progress = downloader.download(hash, Some(addr.id));
+    let mut stream = progress.stream().await.map_err(|_| Fail::Offline)?;
+    loop {
+        match tokio::time::timeout(CONTENT_STALL, stream.next()).await {
+            Ok(None) => return Ok(()),
+            // Let the caller ask Root: a live control connection means the
+            // file likely changed; a dead one is reported as offline.
+            Ok(Some(DownloadProgressItem::Error(_))) => return Err(Fail::Offline),
+            Ok(Some(DownloadProgressItem::DownloadError)) => return Err(Fail::Changed),
+            Ok(Some(_)) => {}
+            Err(_) => return Err(Fail::Stopped),
+        }
+    }
+}
+
+/// Copy an exported blob to `dest` without ever overwriting an existing file.
+fn copy_new(src: &Path, dest: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let mut input = std::fs::File::open(src).map_err(|e| e.to_string())?;
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                EXISTS.to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
+    std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
+    output.flush().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -623,6 +800,64 @@ mod tests {
                 Err("The file changed while downloading. Try again.".to_string())
             );
             assert!(!changed.exists());
+            s.host.shutdown().await;
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_manifest_size_is_known_before_the_body() {
+        within(async {
+            let s = setup(&[("a.txt", b"hi")]).await;
+            let root = s.guest.root(&s.r).await.unwrap();
+            let size = s.guest.blob_size(&s.r.link.addr, root).await.unwrap();
+            assert!(size > 0);
+            assert!(size < MAX_MANIFEST as u64);
+            s.host.shutdown().await;
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_manifest_is_reported_as_unreadable() {
+        within(async {
+            let s = setup(&[("a.txt", b"hi")]).await;
+            s.host
+                .publish_invalid_root(&s.share, b"not a manifest".to_vec())
+                .await;
+            assert_eq!(
+                s.guest.list(&s.r, &top(), false).await.err(),
+                Some("Ahmed's shared folder couldn't be read.".to_string())
+            );
+            s.host.shutdown().await;
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn an_export_failure_leaves_no_dest_or_temporary_store() {
+        within(async {
+            let s = setup(&[("a.txt", b"hi")]).await;
+            let out = s._tmp.path().join("out");
+            std::fs::create_dir_all(&out).unwrap();
+            let blocker = out.join("blocker");
+            std::fs::write(&blocker, b"x").unwrap();
+            let dest = blocker.join("copy.txt");
+
+            assert!(
+                s.guest
+                    .fetch(&s.r, &top().child("a.txt"), &dest)
+                    .await
+                    .is_err()
+            );
+            assert!(!dest.exists());
+
+            let leftovers = std::fs::read_dir(s._tmp.path().join("guest-cache/share-store"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("dl-"))
+                .count();
+            assert_eq!(leftovers, 0);
             s.host.shutdown().await;
         })
         .await

@@ -390,6 +390,13 @@ impl Tree {
         self.root = hash;
         hash
     }
+
+    /// Test hook: point the tree at arbitrary bytes so the guest can be tested
+    /// against a corrupt/undecodable manifest.
+    #[cfg(test)]
+    pub(crate) fn replace_root_hash(&mut self, hash: Hash) {
+        self.root = hash;
+    }
 }
 
 /// The folder to rebuild for a change at `changed`: itself if it is a folder

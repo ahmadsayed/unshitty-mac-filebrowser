@@ -86,6 +86,9 @@ struct Served {
     tree: Tree,
     files: HashMap<Hash, Published>,
     root: watch::Sender<Hash>,
+    /// Test-only hashes a share is allowed to serve without a manifest.
+    #[cfg(test)]
+    extra: HashSet<Hash>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -297,11 +300,17 @@ impl Served {
             tree,
             files: HashMap::new(),
             root,
+            #[cfg(test)]
+            extra: HashSet::new(),
         }
     }
 
     fn publishes(&mut self, hash: &Hash) -> bool {
         if self.tree.manifest(hash).is_some() {
+            return true;
+        }
+        #[cfg(test)]
+        if self.extra.contains(hash) {
             return true;
         }
         let Some(p) = self.files.get(hash) else {
@@ -695,6 +704,18 @@ impl Host {
         let mut st = self.inner.lock();
         let served = st.served.get_mut(share).expect("a served share");
         served.tree.replace_root(manifest);
+    }
+
+    /// Serve arbitrary bytes as the share's root (a corrupt manifest).
+    #[cfg(test)]
+    pub(crate) async fn publish_invalid_root(&self, share: &ShareId, bytes: Vec<u8>) {
+        let hash = iroh_blobs::Hash::new(&bytes);
+        self.inner.store.blobs().add_bytes(bytes).await.unwrap();
+        let mut st = self.inner.lock();
+        let served = st.served.get_mut(share).expect("a served share");
+        served.tree.replace_root_hash(hash);
+        #[cfg(test)]
+        served.extra.insert(hash);
     }
 
     async fn start_inner(

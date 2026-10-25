@@ -1474,6 +1474,7 @@ dependencies = [
 name = "filebrowser"
 version = "0.3.0"
 dependencies = [
+ "bao-tree",
  "blake3",
  "chrono",
  "data-encoding",
@@ -1482,6 +1483,7 @@ dependencies = [
  "iroh",
  "iroh-blobs",
  "keyring",
+ "n0-future",
  "notify",
  "oauth2",
  "percent-encoding",
