@@ -1,5 +1,8 @@
 //! Read-only folder sharing over iroh.
 
+pub mod identity;
+pub mod link;
+
 #[cfg(test)]
 pub(crate) async fn test_endpoint() -> iroh::Endpoint {
     use iroh::endpoint::presets;
@@ -18,10 +21,7 @@ mod tests {
     use super::*;
     use iroh::{address_lookup::memory::MemoryLookup, protocol::Router};
     use iroh_blobs::{
-        BlobsProtocol,
-        api::blobs::AddPathOptions,
-        api::blobs::ImportMode,
-        BlobFormat,
+        BlobFormat, BlobsProtocol, api::blobs::AddPathOptions, api::blobs::ImportMode,
         store::fs::FsStore,
     };
     use std::time::Duration;
@@ -32,7 +32,11 @@ mod tests {
             .map(|e| {
                 let e = e.unwrap();
                 let m = e.metadata().unwrap();
-                if m.is_dir() { dir_size(&e.path()) } else { m.len() }
+                if m.is_dir() {
+                    dir_size(&e.path())
+                } else {
+                    m.len()
+                }
             })
             .sum()
     }
@@ -41,7 +45,9 @@ mod tests {
     async fn a_file_round_trips_between_two_loopback_endpoints() {
         tokio::time::timeout(Duration::from_secs(20), async {
             let tmp = tempfile::tempdir().unwrap();
-            let data: Vec<u8> = (0..3_000_000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+            let data: Vec<u8> = (0..3_000_000u32)
+                .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+                .collect();
             let src = tmp.path().join("big.bin");
             std::fs::write(&src, &data).unwrap();
 
