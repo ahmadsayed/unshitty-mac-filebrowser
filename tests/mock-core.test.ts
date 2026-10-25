@@ -330,6 +330,62 @@ test("the mock Drive refuses like the backend on failure paths", async () => {
   expect(await names(DRIVE)).toContain("Documents");
 });
 
+test("sharing commands create links, receive, go offline and clean up", async () => {
+  const mock = (globalThis as unknown as { __mockShare: { setOnline(v: boolean): void; reset(): void } }).__mockShare;
+  mock.reset();
+  expect(await invoke("share_identity")).toEqual({ name: null });
+  await invoke("set_share_name", { name: "Ahmed" });
+  expect(await invoke("share_identity")).toEqual({ name: "Ahmed" });
+
+  const info = await invoke<Record<string, any>>("share_folder", { path: `${HOME}/Documents` });
+  expect(info).toMatchObject({ status: "ok", access: [] });
+  expect(await invoke<unknown[]>("list_shares")).toHaveLength(1);
+
+  const anyone = await invoke<Record<string, any>>("create_link", {
+    share: info.id,
+    kind: "anyone",
+  });
+  expect(anyone.link).toMatch(/^fbshare1:/);
+  expect(anyone.entry).toMatchObject({ kind: "anyone", state: "unused" });
+  const person = await invoke<Record<string, any>>("create_link", {
+    share: info.id,
+    kind: "person",
+    person: "Sara",
+  });
+  expect(person.entry).toMatchObject({ kind: "person", state: "unused", name: "Sara" });
+  expect(await invoke("share_link", { share: info.id, entry: person.entry.id })).toBe(person.link);
+
+  await expect(invoke("add_received", { link: "hello" })).rejects.toMatch(/share link/);
+  const received = await invoke<Record<string, any>>("add_received", { link: anyone.link });
+  expect(received).toMatchObject({ folder: "Photos", sharer: "Ahmed", status: "online" });
+  await expect(invoke("add_received", { link: anyone.link })).rejects.toMatch(/already in Network/);
+  expect(await invoke<unknown[]>("list_received")).toHaveLength(1);
+
+  const root = await invoke<Array<{ name: string; path: string }>>("list_dir", {
+    path: `share://${received.id}`,
+  });
+  expect(root.map((entry) => entry.name)).toEqual(["hello.txt", "Photos"]);
+  expect(await invoke("share_open", { path: `share://${received.id}/hello.txt` })).toMatch(
+    /mock-share\/hello.txt$/,
+  );
+
+  mock.setOnline(false);
+  expect(await invoke<Array<{ status: string }>>("list_received")).toEqual([
+    expect.objectContaining({ status: "offline" }),
+  ]);
+  mock.setOnline(true);
+
+  await invoke("remove_access", { share: info.id, entry: person.entry.id });
+  expect(await invoke<Record<string, any>>("share_info", { path: `${HOME}/Documents` })).toMatchObject({
+    access: [expect.objectContaining({ id: anyone.entry.id })],
+  });
+  await invoke("stop_sharing", { share: info.id });
+  expect(await invoke<unknown[]>("list_shares")).toEqual([]);
+  await invoke("remove_received", { id: received.id });
+  expect(await invoke<unknown[]>("list_received")).toEqual([]);
+  mock.reset();
+});
+
 test("unknown commands are reported", async () => {
   await expect(invoke("nope")).rejects.toMatch(/unknown command nope/);
 });

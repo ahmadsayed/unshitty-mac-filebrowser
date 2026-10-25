@@ -4,8 +4,25 @@
 /** Every Google Drive location starts with this. */
 export const CLOUD_PREFIX = "gdrive://";
 
+/** Every received-share location starts with this. */
+export const SHARE_PREFIX = "share://";
+
 export function isCloudPath(path: string): boolean {
   return path.startsWith(CLOUD_PREFIX);
+}
+
+export function isSharePath(path: string): boolean {
+  return path.startsWith(SHARE_PREFIX);
+}
+
+/** Drive and received shares are both remote, but they are different things. */
+export function isRemotePath(path: string): boolean {
+  return isCloudPath(path) || isSharePath(path);
+}
+
+/** A share path for a child named `name`, encoded like a Drive name. */
+export function joinSharePath(dir: string, name: string): string {
+  return `${dir.replace(/\/+$/, "")}/${encodeCloudName(name)}`;
 }
 
 /** The account key in `gdrive://<account>/…`. */

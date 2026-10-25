@@ -19,7 +19,10 @@ use versions::state::{Transfer, VersionsState};
 use versions::{VersionDiff, VersionInfo, restore};
 
 fn config_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = match share::identity::config_dir_override() {
+        Some(dir) => dir,
+        None => app.path().app_config_dir().map_err(|e| e.to_string())?,
+    };
     Ok(dir.join(name))
 }
 
@@ -27,6 +30,14 @@ fn lock_state<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, Strin
     mutex
         .lock()
         .map_err(|_| "Google Drive state is unavailable.".to_string())
+}
+
+fn share_versions_hint(app: &tauri::AppHandle) -> share::host::VersionsHint {
+    let app = app.clone();
+    Box::new(move |path, size, mtime| {
+        app.state::<VersionsState>()
+            .content_hint(path, size, mtime)
+    })
 }
 
 /// Folders the user pinned to the sidebar ("Add to Bookmarks").
@@ -163,6 +174,11 @@ async fn list_dir(
     path: String,
     show_hidden: bool,
 ) -> Result<Vec<fs_ops::Entry>, String> {
+    if share::location::is_share(&path) {
+        let state = app.state::<share::state::ShareState>();
+        let hint = share_versions_hint(&app);
+        return state.list_dir(&path, show_hidden, hint).await;
+    }
     if cloud::is_cloud(&path) {
         return blocking(move || {
             let state = app.state::<CloudState>();
@@ -183,7 +199,7 @@ async fn item_counts(
         let mut local = Vec::new();
         let mut positions = Vec::new();
         for (index, path) in paths.iter().enumerate() {
-            if !cloud::is_cloud(path) {
+            if !cloud::is_cloud(path) && !share::location::is_share(path) {
                 local.push(path.clone());
                 positions.push(index);
             }
@@ -208,7 +224,9 @@ async fn path_info(
         let state = app.state::<CloudState>();
         let mut out = Vec::with_capacity(paths.len());
         for path in &paths {
-            if cloud::is_cloud(path) {
+            if share::location::is_share(path) {
+                out.push(None);
+            } else if cloud::is_cloud(path) {
                 out.push(cloud::service::path_info(&state, path).ok());
             } else {
                 out.push(
@@ -267,6 +285,9 @@ fn cancel_folder_size(walk: u64) {
 /// known once Drive has given the new item an id.
 #[tauri::command]
 async fn make_dir(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    if share::location::is_share(&path) {
+        return Err("Shared folders are read only.".into());
+    }
     if cloud::is_cloud(&path) {
         return blocking(move || cloud::write::make_dir(&app.state::<CloudState>(), &path)).await?;
     }
@@ -381,6 +402,9 @@ fn home_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// the move can be undone.
 #[tauri::command]
 async fn trash_entry(app: tauri::AppHandle, path: String) -> Result<Option<String>, String> {
+    if share::location::is_share(&path) {
+        return Err("Shared folders are read only.".into());
+    }
     if cloud::is_cloud(&path) {
         // Drive's own Trash (D10); never a permanent delete.
         return blocking(move || cloud::write::trash(&app.state::<CloudState>(), &path)).await?;
@@ -514,7 +538,7 @@ async fn make_versioned_dir(app: tauri::AppHandle, path: String) -> Result<(), S
 /// `.versions/meta.json`, not SQLite.
 #[tauri::command]
 async fn versioned_root(app: tauri::AppHandle, path: String) -> Option<String> {
-    if cloud::is_cloud(&path) {
+    if cloud::is_cloud(&path) || share::location::is_share(&path) {
         return None;
     }
     blocking(move || {
@@ -768,6 +792,8 @@ async fn thumbnail(app: tauri::AppHandle, path: String, size: u32) -> tauri::ipc
         })
         .await
         .unwrap_or_default()
+    } else if share::location::is_share(&path) {
+        Vec::new()
     } else {
         blocking(move || {
             thumbnail_dir(&app)
@@ -940,6 +966,138 @@ async fn drive_open(
     .await?
 }
 
+#[tauri::command]
+fn share_identity(
+    state: tauri::State<share::state::ShareState>,
+) -> Result<share::state::ShareIdentity, String> {
+    state.identity()
+}
+
+#[tauri::command]
+fn set_share_name(
+    state: tauri::State<share::state::ShareState>,
+    name: String,
+) -> Result<(), String> {
+    state.set_name((!name.trim().is_empty()).then_some(name.trim().to_string()))
+}
+
+#[tauri::command]
+async fn share_folder(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, share::state::ShareState>,
+    path: String,
+) -> Result<share::state::ShareInfo, String> {
+    let hint = share_versions_hint(&app);
+    let trash = app.clone();
+    state
+        .share_folder(Path::new(&path), move |p| in_trash(&trash, p), hint)
+        .await
+}
+
+#[tauri::command]
+async fn share_info(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, share::state::ShareState>,
+    path: String,
+) -> Result<Option<share::state::ShareInfo>, String> {
+    let hint = share_versions_hint(&app);
+    state.info(Path::new(&path), hint).await
+}
+
+#[tauri::command]
+async fn list_shares(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, share::state::ShareState>,
+) -> Result<Vec<share::state::ShareSummary>, String> {
+    state.shares(share_versions_hint(&app)).await
+}
+
+#[tauri::command]
+async fn create_link(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, share::state::ShareState>,
+    share: String,
+    kind: String,
+    person: Option<String>,
+) -> Result<share::state::LinkResult, String> {
+    state
+        .create_link(&share, &kind, person, share_versions_hint(&app))
+        .await
+}
+
+#[tauri::command]
+async fn share_link(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, share::state::ShareState>,
+    share: String,
+    entry: String,
+) -> Result<String, String> {
+    state
+        .link(&share, &entry, share_versions_hint(&app))
+        .await
+}
+
+#[tauri::command]
+async fn remove_access(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, share::state::ShareState>,
+    share: String,
+    entry: String,
+) -> Result<(), String> {
+    state
+        .remove_access(&share, &entry, share_versions_hint(&app))
+        .await
+}
+
+#[tauri::command]
+async fn stop_sharing(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, share::state::ShareState>,
+    share: String,
+) -> Result<(), String> {
+    state
+        .stop_sharing(&share, share_versions_hint(&app))
+        .await
+}
+
+#[tauri::command]
+async fn add_received(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, share::state::ShareState>,
+    link: String,
+) -> Result<share::state::ReceivedShare, String> {
+    state
+        .add_received(&link, share_versions_hint(&app))
+        .await
+}
+
+#[tauri::command]
+async fn list_received(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, share::state::ShareState>,
+) -> Result<Vec<share::state::ReceivedShare>, String> {
+    state.received(share_versions_hint(&app)).await
+}
+
+#[tauri::command]
+fn remove_received(
+    state: tauri::State<share::state::ShareState>,
+    id: String,
+) -> Result<(), String> {
+    state.remove_received(&id)
+}
+
+#[tauri::command]
+async fn share_open(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, share::state::ShareState>,
+    path: String,
+) -> Result<String, String> {
+    state
+        .open(&path, share_versions_hint(&app))
+        .await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     for (key, value) in platform::webview_env_to_set(|k| std::env::var_os(k).is_some()) {
@@ -949,12 +1107,21 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let config_dir = app
+            let config_dir = share::identity::config_dir_override().unwrap_or_else(|| {
+                app.path()
+                    .app_config_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+            });
+            let cache_dir = app
                 .path()
-                .app_config_dir()
+                .app_cache_dir()
                 .unwrap_or_else(|_| PathBuf::from("."));
             app.manage(VersionsState::new(config_dir.join("versioned.json")));
             app.manage(CloudState::new(&config_dir));
+            app.manage(share::state::ShareState::new(
+                config_dir.clone(),
+                cache_dir,
+            ));
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 handle.state::<VersionsState>().startup();
@@ -1014,6 +1181,19 @@ pub fn run() {
             drive_connect_finish,
             drive_connect_cancel,
             drive_open,
+            share_identity,
+            set_share_name,
+            share_folder,
+            share_info,
+            list_shares,
+            create_link,
+            share_link,
+            remove_access,
+            stop_sharing,
+            add_received,
+            list_received,
+            remove_received,
+            share_open,
             make_versioned_dir,
             versioned_root,
             list_versions,

@@ -146,6 +146,29 @@ impl VersionsState {
         Ok(Some((history, rel)))
     }
 
+    /// The BLAKE3 content hash Keep Versions already recorded for `path`, when
+    /// its size and mtime (nanoseconds) still match. Sharing uses this instead
+    /// of reading the file again.
+    pub fn content_hint(&self, path: &Path, size: u64, mtime: i64) -> Option<iroh_blobs::Hash> {
+        let (history, rel) = self.history_for(path).ok().flatten()?;
+        let reader = history.reader().ok()?;
+        let row = crate::versions::index::last_live_version(
+            &reader,
+            &crate::versions::path_bytes(&rel),
+        )
+        .ok()
+        .flatten()?;
+        if row.size != size || row.mtime != mtime {
+            return None;
+        }
+        let bytes: [u8; 32] = data_encoding::HEXLOWER
+            .decode(row.hash?.as_bytes())
+            .ok()?
+            .try_into()
+            .ok()?;
+        Some(iroh_blobs::Hash::from_bytes(bytes))
+    }
+
     /// Adopt a freshly created or reopened history, starting its watcher and
     /// adding it to the registry.
     pub fn adopt(&self, history: History) -> Arc<History> {
@@ -612,8 +635,29 @@ mod tests {
     }
 
     #[test]
-    fn history_for_resolves_an_absolute_deleted_path() {
+    fn a_content_hint_matches_only_the_current_size_and_mtime() {
         let (_dir, root, state) = setup();
+        let history = state.open_registered(&root).unwrap();
+        record(&history, "a.txt", b"hello");
+        let path = root.join("a.txt");
+        let meta = std::fs::metadata(&path).unwrap();
+        let size = meta.len();
+        let mtime = meta
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64;
+        let expected = blake3::hash(b"hello").to_hex().to_string();
+
+        let hint = state.content_hint(&path, size, mtime).unwrap();
+        assert_eq!(hint.to_hex(), expected);
+        assert!(state.content_hint(&path, size + 1, mtime).is_none());
+        assert!(state.content_hint(&path, size, mtime + 1).is_none());
+    }
+
+    #[test]
+    fn history_for_resolves_an_absolute_deleted_path() {        let (_dir, root, state) = setup();
         let history = state.open_registered(&root).unwrap();
         record(&history, "a.txt", b"a");
         std::fs::remove_file(root.join("a.txt")).unwrap();

@@ -200,6 +200,218 @@ function drivePathExists(path: string): boolean {
   return !!driveItemAt(path);
 }
 
+// ---------------------------------------------------------------------------
+// A fake received share and sharer, for the Network preview.
+// ---------------------------------------------------------------------------
+
+const SHARE_FILES: Record<string, { name: string; isDir: boolean; size: number }[]> = {
+  "share://r1": [
+    { name: "hello.txt", isDir: false, size: 5 },
+    { name: "Photos", isDir: true, size: 0 },
+  ],
+  "share://r1/Photos": [{ name: "trip.jpg", isDir: false, size: 10 }],
+};
+
+let mockShareName: string | null = null;
+let mockShares: Array<{
+  id: string;
+  path: string;
+  access: Array<{ id: string; kind: "anyone" | "person"; name: string; link: string; bound: boolean }>;
+}> = [];
+let mockReceived: Array<{ id: string; link: string; folder: string; sharer: string }> = [];
+let mockShareSeq = 0;
+let mockLinkSeq = 0;
+let mockSharersOnline = true;
+let mockNoAccess = false;
+
+function listShare(path: string): Entry[] {
+  if (!mockSharersOnline) throw "Ahmed is offline.";
+  const entries = SHARE_FILES[path];
+  if (!entries) throw "The shared folder was moved or deleted.";
+  return entries.map((entry) => ({
+    name: entry.name,
+    path: `${path}/${encodeURIComponent(entry.name)}`,
+    is_dir: entry.isDir,
+    size: entry.size,
+    modified: now - day,
+    is_hidden: false,
+    is_symlink: false,
+  }));
+}
+
+function shareNode(path: string): Entry | undefined {
+  const at = path.lastIndexOf("/");
+  if (at < 0) return undefined;
+  try {
+    return listShare(path.slice(0, at)).find(
+      (entry) => entry.path === path,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function shareProperties(path: string) {
+  const entry = shareNode(path);
+  if (!entry) throw "Could not read properties: The shared file no longer exists.";
+  return {
+    name: entry.name,
+    path,
+    parent: path.slice(0, path.lastIndexOf("/")),
+    is_dir: entry.is_dir,
+    is_symlink: false,
+    symlink_target: null,
+    size: entry.size,
+    item_count: null,
+    modified: entry.modified,
+    accessed: entry.modified,
+    created: 0,
+    mode: "",
+    octal: "",
+    owner: "Ahmed",
+    group: "",
+    others: "",
+  };
+}
+
+function accessView(entry: { id: string; kind: "anyone" | "person"; name: string; bound: boolean }) {
+  const state = entry.bound ? (mockSharersOnline ? "online" : "offline") : "unused";
+  return {
+    id: entry.id,
+    kind: entry.kind,
+    name: entry.name,
+    state,
+    visitors: entry.bound ? 1 : 0,
+  };
+}
+
+function shareInfo(share: (typeof mockShares)[number]) {
+  return {
+    id: share.id,
+    path: share.path,
+    status: lookup(share.path)?.dir ? "ok" : "missing",
+    access: share.access.map(accessView),
+  };
+}
+
+function shareSummary(share: (typeof mockShares)[number]) {
+  return {
+    id: share.id,
+    path: share.path,
+    name: share.path.slice(share.path.lastIndexOf("/") + 1),
+    status: lookup(share.path)?.dir ? "ok" : "missing",
+  };
+}
+
+function receivedStatus() {
+  if (!mockSharersOnline) return "offline";
+  return mockNoAccess ? "no-access" : "online";
+}
+
+function receivedView(item: (typeof mockReceived)[number]) {
+  return {
+    id: item.id,
+    folder: item.folder,
+    sharer: item.sharer,
+    status: receivedStatus(),
+  };
+}
+
+const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
+  share_identity: () => ({ name: mockShareName }),
+  set_share_name: (a) => {
+    const name = str(a, "name").trim();
+    mockShareName = name || null;
+  },
+  share_folder: (a) => {
+    const path = str(a, "path");
+    if (!lookup(path)?.dir) throw "Only folders on this computer can be shared.";
+    const existing = mockShares.find((share) => share.path === path);
+    if (existing) return shareInfo(existing);
+    const share = { id: `share-${++mockShareSeq}`, path, access: [] };
+    mockShares.push(share);
+    return shareInfo(share);
+  },
+  share_info: (a) => {
+    const share = mockShares.find((item) => item.path === str(a, "path"));
+    return share ? shareInfo(share) : null;
+  },
+  list_shares: () => mockShares.map(shareSummary),
+  create_link: (a) => {
+    const share = mockShares.find((item) => item.id === str(a, "share"));
+    if (!share) throw "This folder is no longer shared.";
+    const kind = str(a, "kind") === "person" ? "person" : "anyone";
+    const entry = {
+      id: `entry-${++mockLinkSeq}`,
+      kind: kind as "anyone" | "person",
+      name: kind === "person" ? (a.person as string) ?? "Guest" : "",
+      link: "",
+      bound: false,
+    };
+    entry.link = `fbshare1:mock-${share.id}-${entry.id}`;
+    share.access.push(entry);
+    return { link: entry.link, entry: accessView(entry) };
+  },
+  share_link: (a) => {
+    const share = mockShares.find((item) => item.id === str(a, "share"));
+    const entry = share?.access.find((item) => item.id === str(a, "entry"));
+    if (!entry) throw "This link no longer exists.";
+    return entry.link;
+  },
+  remove_access: (a) => {
+    const share = mockShares.find((item) => item.id === str(a, "share"));
+    if (share) share.access = share.access.filter((item) => item.id !== str(a, "entry"));
+  },
+  stop_sharing: (a) => {
+    mockShares = mockShares.filter((item) => item.id !== str(a, "share"));
+  },
+  add_received: (a) => {
+    const link = str(a, "link").trim();
+    if (!link.startsWith("fbshare1:")) throw "This isn't a share link.";
+    if (link.startsWith("fbshare1:own")) throw "This is your own shared folder.";
+    if (mockReceived.some((item) => item.link === link)) {
+      throw "This folder is already in Network.";
+    }
+    const item = {
+      id: `r${mockReceived.length + 1}`,
+      link,
+      folder: "Photos",
+      sharer: "Ahmed",
+    };
+    mockReceived.push(item);
+    return receivedView(item);
+  },
+  list_received: () => mockReceived.map(receivedView),
+  remove_received: (a) => {
+    mockReceived = mockReceived.filter((item) => item.id !== str(a, "id"));
+  },
+  share_open: (a) => {
+    const path = str(a, "path");
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    if (!name || name === path) throw "Only files can be opened.";
+    return `/tmp/opencode/mock-share/${decodeURIComponent(name)}`;
+  },
+};
+
+(globalThis as Record<string, unknown>).__mockShare = {
+  setOnline(online: boolean) {
+    mockSharersOnline = online;
+  },
+  setNoAccess(value: boolean) {
+    mockNoAccess = value;
+  },
+  change(_path: string) {},
+  reset() {
+    mockShareName = null;
+    mockShares = [];
+    mockReceived = [];
+    mockShareSeq = 0;
+    mockLinkSeq = 0;
+    mockSharersOnline = true;
+    mockNoAccess = false;
+  },
+};
+
 function driveMakeDir(path: string): string {
   const { parent, name } = driveTarget(path);
   if (driveChildren(parent.id, name).length) throw "A folder with that name already exists.";
@@ -827,14 +1039,18 @@ const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
 const COMMANDS: Record<string, (args: Args) => unknown> = {
   list_dir: (a) => {
     const path = str(a, "path");
+    if (path.startsWith("share://")) return listShare(path);
     return path.startsWith("gdrive://") ? listDrive(path) : list(path, a.showHidden as boolean);
   },
   item_counts: (a) =>
     (a.paths as string[]).map((path) =>
-      path.startsWith("gdrive://") ? null : folderSummary(path, a.showHidden as boolean),
+      path.startsWith("gdrive://") || path.startsWith("share://")
+        ? null
+        : folderSummary(path, a.showHidden as boolean),
     ),
   file_properties: (a) => {
     const path = str(a, "path");
+    if (path.startsWith("share://")) return shareProperties(path);
     return path.startsWith("gdrive://") ? driveProperties(path) : fileProperties(path);
   },
   new_folder_walk: () => ++mockWalks,
@@ -869,16 +1085,23 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   trash_dir: () => TRASH,
   thumbnail: (a) => {
     const path = str(a, "path");
-    return path.startsWith("gdrive://") ? Promise.resolve(new ArrayBuffer(0)) : mockThumbnail(path, a.size as number);
+    return path.startsWith("gdrive://") || path.startsWith("share://")
+      ? Promise.resolve(new ArrayBuffer(0))
+      : mockThumbnail(path, a.size as number);
   },
   path_info: (a) =>
     (a.paths as string[]).map((path) => {
+      if (path.startsWith("share://")) {
+        const entry = shareNode(path);
+        return entry ? { is_dir: entry.is_dir, device: 0 } : null;
+      }
       if (!path.startsWith("gdrive://")) return pathInfo(path);
       const entry = driveNode(path);
       return entry ? { is_dir: entry.is_dir, device: 0 } : null;
     }),
   path_exists: (a) => {
     const path = str(a, "path");
+    if (path.startsWith("share://")) return !!shareNode(path);
     return path.startsWith("gdrive://") ? drivePathExists(path) : lookup(path) !== undefined;
   },
   copy_entry: (a) => (isDriveTransfer(a) ? driveTransfer(a, false) : (transfer(a, false), str(a, "to"))),
@@ -900,6 +1123,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     renameEntry(from, to);
     return to;
   },
+  ...SHARE_COMMANDS,
   ...DRIVE_COMMANDS,
   ...VERSION_COMMANDS,
 };

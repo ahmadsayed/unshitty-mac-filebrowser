@@ -847,6 +847,14 @@ impl Host {
         self.inner.lock().online()
     }
 
+    /// Update the name visitors see. The host's in-memory registry is the one
+    /// serving links, so write both it and the file.
+    pub fn set_name(&self, name: Option<String>) -> Result<(), String> {
+        let mut st = self.inner.lock();
+        st.registry.name = name;
+        st.registry.save(&self.inner.registry_path)
+    }
+
     pub async fn shutdown(self) {
         self.router.shutdown().await.ok();
     }

@@ -8,6 +8,7 @@ pub mod location;
 pub mod manifest;
 pub mod proto;
 pub mod registry;
+pub mod state;
 
 #[cfg(test)]
 pub(crate) async fn test_endpoint() -> iroh::Endpoint {

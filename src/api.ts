@@ -103,6 +103,107 @@ export async function driveDisconnect(account: string): Promise<void> {
   return invoke<void>("drive_disconnect", { account });
 }
 
+// ---------------------------------------------------------------------------
+// Folder sharing (iroh)
+// ---------------------------------------------------------------------------
+
+export interface ShareIdentity {
+  name: string | null;
+}
+
+export type ShareStatus = "ok" | "missing";
+export type LinkState = "unused" | "online" | "offline";
+
+export interface AccessEntry {
+  id: string;
+  kind: "anyone" | "person";
+  name: string;
+  state: LinkState;
+  visitors: number;
+}
+
+export interface ShareInfo {
+  id: string;
+  path: string;
+  status: ShareStatus;
+  access: AccessEntry[];
+}
+
+export interface ShareSummary {
+  id: string;
+  path: string;
+  name: string;
+  status: ShareStatus;
+}
+
+export interface ReceivedShare {
+  id: string;
+  folder: string;
+  sharer: string;
+  status: "online" | "offline" | "no-access" | "missing";
+}
+
+export interface LinkResult {
+  link: string;
+  entry: AccessEntry;
+}
+
+export async function shareIdentity(): Promise<ShareIdentity> {
+  return invoke<ShareIdentity>("share_identity");
+}
+
+export async function setShareName(name: string): Promise<void> {
+  return invoke<void>("set_share_name", { name });
+}
+
+export async function shareFolder(path: string): Promise<ShareInfo> {
+  return invoke<ShareInfo>("share_folder", { path });
+}
+
+export async function shareInfo(path: string): Promise<ShareInfo | null> {
+  return invoke<ShareInfo | null>("share_info", { path });
+}
+
+export async function listShares(): Promise<ShareSummary[]> {
+  return invoke<ShareSummary[]>("list_shares");
+}
+
+export async function createShareLink(
+  share: string,
+  kind: "anyone" | "person",
+  person?: string
+): Promise<LinkResult> {
+  return invoke<LinkResult>("create_link", { share, kind, person });
+}
+
+export async function shareLinkFor(share: string, entry: string): Promise<string> {
+  return invoke<string>("share_link", { share, entry });
+}
+
+export async function removeShareAccess(share: string, entry: string): Promise<void> {
+  return invoke<void>("remove_access", { share, entry });
+}
+
+export async function stopSharing(share: string): Promise<void> {
+  return invoke<void>("stop_sharing", { share });
+}
+
+export async function addReceived(link: string): Promise<ReceivedShare> {
+  return invoke<ReceivedShare>("add_received", { link });
+}
+
+export async function listReceived(): Promise<ReceivedShare[]> {
+  return invoke<ReceivedShare[]>("list_received");
+}
+
+export async function removeReceived(id: string): Promise<void> {
+  return invoke<void>("remove_received", { id });
+}
+
+export async function shareOpen(path: string): Promise<string> {
+  return invoke<string>("share_open", { path });
+}
+
 /**
  * Mounted volumes. `/Volumes` on macOS, the udisks2 mount folders and `/mnt`
  * on Linux — the backend knows where to look.
@@ -225,6 +326,9 @@ export async function openFile(path: string): Promise<void> {
   if (path.startsWith("gdrive://")) {
     const target = await invoke<DriveOpenTarget>("drive_open", { path });
     return target.kind === "url" ? openUrl(target.url) : openPath(target.path);
+  }
+  if (path.startsWith("share://")) {
+    return openPath(await invoke<string>("share_open", { path }));
   }
   return openPath(path);
 }
