@@ -178,11 +178,11 @@ impl Registry {
         map.entry(op.to_string()).or_default().clone()
     }
 
+    /// Cancel `op`. Between two items of a batch nothing is registered, so
+    /// an unknown op is remembered as cancelled and its next command stops.
     pub fn cancel(&self, op: &str) {
-        let map = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(progress) = map.get(op) {
-            progress.cancel();
-        }
+        let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(op.to_string()).or_default().cancel();
     }
 
     pub fn remove(&self, op: &str) {
@@ -332,5 +332,14 @@ mod tests {
         ticker(&Progress::default(), |_| {}, &stop, std::time::Duration::from_secs(10));
         stopper.join().unwrap();
         assert!(begun.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    /// Between two items of a batch no command is registered; a cancel sent
+    /// then must still stop the next item.
+    #[test]
+    fn a_cancel_before_register_reaches_the_next_command() {
+        let registry = Registry::default();
+        registry.cancel("b");
+        assert!(registry.register("b").is_cancelled());
     }
 }

@@ -2943,11 +2943,12 @@ function transferOperation(paths: string[], moving: boolean, destDir: string, ca
  */
 async function runTransfer(paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string): Promise<boolean> {
   if (isPseudo(destDir)) return false;
-  const batch = { cancelled: false, started: false };
+  const batch = { cancelled: false, started: false, measuring: false };
   const op = transferOperation(paths, paths.some(move), destDir, () => {
     batch.cancelled = true;
-    // A batch still waiting in the queue just leaves it.
-    if (!batch.started) endOperation(op);
+    // Waiting in the queue or still measuring: nothing to stop yet, so the
+    // row goes at once and the batch ends before its first item.
+    if (!batch.started || batch.measuring) endOperation(op);
     else void cancelOperation(op.id).catch(() => {});
   });
   const run = transferChain.then(async () => {
@@ -2966,14 +2967,17 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
 }
 
 /** Measure the batch for its progress total; items only when that fails. */
-async function measureBatch(op: Operation, paths: string[]): Promise<void> {
+async function measureBatch(op: Operation, paths: string[], batch: { measuring: boolean }): Promise<void> {
   setOperationState(op, "preparing");
+  batch.measuring = true;
   try {
     const measured = await measure(paths);
     op.totalBytes = measured.bytes || null;
     op.totalItems = measured.items || paths.length;
   } catch {
     op.totalBytes = null;
+  } finally {
+    batch.measuring = false;
   }
   setOperationState(op, "working");
 }
@@ -2995,9 +2999,9 @@ async function transferItem(op: Operation, from: string, to: string, overwrite: 
 
 async function transferBatch(
   paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string,
-  op: Operation, batch: { cancelled: boolean },
+  op: Operation, batch: { cancelled: boolean; measuring: boolean },
 ): Promise<boolean> {
-  await measureBatch(op, paths);
+  await measureBatch(op, paths, batch);
   const done: string[] = [];
   const errors: string[] = [];
   let anyMove = false;

@@ -7,6 +7,7 @@ import { $, $$, boot, click, closeOverlays, goTo, item, key, mouse, names, open,
 
 type MockOps = {
   hold(): void; held(): number; step(bytes: number): void; release(): void; reset(): void; failMeasure(fail: boolean): void;
+  holdMeasure(): void;
 };
 const ops = () => (globalThis as unknown as { __mockOps: MockOps }).__mockOps;
 const HOME = "/Users/me";
@@ -126,6 +127,20 @@ test("when measuring fails the paste counts files instead", async () => {
   await waitHeld();
   await showPopover();
   expect(detail()).toBe("0 of 1 files");
+});
+
+test("Cancel while preparing ends the paste at once, before measuring finishes", async () => {
+  ops().holdMeasure();
+  await copyInto(`${HOME}/Desktop`, ["todo.txt"], `${HOME}/Empty folder`);
+  await waitHeld();
+  await showPopover();
+  expect(detail()).toBe("Preparing…");
+  await click(rows()[0].querySelector(".operation-cancel")!);
+  await settle(5);
+  expect(rows()).toHaveLength(0);
+  ops().release();
+  await settle(20);
+  expect(names()).not.toContain("todo.txt");
 });
 
 test("a trash batch shows progress and Cancel keeps the rest", async () => {

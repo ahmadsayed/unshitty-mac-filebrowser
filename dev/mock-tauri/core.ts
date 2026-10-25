@@ -853,6 +853,7 @@ type Held = { op: string; channel?: Channel<MockUpdate>; bytes: number; resolve:
 let holding = false;
 let held: Held[] = [];
 let measureFails = false;
+let measureHolding = false;
 const cancelledOps = new Set<string>();
 
 function update(bytes: number, done: boolean): MockUpdate {
@@ -916,10 +917,14 @@ function measure(paths: string[]): { bytes: number; items: number } {
   failMeasure(fail: boolean) {
     measureFails = fail;
   },
+  holdMeasure() {
+    measureHolding = true;
+  },
   reset() {
     holding = false;
     held = [];
     measureFails = false;
+    measureHolding = false;
     cancelledOps.clear();
   },
 };
@@ -1508,7 +1513,10 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   ...SHARE_COMMANDS,
   ...DRIVE_COMMANDS,
   ...VERSION_COMMANDS,
-  measure: (a) => measure(a.paths as string[]),
+  measure: async (a) => {
+    if (measureHolding) await new Promise<void>((resolve, reject) => held.push({ op: "", bytes: 0, resolve, reject }));
+    return measure(a.paths as string[]);
+  },
   cancel_operation: (a) => cancelOperation(str(a, "op")),
 };
 
