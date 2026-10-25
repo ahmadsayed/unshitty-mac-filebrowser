@@ -1996,3 +1996,64 @@ kbd {
   font-size: 9pt;
   opacity: var(--dim);
 }
+
+/* ----- Operations button and popover (copies, moves, trash, opens) ----- */
+#btn-operations .op-pie { overflow: visible; }
+.op-pie circle { fill: none; stroke-width: 2.5; }
+.op-pie-track { stroke: currentColor; opacity: 0.2; }
+.op-pie-fill { stroke: var(--accent-bg); }
+
+.operations-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: min(360px, calc(100vw - 32px));
+  padding: 6px;
+}
+
+.operation-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+}
+
+.operation-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.operation-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operation-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.operation-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent-bg);
+  transition: width 120ms linear;
+}
+
+.operation-detail,
+.operation-empty {
+  font-size: 9pt;
+  opacity: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.operation-empty { padding: 6px; }
+.operation-cancel { min-width: 28px; width: 28px; height: 28px; flex-shrink: 0; }
+

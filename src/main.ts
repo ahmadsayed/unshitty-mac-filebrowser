@@ -1,3 +1,4 @@
+import { initOperationsButton } from "./operations";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
@@ -4908,6 +4909,7 @@ async function init(): Promise<void> {
   $("#btn-forward").innerHTML = sym("go-next");
   $("#btn-location-menu").innerHTML = sym("view-more");
   $("#btn-new-folder").innerHTML = sym("folder-new");
+  initOperationsButton($("#btn-operations"));
   $("#btn-view-menu").innerHTML = sym("pan-down");
   $("#search-icon").innerHTML = sym("system-search");
 
