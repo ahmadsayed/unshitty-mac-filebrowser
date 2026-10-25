@@ -7,7 +7,7 @@ import { $, $$, boot, click, closeOverlays, goTo, item, key, mouse, names, open,
 
 type MockOps = {
   hold(): void; held(): number; step(bytes: number): void; release(): void; reset(): void; failMeasure(fail: boolean): void;
-  holdMeasure(): void; lateDone(late: boolean): void;
+  holdMeasure(): void; lateDone(late: boolean): void; holdAfter(): void;
 };
 const ops = () => (globalThis as unknown as { __mockOps: MockOps }).__mockOps;
 const HOME = "/Users/me";
@@ -181,6 +181,15 @@ test("each finished item shows up in the open folder while the rest copy", async
   // Reloads are limited to one a second, so wait for it like a person would.
   await vi.waitFor(() => expect(names()).toContain("Quarterly report.pdf"), { timeout: 2000 });
   expect(names()).not.toContain("Roadmap.key");
+});
+
+test("a folder being copied shows up in the open folder while it is still copying", async () => {
+  ops().holdAfter();
+  await copyInto(`${HOME}/Documents`, ["Projects"], `${HOME}/Pictures/Camera`);
+  await waitHeld();
+  expect(names()).not.toContain("Projects");
+  ops().step(100);
+  await vi.waitFor(() => expect(names()).toContain("Projects"), { timeout: 2000 });
 });
 
 // Last: it leaves the app on a remote server.

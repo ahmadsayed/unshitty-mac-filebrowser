@@ -2997,6 +2997,8 @@ async function transferItem(op: Operation, from: string, to: string, overwrite: 
   const onProgress = (u: ProgressUpdate) => {
     if (finished) return;
     updateOperation(op, u);
+    // A folder fills in place as it copies; let the open view follow.
+    showLanded(parentOf(to));
     if (u.done) sawLast();
   };
   const tracked = { op: op.id, onProgress };
@@ -3016,7 +3018,11 @@ const landedIn = new Set<string>();
 let landedReload: ReturnType<typeof setTimeout> | undefined;
 let lastLandedReload = 0;
 
-/** Show finished items in the open folder while the rest copy, at most once a second. */
+/**
+ * Show what has landed in `destDir` while a transfer runs, at most once a
+ * second: the open folder reloads when it is `destDir` or inside it (a
+ * folder being filled).
+ */
 function showLanded(destDir: string): void {
   landedIn.add(destDir);
   if (landedReload !== undefined) return;
@@ -3024,7 +3030,7 @@ function showLanded(destDir: string): void {
   landedReload = setTimeout(() => {
     landedReload = undefined;
     lastLandedReload = Date.now();
-    const open = landedIn.has(location);
+    const open = [...landedIn].some((dir) => location === dir || location.startsWith(`${dir.replace(/\/+$/, "")}/`));
     landedIn.clear();
     if (open) void reload();
   }, wait);

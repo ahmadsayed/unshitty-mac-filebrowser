@@ -328,6 +328,10 @@ hides or disables those menu items for cloud selections.
 - Uploads and copies create the target under a temporary name, then rename into
   place when the API supports it; a failed upload never leaves a half file with
   the final name.
+- Downloads stage the same way, except a new folder (not a Replace): it
+  downloads straight under its name so it fills as you watch, as in GNOME
+  Files, and a failed or cancelled one goes to the Trash. Only a crash can
+  leave a partial folder with the final name.
 - Local → Drive move deletes the local source only after the upload reports
   success and the resulting id is known.
 - Drive → local move deletes the Drive item (Drive Trash) only after the local
