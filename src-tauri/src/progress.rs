@@ -149,6 +149,24 @@ pub fn copy_counted(
     }
 }
 
+/// Send `progress` every `every` until `stop` disconnects (its sender is
+/// dropped), then once more with `done: true`. Runs on its own thread next
+/// to the work it reports on, and wakes at once when the work ends.
+pub fn ticker(
+    progress: &Progress,
+    send: impl Fn(ProgressUpdate),
+    stop: &std::sync::mpsc::Receiver<()>,
+    every: std::time::Duration,
+) {
+    while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop.recv_timeout(every) {
+        send(progress.snapshot());
+    }
+    send(ProgressUpdate {
+        done: true,
+        ..progress.snapshot()
+    });
+}
+
 /// The running operations by id, so `cancel_operation` can reach them.
 #[derive(Default)]
 pub struct Registry(Mutex<HashMap<String, Progress>>);
@@ -258,5 +276,61 @@ mod tests {
         registry.cancel("missing");
         registry.remove("a");
         assert!(!registry.register("a").is_cancelled());
+    }
+
+    #[test]
+    fn ticker_sends_a_final_done_update() {
+        let sent = std::sync::Mutex::new(Vec::new());
+        let (stopper, stop) = std::sync::mpsc::channel::<()>();
+        drop(stopper);
+        let begun = std::time::Instant::now();
+        ticker(
+            &Progress::default(),
+            |update| sent.lock().unwrap().push(update),
+            &stop,
+            std::time::Duration::from_millis(50),
+        );
+        assert!(begun.elapsed() < std::time::Duration::from_millis(50));
+        let sent = sent.into_inner().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].done);
+    }
+
+    #[test]
+    fn ticker_sends_while_running() {
+        let sent = std::sync::Mutex::new(Vec::new());
+        let (sender, stop) = std::sync::mpsc::channel::<()>();
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            drop(sender);
+        });
+        let progress = Progress::default();
+        progress.add_bytes(9);
+        ticker(
+            &progress,
+            |update| sent.lock().unwrap().push(update),
+            &stop,
+            std::time::Duration::from_millis(50),
+        );
+        stopper.join().unwrap();
+        let sent = sent.into_inner().unwrap();
+        assert!(sent.len() >= 3, "only {} updates", sent.len());
+        assert!(sent[..sent.len() - 1].iter().all(|u| !u.done && u.bytes == 9));
+        assert!(sent.last().unwrap().done);
+    }
+
+    /// Each item of a batch waits for its ticker, so stopping must not wait
+    /// out the period.
+    #[test]
+    fn ticker_stops_without_waiting_out_its_period() {
+        let (sender, stop) = std::sync::mpsc::channel::<()>();
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            drop(sender);
+        });
+        let begun = std::time::Instant::now();
+        ticker(&Progress::default(), |_| {}, &stop, std::time::Duration::from_secs(10));
+        stopper.join().unwrap();
+        assert!(begun.elapsed() < std::time::Duration::from_secs(1));
     }
 }
