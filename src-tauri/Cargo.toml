@@ -41,7 +41,7 @@ iroh = "1"
 iroh-blobs = { version = "0.103", default-features = false, features = ["fs-store"] }
 postcard = { version = "1", features = ["use-std"] }
 data-encoding = "2"
-tokio = { version = "1", features = ["sync", "rt"] }
+tokio = { version = "1", features = ["sync", "rt", "time"] }
 
 
 [dev-dependencies]

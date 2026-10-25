@@ -28,6 +28,26 @@ use tokio::sync::watch;
 
 /// Concurrent visitors (distinct keys with an open connection), D13.
 pub const MAX_VISITORS: usize = 32;
+/// Control connections from keys without access, which may only Claim.
+pub const STRANGER_SLOTS: usize = 8;
+/// How long a key without access may stay connected without a Claim.
+pub const CLAIM_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The connection limits; only tests change them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Limits {
+    pub visitors: usize,
+    pub strangers: usize,
+    pub claim_window: std::time::Duration,
+}
+
+impl Limits {
+    pub const DEFAULT: Limits = Limits {
+        visitors: MAX_VISITORS,
+        strangers: STRANGER_SLOTS,
+        claim_window: CLAIM_WINDOW,
+    };
+}
 
 const INVALID: &str = "This link is no longer valid.";
 const NOT_FOUND: &str = "This item is no longer available.";
@@ -53,9 +73,11 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
 
 // ---- state --------------------------------------------------------------
 
-/// A file hash handed out by `Content`, with what the file looked like.
+/// A file hash handed out by `Content`: the canonical path it was hashed
+/// and imported from, and what the file looked like then.
 struct Published {
     path: PathBuf,
+    folder: PathBuf,
     size: u64,
     mtime: i64,
 }
@@ -66,11 +88,20 @@ struct Served {
     root: watch::Sender<Hash>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Role {
+    /// A blobs connection the gate hasn't decided on yet.
+    Pending,
+    /// A key with access; counts toward the visitor cap.
+    Visitor,
+    /// A control connection from a key without access: Claim only.
+    Stranger,
+}
+
 struct Conn {
     key: PublicKey,
     conn: Connection,
-    /// Counted as a visitor (control: under the cap; blobs: passed the gate).
-    admitted: bool,
+    role: Role,
 }
 
 /// A `Content` request resolved to a file of the sharer's own.
@@ -91,37 +122,64 @@ struct State {
 }
 
 impl State {
-    fn track(&mut self, id: u64, key: PublicKey, conn: Connection) {
-        let admitted = false;
-        self.conns.insert(
-            id,
-            Conn {
-                key,
-                conn,
-                admitted,
-            },
-        );
+    fn track(&mut self, id: u64, key: PublicKey, conn: Connection, role: Role) {
+        self.conns.insert(id, Conn { key, conn, role });
+    }
+
+    fn role(&self, id: u64) -> Option<Role> {
+        self.conns.get(&id).map(|c| c.role)
+    }
+
+    fn visitors(&self) -> HashSet<PublicKey> {
+        let visiting = self.conns.values().filter(|c| c.role == Role::Visitor);
+        visiting.map(|c| c.key).collect()
     }
 
     fn online(&self) -> Vec<PublicKey> {
-        let keys: HashSet<PublicKey> = self
-            .conns
-            .values()
-            .filter(|c| c.admitted)
-            .map(|c| c.key)
-            .collect();
-        keys.into_iter().collect()
+        self.visitors().into_iter().collect()
     }
 
-    /// Count the connection as a visitor unless that would pass the cap; a
-    /// key that is already online never counts twice.
-    fn admit(&mut self, id: u64, max: usize) -> bool {
-        let online = self.online();
-        let Some(c) = self.conns.get_mut(&id) else {
+    /// Whether `key` may be a visitor now: it already is one, or the cap
+    /// leaves room. A key never counts twice.
+    fn room_for(&self, key: &PublicKey, limits: &Limits) -> bool {
+        let visitors = self.visitors();
+        visitors.contains(key) || visitors.len() < limits.visitors
+    }
+
+    /// Track a new control connection: a key with access as a visitor (if
+    /// the cap leaves room), any other as a stranger (if a stranger slot is
+    /// free). Returns the role, or `None` when it is busy and not tracked.
+    fn admit_control(&mut self, id: u64, conn: &Connection, limits: &Limits) -> Option<Role> {
+        let key = conn.remote_id();
+        let strangers = self.conns.values().filter(|c| c.role == Role::Stranger);
+        let role = if self.allowed_anywhere(&key) {
+            self.room_for(&key, limits).then_some(Role::Visitor)
+        } else {
+            (strangers.count() < limits.strangers).then_some(Role::Stranger)
+        }?;
+        self.track(id, key, conn.clone(), role);
+        Some(role)
+    }
+
+    /// Make a connection a visitor, if the cap leaves room.
+    fn promote(&mut self, id: u64, limits: &Limits) -> bool {
+        let Some(key) = self.conns.get(&id).map(|c| c.key) else {
             return false;
         };
-        c.admitted = c.admitted || online.contains(&c.key) || online.len() < max;
-        c.admitted
+        let ok = self.allowed_anywhere(&key) && self.room_for(&key, limits);
+        if let Some(c) = self.conns.get_mut(&id).filter(|_| ok) {
+            c.role = Role::Visitor;
+        }
+        ok
+    }
+
+    /// Close a connection that is still a stranger (its claim time is up).
+    fn expire(&mut self, id: u64) {
+        if self.role(id) == Some(Role::Stranger) {
+            if let Some(c) = self.conns.remove(&id) {
+                c.conn.close(REVOKED.into(), b"no claim");
+            }
+        }
     }
 
     /// Close every connection of these keys.
@@ -219,10 +277,15 @@ impl State {
         })
     }
 
-    fn publish(&mut self, job: Job, hash: Hash) {
+    fn publish(&mut self, job: Job, canon: PathBuf, hash: Hash) {
         if let Some(s) = self.served.get_mut(&job.share) {
-            let (path, size, mtime) = (job.file, job.size, job.mtime);
-            s.files.insert(hash, Published { path, size, mtime });
+            let published = Published {
+                path: canon,
+                folder: job.folder,
+                size: job.size,
+                mtime: job.mtime,
+            };
+            s.files.insert(hash, published);
         }
     }
 }
@@ -244,7 +307,7 @@ impl Served {
         let Some(p) = self.files.get(hash) else {
             return false;
         };
-        let same = stat(&p.path).ok() == Some((p.size, p.mtime));
+        let same = p.unchanged();
         if !same {
             self.files.remove(hash);
         }
@@ -252,11 +315,23 @@ impl Served {
     }
 }
 
-/// Whether `file`, with every symlink resolved now, is inside `folder`.
-fn inside(file: &Path, folder: &Path) -> bool {
+impl Published {
+    /// Still the same regular file, at the same real place inside the
+    /// shared folder: no symlink swapped in, nothing moved, size and mtime
+    /// as they were.
+    fn unchanged(&self) -> bool {
+        let regular = std::fs::symlink_metadata(&self.path).is_ok_and(|m| m.is_file());
+        regular
+            && canonical_inside(&self.path, &self.folder).as_deref() == Some(self.path.as_path())
+            && stat(&self.path).ok() == Some((self.size, self.mtime))
+    }
+}
+
+/// `file` with every symlink resolved now, if that is inside `folder`.
+fn canonical_inside(file: &Path, folder: &Path) -> Option<PathBuf> {
     match (file.canonicalize(), folder.canonicalize()) {
-        (Ok(f), Ok(d)) => f.starts_with(d),
-        _ => false,
+        (Ok(f), Ok(d)) if f.starts_with(&d) => Some(f),
+        _ => None,
     }
 }
 
@@ -268,7 +343,7 @@ struct Inner {
     state: Mutex<State>,
     cache: Mutex<ContentCache>,
     versions_hint: VersionsHint,
-    max_visitors: usize,
+    limits: Limits,
 }
 
 impl fmt::Debug for Inner {
@@ -289,7 +364,7 @@ impl Inner {
         if !key.is_some_and(|k| st.allowed_anywhere(&k)) {
             return Err(AbortReason::Permission);
         }
-        match st.admit(id, self.max_visitors) {
+        match st.promote(id, &self.limits) {
             true => Ok(()),
             false => Err(AbortReason::RateLimited),
         }
@@ -297,7 +372,8 @@ impl Inner {
 
     fn gate_get(&self, id: u64, hash: &Hash, single_blob: bool) -> Result<(), AbortReason> {
         let mut st = self.lock();
-        let key = st.conns.get(&id).filter(|c| c.admitted).map(|c| c.key);
+        let visitor = st.conns.get(&id).filter(|c| c.role == Role::Visitor);
+        let key = visitor.map(|c| c.key);
         match key {
             Some(k) if single_blob && st.may_fetch(&k, hash) => Ok(()),
             _ => Err(AbortReason::Permission),
@@ -316,6 +392,17 @@ impl Inner {
             }
             Claimed::Denied(why) => denied(why),
         }
+    }
+
+    /// A claim on connection `id`; a stranger who claims becomes a visitor
+    /// (or hears Busy when the cap is full).
+    fn claim_on(&self, id: u64, key: PublicKey, share: &ShareId, token: &Token) -> Reply {
+        let reply = self.claim(key, share, token);
+        let ok = matches!(reply, Reply::Ok { .. });
+        if ok && !self.lock().promote(id, &self.limits) {
+            return Reply::Busy;
+        }
+        reply
     }
 
     fn root(&self, key: PublicKey, share: &ShareId) -> Reply {
@@ -338,50 +425,49 @@ impl Inner {
             Ok((found, job)) => (job, found),
             Err(_) => return Reply::Changed,
         };
-        let (hash, size) = match found {
+        let (canon, hash, size) = match found {
             Ok(found) => found,
             Err(reply) => return reply,
         };
-        if let Err(reply) = self.import(&job, hash).await {
+        if let Err(reply) = self.import(&canon, &job.name, hash).await {
             return reply;
         }
-        self.lock().publish(job, hash);
+        self.lock().publish(job, canon, hash);
         Reply::Content { hash, size }
     }
 
     /// Hash the file behind a `Content` request, refusing anything that is
     /// no longer what the manifest describes or now leads out of the folder.
-    fn hash_file(&self, job: &Job) -> Result<(Hash, u64), Reply> {
+    /// Returns the file's canonical path with its hash and size.
+    fn hash_file(&self, job: &Job) -> Result<(PathBuf, Hash, u64), Reply> {
         if stat(&job.file).ok() != Some((job.size, job.mtime)) {
             return Err(Reply::Changed);
         }
-        if !inside(&job.file, &job.folder) {
-            return Err(denied(NOT_FOUND));
-        }
-        let hint = (self.versions_hint)(&job.file, job.size, job.mtime);
+        let canon = canonical_inside(&job.file, &job.folder).ok_or_else(|| denied(NOT_FOUND))?;
+        let hint = (self.versions_hint)(&canon, job.size, job.mtime);
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        match cache.hash(&job.file, hint) {
-            Ok(Some(found)) => Ok(found),
+        match cache.hash(&canon, hint) {
+            Ok(Some((hash, size))) => Ok((canon, hash, size)),
             Ok(None) => Err(Reply::Changed),
             Err(_) => Err(unreadable(&job.name)),
         }
     }
 
     /// Make the file servable in place (by reference, not copied).
-    async fn import(&self, job: &Job, hash: Hash) -> Result<(), Reply> {
+    async fn import(&self, file: &Path, name: &str, hash: Hash) -> Result<(), Reply> {
         let blobs = self.store.blobs();
         if blobs.has(hash).await.unwrap_or(false) {
             return Ok(());
         }
         let opts = AddPathOptions {
-            path: job.file.clone(),
+            path: file.to_path_buf(),
             format: BlobFormat::Raw,
             mode: ImportMode::TryReference,
         };
         match blobs.add_path_with_opts(opts).await {
             Ok(tag) if tag.hash == hash => Ok(()),
             Ok(_) => Err(Reply::Changed),
-            Err(_) => Err(unreadable(&job.name)),
+            Err(_) => Err(unreadable(name)),
         }
     }
 
@@ -436,13 +522,16 @@ impl ProtocolHandler for Control {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let id = conn.stable_id() as u64;
         let key = conn.remote_id();
-        let admitted = {
-            let mut st = self.0.lock();
-            st.track(id, key, conn.clone());
-            st.admit(id, self.0.max_visitors)
-        };
+        let role = self.0.lock().admit_control(id, &conn, &self.0.limits);
+        if role == Some(Role::Stranger) {
+            let inner = self.0.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(inner.limits.claim_window).await;
+                inner.lock().expire(id);
+            });
+        }
         while let Ok((send, recv)) = conn.accept_bi().await {
-            tokio::spawn(answer(self.0.clone(), key, admitted, send, recv));
+            tokio::spawn(answer(self.0.clone(), id, key, send, recv));
         }
         self.0.lock().conns.remove(&id);
         Ok(())
@@ -452,18 +541,33 @@ impl ProtocolHandler for Control {
 /// One request, one reply (a `Watch` keeps replying).
 async fn answer(
     inner: Arc<Inner>,
+    id: u64,
     key: PublicKey,
-    admitted: bool,
     mut send: SendStream,
     mut recv: RecvStream,
 ) {
-    let reply = match read_msg::<Request>(&mut recv).await {
-        Err(_) => return,
-        Ok(_) if !admitted => Reply::Busy,
-        Ok(Request::Claim { share, token }) => inner.claim(key, &share, &token),
-        Ok(Request::Root { share }) => inner.root(key, &share),
-        Ok(Request::Content { share, root, names }) => inner.content(key, share, root, names).await,
-        Ok(Request::Watch { share }) => {
+    let Ok(req) = read_msg::<Request>(&mut recv).await else {
+        return;
+    };
+    let role = inner.lock().role(id);
+    let reply = match (role, req) {
+        (None, _) => Reply::Busy,
+        (_, Request::Claim { share, token }) => inner.claim_on(id, key, &share, &token),
+        (Some(Role::Visitor), req) => return visit(&inner, key, req, send).await,
+        _ => denied(INVALID),
+    };
+    if write_msg(&mut send, &reply).await.is_ok() {
+        send.finish().ok();
+    }
+}
+
+/// The requests only visitors may make.
+async fn visit(inner: &Arc<Inner>, key: PublicKey, req: Request, mut send: SendStream) {
+    let reply = match req {
+        Request::Claim { .. } => return,
+        Request::Root { share } => inner.root(key, &share),
+        Request::Content { share, root, names } => inner.content(key, share, root, names).await,
+        Request::Watch { share } => {
             inner.watch(key, &share, &mut send).await;
             send.finish().ok();
             return;
@@ -484,7 +588,10 @@ struct Blobs {
 impl ProtocolHandler for Blobs {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let id = conn.stable_id() as u64;
-        self.inner.lock().track(id, conn.remote_id(), conn.clone());
+        let key = conn.remote_id();
+        self.inner
+            .lock()
+            .track(id, key, conn.clone(), Role::Pending);
         let result = self.proto.accept(conn).await;
         self.inner.lock().conns.remove(&id);
         result
@@ -550,20 +657,20 @@ impl Host {
         versions_hint: VersionsHint,
     ) -> Result<Host, String> {
         let parts = (identity, registry_path, store_dir, endpoint, versions_hint);
-        Self::start_inner(parts, MAX_VISITORS).await
+        Self::start_inner(parts, Limits::DEFAULT).await
     }
 
     #[cfg(test)]
-    pub(crate) async fn start_with_max_visitors(
+    pub(crate) async fn start_with_limits(
         identity: Identity,
         registry_path: PathBuf,
         store_dir: PathBuf,
         endpoint: iroh::Endpoint,
         versions_hint: VersionsHint,
-        max_visitors: usize,
+        limits: Limits,
     ) -> Result<Host, String> {
         let parts = (identity, registry_path, store_dir, endpoint, versions_hint);
-        Self::start_inner(parts, max_visitors).await
+        Self::start_inner(parts, limits).await
     }
 
     async fn start_inner(
@@ -574,7 +681,7 @@ impl Host {
             iroh::Endpoint,
             VersionsHint,
         ),
-        max_visitors: usize,
+        limits: Limits,
     ) -> Result<Host, String> {
         if endpoint.id() != identity.key.public() {
             return Err(KEY_MISMATCH.into());
@@ -596,7 +703,7 @@ impl Host {
             state: Mutex::new(state),
             cache: Mutex::new(ContentCache::default()),
             versions_hint,
-            max_visitors,
+            limits,
         });
         for (id, path) in shares {
             // A folder that is gone (or can't be walked) answers `Missing`.
@@ -622,12 +729,15 @@ impl Host {
     }
 
     /// Register the folder (saved once its tree is built) and serve it.
-    pub async fn share_folder(&self, path: &Path) -> Result<ShareId, String> {
+    pub async fn share_folder(
+        &self,
+        path: &Path,
+        is_trash: impl Fn(&Path) -> bool + Send,
+    ) -> Result<ShareId, String> {
         let (id, folder, new) = {
             let mut st = self.inner.lock();
             let before = st.registry.shares.len();
-            // The Trash is refused by the caller (it knows where it is).
-            let id = st.registry.share_folder(path, |_| false)?;
+            let id = st.registry.share_folder(path, is_trash)?;
             let folder = st.folder(&id).map(Path::to_path_buf).unwrap_or_default();
             let new = st.registry.shares.len() > before;
             if !new && st.served.contains_key(&id) {
@@ -709,16 +819,24 @@ mod tests {
 
     const LIMIT: Duration = Duration::from_secs(20);
 
-    async fn start(dir: &Path, max_visitors: usize) -> Host {
+    async fn start(dir: &Path, visitors: usize) -> Host {
+        let limits = Limits {
+            visitors,
+            ..Limits::DEFAULT
+        };
+        start_limited(dir, limits).await
+    }
+
+    async fn start_limited(dir: &Path, limits: Limits) -> Host {
         let identity = load_or_create(&dir.join("config")).unwrap();
         let ep = test_endpoint_for(identity.key.clone()).await;
-        Host::start_with_max_visitors(
+        Host::start_with_limits(
             identity,
             dir.join("config/shares.json"),
             dir.join("store"),
             ep,
             Box::new(|_, _, _| None),
-            max_visitors,
+            limits,
         )
         .await
         .unwrap()
@@ -850,7 +968,7 @@ mod tests {
                 &[("a.txt", b"hi"), ("sub/b.txt", b"yo")],
             );
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, _) = claimed(&host, share).await;
             let expected = Tree::build(&f).unwrap().root;
             match v.ask(&host, Request::Root { share }).await {
@@ -871,7 +989,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let v = Visitor::new().await;
             assert_eq!(
                 v.ask(&host, Request::Root { share }).await,
@@ -897,7 +1015,7 @@ mod tests {
             let data = big_data();
             let f = folder(tmp.path(), "F", &[("big.bin", &data)]);
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, _) = claimed(&host, share).await;
             let (hash, size) = content_hash(v.content(&host, share, "big.bin").await);
             assert_eq!(size, data.len() as u64);
@@ -915,7 +1033,7 @@ mod tests {
             let f = folder(tmp.path(), "F", &[("a.txt", b"hi"), ("sub/b.txt", b"yo")]);
             std::fs::write(tmp.path().join("x"), b"outside").unwrap();
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, _) = claimed(&host, share).await;
             let root = v.root(&host, share).await;
             let cases: Vec<(Hash, Vec<&str>)> = vec![
@@ -951,7 +1069,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, _) = claimed(&host, share).await;
             let root = v.root(&host, share).await;
             std::fs::write(f.join("a.txt"), b"hello, changed").unwrap();
@@ -975,7 +1093,7 @@ mod tests {
                 &[("a.txt", b"hi"), ("secret.txt", b"psst")],
             );
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, _) = claimed(&host, share).await;
             let (hash, _) = content_hash(v.content(&host, share, "a.txt").await);
             assert_eq!(v.download(&host, hash).await.unwrap(), b"hi");
@@ -999,8 +1117,8 @@ mod tests {
             let fa = folder(tmp.path(), "A", &[("a.txt", b"from a")]);
             let fb = folder(tmp.path(), "B", &[("b.txt", b"from b")]);
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let a = host.share_folder(&fa).await.unwrap();
-            let b = host.share_folder(&fb).await.unwrap();
+            let a = host.share_folder(&fa, |_| false).await.unwrap();
+            let b = host.share_folder(&fb, |_| false).await.unwrap();
             let (va, _) = claimed(&host, a).await;
             let (vb, _) = claimed(&host, b).await;
             let (hash, _) = content_hash(va.content(&host, a, "a.txt").await);
@@ -1023,7 +1141,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, entry) = claimed(&host, share).await;
             let conn = v.control(&host).await;
             assert!(matches!(
@@ -1051,7 +1169,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
             let host = start(tmp.path(), 1).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (l1, _) = link(&host, share).await;
             let (l2, _) = link(&host, share).await;
             let v1 = Visitor::new().await;
@@ -1080,7 +1198,7 @@ mod tests {
             let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
             let host = start(tmp.path(), MAX_VISITORS).await;
             let id = host.addr().id;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, _) = claimed(&host, share).await;
             host.shutdown().await;
 
@@ -1101,7 +1219,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, _) = claimed(&host, share).await;
             let root = v.root(&host, share).await;
             assert!(v.download(&host, root).await.is_ok());
@@ -1118,7 +1236,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, _) = claimed(&host, share).await;
             let (hash, _) = content_hash(v.content(&host, share, "a.txt").await);
             let later = std::time::SystemTime::now() + Duration::from_secs(60);
@@ -1138,7 +1256,7 @@ mod tests {
             let outside = tmp.path().join("outside.txt");
             std::fs::write(&outside, b"no").unwrap();
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, _) = claimed(&host, share).await;
             let root = v.root(&host, share).await;
             // Same size and mtime as the manifest entry, but outside.
@@ -1171,7 +1289,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, _) = claimed(&host, share).await;
             let a = f.join("a.txt");
             std::fs::set_permissions(&a, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -1193,7 +1311,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, _) = claimed(&host, share).await;
             let root = v.root(&host, share).await;
             std::fs::rename(&f, tmp.path().join("G")).unwrap();
@@ -1214,7 +1332,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
             let host = start(tmp.path(), MAX_VISITORS).await;
-            let share = host.share_folder(&f).await.unwrap();
+            let share = host.share_folder(&f, |_| false).await.unwrap();
             let (v, _) = claimed(&host, share).await;
             let conn = v.control(&host).await;
             assert!(matches!(
@@ -1254,6 +1372,282 @@ mod tests {
                 started.err(),
                 Some("The sharing key doesn't match the network endpoint.".to_string())
             );
+        })
+        .await
+    }
+
+    /// Wait until the host no longer counts `key` as online.
+    async fn gone(host: &Host, key: PublicKey) {
+        while host.online().contains(&key) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    fn set_mtime(p: &Path, t: std::time::SystemTime) {
+        let f = std::fs::File::options().write(true).open(p).unwrap();
+        f.set_modified(t).unwrap();
+    }
+
+    fn mtime(p: &Path) -> std::time::SystemTime {
+        std::fs::metadata(p).unwrap().modified().unwrap()
+    }
+
+    #[tokio::test]
+    async fn identical_files_in_two_shares_never_leak_new_bytes() {
+        within(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let same = vec![b's'; 100_000];
+            let fb = folder(tmp.path(), "B", &[("x", &same)]);
+            let fa = folder(tmp.path(), "A", &[("y", &same)]);
+            let host = start(tmp.path(), MAX_VISITORS).await;
+            let a = host.share_folder(&fa, |_| false).await.unwrap();
+            let b = host.share_folder(&fb, |_| false).await.unwrap();
+            let (vb, _) = claimed(&host, b).await;
+            let (va, _) = claimed(&host, a).await;
+            // B/x is imported first, so the store refers to it.
+            let (h, _) = content_hash(vb.content(&host, b, "x").await);
+            assert_eq!(content_hash(va.content(&host, a, "y").await).0, h);
+            let t = mtime(&fb.join("x"));
+            std::fs::write(fb.join("x"), vec![b'P'; 100_000]).unwrap();
+            set_mtime(&fb.join("x"), t);
+            if let Ok(bytes) = va.download(&host, h).await {
+                assert_eq!(bytes, same);
+            }
+            host.shutdown().await;
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_symlink_swapped_in_after_content_is_refused() {
+        within(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let f = folder(tmp.path(), "F", &[("a.bin", &[b'a'; 100_000])]);
+            let outside = tmp.path().join("outside.bin");
+            // Even the very same bytes outside the folder are refused.
+            std::fs::write(&outside, vec![b'a'; 100_000]).unwrap();
+            let host = start(tmp.path(), MAX_VISITORS).await;
+            let share = host.share_folder(&f, |_| false).await.unwrap();
+            let (v, _) = claimed(&host, share).await;
+            let (h, _) = content_hash(v.content(&host, share, "a.bin").await);
+            set_mtime(&outside, mtime(&f.join("a.bin")));
+            std::fs::remove_file(f.join("a.bin")).unwrap();
+            std::os::unix::fs::symlink(&outside, f.join("a.bin")).unwrap();
+            assert!(v.download(&host, h).await.is_err());
+            host.shutdown().await;
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_trash_folder_is_refused() {
+        within(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let f = folder(tmp.path(), "Trash", &[("a.txt", b"hi")]);
+            let host = start(tmp.path(), MAX_VISITORS).await;
+            let canon = f.canonicalize().unwrap();
+            assert_eq!(
+                host.share_folder(&f, move |p| p == canon).await,
+                Err("Only folders on this computer can be shared.".to_string())
+            );
+            host.shutdown().await;
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn strangers_do_not_take_visitor_slots() {
+        within(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
+            let host = start(tmp.path(), 2).await;
+            let share = host.share_folder(&f, |_| false).await.unwrap();
+            let (v2, _) = claimed(&host, share).await;
+            gone(&host, v2.ep.id()).await;
+            let (l1, _) = link(&host, share).await;
+            let v1 = Visitor::new().await;
+            let held = v1.control(&host).await;
+            let claim = Request::Claim {
+                share,
+                token: l1.token,
+            };
+            assert!(matches!(ask_on(&held, claim).await, Reply::Ok { .. }));
+            let mut strangers = Vec::new();
+            for _ in 0..STRANGER_SLOTS {
+                let s = Visitor::new().await;
+                let c = s.control(&host).await;
+                let r = ask_on(&c, Request::Root { share }).await;
+                assert_eq!(r, denied(INVALID));
+                strangers.push((s, c));
+            }
+            assert!(matches!(
+                v2.ask(&host, Request::Root { share }).await,
+                Reply::Root { .. }
+            ));
+            let ninth = Visitor::new().await;
+            let bad = Request::Claim {
+                share,
+                token: [3; 32],
+            };
+            assert_eq!(ninth.ask(&host, bad).await, Reply::Busy);
+            let online = host.online();
+            assert!(online.contains(&v1.ep.id()));
+            for (s, _) in &strangers {
+                assert!(!online.contains(&s.ep.id()));
+            }
+            host.shutdown().await;
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn an_unclaimed_stranger_is_dropped() {
+        within(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
+            let limits = Limits {
+                claim_window: Duration::from_millis(300),
+                ..Limits::DEFAULT
+            };
+            let host = start_limited(tmp.path(), limits).await;
+            let share = host.share_folder(&f, |_| false).await.unwrap();
+            let s = Visitor::new().await;
+            let idle = s.control(&host).await;
+            assert_eq!(
+                ask_on(&idle, Request::Root { share }).await,
+                denied(INVALID)
+            );
+            tokio::time::timeout(Duration::from_secs(5), idle.closed())
+                .await
+                .expect("the stranger stays connected");
+            // One who claims in time stays.
+            let (l, _) = link(&host, share).await;
+            let v = Visitor::new().await;
+            let conn = v.control(&host).await;
+            let claim = Request::Claim {
+                share,
+                token: l.token,
+            };
+            assert!(matches!(ask_on(&conn, claim).await, Reply::Ok { .. }));
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            assert!(matches!(
+                ask_on(&conn, Request::Root { share }).await,
+                Reply::Root { .. }
+            ));
+            assert!(host.inner.lock().conns.len() <= 1);
+            host.shutdown().await;
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn revoked_visitor_loses_an_open_blobs_connection() {
+        within(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
+            let host = start(tmp.path(), MAX_VISITORS).await;
+            let share = host.share_folder(&f, |_| false).await.unwrap();
+            let (v, entry) = claimed(&host, share).await;
+            let (h, _) = content_hash(v.content(&host, share, "a.txt").await);
+            let blobs = v.connect(&host, iroh_blobs::ALPN).await.unwrap();
+            let get = |c: &Connection| iroh_blobs::get::request::get_blob(c.clone(), h).bytes();
+            assert_eq!(get(&blobs).await.unwrap().to_vec(), b"hi");
+            host.remove_access(&share, &entry.id).await.unwrap();
+            assert!(get(&blobs).await.is_err());
+            host.shutdown().await;
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn blobs_beyond_the_cap_are_rate_limited() {
+        within(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
+            let host = start(tmp.path(), 1).await;
+            let share = host.share_folder(&f, |_| false).await.unwrap();
+            let (v2, _) = claimed(&host, share).await;
+            let root = v2.root(&host, share).await;
+            gone(&host, v2.ep.id()).await;
+            let (l1, _) = link(&host, share).await;
+            let v1 = Visitor::new().await;
+            let held = v1.control(&host).await;
+            let claim = Request::Claim {
+                share,
+                token: l1.token,
+            };
+            assert!(matches!(ask_on(&held, claim).await, Reply::Ok { .. }));
+            let conn = v2.connect(&host, iroh_blobs::ALPN).await.unwrap();
+            let got = iroh_blobs::get::request::get_blob(conn.clone(), root)
+                .bytes()
+                .await;
+            assert!(got.is_err());
+            let why = format!("{:?}", conn.closed().await);
+            assert!(why.contains("limit"), "{why}");
+            host.shutdown().await;
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_previous_root_still_resolves_after_a_rebuild() {
+        within(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
+            let host = start(tmp.path(), MAX_VISITORS).await;
+            let share = host.share_folder(&f, |_| false).await.unwrap();
+            let (v, _) = claimed(&host, share).await;
+            let old = v.root(&host, share).await;
+            std::fs::write(f.join("new.txt"), b"new").unwrap();
+            let canon = f.canonicalize().unwrap();
+            {
+                let mut st = host.inner.lock();
+                let tree = &mut st.served.get_mut(&share).unwrap().tree;
+                tree.rebuild(&canon, &canon.join("new.txt")).unwrap();
+            }
+            assert_ne!(v.root(&host, share).await, old);
+            let names = vec!["a.txt".to_string()];
+            let reply = v
+                .ask(
+                    &host,
+                    Request::Content {
+                        share,
+                        root: old,
+                        names,
+                    },
+                )
+                .await;
+            assert_eq!(content_hash(reply).0, Hash::new(b"hi"));
+            host.shutdown().await;
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn get_many_and_push_are_refused() {
+        use iroh_blobs::protocol::{ChunkRangesSeq, GetManyRequest, PushRequest};
+        within(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let f = folder(tmp.path(), "F", &[("a.txt", b"hi")]);
+            let host = start(tmp.path(), MAX_VISITORS).await;
+            let share = host.share_folder(&f, |_| false).await.unwrap();
+            let (v, _) = claimed(&host, share).await;
+            let (h, _) = content_hash(v.content(&host, share, "a.txt").await);
+            let mine = iroh_blobs::store::mem::MemStore::new();
+            let conn = v.connect(&host, iroh_blobs::ALPN).await.unwrap();
+            let many = GetManyRequest::new(vec![h], ChunkRangesSeq::all());
+            let got = mine.remote().execute_get_many(conn, many).complete().await;
+            assert!(got.is_err());
+            assert!(!mine.blobs().has(h).await.unwrap());
+
+            let pushed = mine.add_bytes(b"pushed".to_vec()).await.unwrap().hash;
+            let conn = v.connect(&host, iroh_blobs::ALPN).await.unwrap();
+            let push = PushRequest::new(pushed, ChunkRangesSeq::root());
+            // The pusher may not hear the refusal; the store must not change.
+            let _ = mine.remote().execute_push(conn, push).complete().await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(!host.inner.store.blobs().has(pushed).await.unwrap());
+            host.shutdown().await;
         })
         .await
     }
