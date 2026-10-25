@@ -5,9 +5,12 @@
 //! A folder (or a Replace) is built under a staging name and renamed once
 //! complete; on failure the staged item goes to Drive's Trash.
 //!
-//! Downloads: everything lands in a hidden staging path next to the target,
-//! is checked against Drive's sizes, then renamed into place. On failure the
-//! staging path, the app's own temporary copy, is removed.
+//! Downloads: a file, or a folder replacing an existing one, lands in a
+//! hidden staging path next to the target, is checked against Drive's sizes,
+//! then renamed into place; on failure the staging path is removed. A new
+//! folder downloads straight under its name so it fills as you watch (as in
+//! GNOME Files); each file in it is still checked, and if the download fails
+//! or is cancelled the partial folder goes to the Trash.
 //!
 //! A move removes its source only after the copy succeeded: a local source
 //! goes to the Trash, a Drive source to Drive's Trash.
@@ -85,7 +88,7 @@ pub fn dispatch(
     overwrite: bool,
     moving: bool,
     progress: &Progress,
-    trash_local: impl FnOnce(&Path) -> Result<(), String>,
+    trash_local: impl Fn(&Path) -> Result<(), String>,
 ) -> Result<String, String> {
     write::live_with(state, progress, |c| {
         dispatch_in(c, from, to, overwrite, moving, trash_local)
@@ -98,7 +101,7 @@ pub(crate) fn dispatch_in(
     to: &str,
     overwrite: bool,
     moving: bool,
-    trash_local: impl FnOnce(&Path) -> Result<(), String>,
+    trash_local: impl Fn(&Path) -> Result<(), String>,
 ) -> Result<String, String> {
     let (from_cloud, to_cloud) = (crate::cloud::is_cloud(from), crate::cloud::is_cloud(to));
     match (from_cloud, to_cloud, moving) {
@@ -106,8 +109,8 @@ pub(crate) fn dispatch_in(
         (true, true, false) => write::copy_in(c, from, to, overwrite),
         (false, true, true) => move_up_in(c, Path::new(from), to, overwrite, trash_local),
         (false, true, false) => upload_in(c, Path::new(from), to, overwrite),
-        (true, false, true) => move_down_in(c, from, Path::new(to), overwrite),
-        (true, false, false) => download_in(c, from, Path::new(to), overwrite),
+        (true, false, true) => move_down_in(c, from, Path::new(to), overwrite, &trash_local),
+        (true, false, false) => download_into(c, from, Path::new(to), overwrite, &trash_local),
         (false, false, _) => Err("Neither location is in Google Drive.".into()),
     }
 }
@@ -241,11 +244,27 @@ fn not_downloadable(file: &DriveFile) -> String {
     }
 }
 
+/// `download_into` that removes a partial folder instead of trashing it.
 pub(crate) fn download_in(
     c: &Ctx,
     from: &str,
     to: &Path,
     overwrite: bool,
+) -> Result<String, String> {
+    let remove = |path: &Path| crate::fs_ops::remove_any(path).map_err(|e| e.to_string());
+    download_into(c, from, to, overwrite, &remove)
+}
+
+/// Download a Drive item to `to`. A new folder downloads straight under its
+/// name, so it fills as you watch; if that fails, the partial folder goes to
+/// `discard` (the Trash). Files and replacements stage under a hidden name
+/// and appear only when complete.
+pub(crate) fn download_into(
+    c: &Ctx,
+    from: &str,
+    to: &Path,
+    overwrite: bool,
+    discard: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<String, String> {
     // `/dest/..` or `/dest/.` would make Replace trash `dest` itself. The
     // raw text is checked: `Path::components` quietly drops a trailing `.`.
@@ -278,23 +297,38 @@ pub(crate) fn download_in(
         return Err(not_downloadable(&file));
     }
 
-    let staging = crate::fs_ops::staging_path(to);
+    let in_place = file.is_dir() && !replacing;
+    let staging = if in_place {
+        to.to_path_buf()
+    } else {
+        crate::fs_ops::staging_path(to)
+    };
     let mut skipped = Vec::new();
     let result = if file.is_dir() {
+        // Only a folder this call created may be discarded on failure.
         std::fs::create_dir(&staging)
             .map_err(|error| error.to_string())
             .and_then(|()| {
-                download_children(&client, &file.id, &staging, &mut skipped, &c.progress)
+                let fetched =
+                    download_children(&client, &file.id, &staging, &mut skipped, &c.progress);
+                if fetched.is_err() && in_place {
+                    let _ = discard(&staging);
+                }
+                fetched
             })
             .map(|()| c.progress.add_item())
     } else {
         download_verified(&client, &file, &staging, &c.progress)
     };
     if let Err(error) = result {
-        let _ = crate::fs_ops::remove_any(&staging);
+        if !in_place {
+            let _ = crate::fs_ops::remove_any(&staging);
+        }
         return Err(error);
     }
-    if replacing {
+    if in_place {
+        // Already in place.
+    } else if replacing {
         crate::fs_ops::replace_with_staged(&staging, to)?;
     } else if let Err(error) = std::fs::rename(&staging, to) {
         let _ = crate::fs_ops::remove_any(&staging);
@@ -387,11 +421,12 @@ pub(crate) fn move_down_in(
     from: &str,
     to: &Path,
     overwrite: bool,
+    discard: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<String, String> {
     // Checked first: a read-only connection must not leave a copy behind
     // and then fail to remove the original.
     let (location, account) = service::writable(c.state, from)?;
-    let downloaded = download_in(c, from, to, overwrite)?;
+    let downloaded = download_into(c, from, to, overwrite, discard)?;
     let id = location.file_id().unwrap_or_default().to_string();
     write::client(c, &account.id)?
         .update(&id, &FileChange::trash(true))
@@ -637,6 +672,55 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
+    /// A folder downloads straight under its name so it fills as you watch;
+    /// a failed one is handed to `discard` (the Trash), never left looking whole.
+    #[test]
+    fn a_failed_folder_download_is_filled_in_place_then_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("Docs");
+        let discarded = std::cell::RefCell::new(Vec::new());
+        let discard = |path: &Path| {
+            discarded.borrow_mut().push(path.to_path_buf());
+            Ok(())
+        };
+        let (result, _) = run(
+            vec![
+                ok(folder("d1", "Docs")),
+                found(&[sized("x1", "x.txt", 2), sized("y1", "y.txt", 5)]),
+                bytes(b"hi"),
+                bytes(b"yy"),
+            ],
+            |c| download_into(c, &format!("{ROOT}/d1~Docs"), &target, false, &discard),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "The download from Google Drive was incomplete."
+        );
+        assert_eq!(*discarded.borrow(), vec![target.clone()]);
+        assert_eq!(std::fs::read(target.join("x.txt")).unwrap(), b"hi");
+    }
+
+    /// Replace still stages: the old folder stays until the new one is whole.
+    #[test]
+    fn a_failed_replacing_folder_download_keeps_the_old_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("Docs");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("old.txt"), b"old").unwrap();
+        let discard = |_: &Path| -> Result<(), String> { panic!("nothing to discard") };
+        let (result, _) = run(
+            vec![
+                ok(folder("d1", "Docs")),
+                found(&[sized("y1", "y.txt", 5)]),
+                bytes(b"yy"),
+            ],
+            |c| download_into(c, &format!("{ROOT}/d1~Docs"), &target, true, &discard),
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(target.join("old.txt")).unwrap(), b"old");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
     #[test]
     fn downloading_a_folder_copies_the_tree() {
         let dir = tempfile::tempdir().unwrap();
@@ -879,7 +963,7 @@ mod tests {
                 bytes(b"hello"),
                 ok(file("f1", "a.txt")),
             ],
-            |c| move_down_in(c, &format!("{ROOT}/f1~a.txt"), &target, false),
+            |c| move_down_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &|_| Ok(())),
         );
         result.unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"hello");

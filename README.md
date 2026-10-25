@@ -54,9 +54,11 @@ files, so the photo thumbnails are placeholders.</sub>
   sends the old item to the Trash, never deletes it
 - An operations button in the header bar, as in GNOME Files: copies, moves,
   trash batches, Empty Trash and opening Drive, SSH or shared files show a
-  progress bar, "12 MB of 80 MB — 1 minute left" and a Cancel button. A
-  cancelled copy leaves nothing half-written, and a second paste waits for the
-  first instead of being dropped
+  progress bar, "12 MB of 80 MB — 1 minute left" and a Cancel button. Copied
+  items show up as they land, and a folder downloaded from Drive fills as you
+  watch; a cancelled copy leaves nothing half-written (a partial Drive folder
+  goes to the Trash), and a second paste waits for the first instead of being
+  dropped
 - Batch rename for several items: find/replace, prefix and suffix, with a live
   preview and clash checking before anything is renamed
 - Extract archives with Extract Here or Extract to a new folder: zip/jar,

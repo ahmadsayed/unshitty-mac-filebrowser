@@ -856,6 +856,8 @@ let measureFails = false;
 let measureHolding = false;
 /** Like the real app can: the last update arrives after the command returned. */
 let lateDone = false;
+/** Hold after doing the work: the item has landed but the command still runs. */
+let holdingAfter = false;
 const cancelledOps = new Set<string>();
 
 function update(bytes: number, done: boolean): MockUpdate {
@@ -866,7 +868,10 @@ function update(bytes: number, done: boolean): MockUpdate {
 async function progressGate(a: Args): Promise<void> {
   const op = typeof a.op === "string" ? a.op : "";
   if (op && cancelledOps.has(op)) throw "Cancelled.";
-  if (!holding) return;
+  if (!holding || (holdingAfter && !a.__landed)) {
+    if (holdingAfter) a.__landed = true;
+    return;
+  }
   const channel = a.onProgress as Channel<MockUpdate> | undefined;
   await new Promise<void>((resolve, reject) => held.push({ op, channel, bytes: 0, resolve, reject }));
 }
@@ -878,6 +883,10 @@ function gated(command: (a: Args) => unknown): (a: Args) => Promise<unknown> {
     const source = typeof a.from === "string" ? lookup(a.from) : undefined;
     const done = update(source && !source.dir ? source.size : 0, true);
     const result = await command(a);
+    if (holdingAfter) {
+      holding = true;
+      await progressGate(a);
+    }
     const send = () => (a.onProgress as Channel<MockUpdate> | undefined)?.onmessage(done);
     if (lateDone) setTimeout(send, 0);
     else send();
@@ -930,12 +939,16 @@ function measure(paths: string[]): { bytes: number; items: number } {
   lateDone(late: boolean) {
     lateDone = late;
   },
+  holdAfter() {
+    holdingAfter = true;
+  },
   reset() {
     holding = false;
     held = [];
     measureFails = false;
     measureHolding = false;
     lateDone = false;
+    holdingAfter = false;
     cancelledOps.clear();
   },
 };
