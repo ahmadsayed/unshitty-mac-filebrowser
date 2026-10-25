@@ -128,7 +128,12 @@ pub fn finish(
         }
         match flow.listener.accept() {
             Ok((mut stream, _)) => {
-                let request = read_request(&mut stream)?;
+                // A connection that goes quiet or fails (a browser preconnect,
+                // say) is dropped; only the deadline or a cancel ends the wait.
+                let until = deadline.min(Instant::now() + REQUEST_TIMEOUT);
+                let Some(request) = read_request(&mut stream, until, || flow.is_cancelled()) else {
+                    continue;
+                };
                 let Some(callback) = parse_callback(&request)? else {
                     // A browser may ask for /favicon.ico or another path first.
                     respond(&mut stream, 404, "Not found");
@@ -296,14 +301,49 @@ fn parse_callback(request: &str) -> Result<Option<Callback>, String> {
     Ok(Some(callback))
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<String, String> {
+/// How long one connection may take to send its request head.
+const REQUEST_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_millis(300)
+} else {
+    Duration::from_secs(5)
+};
+
+/// Read the request head. TCP may deliver it in several pieces, so keep
+/// reading until the blank line that ends the headers, the peer closes, or
+/// 16 KB arrived. `None` when the read fails, `until` passes or `give_up`
+/// says so; reads are short so a cancel is noticed while the peer is quiet.
+fn read_request(
+    stream: &mut TcpStream,
+    until: Instant,
+    give_up: impl Fn() -> bool,
+) -> Option<String> {
+    const LIMIT: usize = 16 * 1024;
     stream.set_nonblocking(false).ok();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    let mut buffer = [0u8; 16 * 1024];
-    let read = stream
-        .read(&mut buffer)
-        .map_err(|error| format!("Google sign-in callback failed: {error}"))?;
-    Ok(String::from_utf8_lossy(&buffer[..read]).into_owned())
+    let mut request = Vec::new();
+    let mut buffer = [0u8; 4096];
+    while request.len() < LIMIT && !request.windows(4).any(|w| w == b"\r\n\r\n") {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() || give_up() {
+            return None;
+        }
+        stream
+            .set_read_timeout(Some(left.min(Duration::from_millis(100))))
+            .ok();
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => request.extend_from_slice(&buffer[..read]),
+            // A signal, or a quiet moment: check the deadline and read again.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => return None,
+        }
+    }
+    Some(String::from_utf8_lossy(&request).into_owned())
 }
 
 fn respond(stream: &mut TcpStream, status: u16, message: &str) {
@@ -424,6 +464,91 @@ mod tests {
         assert_eq!(seen[0].0, "the-code");
         assert!(!seen[0].1.is_empty());
         assert!(seen[0].2.starts_with("http://127.0.0.1:"));
+    }
+
+    #[test]
+    fn a_callback_split_across_packets_is_read_whole() {
+        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
+        let addr = flow.listener.local_addr().unwrap();
+        let state = flow.csrf.clone();
+        let worker = thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.set_nodelay(true).unwrap();
+            stream.write_all(b"GET /?code=the-").unwrap();
+            stream.flush().unwrap();
+            thread::sleep(Duration::from_millis(50));
+            write!(
+                stream,
+                "code&state={state} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+            )
+            .unwrap();
+            let mut buffer = [0u8; 256];
+            let _ = stream.read(&mut buffer);
+        });
+
+        let exchange = FakeExchange::new();
+        let token = finish(&flow, &exchange, Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+        assert_eq!(token.access_token, "access");
+        assert_eq!(exchange.seen.lock().unwrap()[0].0, "the-code");
+    }
+
+    #[test]
+    fn a_silent_connection_is_dropped_and_the_callback_still_arrives() {
+        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
+        let addr = flow.listener.local_addr().unwrap();
+        let state = flow.csrf.clone();
+        let worker = thread::spawn(move || {
+            // Like a browser preconnect: open a socket and send nothing.
+            let _idle = TcpStream::connect(addr).unwrap();
+            thread::sleep(Duration::from_millis(50));
+            call(addr, &format!("/?code=the-code&state={state}"));
+        });
+
+        let exchange = FakeExchange::new();
+        let token = finish(&flow, &exchange, Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+        assert_eq!(token.access_token, "access");
+    }
+
+    /// A peer that sends one byte at a time until it is disconnected.
+    fn trickle(addr: std::net::SocketAddr) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.set_nodelay(true).unwrap();
+            while stream.write_all(b"G").is_ok() {
+                thread::sleep(Duration::from_millis(20));
+            }
+        })
+    }
+
+    #[test]
+    fn a_trickling_request_is_given_up_at_its_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = trickle(listener.local_addr().unwrap());
+        let (mut stream, _) = listener.accept().unwrap();
+        let begun = Instant::now();
+        let read = read_request(&mut stream, begun + Duration::from_millis(200), || false);
+        assert!(read.is_none());
+        assert!(begun.elapsed() < Duration::from_secs(1));
+        drop(stream);
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn a_trickling_request_cannot_hold_off_a_cancel() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = trickle(listener.local_addr().unwrap());
+        let (mut stream, _) = listener.accept().unwrap();
+        let begun = Instant::now();
+        let cancel_at = begun + Duration::from_millis(200);
+        let read = read_request(&mut stream, begun + Duration::from_secs(30), || {
+            Instant::now() >= cancel_at
+        });
+        assert!(read.is_none());
+        assert!(begun.elapsed() < Duration::from_secs(1));
+        drop(stream);
+        peer.join().unwrap();
     }
 
     #[test]

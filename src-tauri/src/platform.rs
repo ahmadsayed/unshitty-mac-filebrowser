@@ -40,6 +40,25 @@ pub fn wait_or_kill(child: &mut std::process::Child, timeout: std::time::Duratio
     }
 }
 
+/// Start an external helper (qlmanage, mdfind). A spawn that fails with
+/// "text file busy" (ETXTBSY) is retried briefly: it happens when another
+/// thread forks while the program file is still open for writing, which the
+/// tests' stand-in scripts hit when the suite runs in parallel.
+pub fn spawn_helper(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    let mut attempt = 0;
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 20 =>
+            {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
 /// A mounted volume as the sidebar shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Volume {
@@ -530,6 +549,25 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("plain")).unwrap();
         assert!(!is_mount_point(&dir.path().join("plain")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_busy_program_is_spawned_once_it_is_released() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("helper");
+        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        // An open write handle makes exec fail with ETXTBSY until it closes.
+        let writer = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            drop(writer);
+        });
+        let mut child = spawn_helper(&mut std::process::Command::new(&path)).unwrap();
+        assert!(child.wait().unwrap().success());
+        release.join().unwrap();
     }
 
     #[cfg(unix)]

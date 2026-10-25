@@ -26,10 +26,11 @@ pub enum Transfer {
 pub struct VersionsState {
     roots: Mutex<HashMap<PathBuf, Arc<History>>>,
     watchers: Mutex<HashMap<PathBuf, WatcherHandle>>,
-    /// Held for a whole `open`, so two threads opening one root can't both
-    /// run `History::open`; the second would hit this process's own lock and
-    /// come back read-only.
-    open_lock: Mutex<()>,
+    /// One lock per root, held for a whole `open`, so two threads opening one
+    /// root can't both run `History::open`; the second would hit this
+    /// process's own lock and come back read-only. Per root because an open
+    /// can wait on a lock held elsewhere, and other roots shouldn't queue.
+    opening: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
     registry_path: PathBuf,
     registry_lock: Mutex<()>,
 }
@@ -39,7 +40,7 @@ impl VersionsState {
         Self {
             roots: Mutex::new(HashMap::new()),
             watchers: Mutex::new(HashMap::new()),
-            open_lock: Mutex::new(()),
+            opening: Mutex::new(HashMap::new()),
             registry_path,
             registry_lock: Mutex::new(()),
         }
@@ -54,7 +55,8 @@ impl VersionsState {
     /// watcher; a history locked by another instance stays read-only.
     pub fn open(&self, root: &Path) -> Result<Arc<History>> {
         let root = fs_canonical(root)?;
-        let _opening = self.open_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let opening = self.open_lock(&root);
+        let _opening = opening.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(history) = self.roots.lock().unwrap().get(&root) {
             return Ok(history.clone());
         }
@@ -64,6 +66,12 @@ impl VersionsState {
             self.start_watcher(history.clone());
         }
         Ok(history)
+    }
+
+    /// The lock that serialises opening `root`.
+    fn open_lock(&self, root: &Path) -> Arc<Mutex<()>> {
+        let mut opening = self.opening.lock().unwrap_or_else(|e| e.into_inner());
+        opening.entry(root.to_path_buf()).or_default().clone()
     }
 
     pub fn is_open(&self, root: &Path) -> bool {
@@ -84,7 +92,8 @@ impl VersionsState {
     /// Open a copy, give it a new identity, register it, and scan it.
     pub fn register_copy(&self, root: &Path) -> Result<Arc<History>> {
         let root = fs_canonical(root)?;
-        let _opening = self.open_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let opening = self.open_lock(&root);
+        let _opening = opening.lock().unwrap_or_else(|e| e.into_inner());
         let mut history = History::open(&root)?;
         if !history.writable {
             return Err(Error::ReadOnly);
@@ -680,6 +689,27 @@ mod tests {
         let opened: Vec<Arc<History>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         assert!(opened.iter().all(|h| h.writable));
         assert!(opened.iter().all(|h| Arc::ptr_eq(h, &opened[0])));
+    }
+
+    #[test]
+    fn a_root_locked_elsewhere_does_not_hold_up_other_roots() {
+        let (dir, root, state) = setup();
+        let other = dir.path().join("Other");
+        std::fs::create_dir(&other).unwrap();
+        drop(History::create(&other).unwrap());
+        // Another instance holds `root`, so opening it waits before going
+        // read-only.
+        let _elsewhere = History::open(&root).unwrap();
+        let state = Arc::new(state);
+        let waiting = {
+            let (state, root) = (state.clone(), root.clone());
+            std::thread::spawn(move || state.open(&root).unwrap())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let begun = std::time::Instant::now();
+        assert!(state.open(&other).unwrap().writable);
+        assert!(begun.elapsed() < std::time::Duration::from_millis(150));
+        assert!(!waiting.join().unwrap().writable);
     }
 
     #[test]

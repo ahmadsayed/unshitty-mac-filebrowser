@@ -162,16 +162,16 @@ pub fn spotlight(home: &Path, days: i64) -> Vec<(String, i64)> {
 /// `spotlight` with the program and timeout passed in, so it can be tested
 /// with a stand-in for mdfind on any platform.
 fn spotlight_with(program: &Path, home: &Path, days: i64, timeout: Duration) -> Vec<(String, i64)> {
-    let child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .arg("-onlyin")
         .arg(home)
         .arg("-attr")
         .arg("kMDItemLastUsedDate")
         .arg(format!("kMDItemLastUsedDate >= $time.today(-{})", days))
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn();
-    let Ok(mut child) = child else {
+        .stderr(Stdio::null());
+    let Ok(mut child) = crate::platform::spawn_helper(&mut command) else {
         return Vec::new();
     };
 
