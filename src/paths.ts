@@ -29,13 +29,24 @@ export function isSftpPath(path: string): boolean {
  */
 const LINK_TICKET = /^[a-z2-7]{64,}\/?$/;
 
-/** A link from Share (also accepts the `<share://…>` form people paste). */
-export function isShareLink(text: string): boolean {
+/**
+ * The ticket inside a share link, lowercased, from either form and with or
+ * without the `<…>` people paste; null when `text` isn't a link. Two links
+ * to the same share have the same ticket whatever their form.
+ */
+export function shareTicket(text: string): string | null {
   let link = text.trim();
   if (link.startsWith("<") && link.endsWith(">")) link = link.slice(1, -1).trim();
   link = link.toLowerCase();
-  if (link.startsWith("fbshare1:")) return true;
-  return link.startsWith(SHARE_PREFIX) && LINK_TICKET.test(link.slice(SHARE_PREFIX.length));
+  if (link.startsWith("fbshare1:")) return link.slice("fbshare1:".length);
+  if (!link.startsWith(SHARE_PREFIX)) return null;
+  const ticket = link.slice(SHARE_PREFIX.length);
+  return LINK_TICKET.test(ticket) ? ticket.replace(/\/$/, "") : null;
+}
+
+/** A link from Share (also accepts the `<share://…>` form people paste). */
+export function isShareLink(text: string): boolean {
+  return shareTicket(text) !== null;
 }
 
 /** Drive, received shares and SFTP are all remote, but different things. */

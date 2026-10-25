@@ -190,6 +190,30 @@ test("pasting your own link opens the local folder", async () => {
   expect(toasts().join(" | ")).toContain("This is your own shared folder.");
 });
 
+test("your own link in the older fbshare1: form still opens the local folder", async () => {
+  resetShareMock();
+  await goTo(HOME);
+  await rightClick(item("Documents"));
+  await chooseMenu("Share…");
+  await settle(10);
+  await type($<HTMLInputElement>("#share-name"), "Ahmed");
+  await respond("Continue");
+  await settle(20);
+  await respond("Copy Link");
+  await settle(25);
+  const own = String(vi.mocked(navigator.clipboard.writeText).mock.calls.at(-1)?.[0]);
+  await respond("Close");
+  await settle(10);
+
+  await click(place("Network"));
+  await settle(20);
+  await type($<HTMLInputElement>(".network-link"), `<${own.replace("share://", "FBSHARE1:").toUpperCase()}>`);
+  await click($(".network-paste .btn"));
+  await settle(40);
+  expect(title()).toBe("Documents");
+  expect(toasts().join(" | ")).toContain("This is your own shared folder.");
+});
+
 test("a share link typed in the path bar opens the share", async () => {
   resetShareMock();
   await goTo(HOME);

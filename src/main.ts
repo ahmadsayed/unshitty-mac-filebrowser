@@ -30,7 +30,7 @@ import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
-import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isShareLink, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
+import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -1198,12 +1198,14 @@ function shareStatusPage(kind: "offline" | "no-access" | "missing"): string {
 
 /** The local folder a link belongs to, when the link is one of this machine's own. */
 async function ownSharePath(link: string): Promise<string | null> {
+  // By ticket, not text: the link may be in the older fbshare1: form.
+  const ticket = shareTicket(link);
   for (const summary of await listShares().catch(() => [])) {
     const info = await shareInfo(summary.path).catch(() => null);
     if (!info) continue;
     for (const access of info.access) {
       const candidate = await shareLinkFor(info.id, access.id).catch(() => "");
-      if (candidate.trim() === link) return info.path;
+      if (ticket !== null && shareTicket(candidate) === ticket) return info.path;
     }
   }
   return null;
