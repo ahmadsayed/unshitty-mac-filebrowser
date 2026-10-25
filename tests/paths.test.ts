@@ -1,7 +1,7 @@
 // Characterization tests for the path-bar rules, including the Drive cases
 // that must not fall back to a local path.
 import { expect, test } from "vitest";
-import { joinCloudPath, joinSharePath, isCloudPath, isRemotePath, isShareLink, isSharePath, resolveTypedPath } from "../src/paths";
+import { joinCloudPath, joinSharePath, joinSftpPath, isCloudPath, isRemotePath, isShareLink, isSharePath, isSftpPath, resolveTypedPath } from "../src/paths";
 
 const HOME = "/Users/me";
 const CLOUD = "gdrive://acct/root~My%20Drive";
@@ -42,6 +42,22 @@ test("share links are recognised with or without angle brackets", () => {
   expect(isShareLink("  <FBSHARE1:AEU73ZIW>  ")).toBe(true);
   expect(isShareLink("/Users/me/fbshare1:aeu73ziw")).toBe(false);
   expect(isShareLink("share://r1")).toBe(false);
+});
+
+test("SFTP paths are remote and resolve as absolute locations", () => {
+  expect(isSftpPath("sftp://me@host/")).toBe(true);
+  expect(isSftpPath("share://r1")).toBe(false);
+  expect(isRemotePath("sftp://me@host/")).toBe(true);
+  expect(joinSftpPath("sftp://me@host/", "a b")).toBe("sftp://me@host/a%20b");
+  expect(resolveTypedPath("sftp://me@host/docs", HOME, HOME)).toEqual({
+    path: "sftp://me@host/docs",
+  });
+  expect(resolveTypedPath("docs", "sftp://me@host/", HOME)).toEqual({
+    path: "sftp://me@host/docs",
+  });
+  expect(resolveTypedPath("/var/log", "sftp://me@host/", HOME)).toEqual({
+    path: "sftp://me@host/var/log",
+  });
 });
 
 test("pasted Drive links become locations for the current account", () => {

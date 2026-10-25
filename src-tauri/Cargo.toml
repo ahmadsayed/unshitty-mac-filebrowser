@@ -63,3 +63,9 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ssh2 = "0.9"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ssh2 = { version = "0.9", features = ["vendored-openssl"] }

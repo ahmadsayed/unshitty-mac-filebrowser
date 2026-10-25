@@ -71,6 +71,41 @@ export async function extractArchive(
   return invoke<ExtractResult>("extract_archive", { path, dest, create });
 }
 
+export interface SftpServer {
+  id: string;
+  label: string;
+  url: string;
+  host: string;
+  port: number;
+  user: string;
+}
+
+export type SftpConnectOutcome =
+  | { kind: "connected"; server: SftpServer }
+  | { kind: "auth-needed"; server: SftpServer }
+  | { kind: "host-key-unknown"; server: SftpServer; fingerprint: string };
+
+/** Connect to an SSH/SFTP server; key/agent first, password only when needed. */
+export async function sftpConnect(
+  url: string,
+  password: string | undefined,
+  trustHost: boolean
+): Promise<SftpConnectOutcome> {
+  return invoke<SftpConnectOutcome>("sftp_connect", { url, password, trustHost });
+}
+
+export async function sftpServers(): Promise<SftpServer[]> {
+  return invoke<SftpServer[]>("sftp_servers");
+}
+
+export async function sftpDisconnect(id: string): Promise<void> {
+  return invoke<void>("sftp_disconnect", { id });
+}
+
+export async function sftpOpen(path: string): Promise<string> {
+  return invoke<string>("sftp_open", { path });
+}
+
 /** Open another File Browser window at `path` (home when omitted). */
 export async function newWindow(path?: string): Promise<void> {
   return invoke<void>("new_window", { path: path ?? null });
@@ -373,6 +408,9 @@ export async function openFile(path: string): Promise<void> {
   }
   if (path.startsWith("share://")) {
     return openPath(await invoke<string>("share_open", { path }));
+  }
+  if (path.startsWith("sftp://")) {
+    return openPath(await invoke<string>("sftp_open", { path }));
   }
   return openPath(path);
 }

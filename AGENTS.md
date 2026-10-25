@@ -30,6 +30,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/api.ts` | Typed wrappers for every Tauri command |
 | `src/styles.css` | All styling; libadwaita colour tokens at the top, light + dark |
 | `src-tauri/src/fs_ops.rs` | Listing, item counts, mkdir, rename, copy/move/trash, path info |
+| `src-tauri/src/sftp.rs` | Read-only SSH/SFTP connections for Network: agent/key/password auth, known-host checks, listing and downloads |
 | `src-tauri/src/properties.rs` | Properties dialog data: size, dates, permissions, symlink targets, recursive folder size |
 | `src-tauri/src/platform.rs` | Platform differences: volume roots per OS, `%XX` decoding, `file://` URIs, XDG data dir |
 | `src-tauri/src/thumbnails.rs` | Quick Look (`qlmanage`) thumbnails on macOS with an `image`-crate fallback everywhere, disk cache |

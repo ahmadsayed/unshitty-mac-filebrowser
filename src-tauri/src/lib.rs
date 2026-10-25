@@ -5,6 +5,7 @@ mod fs_ops;
 mod platform;
 mod properties;
 mod recent;
+mod sftp;
 mod share;
 mod thumbnails;
 mod trash_ops;
@@ -32,6 +33,20 @@ fn lock_state<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, Strin
     mutex
         .lock()
         .map_err(|_| "Google Drive state is unavailable.".to_string())
+}
+
+fn read_only_one(path: &str) -> Option<&'static str> {
+    if sftp::is_sftp(path) {
+        return Some("SSH servers are read only for now.");
+    }
+    if share::location::is_share(path) {
+        return Some("Shared folders are read only.");
+    }
+    None
+}
+
+fn read_only_write(from: &str, to: &str) -> Option<&'static str> {
+    read_only_one(from).or_else(|| read_only_one(to))
 }
 
 fn share_versions_hint(app: &tauri::AppHandle) -> share::host::VersionsHint {
@@ -181,6 +196,10 @@ async fn list_dir(
         let hint = share_versions_hint(&app);
         return state.list_dir(&path, show_hidden, hint).await;
     }
+    if sftp::is_sftp(&path) {
+        let app = app.clone();
+        return blocking(move || app.state::<sftp::SftpState>().list(&path, show_hidden)).await?;
+    }
     if cloud::is_cloud(&path) {
         return blocking(move || {
             let state = app.state::<CloudState>();
@@ -189,6 +208,37 @@ async fn list_dir(
         .await?;
     }
     blocking(move || fs_ops::list_dir(path, show_hidden)).await?
+}
+
+#[tauri::command]
+async fn sftp_connect(
+    app: tauri::AppHandle,
+    url: String,
+    password: Option<String>,
+    trust_host: bool,
+) -> Result<sftp::ConnectOutcome, String> {
+    let app = app.clone();
+    blocking(move || {
+        app.state::<sftp::SftpState>()
+            .connect(&url, password, trust_host)
+    })
+    .await?
+}
+
+#[tauri::command]
+fn sftp_servers(app: tauri::AppHandle) -> Vec<sftp::ServerInfo> {
+    app.state::<sftp::SftpState>().servers()
+}
+
+#[tauri::command]
+fn sftp_disconnect(app: tauri::AppHandle, id: String) {
+    app.state::<sftp::SftpState>().disconnect(&id);
+}
+
+#[tauri::command]
+async fn sftp_open(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let app = app.clone();
+    blocking(move || app.state::<sftp::SftpState>().open(&path)).await?
 }
 
 #[tauri::command]
@@ -296,7 +346,7 @@ async fn item_counts(
         let mut local = Vec::new();
         let mut positions = Vec::new();
         for (index, path) in paths.iter().enumerate() {
-            if !cloud::is_cloud(path) && !share::location::is_share(path) {
+            if !cloud::is_cloud(path) && !share::location::is_share(path) && !sftp::is_sftp(path) {
                 local.push(path.clone());
                 positions.push(index);
             }
@@ -321,7 +371,7 @@ async fn path_info(
         let state = app.state::<CloudState>();
         let mut out = Vec::with_capacity(paths.len());
         for path in &paths {
-            if share::location::is_share(path) {
+            if share::location::is_share(path) || sftp::is_sftp(path) {
                 out.push(None);
             } else if cloud::is_cloud(path) {
                 out.push(cloud::service::path_info(&state, path).ok());
@@ -346,6 +396,9 @@ async fn file_properties(
     path: String,
     show_hidden: bool,
 ) -> Result<properties::FileProperties, String> {
+    if sftp::is_sftp(&path) {
+        return Err("Properties aren't available for SSH servers yet.".into());
+    }
     if cloud::is_cloud(&path) {
         return blocking(move || {
             let state = app.state::<CloudState>();
@@ -360,6 +413,9 @@ async fn file_properties(
 /// `walk` lets `cancel_folder_size` stop it when the dialog closes.
 #[tauri::command]
 async fn folder_size(path: String, walk: u64) -> Result<u64, String> {
+    if sftp::is_sftp(&path) {
+        return Err("Folder sizes aren't available for SSH servers yet.".into());
+    }
     if cloud::is_cloud(&path) {
         return Err(cloud::service::unsupported());
     }
@@ -382,8 +438,8 @@ fn cancel_folder_size(walk: u64) {
 /// known once Drive has given the new item an id.
 #[tauri::command]
 async fn make_dir(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    if share::location::is_share(&path) {
-        return Err("Shared folders are read only.".into());
+    if let Some(message) = read_only_one(&path) {
+        return Err(message.into());
     }
     if cloud::is_cloud(&path) {
         return blocking(move || cloud::write::make_dir(&app.state::<CloudState>(), &path)).await?;
@@ -435,6 +491,9 @@ async fn copy_entry(
     to: String,
     overwrite: bool,
 ) -> Result<String, String> {
+    if let Some(message) = read_only_write(&from, &to) {
+        return Err(message.into());
+    }
     if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
         return drive_transfer(app, from, to, overwrite, false).await;
     }
@@ -456,6 +515,9 @@ async fn move_entry(
     to: String,
     overwrite: bool,
 ) -> Result<String, String> {
+    if let Some(message) = read_only_write(&from, &to) {
+        return Err(message.into());
+    }
     if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
         return drive_transfer(app, from, to, overwrite, true).await;
     }
@@ -472,6 +534,9 @@ async fn move_entry(
 
 #[tauri::command]
 async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result<String, String> {
+    if let Some(message) = read_only_write(&from, &to) {
+        return Err(message.into());
+    }
     // write::rename refuses a local path on either side.
     if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
         return blocking(move || cloud::write::rename(&app.state::<CloudState>(), &from, &to))
@@ -499,8 +564,8 @@ fn home_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// the move can be undone.
 #[tauri::command]
 async fn trash_entry(app: tauri::AppHandle, path: String) -> Result<Option<String>, String> {
-    if share::location::is_share(&path) {
-        return Err("Shared folders are read only.".into());
+    if let Some(message) = read_only_one(&path) {
+        return Err(message.into());
     }
     if cloud::is_cloud(&path) {
         // Drive's own Trash (D10); never a permanent delete.
@@ -889,7 +954,7 @@ async fn thumbnail(app: tauri::AppHandle, path: String, size: u32) -> tauri::ipc
         })
         .await
         .unwrap_or_default()
-    } else if share::location::is_share(&path) {
+    } else if share::location::is_share(&path) || sftp::is_sftp(&path) {
         Vec::new()
     } else {
         blocking(move || {
@@ -1214,8 +1279,14 @@ pub fn run() {
                 .path()
                 .app_cache_dir()
                 .unwrap_or_else(|_| PathBuf::from("."));
+            let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("/"));
             app.manage(VersionsState::new(config_dir.join("versioned.json")));
             app.manage(CloudState::new(&config_dir));
+            app.manage(sftp::SftpState::new(
+                config_dir.join("sftp_known_hosts"),
+                home,
+                cache_dir.join("sftp"),
+            ));
             app.manage(share::state::ShareState::new(
                 config_dir.clone(),
                 cache_dir,
@@ -1241,6 +1312,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_dir,
             search_dir,
+            sftp_connect,
+            sftp_servers,
+            sftp_disconnect,
+            sftp_open,
             extract_archive,
             compress_archive,
             new_window,

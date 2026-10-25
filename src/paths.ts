@@ -7,12 +7,19 @@ export const CLOUD_PREFIX = "gdrive://";
 /** Every received-share location starts with this. */
 export const SHARE_PREFIX = "share://";
 
+/** Every SSH/SFTP location starts with this. */
+export const SFTP_PREFIX = "sftp://";
+
 export function isCloudPath(path: string): boolean {
   return path.startsWith(CLOUD_PREFIX);
 }
 
 export function isSharePath(path: string): boolean {
   return path.startsWith(SHARE_PREFIX);
+}
+
+export function isSftpPath(path: string): boolean {
+  return path.startsWith(SFTP_PREFIX);
 }
 
 /** A link from Share (also accepts the `<fbshare1:…>` form people paste). */
@@ -22,14 +29,24 @@ export function isShareLink(text: string): boolean {
   return link.toLowerCase().startsWith("fbshare1:");
 }
 
-/** Drive and received shares are both remote, but they are different things. */
+/** Drive, received shares and SFTP are all remote, but different things. */
 export function isRemotePath(path: string): boolean {
-  return isCloudPath(path) || isSharePath(path);
+  return isCloudPath(path) || isSharePath(path) || isSftpPath(path);
 }
 
 /** A share path for a child named `name`, encoded like a Drive name. */
 export function joinSharePath(dir: string, name: string): string {
   return `${dir.replace(/\/+$/, "")}/${encodeCloudName(name)}`;
+}
+
+/** An SFTP path for a child named `name`, encoded like a Drive name. */
+export function joinSftpPath(dir: string, name: string): string {
+  return `${dir.replace(/\/+$/, "")}/${encodeCloudName(name)}`;
+}
+
+/** The authority (user@host:port) of an sftp:// path, for server lookups. */
+export function sftpAuthority(path: string): string {
+  return path.slice(SFTP_PREFIX.length).split("/")[0] ?? "";
 }
 
 /** The account key in `gdrive://<account>/…`. */
@@ -88,6 +105,10 @@ export function resolveTypedPath(
 
   if (typed === "~" || typed.startsWith("~/")) {
     typed = home + typed.slice(1);
+  } else if (isSftpPath(location) && !isSftpPath(typed)) {
+    typed = typed.startsWith("/")
+      ? `${SFTP_PREFIX}${sftpAuthority(location)}${typed}`
+      : `${location.replace(/\/+$/, "")}/${typed}`;
   } else if (
     isCloudPath(location) &&
     !isCloudPath(typed) &&
@@ -100,7 +121,8 @@ export function resolveTypedPath(
     !typed.startsWith("/") &&
     !location.startsWith("pseudo:") &&
     !isCloudPath(location) &&
-    !isCloudPath(typed)
+    !isCloudPath(typed) &&
+    !isSftpPath(typed)
   ) {
     typed = `${location.replace(/\/+$/, "")}/${typed}`;
   }

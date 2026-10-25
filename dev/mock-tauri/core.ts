@@ -202,7 +202,63 @@ function drivePathExists(path: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// A fake received share and sharer, for the Network preview.
+// A fake SSH/SFTP server for the Network preview.
+// ---------------------------------------------------------------------------
+
+interface SftpServer {
+  id: string;
+  label: string;
+  url: string;
+  host: string;
+  port: number;
+  user: string;
+}
+
+let mockSftpServers: SftpServer[] = [];
+let mockSftpNeedsAuth = false;
+let mockSftpUnknownHost = false;
+
+const SFTP_FILES: Record<string, Array<{ name: string; isDir: boolean; size: number }>> = {
+  "user@host:/": [
+    { name: "Documents", isDir: true, size: 0 },
+    { name: "notes.txt", isDir: false, size: 42 },
+  ],
+  "user@host:/Documents": [{ name: "hello.txt", isDir: false, size: 12 }],
+};
+
+function sftpParts(path: string): { id: string; rest: string } | null {
+  if (!path.startsWith("sftp://")) return null;
+  const rest = path.slice("sftp://".length);
+  const slash = rest.indexOf("/");
+  const authority = slash < 0 ? rest : rest.slice(0, slash);
+  const tail = slash < 0 ? "/" : rest.slice(slash);
+  const [user, hostPort] = authority.split("@");
+  const [host, portText] = (hostPort ?? "").split(":");
+  const port = portText ? Number(portText) : 22;
+  if (!user || !host) return null;
+  return { id: `${user}@${host}:${port}`, rest: tail || "/" };
+}
+
+function listSftp(path: string): Entry[] {
+  const parts = sftpParts(path);
+  if (!parts || !mockSftpServers.some((server) => server.id === parts.id)) {
+    throw "Connect to this server first.";
+  }
+  const files = SFTP_FILES[`${parts.id.split(":")[0]}:${parts.rest}`] ?? [];
+  const base = path.replace(/\/+$/, "");
+  return files.map((file) => ({
+    name: file.name,
+    path: `${base}/${encodeURIComponent(file.name)}`,
+    is_dir: file.isDir,
+    size: file.size,
+    modified: now - day,
+    is_hidden: false,
+    is_symlink: false,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// A fake received share and sharer, for the Shares preview.
 // ---------------------------------------------------------------------------
 
 const SHARE_FILES: Record<string, { name: string; isDir: boolean; size: number }[]> = {
@@ -412,6 +468,20 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     mockLinkSeq = 0;
     mockSharersOnline = true;
     mockNoAccess = false;
+  },
+};
+
+(globalThis as Record<string, unknown>).__mockSftp = {
+  reset() {
+    mockSftpServers = [];
+    mockSftpNeedsAuth = false;
+    mockSftpUnknownHost = false;
+  },
+  requirePassword() {
+    mockSftpNeedsAuth = true;
+  },
+  unknownHost() {
+    mockSftpUnknownHost = true;
   },
 };
 
@@ -1133,6 +1203,7 @@ const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
 const COMMANDS: Record<string, (args: Args) => unknown> = {
   list_dir: (a) => {
     const path = str(a, "path");
+    if (path.startsWith("sftp://")) return listSftp(path);
     if (path.startsWith("share://")) return listShare(path);
     return path.startsWith("gdrive://") ? listDrive(path) : list(path, a.showHidden as boolean);
   },
@@ -1145,7 +1216,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     ),
   item_counts: (a) =>
     (a.paths as string[]).map((path) =>
-      path.startsWith("gdrive://") || path.startsWith("share://")
+      path.startsWith("gdrive://") || path.startsWith("share://") || path.startsWith("sftp://")
         ? null
         : folderSummary(path, a.showHidden as boolean),
     ),
@@ -1181,6 +1252,35 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   new_window: () => {
     const globals = globalThis as unknown as { __mockNewWindows?: number };
     globals.__mockNewWindows = (globals.__mockNewWindows ?? 0) + 1;
+  },
+  sftp_connect: (a) => {
+    const input = str(a, "url").trim();
+    const raw = input.includes("://") ? input : `sftp://${input}`;
+    const url = new URL(raw);
+    const user = url.username;
+    const host = url.hostname;
+    const port = url.port ? Number(url.port) : 22;
+    if (!user || !host) throw "Enter the SSH user, for example user@host.";
+    const id = `${user}@${host}:${port}`;
+    const label = port === 22 ? `${user}@${host}` : `${user}@${host}:${port}`;
+    const server = { id, label, url: `sftp://${user}@${host}${port === 22 ? "" : `:${port}`}/`, host, port, user };
+    if (mockSftpUnknownHost && !a.trustHost) {
+      return { kind: "host-key-unknown", server, fingerprint: "SHA256:mock-fingerprint" };
+    }
+    if (mockSftpNeedsAuth && a.password !== "secret") {
+      return { kind: "auth-needed", server };
+    }
+    if (!mockSftpServers.some((item) => item.id === id)) mockSftpServers.push(server);
+    return { kind: "connected", server };
+  },
+  sftp_servers: () => mockSftpServers,
+  sftp_disconnect: (a) => {
+    mockSftpServers = mockSftpServers.filter((server) => server.id !== str(a, "id"));
+  },
+  sftp_open: (a) => {
+    const path = str(a, "path");
+    const name = decodeURIComponent(path.split("/").pop() ?? "file");
+    return `/tmp/opencode/mock-sftp/${name}`;
   },
   create_symlink: (a) => {
     const path = str(a, "path");
@@ -1266,7 +1366,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   trash_dir: () => TRASH,
   thumbnail: (a) => {
     const path = str(a, "path");
-    return path.startsWith("gdrive://") || path.startsWith("share://")
+    return path.startsWith("gdrive://") || path.startsWith("share://") || path.startsWith("sftp://")
       ? Promise.resolve(new ArrayBuffer(0))
       : mockThumbnail(path, a.size as number);
   },
