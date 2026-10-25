@@ -133,7 +133,10 @@ Ready-made builds are on the
   `xattr -dr com.apple.quarantine "/Applications/File Browser.app"` once, or
   right-click it and choose Open.
 - **Linux:** the `.deb` (Debian, Ubuntu), the `.rpm` (Fedora) or the
-  `.AppImage` (any distribution).
+  `.AppImage` (any distribution). For the AppImage, use the
+  [GNOME launcher install steps](docs/linux-appimage.md) so it appears in
+  application search; the script is
+  [`scripts/install-linux-appimage.sh`](scripts/install-linux-appimage.sh).
 
 To use Google Drive, follow [docs/google-drive.md](docs/google-drive.md).
 
