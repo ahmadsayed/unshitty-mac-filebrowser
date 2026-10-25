@@ -442,6 +442,10 @@ macOS asks to allow incoming connections, folder watching (FSEvents through
 
 ## Open questions
 
-- D4: by-reference serving in `FsStore` (answered by the spike).
-- Binary size growth: accept it, or put sharing behind a Cargo feature? Decide
-  after the spike's numbers.
+- D4: by-reference serving in `FsStore`. Answered by the spike: it works.
+  `store.blobs().add_path_with_opts(AddPathOptions { mode:
+  ImportMode::TryReference, .. })` references the file in place; after serving
+  a 3 MB file to a second endpoint, A's store directory held about 1 MB
+  (redb preallocation), against 4 MB with `ImportMode::Copy`. D4 stands.
+- Binary size growth: dropped by the user; not measured, sharing is not put
+  behind a Cargo feature.

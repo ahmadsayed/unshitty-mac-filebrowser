@@ -4,6 +4,7 @@ mod fs_ops;
 mod platform;
 mod properties;
 mod recent;
+mod share;
 mod thumbnails;
 mod trash_ops;
 mod versions;
