@@ -216,6 +216,7 @@ function openOperationsPopover(): void {
   popover = openPopover(button, content, {
     onClose: () => {
       popover = null;
+      rowsByOp.clear();
       render();
     },
   });
@@ -238,33 +239,70 @@ function pie(fraction: number): string {
     `</svg>`;
 }
 
-function rowFor(op: Operation, now: number): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "operation-row";
-  const text = document.createElement("div");
-  text.className = "operation-text";
-  const title = document.createElement("div");
-  title.className = "operation-title";
-  title.textContent = op.title;
-  const bar = document.createElement("div");
-  bar.className = "operation-bar";
-  const fill = document.createElement("div");
-  fill.className = "operation-bar-fill";
-  fill.style.width = `${(opFraction(op) * 100).toFixed(1)}%`;
-  bar.appendChild(fill);
-  const detail = document.createElement("div");
-  detail.className = "operation-detail";
-  detail.textContent = opDetail(op, now);
-  text.append(title, bar, detail);
-  const cancel = document.createElement("button");
-  cancel.className = "flat-btn operation-cancel";
-  cancel.title = "Cancel";
-  cancel.setAttribute("aria-label", `Cancel ${op.title}`);
-  cancel.innerHTML = sym("window-close");
-  cancel.disabled = op.state === "cancelling";
-  cancel.addEventListener("click", () => op.cancel());
-  row.append(text, cancel);
+/** A popover row's parts, kept so updates change them in place: a row
+ * rebuilt 10 times a second would swallow a click on its Cancel button. */
+interface Row {
+  el: HTMLElement;
+  title: HTMLElement;
+  fill: HTMLElement;
+  detail: HTMLElement;
+  cancel: HTMLButtonElement;
+}
+
+const rowsByOp = new Map<string, Row>();
+
+function el(tag: string, className: string): HTMLElement {
+  const node = document.createElement(tag);
+  node.className = className;
+  return node;
+}
+
+function createRow(op: Operation): Row {
+  const row: Row = {
+    el: el("div", "operation-row"),
+    title: el("div", "operation-title"),
+    fill: el("div", "operation-bar-fill"),
+    detail: el("div", "operation-detail"),
+    cancel: el("button", "flat-btn operation-cancel") as HTMLButtonElement,
+  };
+  const text = el("div", "operation-text");
+  const bar = el("div", "operation-bar");
+  bar.appendChild(row.fill);
+  text.append(row.title, bar, row.detail);
+  row.cancel.title = "Cancel";
+  row.cancel.innerHTML = sym("window-close");
+  row.cancel.addEventListener("click", () => op.cancel());
+  row.el.append(text, row.cancel);
   return row;
+}
+
+function updateRow(row: Row, op: Operation, now: number): void {
+  row.title.textContent = op.title;
+  row.fill.style.width = `${(opFraction(op) * 100).toFixed(1)}%`;
+  row.detail.textContent = opDetail(op, now);
+  row.cancel.setAttribute("aria-label", `Cancel ${op.title}`);
+  row.cancel.disabled = op.state === "cancelling";
+}
+
+/** Bring the popover's rows in line with `ops`, reusing existing ones. */
+function renderRows(list: Element): void {
+  const now = Date.now();
+  for (const id of rowsByOp.keys()) {
+    if (!ops.some((op) => op.id === id)) rowsByOp.delete(id);
+  }
+  const wanted = ops.map((op) => {
+    const row = rowsByOp.get(op.id) ?? createRow(op);
+    rowsByOp.set(op.id, row);
+    updateRow(row, op, now);
+    return row.el;
+  });
+  if (wanted.length === 0) {
+    const empty = el("div", "operation-empty");
+    empty.textContent = "All operations finished";
+    wanted.push(empty);
+  }
+  const same = wanted.length === list.children.length && wanted.every((node, i) => list.children[i] === node);
+  if (!same) list.replaceChildren(...wanted);
 }
 
 function render(): void {
@@ -272,17 +310,7 @@ function render(): void {
   button.hidden = ops.length === 0 && !popover && Date.now() >= lingerUntil;
   button.innerHTML = ops.length ? pie(overall()) : sym("object-select");
   button.title = ops.length ? "Show Operations" : "Operations Finished";
-  if (popover) {
-    const now = Date.now();
-    const list = popover.element.querySelector(".operations-popover") ?? popover.element;
-    list.replaceChildren(...ops.map((op) => rowFor(op, now)));
-    if (ops.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "operation-empty";
-      empty.textContent = "All operations finished";
-      list.appendChild(empty);
-    }
-  }
+  if (popover) renderRows(popover.element.querySelector(".operations-popover") ?? popover.element);
 }
 
 /** For tests: forget every operation and hide the button. */

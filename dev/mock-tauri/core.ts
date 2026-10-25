@@ -854,6 +854,8 @@ let holding = false;
 let held: Held[] = [];
 let measureFails = false;
 let measureHolding = false;
+/** Like the real app can: the last update arrives after the command returned. */
+let lateDone = false;
 const cancelledOps = new Set<string>();
 
 function update(bytes: number, done: boolean): MockUpdate {
@@ -872,8 +874,13 @@ async function progressGate(a: Args): Promise<void> {
 function gated(command: (a: Args) => unknown): (a: Args) => Promise<unknown> {
   return async (a) => {
     await progressGate(a);
+    // The final update carries every byte of the item, as the backend's does.
+    const source = typeof a.from === "string" ? lookup(a.from) : undefined;
+    const done = update(source && !source.dir ? source.size : 0, true);
     const result = await command(a);
-    (a.onProgress as Channel<MockUpdate> | undefined)?.onmessage(update(0, true));
+    const send = () => (a.onProgress as Channel<MockUpdate> | undefined)?.onmessage(done);
+    if (lateDone) setTimeout(send, 0);
+    else send();
     return result;
   };
 }
@@ -920,11 +927,15 @@ function measure(paths: string[]): { bytes: number; items: number } {
   holdMeasure() {
     measureHolding = true;
   },
+  lateDone(late: boolean) {
+    lateDone = late;
+  },
   reset() {
     holding = false;
     held = [];
     measureFails = false;
     measureHolding = false;
+    lateDone = false;
     cancelledOps.clear();
   },
 };
