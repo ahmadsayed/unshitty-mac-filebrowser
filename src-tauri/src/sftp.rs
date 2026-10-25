@@ -3,6 +3,7 @@
 //! neither works. Host keys are checked against the system and app known-hosts
 //! files; an unknown host is only accepted after an explicit trust decision.
 
+use crate::progress::{CANCELLED, Progress, copy_counted, is_cancel};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
 use ssh2::{CheckResult, HashType, KnownHostFileKind, Session};
@@ -325,33 +326,30 @@ impl SftpState {
             .collect())
     }
 
-    pub fn open(&self, path: &str) -> Result<String, String> {
+    pub fn open(&self, path: &str, progress: &Progress) -> Result<String, String> {
         let target = parse_target(path)?;
         let conn = self.connection(&target.id)?;
         let conn = lock(&conn);
-        self.download(&conn.session, &target)
+        self.download(&conn.session, &target, progress)
     }
 
-    fn download(&self, session: &Session, target: &Target) -> Result<String, String> {
-        let name = target
-            .path
-            .rsplit('/')
-            .next()
-            .filter(|name| !name.is_empty() && *name != "." && *name != "..")
-            .ok_or_else(|| "Only files can be opened.".to_string())?;
+    /// Download to a fresh folder in the cache, counting bytes against the
+    /// remote size; a failure or cancel removes that folder.
+    fn download(
+        &self,
+        session: &Session,
+        target: &Target,
+        progress: &Progress,
+    ) -> Result<String, String> {
+        let name = file_name(&target.path)?;
         let sftp = session.sftp().map_err(|e| e.to_string())?;
         let mut remote = sftp
             .open(Path::new(&target.path))
             .map_err(|e| format!("Could not open the file: {e}"))?;
-        let dir = self.cache_dir.join("sftp-open").join(unique_dir());
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let dest = dir.join(name);
-        let mut local = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
-        if let Err(e) = std::io::copy(&mut remote, &mut local) {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(format!("Could not download the file: {e}"));
+        if let Some(size) = remote.stat().ok().and_then(|stat| stat.size) {
+            progress.set_total(size);
         }
-        Ok(dest.to_string_lossy().to_string())
+        save_copy(&mut remote, &self.cache_dir, name, progress)
     }
 
     fn connection(&self, id: &str) -> Result<Arc<Mutex<SftpConn>>, String> {
@@ -359,6 +357,40 @@ impl SftpState {
             .get(id)
             .cloned()
             .ok_or_else(|| "Connect to this server first.".to_string())
+    }
+}
+
+/// The last part of a remote path, when it names a file.
+fn file_name(path: &str) -> Result<&str, String> {
+    path.rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty() && *name != "." && *name != "..")
+        .ok_or_else(|| "Only files can be opened.".to_string())
+}
+
+/// Copy `reader` to `name` in a fresh folder under `cache_dir/sftp-open`,
+/// counting bytes; on failure or cancel the folder is removed.
+fn save_copy(
+    reader: &mut impl std::io::Read,
+    cache_dir: &Path,
+    name: &str,
+    progress: &Progress,
+) -> Result<String, String> {
+    let dir = cache_dir.join("sftp-open").join(unique_dir());
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dest = dir.join(name);
+    let copied = std::fs::File::create(&dest)
+        .and_then(|mut local| copy_counted(reader, &mut local, progress));
+    match copied {
+        Ok(_) => Ok(dest.to_string_lossy().to_string()),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            Err(if is_cancel(&e) {
+                CANCELLED.into()
+            } else {
+                format!("Could not download the file: {e}")
+            })
+        }
     }
 }
 
@@ -439,5 +471,37 @@ mod tests {
     fn host_key_names_include_nonstandard_ports() {
         assert_eq!(known_host_name("host", 22), "host");
         assert_eq!(known_host_name("host", 2222), "[host]:2222");
+    }
+
+    #[test]
+    fn save_copy_writes_the_file_and_counts_bytes() {
+        let cache = tempfile::tempdir().unwrap();
+        let progress = Progress::default();
+        let saved = save_copy(&mut &b"hello"[..], cache.path(), "a.txt", &progress).unwrap();
+        assert_eq!(std::fs::read(&saved).unwrap(), b"hello");
+        assert!(saved.starts_with(cache.path().to_str().unwrap()));
+        assert_eq!(progress.snapshot().bytes, 5);
+    }
+
+    #[test]
+    fn a_cancelled_save_leaves_no_folder() {
+        let cache = tempfile::tempdir().unwrap();
+        let progress = Progress::default();
+        progress.cancel();
+        let error = save_copy(&mut &b"hello"[..], cache.path(), "a.txt", &progress).unwrap_err();
+        assert_eq!(error, "Cancelled.");
+        let opens = cache.path().join("sftp-open");
+        assert_eq!(std::fs::read_dir(opens).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn only_plain_names_can_be_opened() {
+        for path in ["/home/me/", "/home/me/.", "/home/me/.."] {
+            assert_eq!(
+                file_name(path).unwrap_err(),
+                "Only files can be opened."
+            );
+        }
+        assert_eq!(file_name("/home/me/a.txt").unwrap(), "a.txt");
     }
 }

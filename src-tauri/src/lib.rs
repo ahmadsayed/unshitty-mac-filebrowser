@@ -239,7 +239,7 @@ fn sftp_disconnect(app: tauri::AppHandle, id: String) {
 #[tauri::command]
 async fn sftp_open(app: tauri::AppHandle, path: String) -> Result<String, String> {
     let app = app.clone();
-    blocking(move || app.state::<sftp::SftpState>().open(&path)).await?
+    blocking(move || app.state::<sftp::SftpState>().open(&path, &progress::Progress::default())).await?
 }
 
 #[tauri::command]
@@ -1265,7 +1265,7 @@ async fn share_open(
     path: String,
 ) -> Result<String, String> {
     state
-        .open(&path, share_versions_hint(&app))
+        .open(&path, share_versions_hint(&app), &progress::Progress::default())
         .await
 }
 
