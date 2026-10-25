@@ -1,8 +1,10 @@
 //! Read-only folder sharing over iroh.
 
+pub mod guest;
 pub mod host;
 pub mod identity;
 pub mod link;
+pub mod location;
 pub mod manifest;
 pub mod proto;
 pub mod registry;

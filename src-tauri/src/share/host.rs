@@ -49,7 +49,7 @@ impl Limits {
     };
 }
 
-const INVALID: &str = "This link is no longer valid.";
+pub(crate) const INVALID: &str = "This link is no longer valid.";
 const NOT_FOUND: &str = "This item is no longer available.";
 const KEY_MISMATCH: &str = "The sharing key doesn't match the network endpoint.";
 const REVOKED: u32 = 1;
@@ -657,7 +657,7 @@ impl Host {
         versions_hint: VersionsHint,
     ) -> Result<Host, String> {
         let parts = (identity, registry_path, store_dir, endpoint, versions_hint);
-        Self::start_inner(parts, Limits::DEFAULT).await
+        Self::start_inner(parts, Limits::DEFAULT, proto::ALPN).await
     }
 
     #[cfg(test)]
@@ -670,7 +670,31 @@ impl Host {
         limits: Limits,
     ) -> Result<Host, String> {
         let parts = (identity, registry_path, store_dir, endpoint, versions_hint);
-        Self::start_inner(parts, limits).await
+        Self::start_inner(parts, limits, proto::ALPN).await
+    }
+
+    /// A host speaking another control protocol version.
+    #[cfg(test)]
+    pub(crate) async fn start_with_alpn(
+        identity: Identity,
+        registry_path: PathBuf,
+        store_dir: PathBuf,
+        endpoint: iroh::Endpoint,
+        alpn: &'static [u8],
+    ) -> Result<Host, String> {
+        let hint: VersionsHint = Box::new(|_, _, _| None);
+        let parts = (identity, registry_path, store_dir, endpoint, hint);
+        Self::start_inner(parts, Limits::DEFAULT, alpn).await
+    }
+
+    /// Serve a hand-built manifest as the share's root.
+    #[cfg(test)]
+    pub(crate) async fn publish_root(&self, share: &ShareId, manifest: super::manifest::Manifest) {
+        let bytes = manifest.encode();
+        self.inner.store.blobs().add_bytes(bytes).await.unwrap();
+        let mut st = self.inner.lock();
+        let served = st.served.get_mut(share).expect("a served share");
+        served.tree.replace_root(manifest);
     }
 
     async fn start_inner(
@@ -682,6 +706,7 @@ impl Host {
             VersionsHint,
         ),
         limits: Limits,
+        alpn: &'static [u8],
     ) -> Result<Host, String> {
         if endpoint.id() != identity.key.public() {
             return Err(KEY_MISMATCH.into());
@@ -714,7 +739,7 @@ impl Host {
             proto: BlobsProtocol::new(&store, Some(gate(inner.clone()))),
         };
         let router = Router::builder(endpoint)
-            .accept(proto::ALPN, Control(inner.clone()))
+            .accept(alpn, Control(inner.clone()))
             .accept(iroh_blobs::ALPN, blobs)
             .spawn();
         Ok(Host {

@@ -26,7 +26,7 @@ const ID_MAX: usize = 128;
 
 /// Characters allowed literally in a display name. `~` is the id/name
 /// separator, so it is deliberately encoded (`%7E`).
-const NAME_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'.').remove(b'-').remove(b'_');
+pub(crate) const NAME_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'.').remove(b'-').remove(b'_');
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Location {
@@ -223,7 +223,7 @@ fn valid_id(id: &str) -> bool {
 
 /// Reject malformed `%XX` sequences instead of silently turning them into
 /// literal text; a bad URI should be reported, not guessed at.
-fn valid_percent(input: &str) -> bool {
+pub(crate) fn valid_percent(input: &str) -> bool {
     let bytes = input.as_bytes();
     let mut i = 0;
     while i < bytes.len() {

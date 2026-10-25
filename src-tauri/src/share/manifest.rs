@@ -380,6 +380,16 @@ impl Tree {
     pub fn manifests(&self) -> impl Iterator<Item = Hash> + '_ {
         self.stored.keys().copied()
     }
+
+    /// Make a hand-built manifest the root, as a malicious sharer could.
+    #[cfg(test)]
+    pub(crate) fn replace_root(&mut self, manifest: Manifest) -> Hash {
+        let bytes = manifest.encode();
+        let hash = Hash::new(&bytes);
+        self.stored.insert(hash, Stored { bytes, manifest });
+        self.root = hash;
+        hash
+    }
 }
 
 /// The folder to rebuild for a change at `changed`: itself if it is a folder
