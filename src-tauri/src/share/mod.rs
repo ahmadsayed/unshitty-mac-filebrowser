@@ -2,6 +2,7 @@
 
 pub mod identity;
 pub mod link;
+pub mod manifest;
 
 #[cfg(test)]
 pub(crate) async fn test_endpoint() -> iroh::Endpoint {
