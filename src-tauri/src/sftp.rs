@@ -154,7 +154,7 @@ impl SftpState {
         session.set_tcp_stream(tcp);
         session.handshake().map_err(|e| format!("SSH handshake failed: {e}"))?;
 
-        let server = ServerInfo {
+        let mut server = ServerInfo {
             id: target.id.clone(),
             label: target.label.clone(),
             url: target.root_url.clone(),
@@ -171,6 +171,8 @@ impl SftpState {
         if !self.authenticate(&session, &target.user, password.as_deref()) {
             return Ok(ConnectOutcome::AuthNeeded { server });
         }
+        // Start in the user's home folder unless the URL named a path.
+        server.url = start_url(&session, &target, &server.url);
         let conn = Arc::new(Mutex::new(SftpConn {
             session,
             info: server.clone(),
@@ -373,6 +375,29 @@ fn fingerprint(session: &Session) -> String {
         .host_key_hash(HashType::Sha256)
         .map(|hash| format!("SHA256:{}", data_encoding::BASE64.encode(hash)))
         .unwrap_or_else(|| "unknown".into())
+}
+
+fn start_url(session: &Session, target: &Target, root: &str) -> String {
+    let path = if target.path == "/" {
+        session
+            .sftp()
+            .and_then(|sftp| sftp.realpath(Path::new(".")))
+            .map(|home| home.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "/".into())
+    } else {
+        target.path.clone()
+    };
+    with_path(root, &path)
+}
+
+fn with_path(root: &str, path: &str) -> String {
+    match Url::parse(root) {
+        Ok(mut url) => {
+            url.set_path(path);
+            url.to_string()
+        }
+        Err(_) => root.to_string(),
+    }
 }
 
 fn unique_dir() -> String {
