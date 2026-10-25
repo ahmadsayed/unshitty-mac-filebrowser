@@ -308,7 +308,6 @@ mod tests {
         assert!(!is_mount_point(&dir.path().join("plain")));
     }
 
-    #[cfg(unix)]
     #[cfg(target_os = "linux")]
     #[test]
     fn a_busy_program_is_spawned_once_it_is_released() {
@@ -328,6 +327,7 @@ mod tests {
         release.join().unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn wait_or_kill_waits_for_quick_programs_and_kills_stuck_ones() {
         use std::process::Command;
