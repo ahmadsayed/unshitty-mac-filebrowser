@@ -4,8 +4,7 @@
     "src-tauri/src/lib.rs::list_dir": 56,
     "src-tauri/src/lib.rs::rename_entry": 42,
     "src-tauri/src/sftp.rs::SftpState::check_host_key": 90,
-    "src-tauri/src/sftp.rs::SftpState::connect": 90,
-    "src-tauri/src/sftp.rs::SftpState::download": 56
+    "src-tauri/src/sftp.rs::SftpState::connect": 90
   },
   "ts": {}
 }

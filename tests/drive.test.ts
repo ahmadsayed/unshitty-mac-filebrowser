@@ -1,6 +1,6 @@
 // The Google Drive location: connect through the mock, browse the fake Drive,
 // and keep the read-only milestone free of version markers and write actions.
-import { beforeAll, expect, test } from "vitest";
+import { beforeAll, expect, test, vi } from "vitest";
 import { driveLog, invoke } from "../dev/mock-tauri/core";
 import { $, $$, boot, click, closeOverlays, goTo, item, key, menuLabels, mouse, names, respond, selectedNames, settle, toasts, type } from "./app";
 
@@ -189,19 +189,29 @@ test("the Drive item menu offers writes and has no empty sections", async () => 
 });
 
 // Drag and drop between local folders and Drive.
-let pointAt: Element | null = null;
-
 async function dragTo(name: string, target: Element, mods: MouseEventInit = {}): Promise<void> {
-  document.elementFromPoint = () => pointAt;
+  // A delayed reload from an earlier transfer can replace the item after the
+  // test grabbed it. Resolve the live equivalent when the pointer is checked.
+  const targetName = target.querySelector(".name")?.textContent;
+  const targetLoc = (target as HTMLElement).dataset.location;
+  const liveTarget = (): Element | null => {
+    if (target.isConnected) return target;
+    if (targetName) {
+      return $$("#view .item").find((el) => el.querySelector(".name")?.textContent === targetName) ?? null;
+    }
+    if (targetLoc) {
+      return $$(".sidebar-row").find((row) => row.dataset.location === targetLoc) ?? null;
+    }
+    return null;
+  };
+  document.elementFromPoint = () => liveTarget();
   await mouse(item(name), "mousedown", { clientX: 50, clientY: 60 });
-  pointAt = target;
   window.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 300, ...mods }));
   await settle(10);
   window.dispatchEvent(new MouseEvent("mousemove", { clientX: 301, clientY: 301, ...mods }));
   await settle(10);
   window.dispatchEvent(new MouseEvent("mouseup", { clientX: 301, clientY: 301, ...mods }));
   await settle(25);
-  pointAt = null;
 }
 
 const row = (text: string) => $$(".sidebar-row").find((r) => r.textContent?.trim() === text)!;
@@ -224,7 +234,8 @@ test("dropping a Drive item on a local folder copies it", async () => {
 test("dragging inside Drive moves the item", async () => {
   await goTo(DRIVE);
   await dragTo("Report.docx", item("Projects"));
-  expect(names()).not.toContain("Report.docx");
+  // A move measures, then moves, each a mock round trip: wait for it.
+  await vi.waitFor(() => expect(names()).not.toContain("Report.docx"), { timeout: 2000 });
   expect(await invoke("path_exists", { path: `${DRIVE}/~Projects` })).toBe(true);
 });
 

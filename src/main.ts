@@ -652,6 +652,12 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
 
 /** Re-list the current folder, keeping the selection where possible. */
 async function reload(select?: string[]): Promise<void> {
+  // A reload replaces the item elements under the pointer; wait until the
+  // drag ends so a drop cannot land on a detached target.
+  if (drag) {
+    reloadAfterDrag = true;
+    return;
+  }
   if (!hasEntries(location)) return;
   if (isSharePath(location) || location === NETWORK) await refreshShares();
   if (location === NETWORK) await refreshSftpServers();
@@ -3394,6 +3400,8 @@ interface DragState {
 }
 
 let drag: DragState | null = null;
+/** A reload that arrived while a drag was in progress. */
+let reloadAfterDrag = false;
 /** Set while a press on a selected item may still narrow the selection on release. */
 let pendingNarrow: (() => void) | null = null;
 
@@ -3569,6 +3577,10 @@ function endDrag(drop: boolean): void {
   document.documentElement.style.cursor = "";
   setDropHighlight(null);
   if (drop && d.target && d.op) performDrop(d.paths, d.dirs, d.target, d.op);
+  if (reloadAfterDrag) {
+    reloadAfterDrag = false;
+    void reload();
+  }
 }
 
 /** Files dragged in from Finder (or any other app) arrive as paths. */
