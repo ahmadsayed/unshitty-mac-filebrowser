@@ -855,6 +855,9 @@ impl Host {
         st.registry.save(&self.inner.registry_path)
     }
 
+    /// Stops the router. Task 11 uses this when sharing shuts down; tests use
+    /// it to release their endpoints.
+    #[cfg(test)]
     pub async fn shutdown(self) {
         self.router.shutdown().await.ok();
     }

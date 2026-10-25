@@ -2,7 +2,6 @@
 //! the claim rules (design D6, D7). Plain functions, no Tauri types.
 
 use super::link::{random_id, random_token, LinkKind, ShareId, ShareLink, Token};
-use crate::config_store::write_json;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::path::{Path, PathBuf};
 
@@ -321,6 +320,8 @@ impl Registry {
     }
 
     /// A folder was moved or renamed: shares at or under `from` follow it.
+    /// Wired into rename/move in Task 10.
+    #[cfg(test)]
     pub fn follow_move(&mut self, from: &Path, to: &Path) {
         for s in &mut self.shares {
             if let Ok(rest) = s.path.strip_prefix(from) {

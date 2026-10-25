@@ -78,10 +78,6 @@ impl Manifest {
             _ => Err("Unsupported manifest version.".to_string()),
         }
     }
-
-    pub fn hash(&self) -> Hash {
-        Hash::new(self.encode())
-    }
 }
 
 fn from_wire(w: WireEntry) -> Result<ManifestEntry, String> {
@@ -168,6 +164,9 @@ impl Tree {
     /// Rebuilds the folder containing `changed` (or `changed` itself when it
     /// is a folder) from scratch, then each ancestor up to the shared folder,
     /// reusing only unchanged real sibling folders.
+    ///
+    /// The watcher wires this up in Task 10; until then only tests call it.
+    #[cfg(test)]
     pub fn rebuild(&mut self, folder: &Path, changed: &Path) -> Result<(), String> {
         let old = self.root;
         let mut dir = nearest_folder(folder, changed);
@@ -186,6 +185,7 @@ impl Tree {
         Ok(())
     }
 
+    #[cfg(test)]
     fn climb(&mut self, folder: &Path, dir: &mut PathBuf, mut hash: Hash) -> Result<Hash, String> {
         while dir.as_path() != folder {
             let child = dir.clone();
@@ -337,6 +337,7 @@ impl Tree {
     }
 
     /// Drops manifests unreachable from the current and previous roots.
+    #[cfg(test)]
     fn prune(&mut self) {
         let mut keep = std::collections::HashSet::new();
         let mut todo: Vec<Hash> = std::iter::once(self.root).chain(self.previous).collect();
@@ -401,6 +402,7 @@ impl Tree {
 
 /// The folder to rebuild for a change at `changed`: itself if it is a folder
 /// inside `folder`, otherwise its nearest existing folder ancestor.
+#[cfg(test)]
 fn nearest_folder(folder: &Path, changed: &Path) -> PathBuf {
     changed
         .ancestors()
