@@ -3,6 +3,7 @@ mod cloud;
 mod config_store;
 mod fs_ops;
 mod platform;
+mod progress;
 mod properties;
 mod recent;
 mod sftp;
