@@ -3,6 +3,10 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "linux")]
+use crate::progress::copy_counted;
+use crate::progress::{CANCELLED, Progress, cancelled_io, is_cancel};
+
 pub fn make_dir(path: String) -> Result<(), String> {
     let p = Path::new(&path);
     if p.exists() {
@@ -438,7 +442,12 @@ pub fn is_subpath(child: &Path, ancestor: &Path) -> bool {
 
 /// Copy a file, symlink or whole directory tree. Symlinks are recreated, not
 /// followed, so a link pointing at a parent can't cause an endless copy.
-pub fn copy_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+/// Every file, link and folder counts as an item; a cancel stops between
+/// entries (and, on Linux, between slices of a file).
+pub fn copy_recursive(from: &Path, to: &Path, progress: &Progress) -> std::io::Result<()> {
+    if progress.is_cancelled() {
+        return Err(cancelled_io());
+    }
     let meta = std::fs::symlink_metadata(from)?;
     if meta.file_type().is_symlink() {
         #[cfg(unix)]
@@ -449,13 +458,87 @@ pub fn copy_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
         std::fs::create_dir(to)?;
         for entry in std::fs::read_dir(from)? {
             let entry = entry?;
-            copy_recursive(&entry.path(), &to.join(entry.file_name()))?;
+            copy_recursive(&entry.path(), &to.join(entry.file_name()), progress)?;
         }
         std::fs::set_permissions(to, meta.permissions())?;
     } else {
-        std::fs::copy(from, to)?;
+        copy_file_progress(from, to, progress)?;
+    }
+    progress.add_item();
+    Ok(())
+}
+
+/// Copy one file in slices; std turns each `File` → `File` slice into
+/// `copy_file_range`, so btrfs still reflinks and a cancel works mid-file.
+#[cfg(target_os = "linux")]
+fn copy_file_progress(from: &Path, to: &Path, progress: &Progress) -> std::io::Result<()> {
+    let mut input = std::fs::File::open(from)?;
+    let mut output = std::fs::File::create(to)?;
+    copy_counted(&mut input, &mut output, progress)?;
+    std::fs::set_permissions(to, input.metadata()?.permissions())
+}
+
+/// Copy one file with `fs::copy`, which keeps extended attributes and clones
+/// on APFS, and count bytes by watching the copy grow. A cancel takes effect
+/// before or after the file, not during it.
+#[cfg(not(target_os = "linux"))]
+fn copy_file_progress(from: &Path, to: &Path, progress: &Progress) -> std::io::Result<()> {
+    let base = progress.snapshot().bytes;
+    let (src, dst) = (from.to_path_buf(), to.to_path_buf());
+    let copy = std::thread::spawn(move || std::fs::copy(src, dst));
+    while !copy.is_finished() {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let len = std::fs::metadata(to).map(|m| m.len()).unwrap_or(0);
+        progress.set_bytes(base + len);
+    }
+    let copied = copy
+        .join()
+        .map_err(|_| std::io::Error::other("the copy stopped unexpectedly"))??;
+    progress.set_bytes(base + copied);
+    if progress.is_cancelled() {
+        return Err(cancelled_io());
     }
     Ok(())
+}
+
+/// Sizes and item counts of `paths` before a copy, for the progress total.
+#[derive(Serialize, Default, PartialEq, Eq, Debug, Clone, Copy)]
+pub struct Measure {
+    pub bytes: u64,
+    pub items: u64,
+}
+
+/// Apparent sizes of everything under `paths`. Symlinks are counted, not
+/// followed; folders that can't be read are skipped, not reported.
+pub fn measure(paths: &[PathBuf]) -> Measure {
+    let mut total = Measure::default();
+    for path in paths {
+        measure_into(path, &mut total);
+    }
+    total
+}
+
+fn measure_into(path: &Path, total: &mut Measure) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    total.items += 1;
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(path).into_iter().flatten().flatten() {
+            measure_into(&entry.path(), total);
+        }
+    } else if meta.is_file() {
+        total.bytes += meta.len();
+    }
+}
+
+/// A copy error as the user sees it; a cancel stays exactly "Cancelled.".
+fn copy_error(verb: &str, error: std::io::Error) -> String {
+    if is_cancel(&error) {
+        CANCELLED.to_string()
+    } else {
+        format!("Failed to {verb}: {error}")
+    }
 }
 
 pub(crate) fn remove_any(path: &Path) -> std::io::Result<()> {
@@ -529,7 +612,12 @@ fn is_cross_device(e: &std::io::Error) -> bool {
 }
 
 /// Copy `from` to `to` (recursively for folders).
-pub fn copy_entry(from: String, to: String, overwrite: bool) -> Result<(), String> {
+pub fn copy_entry(
+    from: String,
+    to: String,
+    overwrite: bool,
+    progress: &Progress,
+) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let replacing = check_transfer(from, to, overwrite)?;
     let dest = if replacing {
@@ -537,9 +625,9 @@ pub fn copy_entry(from: String, to: String, overwrite: bool) -> Result<(), Strin
     } else {
         to.to_path_buf()
     };
-    if let Err(e) = copy_recursive(from, &dest) {
+    if let Err(e) = copy_recursive(from, &dest, progress) {
         let _ = remove_any(&dest);
-        return Err(format!("Failed to copy: {}", e));
+        return Err(copy_error("copy", e));
     }
     if replacing {
         replace_with_staged(&dest, to)?;
@@ -548,7 +636,12 @@ pub fn copy_entry(from: String, to: String, overwrite: bool) -> Result<(), Strin
 }
 
 /// Move `from` to `to`: a rename on the same volume, copy-then-delete across volumes.
-pub fn move_entry(from: String, to: String, overwrite: bool) -> Result<(), String> {
+pub fn move_entry(
+    from: String,
+    to: String,
+    overwrite: bool,
+    progress: &Progress,
+) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let replacing = check_transfer(from, to, overwrite)?;
     let dest = if replacing {
@@ -557,18 +650,13 @@ pub fn move_entry(from: String, to: String, overwrite: bool) -> Result<(), Strin
         to.to_path_buf()
     };
     match std::fs::rename(from, &dest) {
-        Ok(()) => {}
+        Ok(()) => progress.add_item(),
         Err(e) if is_cross_device(&e) => {
-            if let Err(e) = copy_recursive(from, &dest) {
+            if let Err(e) = copy_recursive(from, &dest, progress) {
                 let _ = remove_any(&dest);
-                return Err(format!("Failed to move: {}", e));
+                return Err(copy_error("move", e));
             }
-            if replacing {
-                replace_with_staged(&dest, to)?;
-            }
-            // Only now, with the copy complete, is the source removed.
-            return remove_any(from)
-                .map_err(|e| format!("Moved, but could not remove the original: {}", e));
+            return finish_cross_device_move(from, &dest, to, replacing);
         }
         Err(e) => return Err(format!("Failed to move: {}", e)),
     }
@@ -578,9 +666,25 @@ pub fn move_entry(from: String, to: String, overwrite: bool) -> Result<(), Strin
     Ok(())
 }
 
+/// The end of a move across volumes, once the copy at `dest` is complete:
+/// put a staged copy in place, then remove the source. It takes no progress,
+/// so a cancel arriving now can't leave both copies or neither.
+fn finish_cross_device_move(
+    from: &Path,
+    dest: &Path,
+    to: &Path,
+    replacing: bool,
+) -> Result<(), String> {
+    if replacing {
+        replace_with_staged(dest, to)?;
+    }
+    remove_any(from).map_err(|e| format!("Moved, but could not remove the original: {}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::Progress;
     use std::fs;
     use tempfile::tempdir;
 
@@ -1001,7 +1105,7 @@ mod tests {
         let dst = dir.path().join("b.txt");
         fs::write(&src, "hello").unwrap();
 
-        copy_entry(s(&src), s(&dst), false).unwrap();
+        copy_entry(s(&src), s(&dst), false, &Progress::default()).unwrap();
         assert_eq!(fs::read_to_string(&dst).unwrap(), "hello");
         assert!(src.exists());
     }
@@ -1015,7 +1119,7 @@ mod tests {
         fs::write(src.join("sub/deeper/leaf.txt"), "2").unwrap();
         let dst = dir.path().join("copy");
 
-        copy_entry(s(&src), s(&dst), false).unwrap();
+        copy_entry(s(&src), s(&dst), false, &Progress::default()).unwrap();
         assert_eq!(fs::read_to_string(dst.join("top.txt")).unwrap(), "1");
         assert_eq!(
             fs::read_to_string(dst.join("sub/deeper/leaf.txt")).unwrap(),
@@ -1033,7 +1137,7 @@ mod tests {
         std::os::unix::fs::symlink(&src, src.join("loop")).unwrap();
         let dst = dir.path().join("copy");
 
-        copy_entry(s(&src), s(&dst), false).unwrap();
+        copy_entry(s(&src), s(&dst), false, &Progress::default()).unwrap();
         let meta = fs::symlink_metadata(dst.join("loop")).unwrap();
         assert!(meta.file_type().is_symlink());
     }
@@ -1046,7 +1150,7 @@ mod tests {
         fs::write(&src, "new").unwrap();
         fs::write(&dst, "old").unwrap();
 
-        let err = copy_entry(s(&src), s(&dst), false).unwrap_err();
+        let err = copy_entry(s(&src), s(&dst), false, &Progress::default()).unwrap_err();
         assert!(err.contains("already exists"), "unexpected error: {}", err);
         assert_eq!(fs::read_to_string(&dst).unwrap(), "old");
     }
@@ -1059,7 +1163,7 @@ mod tests {
         fs::write(&src, "new").unwrap();
         fs::write(&dst, "old").unwrap();
 
-        copy_entry(s(&src), s(&dst), true).unwrap();
+        copy_entry(s(&src), s(&dst), true, &Progress::default()).unwrap();
         assert_eq!(fs::read_to_string(&dst).unwrap(), "new");
         // No staging leftovers in the folder.
         let names: Vec<_> = fs::read_dir(dir.path())
@@ -1087,8 +1191,8 @@ mod tests {
         fs::create_dir(&a).unwrap();
         let inside = a.join("a");
 
-        assert!(copy_entry(s(&a), s(&inside), false).is_err());
-        assert!(move_entry(s(&a), s(&inside), false).is_err());
+        assert!(copy_entry(s(&a), s(&inside), false, &Progress::default()).is_err());
+        assert!(move_entry(s(&a), s(&inside), false, &Progress::default()).is_err());
         assert!(!inside.exists());
     }
 
@@ -1098,8 +1202,8 @@ mod tests {
         let f = dir.path().join("f.txt");
         fs::write(&f, "x").unwrap();
 
-        assert!(copy_entry(s(&f), s(&f), true).is_err());
-        assert!(move_entry(s(&f), s(&f), true).is_err());
+        assert!(copy_entry(s(&f), s(&f), true, &Progress::default()).is_err());
+        assert!(move_entry(s(&f), s(&f), true, &Progress::default()).is_err());
         assert_eq!(fs::read_to_string(&f).unwrap(), "x");
     }
 
@@ -1109,8 +1213,8 @@ mod tests {
         let parent = dir.path().join("p");
         fs::create_dir_all(parent.join("child")).unwrap();
 
-        assert!(copy_entry(s(&parent.join("child")), s(&parent), true).is_err());
-        assert!(move_entry(s(&parent.join("child")), s(&parent), true).is_err());
+        assert!(copy_entry(s(&parent.join("child")), s(&parent), true, &Progress::default()).is_err());
+        assert!(move_entry(s(&parent.join("child")), s(&parent), true, &Progress::default()).is_err());
         assert!(parent.join("child").exists());
     }
 
@@ -1122,7 +1226,7 @@ mod tests {
         let dst = dir.path().join("dest/a.txt");
         fs::write(&src, "hello").unwrap();
 
-        move_entry(s(&src), s(&dst), false).unwrap();
+        move_entry(s(&src), s(&dst), false, &Progress::default()).unwrap();
         assert!(!src.exists());
         assert_eq!(fs::read_to_string(&dst).unwrap(), "hello");
     }
@@ -1135,7 +1239,7 @@ mod tests {
         fs::write(&src, "new").unwrap();
         fs::write(&dst, "old").unwrap();
 
-        assert!(move_entry(s(&src), s(&dst), false).is_err());
+        assert!(move_entry(s(&src), s(&dst), false, &Progress::default()).is_err());
         assert!(src.exists());
         assert_eq!(fs::read_to_string(&dst).unwrap(), "old");
     }
@@ -1148,7 +1252,7 @@ mod tests {
         fs::write(&src, "new").unwrap();
         fs::write(&dst, "old").unwrap();
 
-        move_entry(s(&src), s(&dst), true).unwrap();
+        move_entry(s(&src), s(&dst), true, &Progress::default()).unwrap();
         assert!(!src.exists());
         assert_eq!(fs::read_to_string(&dst).unwrap(), "new");
     }
@@ -1176,8 +1280,121 @@ mod tests {
         let gone = dir.path().join("gone");
         let dst = dir.path().join("dst");
 
-        assert!(copy_entry(s(&gone), s(&dst), false).is_err());
-        assert!(move_entry(s(&gone), s(&dst), false).is_err());
+        assert!(copy_entry(s(&gone), s(&dst), false, &Progress::default()).is_err());
+        assert!(move_entry(s(&gone), s(&dst), false, &Progress::default()).is_err());
         assert!(!path_exists(s(&gone)));
+    }
+
+    #[test]
+    fn copy_reports_bytes_and_items() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("x"), vec![1u8; 1000]).unwrap();
+        fs::write(src.join("y"), vec![2u8; 24]).unwrap();
+        fs::write(src.join("sub/z"), b"").unwrap();
+        let progress = Progress::default();
+        copy_entry(s(&src), s(&dir.path().join("b")), false, &progress).unwrap();
+        let update = progress.snapshot();
+        assert_eq!(update.bytes, 1024);
+        assert_eq!(update.items, 5);
+    }
+
+    #[test]
+    fn empty_files_and_folders_count_as_items() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("empty");
+        fs::create_dir(&src).unwrap();
+        let progress = Progress::default();
+        copy_entry(s(&src), s(&dir.path().join("copy")), false, &progress).unwrap();
+        assert_eq!(progress.snapshot().items, 1);
+        assert_eq!(progress.snapshot().bytes, 0);
+    }
+
+    #[test]
+    fn cancelled_copy_leaves_nothing() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        fs::write(&src, b"hello").unwrap();
+        let dst = dir.path().join("b.txt");
+        let progress = Progress::default();
+        progress.cancel();
+        assert_eq!(
+            copy_entry(s(&src), s(&dst), false, &progress),
+            Err("Cancelled.".to_string())
+        );
+        assert!(!dst.exists());
+        assert_eq!(fs::read(&src).unwrap(), b"hello");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cancelled_copy_mid_file_leaves_nothing() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("big.bin");
+        fs::write(&src, vec![9u8; 64 * 1024 * 1024]).unwrap();
+        let dst = dir.path().join("copy.bin");
+        let progress = Progress::default();
+        let watcher = {
+            let progress = progress.clone();
+            std::thread::spawn(move || {
+                while progress.snapshot().bytes < 1024 * 1024 {
+                    std::thread::yield_now();
+                }
+                progress.cancel();
+            })
+        };
+        let result = copy_entry(s(&src), s(&dst), false, &progress);
+        watcher.join().unwrap();
+        assert_eq!(result, Err("Cancelled.".to_string()));
+        assert!(!dst.exists());
+    }
+
+    #[test]
+    fn cancelled_replace_keeps_the_original() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("new.txt");
+        fs::write(&src, b"new").unwrap();
+        let dst = dir.path().join("target.txt");
+        fs::write(&dst, b"old").unwrap();
+        let progress = Progress::default();
+        progress.cancel();
+        assert_eq!(
+            copy_entry(s(&src), s(&dst), true, &progress),
+            Err("Cancelled.".to_string())
+        );
+        assert_eq!(fs::read(&dst).unwrap(), b"old");
+        let names: Vec<_> = fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names.len(), 2, "no staging file left: {names:?}");
+    }
+
+    #[test]
+    fn cancel_after_copy_still_finishes_the_move() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("x"), b"data").unwrap();
+        let dest = dir.path().join("b");
+        let progress = Progress::default();
+        copy_recursive(&src, &dest, &progress).unwrap();
+        progress.cancel();
+        finish_cross_device_move(&src, &dest, &dest, false).unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read(dest.join("x")).unwrap(), b"data");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn measure_counts_and_skips_unreadable_folders() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("a");
+        fs::create_dir_all(root.join("locked")).unwrap();
+        fs::write(root.join("x"), vec![0u8; 10]).unwrap();
+        fs::write(root.join("locked/y"), vec![0u8; 5]).unwrap();
+        fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        let measured = measure(&[root.clone()]);
+        fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(measured, Measure { bytes: 10, items: 3 });
     }
 }

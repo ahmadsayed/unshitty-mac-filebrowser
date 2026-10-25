@@ -502,7 +502,7 @@ async fn copy_entry(
         let state = app.state::<VersionsState>();
         let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
         state.transfer(&from_path, &to_path, Transfer::Copy, || {
-            fs_ops::copy_entry(from, to.clone(), overwrite)
+            fs_ops::copy_entry(from, to.clone(), overwrite, &progress::Progress::default())
         })?;
         Ok(to_path.to_string_lossy().to_string())
     })
@@ -526,7 +526,7 @@ async fn move_entry(
         let state = app.state::<VersionsState>();
         let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
         state.transfer(&from_path, &to_path, Transfer::Move, || {
-            fs_ops::move_entry(from, to.clone(), overwrite)
+            fs_ops::move_entry(from, to.clone(), overwrite, &progress::Progress::default())
         })?;
         Ok(to_path.to_string_lossy().to_string())
     })

@@ -727,6 +727,7 @@ mod tests {
                     root.to_string_lossy().to_string(),
                     dest.to_string_lossy().to_string(),
                     false,
+                    &crate::progress::Progress::default(),
                 )
             })
             .unwrap();
