@@ -1,3 +1,4 @@
+mod archive;
 mod cloud;
 mod config_store;
 mod fs_ops;
@@ -197,6 +198,15 @@ async fn search_dir(
     limit: usize,
 ) -> Result<Vec<fs_ops::Entry>, String> {
     blocking(move || fs_ops::search_dir(path, query, show_hidden, limit)).await?
+}
+
+#[tauri::command]
+async fn extract_archive(
+    path: String,
+    dest: String,
+    create: bool,
+) -> Result<archive::ExtractResult, String> {
+    blocking(move || archive::extract_archive(path, dest, create)).await?
 }
 
 #[tauri::command]
@@ -1178,6 +1188,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_dir,
             search_dir,
+            extract_archive,
             list_apps,
             open_with,
             preview_text,

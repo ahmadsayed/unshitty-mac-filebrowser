@@ -330,8 +330,36 @@ test("the mock Drive refuses like the backend on failure paths", async () => {
   expect(await names(DRIVE)).toContain("Documents");
 });
 
-test("permissions can be read and changed", async () => {
-  const path = `${HOME}/Desktop/todo.txt`;
+test("extract_archive refuses to overwrite and rejects unknown formats", async () => {
+  const first = await invoke<Record<string, unknown>>("extract_archive", {
+    path: `${HOME}/Downloads/photos-export.zip`,
+    dest: `${HOME}/Downloads/Extracted`,
+    create: true,
+  });
+  expect(first).toMatchObject({ files: 1, folders: 0, skipped: 0 });
+  await expect(
+    invoke("extract_archive", {
+      path: `${HOME}/Downloads/photos-export.zip`,
+      dest: `${HOME}/Downloads/Extracted`,
+      create: true,
+    })
+  ).rejects.toMatch(/already exists/);
+
+  await invoke("copy_entry", {
+    from: `${HOME}/Downloads/photos-export.zip`,
+    to: `${HOME}/Downloads/unknown.7z`,
+    overwrite: false,
+  });
+  await expect(
+    invoke("extract_archive", {
+      path: `${HOME}/Downloads/unknown.7z`,
+      dest: `${HOME}/Downloads/Extracted`,
+      create: true,
+    })
+  ).rejects.toMatch(/isn't supported/);
+});
+
+test("permissions can be read and changed", async () => {  const path = `${HOME}/Desktop/todo.txt`;
   await invoke("set_permissions", { path, mode: 0o600 });
   const props = await invoke<Record<string, unknown>>("file_properties", { path, showHidden: false });
   expect(props).toMatchObject({ octal: "600", mode: "-rw-------", others: "None" });

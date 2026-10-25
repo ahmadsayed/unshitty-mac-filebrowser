@@ -1160,6 +1160,23 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) throw "Invalid permissions.";
     mockModes.set(path, mode);
   },
+  extract_archive: (a) => {
+    const path = str(a, "path");
+    const dest = str(a, "dest");
+    const node = lookup(path);
+    if (!node || node.dir) throw "The archive no longer exists.";
+    if (!/\.(zip|jar|tar|tar\.gz|tgz|tar\.bz2|tbz2|tbz|tar\.xz|txz|tar\.zst|tzst|gz|bz2|xz|zst)$/i.test(path)) {
+      throw "This archive format isn't supported yet.";
+    }
+    let target = lookup(dest);
+    if (!target?.dir) {
+      if (!a.create) throw "The destination folder no longer exists.";
+      target = ensureDir(dest);
+    }
+    if (target.children["extracted.txt"]) throw "“extracted.txt” already exists.";
+    target.children["extracted.txt"] = f(5, 0);
+    return { path: dest, files: 1, folders: 0, skipped: 0 };
+  },
   preview_text: (a) => {
     const path = str(a, "path");
     const node = lookup(path);

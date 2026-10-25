@@ -55,6 +55,22 @@ export async function searchDir(
   return invoke<Entry[]>("search_dir", { path, query, showHidden, limit });
 }
 
+export interface ExtractResult {
+  path: string;
+  files: number;
+  folders: number;
+  skipped: number;
+}
+
+/** Extract a supported archive, never overwriting existing files. */
+export async function extractArchive(
+  path: string,
+  dest: string,
+  create: boolean
+): Promise<ExtractResult> {
+  return invoke<ExtractResult>("extract_archive", { path, dest, create });
+}
+
 /** A mounted volume, as the sidebar lists it. */
 export interface Volume {
   name: string;

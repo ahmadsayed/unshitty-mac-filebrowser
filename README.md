@@ -54,6 +54,9 @@ files, so the photo thumbnails are placeholders.</sub>
   sends the old item to the Trash, never deletes it
 - Batch rename for several items: find/replace, prefix and suffix, with a live
   preview and clash checking before anything is renamed
+- Extract archives with Extract Here or Extract to a new folder: zip/jar,
+  tar, tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, and single-file
+  gz/bz2/xz/zst; existing files are never overwritten
 - Drag and drop: drag items onto a folder, a sidebar entry or a path-bar
   segment; hovering a folder opens it. Same disk moves, another disk copies;
   hold ⌥ to copy or ⌘ to move. Dropping on Trash trashes. Files dragged in from
@@ -178,7 +181,8 @@ or other apps and no SMB / SFTP / WebDAV browsing. Search matches file names
 only and is not a disk-wide content index. Preview covers text and thumbnails,
 not GNOME Sushi-style document or video playback. Open With lists installed
 applications but cannot set a new default handler. There are no Nautilus
-extensions, archive extraction, duplicate/link creation or templates yet.
+extensions, duplicate/link creation or templates yet, and archive extraction
+covers the formats listed above (not 7z, rar, deb, rpm or pkg).
 
 Google Drive has no shared drives, no Shared with me, no view of Drive's
 Trash (restore there, or use Undo right after Move to Trash), and no

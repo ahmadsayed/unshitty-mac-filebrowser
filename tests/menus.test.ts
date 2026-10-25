@@ -50,7 +50,7 @@ test("several items: Rename and Properties are disabled", async () => {
   await key("a", { mod: true });
   await rightClick(item(names()[0]));
   const disabled = $$(".popover .menu-item:disabled").map((b) => b.textContent);
-  expect(disabled).toEqual(["Preview", "Properties"]);
+  expect(disabled).toEqual(["Preview", "Open With…", "Properties"]);
   await chooseMenu("Star");
   await rightClick(item(names()[0]));
   expect(menuLabels()).toContain("Unstar");
@@ -63,7 +63,7 @@ test("Recent: Open Item Location and Remove from Recent", async () => {
   expect(title()).toBe("Recent");
   const first = names()[0];
   await rightClick(item(first));
-  expect(menuLabels()).toEqual(["Open", "Open Item Location", "Cut", "Copy", expect.stringMatching(/Star|Unstar/), "Move to Trash", "Remove from Recent", "Properties"]);
+  expect(menuLabels()).toEqual(["Open", "Preview", "Open With…", "Open Item Location", "Cut", "Copy", expect.stringMatching(/Star|Unstar/), "Move to Trash", "Remove from Recent", "Properties"]);
   await chooseMenu("Remove from Recent");
   expect(names()).not.toContain(first);
   await rightClick(item(names()[0]));
@@ -77,7 +77,7 @@ test("Starred: its own menu, and Open Item Location", async () => {
   await settle(10);
   expect(title()).toBe("Starred");
   await rightClick(item(names()[0]));
-  expect(menuLabels()).toEqual(["Open", "Open Item Location", "Cut", "Copy", "Unstar", "Move to Trash", "Properties"]);
+  expect(menuLabels()).toEqual(["Open", "Preview", "Open With…", "Open Item Location", "Cut", "Copy", "Unstar", "Move to Trash", "Properties"]);
   await closeOverlays();
 });
 

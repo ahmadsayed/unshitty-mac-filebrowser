@@ -2,6 +2,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
   listDir, searchDir, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntry, pathExists,
+  extractArchive,
   openFile, openFullDiskAccessSettings, loadPins, savePins, getFlag, setFlag, hasFullDiskAccess, pathInfo,
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
   trashInfo, restoreEntry, deletePermanently, emptyTrash, listVolumes, trashDir, fileProperties, folderSize,
@@ -1884,9 +1885,59 @@ function openLocationItem(single: Entry | null): MenuItem {
   return { label: "Open Item Location", disabled: !single, action: () => single && openItemLocation(single) };
 }
 
+/** Preview and Open With for a single local file. */
+function previewAndOpenWithItems(single: Entry | null): MenuItem[] {
+  const file = single && !single.is_dir && !isCloud(single.path) && !isSharePath(single.path) ? single : null;
+  return [
+    { label: "Preview", disabled: !file, action: () => file && void showPreview(file) },
+    { label: "Open With…", disabled: !file, action: () => file && void showOpenWith(file) },
+  ];
+}
+
+const ARCHIVE_SUFFIXES = [
+  ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tgz", ".tbz2", ".tbz", ".txz", ".tzst",
+  ".tar", ".zip", ".jar", ".gz", ".bz2", ".xz", ".zst",
+];
+
+function isExtractableArchive(name: string): boolean {
+  const lower = name.toLowerCase();
+  return ARCHIVE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+}
+
+function archiveStem(name: string): string {
+  const lower = name.toLowerCase();
+  const suffix = ARCHIVE_SUFFIXES.find((item) => lower.endsWith(item));
+  return suffix ? name.slice(0, -suffix.length) : name;
+}
+
+/** A folder name that doesn't exist yet: "Photos", "Photos 2", … */
+async function freeFolderName(dir: string, base: string): Promise<string> {
+  for (let n = 1; ; n++) {
+    const candidate = n === 1 ? base : `${base} ${n}`;
+    if (!(await pathExists(joinPath(dir, candidate)))) return candidate;
+  }
+}
+
+/** Extract an archive into its folder or a new folder beside it. */
+async function extractArchiveEntry(entry: Entry, toNewFolder: boolean): Promise<void> {
+  if (isCloud(entry.path) || isSharePath(entry.path)) return;
+  const dir = parentOf(entry.path);
+  const dest = toNewFolder ? joinPath(dir, await freeFolderName(dir, archiveStem(entry.name))) : dir;
+  showToast(`Extracting “${entry.name}”…`);
+  try {
+    const result = await extractArchive(entry.path, dest, toNewFolder);
+    await reload(toNewFolder ? [dest] : undefined);
+    const skipped = result.skipped ? `, ${result.skipped} links skipped` : "";
+    showToast(`Extracted ${result.files} ${result.files === 1 ? "file" : "files"}${skipped}`);
+  } catch (err) {
+    showToast(`Could not extract “${entry.name}”: ${cleanError(err)}`);
+  }
+}
+
 function recentItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
   return [
     { label: "Open", action: activateSelection },
+    ...previewAndOpenWithItems(single),
     openLocationItem(single),
     { separator: true },
     ...cutCopyItems(),
@@ -1907,6 +1958,7 @@ function trashItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
   const restorable = top && sel.some((e) => e.origin);
   return [
     { label: "Open", action: activateSelection },
+    ...previewAndOpenWithItems(single),
     ...(top ? [{ label: "Restore From Trash", disabled: !restorable, action: restoreSelection }] : []),
     { separator: true },
     ...cutCopyItems(),
@@ -1920,6 +1972,7 @@ function trashItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
 function starredItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
   return [
     { label: "Open", action: activateSelection },
+    ...previewAndOpenWithItems(single),
     openLocationItem(single),
     { separator: true },
     ...cutCopyItems(),
@@ -1939,9 +1992,15 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
   const renameable = sel.length > 1 || !!single;
   return [
     { label: "Open", action: activateSelection },
-    { label: "Preview", disabled: !single || single.is_dir, action: () => single && void showPreview(single) },
-    ...(single && !single.is_dir && !isCloud(single.path) && !isSharePath(single.path)
-      ? [{ label: "Open With…", action: () => void showOpenWith(single) }]
+    ...previewAndOpenWithItems(single),
+    ...(single && !single.is_dir && !isCloud(single.path) && !isSharePath(single.path) && isExtractableArchive(single.name)
+      ? [
+          { label: "Extract Here", action: () => void extractArchiveEntry(single, false) },
+          {
+            label: `Extract to “${archiveStem(single.name)}”`,
+            action: () => void extractArchiveEntry(single, true),
+          },
+        ]
       : []),
     ...(app ? [{ label: "Show Package Contents", action: () => navigate(app.path) }] : []),
     ...(intoFolder ? [bookmarkMenuItem(intoFolder.path)] : []),

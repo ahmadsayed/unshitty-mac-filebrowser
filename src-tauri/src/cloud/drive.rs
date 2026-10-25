@@ -691,7 +691,7 @@ mod tests {
     use super::*;
     use crate::cloud::test_server::{json, serve};
 
-    fn client(base: &str) -> DriveClient {
+    fn client(base: &str) -> DriveClient<'_> {
         let mut client = DriveClient::new(http_client().unwrap(), base, "token".into());
         client.backoff = Duration::from_millis(1);
         client
