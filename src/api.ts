@@ -357,9 +357,19 @@ export async function moveEntry(from: string, to: string, overwrite: boolean, tr
   return invoke<string>("move_entry", { from, to, overwrite, ...trackedArgs(tracked) });
 }
 
-/** Move `path` to the Trash. Resolves with its path in the Trash when known (for Undo). */
-export async function trashEntry(path: string): Promise<string | null> {
-  return invoke<string | null>("trash_entry", { path });
+/** One path of a Move to Trash: its path in the Trash when known (for Undo), or why it stayed. */
+export interface TrashOutcome {
+  trashed: string | null;
+  error: string | null;
+}
+
+/**
+ * Move `paths` to the Trash as one batch (one Finder request, so one sound,
+ * on macOS). Progress counts items; a cancel stops between the backend's
+ * calls and leaves the rest with the "Cancelled." error.
+ */
+export async function trashEntries(paths: string[], tracked?: Tracked): Promise<TrashOutcome[]> {
+  return invoke<TrashOutcome[]>("trash_entries", { paths, ...trackedArgs(tracked) });
 }
 
 export interface TrashInfo {

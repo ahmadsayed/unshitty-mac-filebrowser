@@ -69,7 +69,7 @@ succeeded. The frontend treats "Cancelled." as a cancel, not an error.
 
 **D3. `lib.rs` wires it to a Tauri `Channel`.** The long commands gain
 `op: String` and `progress: Channel<ProgressUpdate>`: `copy_entry`,
-`move_entry`, `trash_entry`, `delete_permanently`, `empty_trash`,
+`move_entry`, `trash_entries`, `delete_permanently`, `empty_trash`,
 `drive_open`, `sftp_open`, `share_open`. A registry in managed state maps
 `op` to its `Progress`; `cancel_operation(op)` sets the flag (cancelling an
 unknown or finished op does nothing). While a command runs, a ticker sends
@@ -99,11 +99,20 @@ reads go through a counting reader in slices instead of one `io::copy`. A
 shared file's download reports bytes if iroh-blobs exposes download progress
 for the request; otherwise it counts as one item.
 
-**D7. Trash and delete batches count items.** `trash_entry` and
-`delete_permanently` stay one call per item, all in one `op`; `empty_trash`
-counts its top-level items. Cancel stops before the next item; items already
-trashed or deleted stay so (trashed ones keep Undo). Both Trash layouts are
-covered.
+**D7. Trash and delete batches count items.** A Move to Trash is one
+`trash_entries` command for the whole selection. It trashes in as few calls
+as possible, one per Trash folder and 100 items (`TRASH_CHUNK`). On macOS each
+call is one Finder request, and Finder plays its sound once per request, so a
+selection makes one sound rather than one per item. Items with the same name
+go in separate calls, so each can still be found in the Trash for Undo. If a
+call fails, the items it left are tried one by one, so each gets its own error.
+Progress counts each item as it leaves its folder, which is checked every
+50 ms while the call runs. A running call can't be stopped, so Cancel takes
+effect before the next one; the rest end with "Cancelled.".
+`delete_permanently` stays one call per item, all in one `op`; `empty_trash`
+counts its top-level items. Cancel stops before the next item or call; items
+already trashed or deleted stay so (trashed ones keep Undo). Both Trash
+layouts are covered.
 
 **D8. Transfers queue.** `runTransfer` no longer returns early while another
 transfer runs: a new batch joins a FIFO queue, shows as "Waiting…" in the

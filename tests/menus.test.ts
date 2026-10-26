@@ -83,7 +83,7 @@ test("Starred: its own menu, and Open Item Location", async () => {
 
 test("Trash: Restore From Trash and Delete Permanently", async () => {
   await invoke("make_dir", { path: `${HOME}/Restorable` });
-  await invoke("trash_entry", { path: `${HOME}/Restorable` });
+  await invoke("trash_entries", { paths: [`${HOME}/Restorable`] });
   await goTo(`${HOME}/.Trash`);
   await rightClick(item("unknown origin.zip"));
   const restore = $$(".popover .menu-item").find((b) => b.textContent === "Restore From Trash")!;
@@ -102,7 +102,7 @@ test("Trash: Restore From Trash and Delete Permanently", async () => {
 
 test("restoring onto an existing item reports it", async () => {
   await invoke("make_dir", { path: `${HOME}/Twice` });
-  await invoke("trash_entry", { path: `${HOME}/Twice` });
+  await invoke("trash_entries", { paths: [`${HOME}/Twice`] });
   await invoke("make_dir", { path: `${HOME}/Twice` });
   await goTo(`${HOME}/.Trash`);
   await key("F5"); // already showing the Trash: reload to see the new item

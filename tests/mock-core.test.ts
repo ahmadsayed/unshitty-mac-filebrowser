@@ -111,18 +111,21 @@ test("copy_entry and move_entry copy, move, replace and refuse", async () => {
   await expect(invoke("copy_entry", { from: `${HOME}/Box`, to: `${HOME}/Box/inner`, overwrite: false })).rejects.toMatch(/into itself/);
 });
 
+type TrashOutcome = { trashed: string | null; error: string | null };
+const trashOne = async (path: string) => (await invoke<TrashOutcome[]>("trash_entries", { paths: [path] }))[0];
+
 test("trash, trash info, restore, delete permanently and empty", async () => {
   await invoke("make_dir", { path: `${HOME}/Doomed` });
-  const trashed = await invoke<string>("trash_entry", { path: `${HOME}/Doomed` });
+  const trashed = (await trashOne(`${HOME}/Doomed`)).trashed!;
   expect(trashed).toBe(`${HOME}/.Trash/Doomed`);
-  await expect(invoke("trash_entry", { path: `${HOME}/Doomed` })).rejects.toMatch(/no longer exists/);
+  expect((await trashOne(`${HOME}/Doomed`)).error).toMatch(/no longer exists/);
   const [info, unknown] = await invoke<{ origin: string | null }[]>("trash_info", { paths: [trashed, `${HOME}/.Trash/unknown origin.zip`] });
   expect(info.origin).toBe(`${HOME}/Doomed`);
   expect(unknown.origin).toBeNull();
   expect(await invoke("restore_entry", { path: trashed })).toBe(`${HOME}/Doomed`);
   await expect(invoke("restore_entry", { path: `${HOME}/.Trash/unknown origin.zip` })).rejects.toMatch(/unknown/);
   // Restoring onto an existing item is refused.
-  const again = await invoke<string>("trash_entry", { path: `${HOME}/Doomed` });
+  const again = (await trashOne(`${HOME}/Doomed`)).trashed!;
   await invoke("make_dir", { path: `${HOME}/Doomed` });
   await expect(invoke("restore_entry", { path: again })).rejects.toMatch(/already exists/);
   await expect(invoke("delete_permanently", { path: `${HOME}/main.rs` })).rejects.toMatch(/Only items in the Trash/);
@@ -289,7 +292,7 @@ test("Drive copy, move, trash and restore", async () => {
   expect(moved).toBe(`${DRIVE}/${copy.split("/").pop()!.split("~")[0]}~moved.txt`);
   expect(await names(DRIVE_DOCS)).not.toContain("hello.txt");
 
-  expect(await invoke("trash_entry", { path: moved })).toBe(moved);
+  expect(await trashOne(moved)).toEqual({ trashed: moved, error: null });
   expect(await names(DRIVE)).not.toContain("moved.txt");
   expect(await invoke("restore_entry", { path: moved })).toBe(moved);
   expect(await names(DRIVE)).toContain("moved.txt");
@@ -490,3 +493,23 @@ test("a released copy finishes and sends a done update", async () => {
   mockOps().reset();
 });
 
+
+test("trash_entries trashes in chunks of 100, counts items and stops between chunks on cancel", async () => {
+  const big = (await ls("/big")).map((e) => e.path).slice(0, 150);
+  mockOps().hold();
+  const seen: Array<{ items: number; done: boolean }> = [];
+  const channel = new Channel<{ items: number; done: boolean }>();
+  channel.onmessage = (update) => seen.push(update);
+  const trashing = invoke<TrashOutcome[]>("trash_entries", { paths: big, op: "op-t", onProgress: channel });
+  await vi.waitFor(() => expect(mockOps().held()).toBe(1));
+  mockOps().release();
+  await vi.waitFor(() => expect(mockOps().held()).toBe(1));
+  expect(seen.at(-1)).toMatchObject({ items: 100, done: false });
+  await invoke("cancel_operation", { op: "op-t" });
+  const outcomes = await trashing;
+  expect(outcomes.slice(0, 100).every((o) => o.error === null && o.trashed !== null)).toBe(true);
+  expect(outcomes.slice(100).every((o) => o.error === "Cancelled." && o.trashed === null)).toBe(true);
+  expect(seen.at(-1)).toMatchObject({ items: 100, done: true });
+  expect((await ls("/big")).length).toBe(10_000 - 100);
+  mockOps().reset();
+});

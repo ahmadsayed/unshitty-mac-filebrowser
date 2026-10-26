@@ -363,20 +363,49 @@ impl VersionsState {
         path: &Path,
         op: impl FnOnce() -> std::result::Result<T, String>,
     ) -> std::result::Result<T, String> {
-        let roots = self.roots_affected(path);
-        self.suspend_all(&roots)?;
-        for root in &roots {
-            self.unregister(root);
+        let mut results = self.trash_many(&[path.to_path_buf()], |ready| {
+            if ready.is_empty() { Vec::new() } else { vec![op()] }
+        });
+        results.pop().unwrap_or_else(|| Err("Nothing was trashed".into()))
+    }
+
+    /// `trash` for a batch, in one `op` call. `op` gets the paths whose
+    /// histories could be closed and returns one result for each, in order;
+    /// the rest fail with the reason. Returns one result per path.
+    pub fn trash_many<T>(
+        &self,
+        paths: &[PathBuf],
+        op: impl FnOnce(&[PathBuf]) -> Vec<std::result::Result<T, String>>,
+    ) -> Vec<std::result::Result<T, String>> {
+        let mut results: Vec<Option<std::result::Result<T, String>>> =
+            paths.iter().map(|_| None).collect();
+        let mut ready = Vec::new();
+        let mut ready_roots = Vec::new();
+        for (i, path) in paths.iter().enumerate() {
+            let roots = self.roots_affected(path);
+            if let Err(error) = self.suspend_all(&roots) {
+                results[i] = Some(Err(error));
+                continue;
+            }
+            for root in &roots {
+                self.unregister(root);
+            }
+            ready.push(path.clone());
+            ready_roots.push((i, roots));
         }
-        match op() {
-            Ok(value) => Ok(value),
-            Err(error) => {
+        let outcomes = op(&ready);
+        for ((i, roots), outcome) in ready_roots.into_iter().zip(outcomes) {
+            if outcome.is_err() {
                 for root in &roots {
                     let _ = self.open_registered(root);
                 }
-                Err(error)
             }
+            results[i] = Some(outcome);
         }
+        results
+            .into_iter()
+            .map(|r| r.unwrap_or_else(|| Err("Nothing was trashed".into())))
+            .collect()
     }
 
     /// Clear History…: move `.versions/` to the Trash with `trash_dir`, then
@@ -815,6 +844,34 @@ mod tests {
         state.trash(&root, || Ok(())).unwrap();
         assert!(!state.is_open(&root));
         assert!(read(state.registry_path()).is_empty());
+    }
+
+    #[test]
+    fn a_trash_batch_skips_held_histories_and_reopens_failed_ones() {
+        let (dir, root, state) = setup();
+        state.open_registered(&root).unwrap();
+        // Registered but locked by "another instance".
+        let held = dir.path().join("Held");
+        std::fs::create_dir(&held).unwrap();
+        drop(History::create(&held).unwrap());
+        let held = std::fs::canonicalize(&held).unwrap();
+        registry::register(state.registry_path(), &held).unwrap();
+        let _other = History::open(&held).unwrap();
+        let plain = dir.path().join("plain.txt");
+        std::fs::write(&plain, "").unwrap();
+
+        let paths = [root.clone(), held.clone(), plain.clone()];
+        let results = state.trash_many(&paths, |ready| {
+            assert_eq!(ready, [root.clone(), plain.clone()], "the held history isn't passed on");
+            vec![Err("no Trash".to_string()), Ok(())]
+        });
+
+        assert_eq!(
+            results,
+            vec![Err("no Trash".into()), Err(Error::ReadOnly.to_string()), Ok(())]
+        );
+        assert!(state.is_open(&root), "a failed item's history is reopened");
+        assert!(read(state.registry_path()).contains(&held));
     }
 
     #[test]
