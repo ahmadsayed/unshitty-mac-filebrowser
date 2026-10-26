@@ -147,3 +147,41 @@ test("double-clicking a folder opens it, a file opens it in its app", async () =
   await mouse(item("Track 1.flac"), "dblclick", { shiftKey: true });
   expect(title()).toBe("Music");
 });
+
+test("a click in the gutter between grid cells picks the nearer item", async () => {
+  await goTo("/Users/me");
+  await key("2", { mod: true });
+  await settle(10);
+  const view = $("#view");
+  const cellW = parseFloat(view.style.getPropertyValue("--cell-w"));
+  const cellH = parseFloat(view.style.getPropertyValue("--cell-h"));
+  const cells = [...document.querySelectorAll<HTMLElement>("#view .item[data-index]")]
+    .sort((a, b) => Number(a.dataset.index) - Number(b.dataset.index));
+  const left = (el: HTMLElement) => parseFloat(el.style.left);
+  const top = (el: HTMLElement) => parseFloat(el.style.top);
+  const all = names();
+  const clickAt = async (x: number, y: number) => {
+    await mouse(view, "mousedown", { clientX: x, clientY: y });
+    window.dispatchEvent(new MouseEvent("mouseup"));
+    await settle();
+  };
+
+  // Left half of the vertical gutter → the left cell; right half → the right one.
+  const gap = left(cells[1]) - left(cells[0]) - cellW;
+  const midX = left(cells[0]) + cellW + gap / 2;
+  const y = top(cells[0]) + cellH / 2;
+  await clickAt(midX - 1, y);
+  expect(selectedNames()).toEqual([all[0]]);
+  await clickAt(midX + 1, y);
+  expect(selectedNames()).toEqual([all[1]]);
+
+  // Upper half of the horizontal gutter → the row above; lower half → below.
+  const cols = cells.filter((el) => top(el) === top(cells[0])).length;
+  const gapY = top(cells[cols]) - top(cells[0]) - cellH;
+  const midY = top(cells[0]) + cellH + gapY / 2;
+  const x = left(cells[0]) + cellW / 2;
+  await clickAt(x, midY - 1);
+  expect(selectedNames()).toEqual([all[0]]);
+  await clickAt(x, midY + 1);
+  expect(selectedNames()).toEqual([all[cols]]);
+});

@@ -1510,8 +1510,8 @@ function computeLayout(): void {
     const inner = width - GRID_PAD * 2;
     const cols = Math.max(1, Math.floor((inner + GRID_GAP) / (icon + 36 + GRID_GAP)));
     const itemW = Math.floor((inner - GRID_GAP * (cols - 1)) / cols);
-    // icon + gap + two lines of label + padding; a selected item grows to show its full name.
-    // Network adds one line for "Shared by …".
+    // icon + gap + two lines of label + padding. Network adds one line for
+    // "Shared by …".
     const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9 + (location === NETWORK ? lineH : 0));
     layout = { cols, itemW, itemH, gap: GRID_GAP, padX: GRID_PAD, padY: GRID_PAD, bodyTop: 0 };
   } else {
@@ -1914,13 +1914,41 @@ function indexFromEvent(e: MouseEvent): number {
   return item ? Number(item.dataset.index) : -1;
 }
 
+/** The grid cell under a point, including the gutter around each cell. */
+function gridIndexAtPoint(x: number, y: number): number {
+  if (prefs.view !== "grid" || !itemsLayer) return -1;
+  const rect = itemsLayer.getBoundingClientRect();
+  const px = x - rect.left;
+  const py = y - rect.top;
+  const half = layout.gap / 2;
+  const pitchX = layout.itemW + layout.gap;
+  const pitchY = layout.itemH + layout.gap;
+  const rows = Math.ceil(shown.length / layout.cols);
+  const left = layout.padX - half;
+  const top = layout.padY - half;
+  const right = layout.padX + layout.cols * pitchX - layout.gap + half;
+  const bottom = layout.padY + rows * pitchY - layout.gap + half;
+  if (px < left || py < top || px > right || py > bottom) return -1;
+  const col = Math.max(0, Math.min(layout.cols - 1, Math.floor((px - left) / pitchX)));
+  const row = Math.max(0, Math.floor((py - top) / pitchY));
+  const index = row * layout.cols + col;
+  return index < shown.length ? index : -1;
+}
+
+/** The item a left click acts on; the gutter around a grid cell snaps to it. */
+function itemIndexAt(e: MouseEvent): number {
+  const exact = indexFromEvent(e);
+  if (exact >= 0 || e.button !== 0) return exact;
+  return gridIndexAtPoint(e.clientX, e.clientY);
+}
+
 function onViewMouseDown(e: MouseEvent): void {
   viewEl.classList.remove("keyboard-nav");
   cancelPendingNarrow();
   const sortBtn = (e.target as HTMLElement).closest<HTMLElement>("[data-sort]");
   if (sortBtn) return;
 
-  const index = indexFromEvent(e);
+  const index = itemIndexAt(e);
   if (index >= 0 && e.button === 0 && (e.target as HTMLElement).closest(".star")) {
     setStarred([shown[index].path], !starred.has(shown[index].path));
     return;
@@ -5149,7 +5177,7 @@ async function init(): Promise<void> {
   viewEl.addEventListener("gesturechange", onGestureChange);
   viewEl.addEventListener("gestureend", onGestureEnd);
   viewEl.addEventListener("dblclick", (e) => {
-    const i = indexFromEvent(e);
+    const i = itemIndexAt(e);
     if ((e.target as HTMLElement).closest(".star")) return;
     if (i >= 0 && !e.shiftKey && !e.metaKey && !e.ctrlKey) activate(shown[i]);
   });

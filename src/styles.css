@@ -607,13 +607,10 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 }
 
 .grid-item:hover { background: var(--item-hover); }
-/* A selected item grows to show its whole name, over the row below. */
-.grid-item.selected {
-  height: auto;
-  min-height: var(--cell-h);
-  z-index: 1;
-  background: var(--item-selected-solid);
-}
+/* A selected item keeps its cell: growing to show a long name would cover the
+   row below and steal clicks meant for those icons. The full name is in the
+   tooltip and the status line. */
+.grid-item.selected { background: var(--item-selected-solid); }
 .grid-item.selected:hover { background: var(--item-selected-hover-solid); }
 .grid-item:focus-visible { outline-offset: -2px; }
 
@@ -635,7 +632,6 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   line-height: 1.3;
 }
 
-.grid-item.selected .name { -webkit-line-clamp: unset; }
 .item.cut .icon { opacity: 0.5; }
 .hidden-entry .icon { opacity: 0.6; }
 
