@@ -1055,6 +1055,40 @@ function trashEntry(path: string): string {
   return trash(parent, name, path);
 }
 
+/** Items per backend call, as `TRASH_CHUNK` in trash_ops.rs. */
+const TRASH_CHUNK = 100;
+
+/**
+ * Like the backend: chunks of `TRASH_CHUNK`, progress counted per item, and
+ * a cancel between chunks leaving the rest with "Cancelled.". Tests can hold
+ * it before each chunk (__mockOps).
+ */
+async function trashEntries(a: Args): Promise<Array<{ trashed: string | null; error: string | null }>> {
+  const paths = a.paths as string[];
+  const channel = a.onProgress as Channel<MockUpdate> | undefined;
+  const outcomes = paths.map(() => ({ trashed: null as string | null, error: "Cancelled." as string | null }));
+  let items = 0;
+  for (let start = 0; start < paths.length; start += TRASH_CHUNK) {
+    try {
+      await progressGate(a);
+    } catch {
+      break;
+    }
+    for (let i = start; i < Math.min(paths.length, start + TRASH_CHUNK); i++) {
+      try {
+        const trashed = paths[i].startsWith("gdrive://") ? driveTrash(paths[i], true) : trashEntry(paths[i]);
+        outcomes[i] = { trashed, error: null };
+        items++;
+      } catch (err) {
+        outcomes[i] = { trashed: null, error: String(err) };
+      }
+    }
+    channel?.onmessage({ bytes: 0, items, total: null, phase: "working", done: false });
+  }
+  channel?.onmessage({ bytes: 0, items, total: null, phase: "working", done: true });
+  return outcomes;
+}
+
 function restoreEntry(path: string): string {
   const logged = trashLog.get(path);
   if (!logged) throw "The original location is unknown";
@@ -1516,10 +1550,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   },
   copy_entry: (a) => (isDriveTransfer(a) ? driveTransfer(a, false) : (transfer(a, false), str(a, "to"))),
   move_entry: (a) => (isDriveTransfer(a) ? driveTransfer(a, true) : (transfer(a, true), str(a, "to"))),
-  trash_entry: (a) => {
-    const path = str(a, "path");
-    return path.startsWith("gdrive://") ? driveTrash(path, true) : trashEntry(path);
-  },
+  trash_entries: trashEntries,
   trash_info: (a) => (a.paths as string[]).map(trashInfo),
   restore_entry: (a) => {
     const path = str(a, "path");
@@ -1545,7 +1576,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
 };
 
 // Long commands report progress and can be held by tests (see __mockOps).
-for (const name of ["copy_entry", "move_entry", "trash_entry", "delete_permanently", "empty_trash", "drive_open", "sftp_open", "share_open"]) {
+for (const name of ["copy_entry", "move_entry", "delete_permanently", "empty_trash", "drive_open", "sftp_open", "share_open"]) {
   COMMANDS[name] = gated(COMMANDS[name]);
 }
 

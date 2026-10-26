@@ -1393,6 +1393,10 @@ mod tests {
         fs::write(root.join("x"), vec![0u8; 10]).unwrap();
         fs::write(root.join("locked/y"), vec![0u8; 5]).unwrap();
         fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(root.join("locked")).is_ok() {
+            fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+            return; // running as root: permissions can't make it unreadable
+        }
         let measured = measure(&[root.clone()]);
         fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(measured, Measure { bytes: 10, items: 3 });

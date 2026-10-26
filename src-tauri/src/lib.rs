@@ -669,31 +669,93 @@ fn home_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path().home_dir().map_err(|e| e.to_string())
 }
 
-/// Move `path` to the Trash. Returns where it went, when that's known, so
-/// the move can be undone.
+/// One path of a Move to Trash: where it went, when that's known (so the
+/// move can be undone), or why it is still there.
+#[derive(serde::Serialize)]
+struct TrashOutcome {
+    trashed: Option<String>,
+    error: Option<String>,
+}
+
+/// Move `paths` to the Trash as one batch: one Finder request (and one
+/// sound) on macOS rather than one per item, counted in items for the
+/// operation's progress. Returns one outcome per path, in order.
 #[tauri::command]
-async fn trash_entry(app: tauri::AppHandle, path: String) -> Result<Option<String>, String> {
-    if let Some(message) = read_only_one(&path) {
-        return Err(message.into());
+async fn trash_entries(
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+    op: String,
+    on_progress: Channel<ProgressUpdate>,
+) -> Result<Vec<TrashOutcome>, String> {
+    let tracking = Tracking::start(&app, &op, on_progress);
+    let progress = tracking.progress.clone();
+    let worker = app.clone();
+    let outcomes = blocking(move || trash_batch(&worker, &paths, &progress)).await;
+    tracking.finish(&app);
+    outcomes
+}
+
+fn trash_batch(
+    app: &tauri::AppHandle,
+    paths: &[String],
+    progress: &progress::Progress,
+) -> Vec<TrashOutcome> {
+    let home = home_dir(app);
+    let versions = app.state::<VersionsState>();
+    let local = |origins: &[PathBuf]| match &home {
+        Ok(home) => versions.trash_many(origins, |ready| trash_ops::trash_many(ready, home, progress)),
+        Err(error) => origins.iter().map(|_| Err(error.clone())).collect(),
+    };
+    let (results, moves) =
+        trash_ops::trash_routed(paths, |path| trash_elsewhere(app, path, progress), local);
+    log_trashed(app, &moves);
+    results.into_iter().map(TrashOutcome::from).collect()
+}
+
+/// A path of a Move to Trash that doesn't go to a local Trash: refused for
+/// read-only locations, or sent to Drive's own Trash (D10; never a
+/// permanent delete). `None` for local paths.
+fn trash_elsewhere(
+    app: &tauri::AppHandle,
+    path: &str,
+    progress: &progress::Progress,
+) -> Option<Result<Option<String>, String>> {
+    if let Some(message) = read_only_one(path) {
+        return Some(Err(message.into()));
     }
-    if cloud::is_cloud(&path) {
-        // Drive's own Trash (D10); never a permanent delete.
-        return blocking(move || cloud::write::trash(&app.state::<CloudState>(), &path)).await?;
+    if !cloud::is_cloud(path) {
+        return None;
     }
-    blocking(move || {
-        let home = home_dir(&app)?;
-        let origin = PathBuf::from(&path);
-        let state = app.state::<VersionsState>();
-        let trashed = state.trash(&origin, || trash_ops::trash_and_locate(&origin, &home))?;
-        if let (Some(trashed), Ok(log_path)) = (&trashed, config_file(&app, "trash_log.json")) {
-            let _guard = TRASH_LOG.lock().unwrap_or_else(|e| e.into_inner());
-            let mut log = trash_ops::read_log(&log_path);
-            trash_ops::record(&mut log, trashed, &origin, recent::now());
-            let _ = config_store::write_json(&log_path, &log);
+    let result = progress
+        .check()
+        .and_then(|()| cloud::write::trash(&app.state::<CloudState>(), path));
+    if result.is_ok() {
+        progress.add_item();
+    }
+    Some(result)
+}
+
+/// Remember where trashed items went, for Undo and Restore.
+fn log_trashed(app: &tauri::AppHandle, moves: &[(PathBuf, PathBuf)]) {
+    let Ok(log_path) = config_file(app, "trash_log.json") else {
+        return;
+    };
+    if moves.is_empty() {
+        return;
+    }
+    let _guard = TRASH_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    let mut log = trash_ops::read_log(&log_path);
+    trash_ops::record(&mut log, moves, recent::now());
+    let _ = config_store::write_json(&log_path, &log);
+}
+
+impl From<Result<Option<String>, String>> for TrashOutcome {
+    fn from(result: Result<Option<String>, String>) -> Self {
+        match result {
+            Ok(trashed) => TrashOutcome { trashed, error: None },
+            Err(error) => TrashOutcome { trashed: None, error: Some(error) },
         }
-        Ok(trashed.map(|p| p.to_string_lossy().to_string()))
-    })
-    .await?
+    }
 }
 
 /// Finder's "Put Back" records for the home Trash. macOS keeps them in the
@@ -1467,7 +1529,7 @@ pub fn run() {
             cancel_operation,
             measure,
             move_entry,
-            trash_entry,
+            trash_entries,
             trash_info,
             restore_entry,
             delete_permanently,

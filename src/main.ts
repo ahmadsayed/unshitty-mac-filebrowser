@@ -2,7 +2,7 @@ import { CANCELLED, endOperation, finishItem, initOperationsButton, opTitle, set
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
-  listDir, searchDir, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntry, pathExists,
+  listDir, searchDir, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
   extractArchive,
   newWindow,
   createSymlink,
@@ -666,32 +666,13 @@ async function reload(select?: string[]): Promise<void> {
   if (!hasEntries(location)) return;
   if (isSharePath(location) || location === NETWORK) await refreshShares();
   if (location === NETWORK) await refreshSftpServers();
-  if (isSharePath(location)) {
-    const received = receivedFor(location);
-    if (received && received.status !== "online") {
-      entries = [];
-      sharePage = received.status;
-      renderView();
-      return;
-    }
-  }
+  if (showShareStatusPage()) return;
   try {
     entries = await listLocation(location);
     listingError = null;
     sharePage = null;
   } catch (err) {
-    entries = [];
-    if (isSharePath(location)) {
-      sharePage = "offline";
-    } else if (isLocalLocation(location) && isMissingPathError(err)) {
-      // The folder went away under us: a cancelled copy deletes the folder it
-      // was writing, and the view can still be showing it. Go to its parent
-      // rather than stranding the view on an error page.
-      if (await navigate(parentOf(location), { history: "none" })) return;
-      listingError = cleanError(err);
-    } else {
-      listingError = cleanError(err);
-    }
+    if (await listingFailed(err)) return;
   }
   const keep = select ?? [...selected];
   selected.clear();
@@ -704,6 +685,33 @@ async function reload(select?: string[]): Promise<void> {
   versionedRootPath = await lookupVersionedRoot(location);
   updateShareSubtitle();
   if (searchQuery !== null) onSearchInput();
+}
+
+/** A received share that isn't online shows its status page instead of a listing. */
+function showShareStatusPage(): boolean {
+  const received = isSharePath(location) ? receivedFor(location) : undefined;
+  if (!received || received.status === "online") return false;
+  entries = [];
+  sharePage = received.status;
+  renderView();
+  return true;
+}
+
+/** Show why `reload` couldn't list the folder. True when it navigated away instead. */
+async function listingFailed(err: unknown): Promise<boolean> {
+  entries = [];
+  if (isSharePath(location)) {
+    sharePage = "offline";
+    return false;
+  }
+  if (isLocalLocation(location) && isMissingPathError(err)) {
+    // The folder went away under us: a cancelled copy deletes the folder it
+    // was writing, and the view can still be showing it. Go to its parent
+    // rather than stranding the view on an error page.
+    if (await navigate(parentOf(location), { history: "none" })) return true;
+  }
+  listingError = cleanError(err);
+  return false;
 }
 
 /** "Shared by Ahmed · Read only" under the path bar. */
@@ -3173,29 +3181,39 @@ async function trashPaths(paths: string[]): Promise<void> {
   if (paths.length === 0) return;
   const errors: string[] = [];
   const undoable: { trashed: string; origin: string }[] = [];
-  let done = 0;
-  const batch = itemOperation("trash", paths.map(basename));
-  for (const p of paths) {
-    if (batch.cancelled) break;
-    try {
-      const trashed = await trashEntry(p);
-      if (trashed) undoable.push({ trashed, origin: p });
-      done++;
-    } catch (err) {
-      errors.push(`“${basename(p)}”: ${cleanError(err)}`);
-    }
-    finishItem(batch.op);
+  const done: string[] = [];
+  const op = startOperation(opTitle("trash", paths.map(basename)), {
+    totalItems: paths.length,
+    onCancel: () => void cancelOperation(op.id).catch(() => {}),
+  });
+  setOperationState(op, "working");
+  let outcomes: TrashOutcome[] = [];
+  try {
+    // One batch, so one Finder request and one sound on macOS.
+    outcomes = await trashEntries(paths, { op: op.id, onProgress: (u) => updateOperation(op, u) });
+  } catch (err) {
+    const what = paths.length === 1 ? `“${basename(paths[0])}”` : `${paths.length} items`;
+    if (cleanError(err) !== CANCELLED) errors.push(`${what}: ${cleanError(err)}`);
   }
-  endOperation(batch.op);
+  outcomes.forEach(({ trashed, error }, i) => {
+    if (error === null) {
+      done.push(paths[i]);
+      if (trashed) undoable.push({ trashed, origin: paths[i] });
+    } else if (error !== CANCELLED) {
+      errors.push(`“${basename(paths[i])}”: ${cleanError(error)}`);
+    }
+  });
+  endOperation(op);
   if (clipboard) {
-    clipboard.paths = clipboard.paths.filter((p) => !paths.includes(p));
+    const gone = new Set(done);
+    clipboard.paths = clipboard.paths.filter((p) => !gone.has(p));
     if (clipboard.paths.length === 0) clipboard = null;
   }
   lastTrashed = undoable;
   if (errors.length) {
     showToast(`Could not move ${errors[0]} to the Trash`);
-  } else {
-    const message = done === 1 ? `“${basename(paths[0])}” moved to trash` : `${done} items moved to trash`;
+  } else if (done.length) {
+    const message = done.length === 1 ? `“${basename(done[0])}” moved to trash` : `${done.length} items moved to trash`;
     showToast(message, undoable.length ? { button: { label: "Undo", onClick: undoTrash } } : {});
   }
   await reload([]);

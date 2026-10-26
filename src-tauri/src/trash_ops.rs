@@ -23,7 +23,7 @@
 
 use crate::progress::Progress;
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -64,17 +64,19 @@ pub fn read_log(path: &Path) -> TrashLog {
         .unwrap_or_default()
 }
 
-/// Remember that `origin` now lives at `trashed`, forgetting items that have
-/// since left the Trash.
-pub fn record(log: &mut TrashLog, trashed: &Path, origin: &Path, now: i64) {
+/// Remember where each `(trashed, origin)` item now lives, forgetting items
+/// that have since left the Trash.
+pub fn record(log: &mut TrashLog, moves: &[(PathBuf, PathBuf)], now: i64) {
     log.items.retain(|p, _| fs::symlink_metadata(p).is_ok());
-    log.items.insert(
-        trashed.to_string_lossy().to_string(),
-        LoggedItem {
-            origin: origin.to_string_lossy().to_string(),
-            time: now,
-        },
-    );
+    for (trashed, origin) in moves {
+        log.items.insert(
+            trashed.to_string_lossy().to_string(),
+            LoggedItem {
+                origin: origin.to_string_lossy().to_string(),
+                time: now,
+            },
+        );
+    }
     if log.items.len() > MAX_LOGGED {
         let mut times: Vec<i64> = log.items.values().map(|i| i.time).collect();
         times.sort_unstable_by(|a, b| b.cmp(a));
@@ -263,32 +265,58 @@ fn find_new(
     original_name: &str,
     is_dir: bool,
 ) -> Option<PathBuf> {
-    let stem = Path::new(original_name)
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| original_name.to_string());
-    let fresh: Vec<PathBuf> = names_in(dir)
+    locate_all(dir, before, &[(OsStr::new(original_name), is_dir)])
+        .pop()
+        .flatten()
+}
+
+/// Where each `(name, is_dir)` item went in `dir`, judged by the entries
+/// that appeared since `before`: one with the item's own name, else the one
+/// look-alike that no other item could be (name clashes in the Trash get
+/// renamed: "a 2.txt", Finder: "a 10.21.33.txt"). `None` when it can't be
+/// told apart.
+fn locate_all(
+    dir: &Path,
+    before: &HashSet<OsString>,
+    items: &[(&OsStr, bool)],
+) -> Vec<Option<PathBuf>> {
+    let mut fresh: Vec<(OsString, bool)> = names_in(dir)
         .into_iter()
         .filter(|n| !before.contains(n))
-        .map(|n| dir.join(n))
-        .filter(|p| fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() == is_dir))
-        .collect();
-    let named = |p: &PathBuf| p.file_name().is_some_and(|n| n == original_name);
-    if let Some(exact) = fresh.iter().find(|p| named(p)) {
-        return Some(exact.clone());
-    }
-    // Name clashes in the Trash get renamed ("a 2.txt", Finder: "a 10.21.33.txt").
-    let similar: Vec<&PathBuf> = fresh
-        .iter()
-        .filter(|p| {
-            p.file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with(&stem))
+        .filter_map(|n| {
+            let is_dir = fs::symlink_metadata(dir.join(&n)).ok()?.is_dir();
+            Some((n, is_dir))
         })
         .collect();
-    match similar[..] {
-        [one] => Some(one.clone()),
-        _ => None,
+    // Exact names first, so a look-alike can't take another item's entry.
+    let mut found: Vec<Option<OsString>> = items
+        .iter()
+        .map(|&(name, is_dir)| {
+            let at = fresh.iter().position(|(n, d)| n == name && *d == is_dir)?;
+            Some(fresh.swap_remove(at).0)
+        })
+        .collect();
+    let look_alikes: Vec<Vec<usize>> = items
+        .iter()
+        .zip(&found)
+        .map(|(&(name, is_dir), found)| {
+            if found.is_some() {
+                return Vec::new();
+            }
+            let stem = Path::new(name).file_stem().unwrap_or(name).to_string_lossy();
+            (0..fresh.len())
+                .filter(|&i| fresh[i].1 == is_dir && fresh[i].0.to_string_lossy().starts_with(&*stem))
+                .collect()
+        })
+        .collect();
+    for (k, candidates) in look_alikes.iter().enumerate() {
+        if let [one] = candidates[..] {
+            if look_alikes.iter().filter(|c| c.contains(&one)).count() == 1 {
+                found[k] = Some(fresh[one].0.clone());
+            }
+        }
     }
+    found.into_iter().map(|f| f.map(|n| dir.join(n))).collect()
 }
 
 /// Move `path` to the Trash and return where it ended up, if that could be
@@ -309,6 +337,219 @@ pub fn trash_and_locate(path: &Path, home: &Path) -> Result<Option<PathBuf>, Str
         &name,
         meta.is_dir() && !meta.file_type().is_symlink(),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Trashing a batch
+// ---------------------------------------------------------------------------
+
+/// Most items trashed in one call. On macOS each call is one Finder request:
+/// one sound, and nothing can stop it once it runs. This bounds both the
+/// sounds of a huge selection and how long a Cancel waits.
+pub const TRASH_CHUNK: usize = 100;
+
+/// How often the items of a running call are checked, for progress.
+const WATCH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// What a batch Move to Trash says about one path: where it went, when that
+/// could be worked out (for Undo), or why it is still there. Paths a Cancel
+/// stopped before end with `progress::CANCELLED`.
+pub type TrashResult = Result<Option<PathBuf>, String>;
+
+struct Item {
+    index: usize,
+    path: PathBuf,
+    name: OsString,
+    is_dir: bool,
+}
+
+/// Items that go to the same Trash folder in one call.
+struct Chunk {
+    dir: PathBuf,
+    items: Vec<Item>,
+}
+
+/// Move `paths` to the Trash in as few calls as possible: one per Trash
+/// folder and `TRASH_CHUNK` items, so a selection is one Finder request (and
+/// one sound) on macOS instead of one per item. Progress counts each item as
+/// it leaves its folder; a Cancel stops before the next call. Returns one
+/// result per path, in order.
+pub fn trash_many(paths: &[PathBuf], home: &Path, progress: &Progress) -> Vec<TrashResult> {
+    let delete = |batch: &[PathBuf]| {
+        trash::delete_all(batch).map_err(|e| format!("Failed to move to Trash: {}", e))
+    };
+    trash_many_with(paths, |p| trash_dir_for(p, home), &delete, progress)
+}
+
+/// One Move to Trash over `paths`: each path `elsewhere` takes (a refusal,
+/// or another Trash such as Drive's) gets its result from there; the rest go
+/// to `local` together, as one batch. Returns one result per path (the
+/// place in the Trash as text, for the frontend) and the `(trashed, origin)`
+/// pairs of the local items that could be found, for the log.
+#[allow(clippy::type_complexity)]
+pub fn trash_routed(
+    paths: &[String],
+    mut elsewhere: impl FnMut(&str) -> Option<Result<Option<String>, String>>,
+    local: impl FnOnce(&[PathBuf]) -> Vec<TrashResult>,
+) -> (Vec<Result<Option<String>, String>>, Vec<(PathBuf, PathBuf)>) {
+    let mut results: Vec<Result<Option<String>, String>> = Vec::with_capacity(paths.len());
+    let mut origins = Vec::new();
+    let mut at = Vec::new();
+    for (i, path) in paths.iter().enumerate() {
+        match elsewhere(path) {
+            Some(result) => results.push(result),
+            None => {
+                results.push(Err(crate::progress::CANCELLED.into()));
+                origins.push(PathBuf::from(path));
+                at.push(i);
+            }
+        }
+    }
+    let mut moves = Vec::new();
+    for ((i, origin), result) in at.into_iter().zip(origins.iter()).zip(local(&origins)) {
+        if let Ok(Some(trashed)) = &result {
+            moves.push((trashed.clone(), origin.clone()));
+        }
+        results[i] = result.map(|place| place.map(|p| p.to_string_lossy().to_string()));
+    }
+    (results, moves)
+}
+
+/// `trash_many` with the Trash folder and the trashing itself passed in, so
+/// tests can stand in for Finder.
+fn trash_many_with(
+    paths: &[PathBuf],
+    dir_for: impl Fn(&Path) -> PathBuf,
+    delete: &(impl Fn(&[PathBuf]) -> Result<(), String> + Sync),
+    progress: &Progress,
+) -> Vec<TrashResult> {
+    let mut results: Vec<TrashResult> = paths
+        .iter()
+        .map(|_| Err(crate::progress::CANCELLED.into()))
+        .collect();
+    let mut items = Vec::new();
+    for (index, path) in paths.iter().enumerate() {
+        match fs::symlink_metadata(path) {
+            Ok(meta) => items.push(Item {
+                index,
+                path: path.clone(),
+                name: path.file_name().map(OsString::from).unwrap_or_default(),
+                is_dir: meta.is_dir(),
+            }),
+            Err(_) => results[index] = Err(format!("“{}” no longer exists", path.display())),
+        }
+    }
+    for chunk in chunks(items, dir_for) {
+        if progress.is_cancelled() {
+            break;
+        }
+        for (index, result) in trash_chunk(&chunk, delete, progress) {
+            results[index] = result;
+        }
+    }
+    results
+}
+
+/// Group `items` by Trash folder, in order, into calls of at most
+/// `TRASH_CHUNK` items with no two of the same name: those land in the Trash
+/// renamed, and apart they can still be told apart for Undo.
+fn chunks(items: Vec<Item>, dir_for: impl Fn(&Path) -> PathBuf) -> Vec<Chunk> {
+    let mut chunks: Vec<(Chunk, HashSet<OsString>)> = Vec::new();
+    for item in items {
+        let dir = dir_for(&item.path);
+        let open = chunks.iter_mut().find(|(chunk, names)| {
+            chunk.dir == dir && chunk.items.len() < TRASH_CHUNK && !names.contains(&item.name)
+        });
+        match open {
+            Some((chunk, names)) => {
+                names.insert(item.name.clone());
+                chunk.items.push(item);
+            }
+            None => {
+                let names = HashSet::from([item.name.clone()]);
+                chunks.push((Chunk { dir, items: vec![item] }, names));
+            }
+        }
+    }
+    chunks.into_iter().map(|(chunk, _)| chunk).collect()
+}
+
+/// Trash one chunk in one call and find where its items went. If the call
+/// fails, the items it left behind are tried one by one, so one bad item
+/// doesn't keep the others and each gets its own error.
+fn trash_chunk(
+    chunk: &Chunk,
+    delete: &(impl Fn(&[PathBuf]) -> Result<(), String> + Sync),
+    progress: &Progress,
+) -> Vec<(usize, TrashResult)> {
+    let before = names_in(&chunk.dir);
+    let outcome = delete_counted(&chunk.items, delete, progress);
+    let (gone, left): (Vec<&Item>, Vec<&Item>) = match &outcome {
+        Ok(()) => (chunk.items.iter().collect(), Vec::new()),
+        Err(_) => chunk
+            .items
+            .iter()
+            .partition(|item| fs::symlink_metadata(&item.path).is_err()),
+    };
+    let wanted: Vec<(&OsStr, bool)> = gone.iter().map(|i| (i.name.as_os_str(), i.is_dir)).collect();
+    let located = locate_all(&chunk.dir, &before, &wanted);
+    let mut results: Vec<(usize, TrashResult)> = gone
+        .iter()
+        .zip(located)
+        .map(|(item, place)| (item.index, Ok(place)))
+        .collect();
+    match (outcome, &left[..]) {
+        (Err(error), [only]) if chunk.items.len() == 1 => results.push((only.index, Err(error))),
+        _ => {
+            for item in left {
+                let result = match progress.check() {
+                    Err(cancelled) => Err(cancelled),
+                    Ok(()) => {
+                        let alone = Chunk {
+                            dir: chunk.dir.clone(),
+                            items: vec![Item { name: item.name.clone(), path: item.path.clone(), ..*item }],
+                        };
+                        trash_chunk(&alone, delete, progress).remove(0).1
+                    }
+                };
+                results.push((item.index, result));
+            }
+        }
+    }
+    results
+}
+
+/// Run `delete` on `items` while counting each one that leaves its folder.
+fn delete_counted(
+    items: &[Item],
+    delete: &(impl Fn(&[PathBuf]) -> Result<(), String> + Sync),
+    progress: &Progress,
+) -> Result<(), String> {
+    let paths: Vec<PathBuf> = items.iter().map(|item| item.path.clone()).collect();
+    let (running, ended) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let mut counted = vec![false; items.len()];
+            loop {
+                let last = !matches!(
+                    ended.recv_timeout(WATCH_EVERY),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                );
+                for (counted, item) in counted.iter_mut().zip(items) {
+                    if !*counted && fs::symlink_metadata(&item.path).is_err() {
+                        *counted = true;
+                        progress.add_item();
+                    }
+                }
+                if last {
+                    break;
+                }
+            }
+        });
+        let outcome = delete(&paths);
+        drop(running);
+        outcome
+    })
 }
 
 /// Where a trashed item came from: its `.trashinfo` sidecar first, then this
@@ -756,15 +997,14 @@ mod tests {
         let a = dir.path().join("a");
         fs::write(&a, "").unwrap();
         let mut log = TrashLog::default();
-        record(&mut log, &a, Path::new("/Users/me/a"), 100);
+        let gone = dir.path().join("gone");
         record(
             &mut log,
-            &dir.path().join("gone"),
-            Path::new("/Users/me/gone"),
-            101,
+            &[(a.clone(), "/Users/me/a".into()), (gone, "/Users/me/gone".into())],
+            100,
         );
         assert_eq!(log.items.len(), 2);
-        record(&mut log, &a, Path::new("/Users/me/a"), 102);
+        record(&mut log, &[(a.clone(), "/Users/me/a".into())], 102);
         assert_eq!(log.items.len(), 1, "the missing item is dropped");
 
         let info = info(
@@ -780,6 +1020,230 @@ mod tests {
                 trashed: 102
             }
         );
+    }
+
+    /// Stands in for Finder: moves each path into `trash` (renaming a clash
+    /// "name 2.ext"), stopping with an error at `fail_on`, and logs the calls.
+    fn fake_finder<'a>(
+        trash: &'a Path,
+        calls: &'a std::sync::Mutex<Vec<Vec<String>>>,
+        fail_on: Option<&'a str>,
+    ) -> impl Fn(&[PathBuf]) -> Result<(), String> + Sync + 'a {
+        move |paths: &[PathBuf]| {
+            let names = paths.iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string());
+            calls.lock().unwrap().push(names.collect());
+            for path in paths {
+                let name = path.file_name().unwrap().to_string_lossy().to_string();
+                if fail_on == Some(name.as_str()) {
+                    return Err(format!("Failed to move to Trash: {name} is locked"));
+                }
+                let mut target = trash.join(&name);
+                if target.exists() {
+                    let p = Path::new(&name);
+                    let stem = p.file_stem().unwrap().to_string_lossy();
+                    let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+                    target = trash.join(format!("{stem} 2{ext}"));
+                }
+                fs::rename(path, target).unwrap();
+            }
+            Ok(())
+        }
+    }
+
+    fn files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
+        fs::create_dir_all(dir).unwrap();
+        names
+            .iter()
+            .map(|name| {
+                let path = dir.join(name);
+                fs::write(&path, *name).unwrap();
+                path
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_batch_is_one_call_and_finds_every_item() {
+        let dir = tempdir().unwrap();
+        let trash = dir.path().join("Trash");
+        fs::create_dir(&trash).unwrap();
+        fs::write(trash.join("a.txt"), "older").unwrap();
+        let mut paths = files(&dir.path().join("src"), &["a.txt", "b.txt"]);
+        fs::create_dir(dir.path().join("src/folder")).unwrap();
+        paths.push(dir.path().join("src/folder"));
+        let calls = std::sync::Mutex::new(Vec::new());
+        let progress = Progress::default();
+
+        let results =
+            trash_many_with(&paths, |_| trash.clone(), &fake_finder(&trash, &calls, None), &progress);
+
+        assert_eq!(calls.lock().unwrap().len(), 1, "one call, so one Finder sound");
+        assert_eq!(
+            results,
+            vec![
+                Ok(Some(trash.join("a 2.txt"))),
+                Ok(Some(trash.join("b.txt"))),
+                Ok(Some(trash.join("folder"))),
+            ]
+        );
+        assert_eq!(progress.snapshot().items, 3);
+    }
+
+    #[test]
+    fn same_names_and_other_trash_folders_go_in_separate_calls() {
+        let dir = tempdir().unwrap();
+        let (home_trash, usb_trash) = (dir.path().join("Trash"), dir.path().join("usb/.Trashes"));
+        fs::create_dir(&home_trash).unwrap();
+        fs::create_dir_all(&usb_trash).unwrap();
+        let mut paths = files(&dir.path().join("one"), &["same.txt", "other.txt"]);
+        paths.extend(files(&dir.path().join("two"), &["same.txt"]));
+        paths.extend(files(&dir.path().join("usb"), &["stick.txt"]));
+        let dir_for = |p: &Path| {
+            if p.starts_with(dir.path().join("usb")) { usb_trash.clone() } else { home_trash.clone() }
+        };
+        let calls = std::sync::Mutex::new(Vec::new());
+        // One fake Finder per Trash folder would be truer; one is enough to
+        // count calls, so the USB item lands in the home "Trash" too.
+        let finder = fake_finder(&home_trash, &calls, None);
+
+        let results = trash_many_with(&paths, dir_for, &finder, &Progress::default());
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![vec!["same.txt", "other.txt"], vec!["same.txt"], vec!["stick.txt"]],
+        );
+        assert_eq!(results[0], Ok(Some(home_trash.join("same.txt"))));
+        assert_eq!(results[2], Ok(Some(home_trash.join("same 2.txt"))), "apart, both are found");
+        assert!(paths.iter().all(|p| !p.exists()));
+    }
+
+    #[test]
+    fn a_failed_call_retries_what_it_left_one_by_one() {
+        let dir = tempdir().unwrap();
+        let trash = dir.path().join("Trash");
+        fs::create_dir(&trash).unwrap();
+        let paths = files(&dir.path().join("src"), &["a.txt", "locked.txt", "c.txt"]);
+        let calls = std::sync::Mutex::new(Vec::new());
+        let progress = Progress::default();
+
+        let results = trash_many_with(
+            &paths,
+            |_| trash.clone(),
+            &fake_finder(&trash, &calls, Some("locked.txt")),
+            &progress,
+        );
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![vec!["a.txt", "locked.txt", "c.txt"], vec!["locked.txt"], vec!["c.txt"]],
+        );
+        assert_eq!(results[0], Ok(Some(trash.join("a.txt"))));
+        assert_eq!(results[1], Err("Failed to move to Trash: locked.txt is locked".into()));
+        assert_eq!(results[2], Ok(Some(trash.join("c.txt"))));
+        assert!(paths[1].exists(), "the locked item stays where it was");
+        assert_eq!(progress.snapshot().items, 2);
+    }
+
+    #[test]
+    fn a_vanished_item_is_reported_and_never_passed_on() {
+        let dir = tempdir().unwrap();
+        let trash = dir.path().join("Trash");
+        fs::create_dir(&trash).unwrap();
+        let mut paths = files(&dir.path().join("src"), &["here.txt"]);
+        paths.insert(0, dir.path().join("src/gone.txt"));
+        let calls = std::sync::Mutex::new(Vec::new());
+
+        let results =
+            trash_many_with(&paths, |_| trash.clone(), &fake_finder(&trash, &calls, None), &Progress::default());
+
+        assert!(matches!(&results[0], Err(e) if e.contains("no longer exists")));
+        assert_eq!(results[1], Ok(Some(trash.join("here.txt"))));
+        assert_eq!(*calls.lock().unwrap(), vec![vec!["here.txt"]]);
+    }
+
+    #[test]
+    fn cancel_stops_before_the_next_call() {
+        let dir = tempdir().unwrap();
+        let trash = dir.path().join("Trash");
+        fs::create_dir(&trash).unwrap();
+        let names: Vec<String> = (0..TRASH_CHUNK + 1).map(|i| format!("f{i}.txt")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let paths = files(&dir.path().join("src"), &names);
+        let calls = std::sync::Mutex::new(Vec::new());
+        let progress = Progress::default();
+        let finder = fake_finder(&trash, &calls, None);
+        // Cancelled while the first call runs: that call still finishes.
+        let cancelling = |batch: &[PathBuf]| {
+            progress.cancel();
+            finder(batch)
+        };
+
+        let results = trash_many_with(&paths, |_| trash.clone(), &cancelling, &progress);
+
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert!(results[..TRASH_CHUNK].iter().all(|r| matches!(r, Ok(Some(_)))));
+        assert_eq!(results[TRASH_CHUNK], Err(crate::progress::CANCELLED.into()));
+        assert!(paths[TRASH_CHUNK].exists());
+        assert_eq!(progress.snapshot().items, TRASH_CHUNK as u64);
+    }
+
+    #[test]
+    fn routed_batches_send_local_paths_together_and_keep_the_order() {
+        let paths: Vec<String> = ["/a", "gdrive://x", "/b", "share://s"].map(String::from).into();
+        let elsewhere = |path: &str| match path {
+            "gdrive://x" => Some(Ok(Some("gdrive://x".to_string()))),
+            "share://s" => Some(Err("Shared folders are read only.".to_string())),
+            _ => None,
+        };
+        let mut batches = Vec::new();
+        let local = |origins: &[PathBuf]| {
+            batches.push(origins.to_vec());
+            vec![Ok(Some(PathBuf::from("/Trash/a"))), Err("locked".to_string())]
+        };
+
+        let (results, moves) = trash_routed(&paths, elsewhere, local);
+
+        assert_eq!(batches, vec![vec![PathBuf::from("/a"), PathBuf::from("/b")]]);
+        assert_eq!(
+            results,
+            vec![
+                Ok(Some("/Trash/a".into())),
+                Ok(Some("gdrive://x".into())),
+                Err("locked".into()),
+                Err("Shared folders are read only.".into()),
+            ]
+        );
+        assert_eq!(moves, vec![(PathBuf::from("/Trash/a"), PathBuf::from("/a"))]);
+    }
+
+    #[test]
+    fn look_alikes_that_fit_two_items_stay_unknown() {
+        let dir = tempdir().unwrap();
+        let t = dir.path();
+        let before = names_in(t);
+        fs::write(t.join("a 2.txt"), "").unwrap();
+        fs::write(t.join("b.txt"), "").unwrap();
+        // "a 2.txt" could be either "a.txt" or "a.md": can't tell.
+        let items = [(OsStr::new("a.txt"), false), (OsStr::new("a.md"), false), (OsStr::new("b.txt"), false)];
+        assert_eq!(locate_all(t, &before, &items), vec![None, None, Some(t.join("b.txt"))]);
+    }
+
+    #[test]
+    fn trash_many_moves_items_to_the_real_trash() {
+        let dir = tempdir().unwrap();
+        let paths = files(dir.path(), &["batch-1.txt", "batch-2.txt"]);
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| dir.path().to_path_buf());
+
+        let results = trash_many(&paths, &home, &Progress::default());
+        assert!(paths.iter().all(|p| !p.exists()));
+        for (result, name) in results.into_iter().zip(["batch-1.txt", "batch-2.txt"]) {
+            if let Some(p) = result.unwrap() {
+                assert_eq!(fs::read_to_string(&p).unwrap(), name);
+                let _ = fs::remove_file(p);
+            }
+        }
     }
 
     #[test]

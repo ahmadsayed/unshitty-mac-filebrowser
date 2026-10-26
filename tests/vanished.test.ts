@@ -12,7 +12,7 @@ test("reloading a folder that was removed goes to its parent", async () => {
   await goTo(`${DOCS}/Projects`);
   expect(title()).toBe("Projects");
 
-  await invoke("trash_entry", { path: `${DOCS}/Projects` });
+  await invoke("trash_entries", { paths: [`${DOCS}/Projects`] });
   await key("F5");
   await settle(20);
 

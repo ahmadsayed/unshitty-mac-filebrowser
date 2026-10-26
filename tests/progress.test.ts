@@ -143,7 +143,7 @@ test("Cancel while preparing ends the paste at once, before measuring finishes",
   expect(names()).not.toContain("todo.txt");
 });
 
-test("a trash batch shows progress and Cancel keeps the rest", async () => {
+test("a trash batch is one call and shows its progress", async () => {
   await goTo(`${HOME}/Documents`);
   ops().hold();
   await select("Notes.md");
@@ -152,11 +152,30 @@ test("a trash batch shows progress and Cancel keeps the rest", async () => {
   await waitHeld();
   await showPopover();
   expect(rowTitle()).toBe("Moving 2 files to the Trash");
-  await click(rows()[0].querySelector(".operation-cancel")!);
+  expect(detail()).toBe("0 of 2 files");
   ops().release();
   await settle(20);
-  expect(names().filter((n) => n === "Notes.md" || n === "Budget 2026.xlsx")).toHaveLength(1);
-  expect(toasts().some((t) => t.includes("moved to trash"))).toBe(true);
+  expect(ops().held()).toBe(0);
+  expect(names()).not.toContain("Notes.md");
+  expect(names()).not.toContain("Budget 2026.xlsx");
+  expect(toasts().some((t) => t.includes("2 items moved to trash"))).toBe(true);
+});
+
+test("Cancel stops a big trash batch between chunks and keeps the rest", async () => {
+  await goTo("/big");
+  ops().hold();
+  await key("a", { mod: true });
+  await key("Delete");
+  await waitHeld();
+  await showPopover();
+  expect(rowTitle()).toBe("Moving 10000 files to the Trash");
+  ops().release();
+  await waitHeld();
+  expect(detail()).toBe("100 of 10000 files");
+  await click(rows()[0].querySelector(".operation-cancel")!);
+  await settle(20);
+  expect(await invoke<unknown[]>("list_dir", { path: "/big", showHidden: true })).toHaveLength(9_900);
+  expect(toasts().some((t) => t.includes("100 items moved to trash"))).toBe(true);
 });
 
 test("a finished item counts all its bytes, even when its last update arrives late", async () => {
