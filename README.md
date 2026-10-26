@@ -78,9 +78,9 @@ without installing the runtime dependencies. To install it for your user and
 make **File Browser** appear in GNOME search:
 
 ```sh
-# Download the 0.4.1 AppImage from the Releases page, then:
+# Download the 0.4.2 AppImage from the Releases page, then:
 chmod +x scripts/install-linux-appimage.sh
-scripts/install-linux-appimage.sh ~/Downloads/File.Browser_0.4.1_amd64.AppImage
+scripts/install-linux-appimage.sh ~/Downloads/File.Browser_0.4.2_amd64.AppImage
 ```
 
 The script installs the AppImage under `~/.local/bin`, extracts its icon, and

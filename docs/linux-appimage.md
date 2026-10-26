@@ -7,13 +7,13 @@ because it can use the system WebKitGTK.
 
 ## Install
 
-Download `File.Browser_0.4.1_amd64.AppImage` from the
-[v0.4.1 release](https://github.com/ahmadsayed/unshitty-mac-filebrowser/releases/tag/v0.4.1),
+Download `File.Browser_0.4.2_amd64.AppImage` from the
+[v0.4.2 release](https://github.com/ahmadsayed/unshitty-mac-filebrowser/releases/tag/v0.4.2),
 then run the installer from this repository:
 
 ```sh
 chmod +x scripts/install-linux-appimage.sh
-scripts/install-linux-appimage.sh ~/Downloads/File.Browser_0.4.1_amd64.AppImage
+scripts/install-linux-appimage.sh ~/Downloads/File.Browser_0.4.2_amd64.AppImage
 ```
 
 It installs:
@@ -34,7 +34,7 @@ application cache, log out and back in once.
 ```sh
 mkdir -p ~/.local/bin ~/.local/share/applications \
          ~/.local/share/icons/hicolor/512x512/apps
-install -m 755 ~/Downloads/File.Browser_0.4.1_amd64.AppImage \
+install -m 755 ~/Downloads/File.Browser_0.4.2_amd64.AppImage \
         ~/.local/bin/file-browser.AppImage
 ```
 
