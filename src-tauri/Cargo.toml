@@ -1,6 +1,6 @@
 [package]
 name = "filebrowser"
-version = "0.4.0"
+version = "0.4.1"
 description = "A GNOME Files-style file browser for macOS and Linux"
 authors = ["you"]
 edition = "2024"
