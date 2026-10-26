@@ -35,6 +35,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src-tauri/src/platform.rs` | Platform differences: volume roots per OS, `%XX` decoding, `file://` URIs, XDG data dir |
 | `src-tauri/src/thumbnails.rs` | Quick Look (`qlmanage`) thumbnails on macOS with an `image`-crate fallback everywhere, disk cache |
 | `src-tauri/src/trash_ops.rs` | Trash + locate (for Undo), restore, delete permanently, empty; macOS `~/.Trash` + Finder "Put Back" in `.DS_Store`, Linux `Trash/{files,info}` + `.trashinfo`, `trash_log.json` |
+| `src-tauri/src/downloads.rs` | Copies of opened SFTP/Drive/share files in the app cache: marks them as downloaded, prunes them after a week (edited copies go to the Trash) |
 | `src-tauri/src/recent.rs` | Recent: Spotlight (`mdfind`) on macOS, `recently-used.xbel` on Linux, merged with `recent.json` |
 | `src-tauri/src/config_store.rs` | `pins.json` / `starred.json` / `flags.json` in the app config dir, Full Disk Access check |
 | `src-tauri/src/versions/` | Keep Versions: `.versions/` ownership, SQLite index, content-addressed zstd objects, capture/watch/restore |
@@ -98,7 +99,7 @@ the DOM. Code that adds a mock command needs a case in
   `npm run build` must run first, because `generate_context!` reads `../dist`.
 - **Backend modules must still be testable without Tauri.** Copy `fs_ops.rs`,
   `config_store.rs`, `platform.rs`, `properties.rs`, `thumbnails.rs`, `recent.rs`,
-  `trash_ops.rs` and `versions/` into a scratch crate depending on `serde`,
+  `trash_ops.rs`, `downloads.rs` and `versions/` into a scratch crate depending on `serde`,
   `serde_json`, `trash`, `image` (same features as `src-tauri/Cargo.toml`),
   `rusqlite` (`default-features = false`, features `bundled` + `backup`), `zstd`,
   `blake3`, `notify` and `similar`, plus dev-dependency `tempfile`, strip the
@@ -141,6 +142,9 @@ the DOM. Code that adds a mock command needs a case in
   exceptions are Delete Permanently and Empty Trash in `trash_ops.rs`: they act
   only inside a Trash folder (refused elsewhere, with tests) and only after a
   confirmation dialog whose default response is Cancel.
+- Pruning the app cache deletes only what the app made and nobody changed
+  (thumbnails, opened version copies, unchanged downloads); a downloaded copy
+  that was edited goes to the Trash (`downloads.rs`).
 - Restoring never overwrites: an existing item at the original path is an error.
 - Anything that touches `.versions/` must prove ownership (the `meta.json` + DB
   `meta` marker, D14) before registering, clearing or trashing it. Object files

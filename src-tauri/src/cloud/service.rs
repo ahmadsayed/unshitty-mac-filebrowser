@@ -484,6 +484,7 @@ fn open_with(
     }
     std::fs::rename(&part, &dest)
         .map_err(|error| format!("Could not finish the Google Drive download: {error}"))?;
+    crate::downloads::mark(&dest);
     Ok(OpenTarget::File {
         path: dest.to_string_lossy().to_string(),
     })

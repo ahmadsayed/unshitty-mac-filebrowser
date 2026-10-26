@@ -365,6 +365,7 @@ impl ShareState {
             let _ = fs::remove_dir_all(&dir);
             return Err(error);
         }
+        crate::downloads::mark(&dest);
         Ok(dest.to_string_lossy().into_owned())
     }
 }

@@ -382,7 +382,10 @@ fn save_copy(
     let copied = std::fs::File::create(&dest)
         .and_then(|mut local| copy_counted(reader, &mut local, progress));
     match copied {
-        Ok(_) => Ok(dest.to_string_lossy().to_string()),
+        Ok(_) => {
+            crate::downloads::mark(&dest);
+            Ok(dest.to_string_lossy().to_string())
+        }
         Err(e) => {
             let _ = std::fs::remove_dir_all(&dir);
             Err(if is_cancel(&e) {
@@ -480,6 +483,9 @@ mod tests {
         let saved = save_copy(&mut &b"hello"[..], cache.path(), "a.txt", &progress).unwrap();
         assert_eq!(std::fs::read(&saved).unwrap(), b"hello");
         assert!(saved.starts_with(cache.path().to_str().unwrap()));
+        // Remembered as downloaded, so pruning can tell an edited copy.
+        let mark = std::path::Path::new(&saved).with_file_name(".a.txt.downloaded");
+        assert!(mark.exists());
         assert_eq!(progress.snapshot().bytes, 5);
     }
 

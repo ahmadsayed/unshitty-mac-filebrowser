@@ -1,6 +1,7 @@
 mod archive;
 mod cloud;
 mod config_store;
+mod downloads;
 mod fs_ops;
 mod platform;
 mod progress;
@@ -1512,6 +1513,17 @@ pub fn run() {
                 home,
                 cache_dir.join("sftp"),
             ));
+            // Drop copies of remote files nobody has touched for a week.
+            let download_dirs: Vec<PathBuf> = downloads::DIRS
+                .iter()
+                .map(|dir| cache_dir.join(dir))
+                .collect();
+            std::thread::spawn(move || {
+                let trash = |path: &std::path::Path| trash::delete(path).map_err(|e| e.to_string());
+                for dir in &download_dirs {
+                    downloads::prune(dir, std::time::SystemTime::now(), downloads::MAX_AGE, &trash);
+                }
+            });
             app.manage(share::state::ShareState::new(
                 config_dir.clone(),
                 cache_dir,
