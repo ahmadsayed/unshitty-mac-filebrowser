@@ -378,6 +378,11 @@ async fn list_apps() -> Result<Vec<platform::AppChoice>, String> {
 }
 
 #[tauri::command]
+async fn open_file(path: String) -> Result<(), String> {
+    blocking(move || platform::open_default(&path)).await?
+}
+
+#[tauri::command]
 async fn open_with(path: String, app: String) -> Result<(), String> {
     blocking(move || platform::open_with(&path, &app)).await?
 }
@@ -1509,6 +1514,7 @@ pub fn run() {
             compress_archive,
             new_window,
             list_apps,
+            open_file,
             open_with,
             preview_text,
             rename_many,

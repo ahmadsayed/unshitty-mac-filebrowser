@@ -89,6 +89,12 @@ test("platform answers: Full Disk Access, volumes, Trash, path info and existenc
   expect(await invoke("path_exists", { path: "/nope" })).toBe(false);
 });
 
+test("open_file accepts local and downloaded files and reports missing handlers", async () => {
+  expect(await invoke("open_file", { path: `${HOME}/Documents/Versioned/image.png` })).toBeUndefined();
+  expect(await invoke("open_file", { path: "/tmp/opencode/mock-drive/photo.png" })).toBeUndefined();
+  await expect(invoke("open_file", { path: `${HOME}/song.mp3` })).rejects.toMatch(/No application/);
+});
+
 test("thumbnails are empty for files without a preview", async () => {
   const buf = await invoke<ArrayBuffer>("thumbnail", { path: `${HOME}/main.rs`, size: 64 });
   expect(buf.byteLength).toBe(0);
