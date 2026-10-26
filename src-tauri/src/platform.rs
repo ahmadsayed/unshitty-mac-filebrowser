@@ -198,6 +198,29 @@ fn desktop_app(path: &Path) -> Option<AppChoice> {
     })
 }
 
+/// Launch `path` with the default application for its type.
+pub fn open_default(path: &str) -> Result<(), String> {
+    fs::metadata(path).map_err(|e| e.to_string())?;
+    let mut command = default_open_command(path)?;
+    spawn_helper(&mut command)
+        .map(|_| ())
+        .map_err(|e| format!("Could not open with the default application: {e}"))
+}
+
+fn default_open_command(path: &str) -> Result<std::process::Command, String> {
+    let mut command = if IS_MACOS {
+        std::process::Command::new("open")
+    } else if cfg!(target_os = "linux") {
+        let mut command = std::process::Command::new("gio");
+        command.arg("open");
+        command
+    } else {
+        return Err("Opening files is not supported on this platform.".into());
+    };
+    command.arg(path);
+    Ok(command)
+}
+
 /// Launch `path` with the chosen application.
 pub fn open_with(path: &str, app: &str) -> Result<(), String> {
     if IS_MACOS {
@@ -463,6 +486,32 @@ mod tests {
         fs::write(dir.path().join("readme.txt"), "x").unwrap();
         let names: Vec<String> = apps_in_dir(dir.path()).into_iter().map(|app| app.name).collect();
         assert_eq!(names, ["Editor"]);
+    }
+
+    #[test]
+    fn default_open_uses_the_platform_mime_handler() {
+        let command = default_open_command("/tmp/photo with spaces.png").unwrap();
+        let args: Vec<_> = command.get_args().collect();
+        if IS_MACOS {
+            assert_eq!(command.get_program(), "open");
+            assert_eq!(args, [std::ffi::OsStr::new("/tmp/photo with spaces.png")]);
+        } else if cfg!(target_os = "linux") {
+            assert_eq!(command.get_program(), "gio");
+            assert_eq!(
+                args,
+                [
+                    std::ffi::OsStr::new("open"),
+                    std::ffi::OsStr::new("/tmp/photo with spaces.png")
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn default_open_rejects_a_missing_file() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing.png");
+        assert!(open_default(missing.to_str().unwrap()).is_err());
     }
 
     #[test]

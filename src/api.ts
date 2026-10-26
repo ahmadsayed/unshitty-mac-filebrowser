@@ -1,6 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { ProgressUpdate } from "./operations";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 export interface Entry {
   name: string;
@@ -434,19 +434,21 @@ export async function starredFiles(showHidden: boolean): Promise<Entry[]> {
   return invoke<Entry[]>("starred_files", { showHidden });
 }
 
-/** Open a file (or an .app bundle) with its default macOS application. */
+/** Open a local file or downloaded remote file with its default application. */
 export async function openFile(path: string, tracked?: Tracked): Promise<void> {
   if (path.startsWith("gdrive://")) {
     const target = await invoke<DriveOpenTarget>("drive_open", { path, ...trackedArgs(tracked) });
-    return target.kind === "url" ? openUrl(target.url) : openPath(target.path);
+    return target.kind === "url" ? openUrl(target.url) : invoke<void>("open_file", { path: target.path });
   }
   if (path.startsWith("share://")) {
-    return openPath(await invoke<string>("share_open", { path, ...trackedArgs(tracked) }));
+    const localPath = await invoke<string>("share_open", { path, ...trackedArgs(tracked) });
+    return invoke<void>("open_file", { path: localPath });
   }
   if (path.startsWith("sftp://")) {
-    return openPath(await invoke<string>("sftp_open", { path, ...trackedArgs(tracked) }));
+    const localPath = await invoke<string>("sftp_open", { path, ...trackedArgs(tracked) });
+    return invoke<void>("open_file", { path: localPath });
   }
-  return openPath(path);
+  return invoke<void>("open_file", { path });
 }
 
 export type DriveOpenTarget =

@@ -1493,6 +1493,12 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     { name: "Preview", id: "/Applications/Preview.app" },
     { name: "Visual Studio Code", id: "/Applications/Visual Studio Code.app" },
   ],
+  open_file: (a) => {
+    const path = str(a, "path");
+    if (path.endsWith(".mp3")) throw "No application knows how to open this file";
+    console.log("mock open_file", path);
+    return undefined;
+  },
   open_with: (a) => {
     if (!lookup(str(a, "path"))) throw "No such file or directory";
     return undefined;

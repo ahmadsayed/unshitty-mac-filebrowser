@@ -39,7 +39,7 @@ A standalone desktop application for macOS that provides:
 4. **File operations**
    - Copy, cut, paste, rename, delete-to-Trash, create new folder.
    - Available via right-click context menu and keyboard shortcuts.
-5. **Open files** in their default macOS application (double-click a file).
+5. **Open files** in their default application (double-click a file).
 6. **Show hidden files** toggle (dotfiles).
 
 ## Non-goals (v1)
@@ -97,7 +97,8 @@ chose:
   awkward — builder's discretion.)
 - **Delete-to-Trash**: use a maintained Rust crate (e.g. `trash`) rather than
   shelling out, so deletes are recoverable via macOS Trash.
-- **Open-in-default-app**: use the Tauri opener / macOS `open` mechanism.
+- **Open-in-default-app**: use macOS `open`; on Linux use `gio open` so the
+  desktop's MIME default is respected rather than a browser fallback.
 - **Styling**: approximate the look of **modern GNOME Files (GNOME 48–51)**
   with **libadwaita** styling, NOT classic Nautilus. (Revised 2026-10-23 after
   the user clarified the target and approved a mockup — see
