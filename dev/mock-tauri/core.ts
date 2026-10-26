@@ -1363,6 +1363,10 @@ const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
 };
 
 /** Every command the app calls, by name. */
+/** The window the header bar buttons act on; tests read `actions`. */
+const mockWindow = { maximized: false, actions: [] as string[] };
+(globalThis as Record<string, unknown>).__mockWindow = mockWindow;
+
 const COMMANDS: Record<string, (args: Args) => unknown> = {
   list_dir: (a) => {
     const path = str(a, "path");
@@ -1493,6 +1497,22 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     { name: "Preview", id: "/Applications/Preview.app" },
     { name: "Visual Studio Code", id: "/Applications/Visual Studio Code.app" },
   ],
+  // A Mac draws its own window buttons. Set __mockButtonLayout (GNOME's
+  // button-layout, e.g. "close,minimize:maximize") before boot to try others.
+  window_buttons: () => {
+    const globals = globalThis as { __mockButtonLayout?: string };
+    const layout = globals.__mockButtonLayout ?? (/Mac/.test(navigator.userAgent) ? "" : "appmenu:close");
+    const [start, end = ""] = layout.split(":");
+    const pick = (side: string) => side.split(",").filter((name) => ["minimize", "maximize", "close"].includes(name));
+    return { start: pick(start), end: pick(end) };
+  },
+  window_control: (a) => {
+    const action = str(a, "action");
+    if (!["minimize", "maximize", "close", "state"].includes(action)) throw `Unknown window action “${action}”`;
+    if (action === "maximize") mockWindow.maximized = !mockWindow.maximized;
+    if (action !== "state") mockWindow.actions.push(action);
+    return mockWindow.maximized;
+  },
   open_file: (a) => {
     const path = str(a, "path");
     // Downloaded remote files and opened versions live outside the fake filesystem.

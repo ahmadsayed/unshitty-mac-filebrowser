@@ -330,6 +330,83 @@ fn launched(result: Launch) -> Result<(), String> {
     }
 }
 
+/// The window buttons the header bars draw, on each side. Empty on macOS,
+/// where the system draws the traffic lights over the window.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WindowButtons {
+    pub start: Vec<String>,
+    pub end: Vec<String>,
+}
+
+/// GNOME's default `button-layout`: only a close button, on the right.
+const DEFAULT_BUTTON_LAYOUT: &str = "appmenu:close";
+
+/// Parse a GNOME `button-layout` such as `'close,minimize:'` or
+/// `appmenu:minimize,maximize,close`: buttons before the colon go at the
+/// start, the rest at the end. Entries other than the three window buttons
+/// (`appmenu`, `icon`, `spacer`) are dropped.
+pub fn parse_button_layout(layout: &str) -> WindowButtons {
+    let layout = layout.trim().trim_matches('\'');
+    let (start, end) = layout.split_once(':').unwrap_or((layout, ""));
+    let buttons = |side: &str| {
+        side.split(',')
+            .map(str::trim)
+            .filter(|name| matches!(*name, "minimize" | "maximize" | "close"))
+            .map(String::from)
+            .collect()
+    };
+    WindowButtons {
+        start: buttons(start),
+        end: buttons(end),
+    }
+}
+
+/// The window buttons the user chose in GNOME, or GNOME's default when the
+/// setting can't be read (no `gsettings`, another desktop).
+pub fn window_buttons() -> WindowButtons {
+    if IS_MACOS {
+        return WindowButtons {
+            start: Vec::new(),
+            end: Vec::new(),
+        };
+    }
+    let output = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.wm.preferences", "button-layout"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let layout = match &output {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout).into_owned(),
+        _ => DEFAULT_BUTTON_LAYOUT.to_string(),
+    };
+    parse_button_layout(&layout)
+}
+
+/// What the header bar's window buttons need from a window; `lib.rs`
+/// implements it for Tauri's window.
+pub trait WindowOps {
+    fn minimize(&self) -> Result<(), String>;
+    fn maximize(&self) -> Result<(), String>;
+    fn unmaximize(&self) -> Result<(), String>;
+    fn close(&self) -> Result<(), String>;
+    fn is_maximized(&self) -> Result<bool, String>;
+}
+
+/// Run a window button: `minimize`, `maximize` (which toggles) or `close`;
+/// `state` changes nothing. Answers whether the window is now maximized, so
+/// the button can show Restore.
+pub fn window_control(window: &impl WindowOps, action: &str) -> Result<bool, String> {
+    match action {
+        "minimize" => window.minimize()?,
+        "maximize" if window.is_maximized()? => window.unmaximize()?,
+        "maximize" => window.maximize()?,
+        "close" => window.close()?,
+        "state" => {}
+        _ => return Err(format!("Unknown window action “{action}”")),
+    }
+    window.is_maximized()
+}
+
 /// Folders that hold mounted volumes on this platform.
 ///
 /// macOS puts them all in `/Volumes`. Linux has no single place: udisks2
@@ -620,6 +697,84 @@ mod tests {
         }
         assert!(marker.exists());
         assert!(spawn_detached(&mut Command::new(dir.path().join("missing"))).is_err());
+    }
+
+    #[test]
+    fn button_layout_splits_at_the_colon_and_keeps_window_buttons() {
+        let buttons = |start: &[&str], end: &[&str]| WindowButtons {
+            start: start.iter().map(|s| s.to_string()).collect(),
+            end: end.iter().map(|s| s.to_string()).collect(),
+        };
+        // gsettings prints the value quoted, with a newline.
+        assert_eq!(parse_button_layout("'appmenu:close'\n"), buttons(&[], &["close"]));
+        assert_eq!(
+            parse_button_layout("appmenu:minimize,maximize,close"),
+            buttons(&[], &["minimize", "maximize", "close"])
+        );
+        assert_eq!(
+            parse_button_layout("close,minimize,maximize:icon"),
+            buttons(&["close", "minimize", "maximize"], &[])
+        );
+        // No colon: everything is at the start, as in GTK.
+        assert_eq!(parse_button_layout("close"), buttons(&["close"], &[]));
+        assert_eq!(parse_button_layout(""), buttons(&[], &[]));
+        assert_eq!(
+            parse_button_layout(DEFAULT_BUTTON_LAYOUT),
+            buttons(&[], &["close"])
+        );
+    }
+
+    /// A window that records what it was asked to do.
+    #[derive(Default)]
+    struct FakeWindow {
+        maximized: std::cell::Cell<bool>,
+        calls: std::cell::RefCell<Vec<&'static str>>,
+    }
+
+    impl WindowOps for FakeWindow {
+        fn minimize(&self) -> Result<(), String> {
+            self.calls.borrow_mut().push("minimize");
+            Ok(())
+        }
+        fn maximize(&self) -> Result<(), String> {
+            self.maximized.set(true);
+            self.calls.borrow_mut().push("maximize");
+            Ok(())
+        }
+        fn unmaximize(&self) -> Result<(), String> {
+            self.maximized.set(false);
+            self.calls.borrow_mut().push("unmaximize");
+            Ok(())
+        }
+        fn close(&self) -> Result<(), String> {
+            self.calls.borrow_mut().push("close");
+            Ok(())
+        }
+        fn is_maximized(&self) -> Result<bool, String> {
+            Ok(self.maximized.get())
+        }
+    }
+
+    #[test]
+    fn window_control_toggles_maximize_and_reports_the_state() {
+        let window = FakeWindow::default();
+        assert_eq!(window_control(&window, "state"), Ok(false));
+        assert_eq!(window_control(&window, "maximize"), Ok(true));
+        assert_eq!(window_control(&window, "maximize"), Ok(false));
+        assert_eq!(window_control(&window, "minimize"), Ok(false));
+        assert_eq!(window_control(&window, "close"), Ok(false));
+        assert!(window_control(&window, "fullscreen").is_err());
+        assert_eq!(
+            *window.calls.borrow(),
+            ["maximize", "unmaximize", "minimize", "close"]
+        );
+    }
+
+    #[test]
+    fn window_buttons_are_left_to_macos_itself() {
+        if IS_MACOS {
+            assert_eq!(window_buttons(), parse_button_layout(""));
+        }
     }
 
     #[test]

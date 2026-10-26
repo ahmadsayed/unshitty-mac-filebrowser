@@ -271,6 +271,37 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   flex-shrink: 0;
 }
 
+/* Window buttons on Linux (GNOME's button-layout): a round 24 px button
+   inside a 34 px target, like libadwaita's window controls. */
+.window-controls {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.window-controls-end { margin-left: 3px; }
+.window-controls-start { margin-right: 3px; }
+.window-control {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: inherit;
+}
+.window-control .sym {
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+  border-radius: 50%;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  transition: background-color 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+.window-control:hover .sym { background: color-mix(in srgb, currentColor 15%, transparent); }
+.window-control:active .sym { background: color-mix(in srgb, currentColor 30%, transparent); }
+
 .sidebar-title {
   flex: 1;
   text-align: center;

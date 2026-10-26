@@ -350,6 +350,35 @@ async fn compress_archive(paths: Vec<String>, dest: String, format: String) -> R
 static WINDOW_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[tauri::command]
+async fn window_buttons() -> Result<platform::WindowButtons, String> {
+    blocking(platform::window_buttons).await
+}
+
+/// The header bar's window buttons (see `platform::window_control`).
+#[tauri::command]
+fn window_control(window: tauri::WebviewWindow, action: String) -> Result<bool, String> {
+    platform::window_control(&window, &action)
+}
+
+impl platform::WindowOps for tauri::WebviewWindow {
+    fn minimize(&self) -> Result<(), String> {
+        tauri::WebviewWindow::minimize(self).map_err(|e| e.to_string())
+    }
+    fn maximize(&self) -> Result<(), String> {
+        tauri::WebviewWindow::maximize(self).map_err(|e| e.to_string())
+    }
+    fn unmaximize(&self) -> Result<(), String> {
+        tauri::WebviewWindow::unmaximize(self).map_err(|e| e.to_string())
+    }
+    fn close(&self) -> Result<(), String> {
+        tauri::WebviewWindow::close(self).map_err(|e| e.to_string())
+    }
+    fn is_maximized(&self) -> Result<bool, String> {
+        tauri::WebviewWindow::is_maximized(self).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
 async fn new_window(app: tauri::AppHandle, path: Option<String>) -> Result<(), String> {
     let label = format!("files-{}", WINDOW_SEQ.fetch_add(1, Ordering::Relaxed));
     let url = match path.filter(|path| !path.is_empty()) {
@@ -366,6 +395,8 @@ async fn new_window(app: tauri::AppHandle, path: Option<String>) -> Result<(), S
         .title("Files")
         .inner_size(1100.0, 720.0)
         .min_inner_size(640.0, 420.0)
+        // On Linux the header bars are the title bar (see tauri.linux.conf.json).
+        .decorations(!cfg!(target_os = "linux"))
         .focused(true)
         .build()
         .map(|_| ())
@@ -1513,6 +1544,8 @@ pub fn run() {
             extract_archive,
             compress_archive,
             new_window,
+            window_buttons,
+            window_control,
             list_apps,
             open_file,
             open_with,

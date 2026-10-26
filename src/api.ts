@@ -107,6 +107,23 @@ export async function sftpOpen(path: string): Promise<string> {
   return invoke<string>("sftp_open", { path });
 }
 
+/** Window buttons for each end of the header bars; none on macOS. */
+export interface WindowButtons {
+  start: string[];
+  end: string[];
+}
+
+/** The window buttons the user chose in GNOME (`button-layout`). */
+export async function windowButtons(): Promise<WindowButtons> {
+  return invoke<WindowButtons>("window_buttons");
+}
+
+/** Minimize, toggle maximize or close this window (`state` only asks).
+ * Answers whether the window is maximized. */
+export async function windowControl(action: "minimize" | "maximize" | "close" | "state"): Promise<boolean> {
+  return invoke<boolean>("window_control", { action });
+}
+
 /** Open another File Browser window at `path` (home when omitted). */
 export async function newWindow(path?: string): Promise<void> {
   return invoke<void>("new_window", { path: path ?? null });

@@ -175,7 +175,7 @@ exact build: after rebuilding, toggle the permission off and on again.
 - No Nautilus extensions; no 7z, rar, deb, rpm or pkg archive support.
 - Google Drive: no Shared Drives, no "Shared with me", no Drive Trash view, no Drive-wide search. Google Docs/Sheets/Slides can't be exported to a local folder. Edits to a locally-opened Drive snapshot are not uploaded.
 - Keep Versions: history is local only (not a backup); changes made while the app is closed may be missed; one instance per versioned folder; no "folder at time T" view.
-- Linux: thumbnails are images only (no Quick Look); Recent reads `recently-used.xbel` only; window uses the desktop's native title bar.
+- Linux: thumbnails are images only (no Quick Look); Recent reads `recently-used.xbel` only.
 
 ## Credits and thanks
 

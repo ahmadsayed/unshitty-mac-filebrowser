@@ -5,6 +5,8 @@ import {
   listDir, searchDir, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
   extractArchive,
   newWindow,
+  windowButtons,
+  windowControl,
   createSymlink,
   createFile,
   listTemplates,
@@ -5064,6 +5066,53 @@ async function buildSidebar(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Window buttons: on Linux the header bars are the title bar
+// ---------------------------------------------------------------------------
+
+type WindowAction = "minimize" | "maximize" | "close";
+
+const WINDOW_BUTTON_LABELS: Record<WindowAction, string> = { minimize: "Minimize", maximize: "Maximize", close: "Close" };
+
+/** Draw the buttons GNOME's `button-layout` asks for: the start ones in the
+ * sidebar header, the end ones in the content header bar. macOS gets none. */
+async function setupWindowButtons(): Promise<void> {
+  const buttons = await windowButtons().catch(() => ({ start: [], end: [] }));
+  placeWindowButtons($(".sidebar-header"), buttons.start, "start");
+  placeWindowButtons($(".headerbar"), buttons.end, "end");
+  if (!document.querySelector(".window-maximize")) return;
+  const sync = () => windowControl("state").then(showMaximized, () => {});
+  window.addEventListener("resize", sync);
+  sync();
+}
+
+function placeWindowButtons(bar: HTMLElement, names: string[], side: "start" | "end"): void {
+  const actions = names.filter((name): name is WindowAction => name in WINDOW_BUTTON_LABELS);
+  if (!actions.length) return;
+  const box = document.createElement("div");
+  box.className = `window-controls window-controls-${side}`;
+  for (const action of actions) {
+    const btn = document.createElement("button");
+    btn.className = `window-control window-${action}`;
+    btn.title = WINDOW_BUTTON_LABELS[action];
+    btn.setAttribute("aria-label", btn.title);
+    btn.innerHTML = sym(`window-${action}`);
+    btn.addEventListener("click", () => void windowControl(action).then(showMaximized, () => {}));
+    box.append(btn);
+  }
+  if (side === "start") bar.prepend(box);
+  else bar.append(box);
+}
+
+/** Maximize turns into Restore while the window is maximized. */
+function showMaximized(maximized: boolean): void {
+  for (const btn of document.querySelectorAll<HTMLElement>(".window-maximize")) {
+    btn.title = maximized ? "Restore" : "Maximize";
+    btn.setAttribute("aria-label", btn.title);
+    btn.innerHTML = sym(maximized ? "window-restore" : "window-maximize");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Initialise
 // ---------------------------------------------------------------------------
 
@@ -5071,6 +5120,7 @@ async function init(): Promise<void> {
   loadPrefs();
   installIconSprite();
   if (isMac) document.documentElement.classList.add("platform-mac");
+  void setupWindowButtons();
 
   viewEl = $("#view");
   scrollEl = $("#view-scroll");

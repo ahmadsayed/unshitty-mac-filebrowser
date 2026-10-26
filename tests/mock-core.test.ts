@@ -96,6 +96,18 @@ test("open_file accepts local and downloaded files and reports missing handlers"
   await expect(invoke("open_file", { path: `${HOME}/nope.png` })).rejects.toMatch(/No such file/);
 });
 
+test("window buttons follow the button layout; window_control toggles maximize", async () => {
+  const globals = globalThis as { __mockButtonLayout?: string };
+  expect(await invoke("window_buttons")).toEqual({ start: [], end: [] }); // a Mac
+  globals.__mockButtonLayout = "close,icon:minimize,maximize";
+  expect(await invoke("window_buttons")).toEqual({ start: ["close"], end: ["minimize", "maximize"] });
+  delete globals.__mockButtonLayout;
+  expect(await invoke("window_control", { action: "state" })).toBe(false);
+  expect(await invoke("window_control", { action: "maximize" })).toBe(true);
+  expect(await invoke("window_control", { action: "maximize" })).toBe(false);
+  await expect(invoke("window_control", { action: "fullscreen" })).rejects.toMatch(/Unknown/);
+});
+
 test("thumbnails are empty for files without a preview", async () => {
   const buf = await invoke<ArrayBuffer>("thumbnail", { path: `${HOME}/main.rs`, size: 64 });
   expect(buf.byteLength).toBe(0);
