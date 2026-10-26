@@ -198,13 +198,72 @@ fn desktop_app(path: &Path) -> Option<AppChoice> {
     })
 }
 
+/// How running a launcher (`open`, `gio open`, …) went.
+#[derive(Debug, PartialEq)]
+enum Launch {
+    Opened,
+    /// The launcher program isn't installed.
+    Missing,
+    Failed(String),
+}
+
+/// Run a launcher and wait for it. `open`, `gio open`, `gio launch` and
+/// `gtk-launch` exit as soon as the app has been asked to open the file, so
+/// waiting is short, reaps the process and turns a failure (say, no app for
+/// this type) into its own message.
+fn launch(command: &mut std::process::Command) -> Launch {
+    use std::process::Stdio;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let child = match spawn_helper(command) {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Launch::Missing,
+        Err(error) => return Launch::Failed(error.to_string()),
+    };
+    match child.wait_with_output() {
+        Ok(output) if output.status.success() => Launch::Opened,
+        Ok(output) => Launch::Failed(launcher_message(&output.stderr, output.status)),
+        Err(error) => Launch::Failed(error.to_string()),
+    }
+}
+
+/// A launcher's error output, without the `gio: file:///…: ` prefix gio puts
+/// before the reason.
+fn launcher_message(stderr: &[u8], status: std::process::ExitStatus) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let line = text.lines().rev().find(|line| !line.trim().is_empty());
+    let Some(line) = line.map(str::trim) else {
+        return format!("The launcher failed ({status}).");
+    };
+    line.strip_prefix("gio: ")
+        .and_then(|rest| rest.split_once(": "))
+        .map_or(line, |(_, reason)| reason)
+        .to_string()
+}
+
+/// Start a launcher that may not exit until the app does (`xdg-open` runs
+/// some apps in the foreground) and reap it on a thread of its own.
+fn spawn_detached(command: &mut std::process::Command) -> Result<(), String> {
+    let mut child = spawn_helper(command).map_err(|e| e.to_string())?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
 /// Launch `path` with the default application for its type.
 pub fn open_default(path: &str) -> Result<(), String> {
     fs::metadata(path).map_err(|e| e.to_string())?;
-    let mut command = default_open_command(path)?;
-    spawn_helper(&mut command)
-        .map(|_| ())
-        .map_err(|e| format!("Could not open with the default application: {e}"))
+    let opened = match launch(&mut default_open_command(path)?) {
+        Launch::Opened => Ok(()),
+        Launch::Failed(message) => Err(message),
+        // Not every Linux desktop installs GLib's `gio` tool.
+        Launch::Missing if !IS_MACOS => {
+            spawn_detached(std::process::Command::new("xdg-open").arg(path))
+        }
+        Launch::Missing => Err("The open command is missing.".into()),
+    };
+    opened.map_err(|e| format!("Could not open with the default application: {e}"))
 }
 
 fn default_open_command(path: &str) -> Result<std::process::Command, String> {
@@ -237,13 +296,9 @@ fn mac_open_with(path: &str, app: &str) -> Result<(), String> {
     if !app_path.is_dir() {
         return Err("That application is no longer available.".into());
     }
-    std::process::Command::new("open")
-        .arg("-a")
-        .arg(app_path)
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Could not open with that application: {e}"))
+    let mut command = std::process::Command::new("open");
+    command.arg("-a").arg(app_path).arg(path);
+    launched(launch(&mut command))
 }
 
 fn linux_open_with(path: &str, app: &str) -> Result<(), String> {
@@ -251,25 +306,28 @@ fn linux_open_with(path: &str, app: &str) -> Result<(), String> {
     if !desktop.is_file() {
         return Err("That application is no longer available.".into());
     }
-    if std::process::Command::new("gio")
-        .arg("launch")
-        .arg(desktop)
-        .arg(path)
-        .spawn()
-        .is_ok()
-    {
+    let mut gio = std::process::Command::new("gio");
+    gio.arg("launch").arg(desktop).arg(path);
+    // `gio launch` is newer than `gtk-launch` (GLib 2.68): try the other one
+    // when it is missing or fails.
+    if launch(&mut gio) == Launch::Opened {
         return Ok(());
     }
     let id = desktop
         .file_name()
         .map(|name| name.to_string_lossy().trim_end_matches(".desktop").to_string())
         .unwrap_or_default();
-    std::process::Command::new("gtk-launch")
-        .arg(id)
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Could not open with that application: {e}"))
+    let mut gtk = std::process::Command::new("gtk-launch");
+    gtk.arg(id).arg(path);
+    launched(launch(&mut gtk))
+}
+
+fn launched(result: Launch) -> Result<(), String> {
+    match result {
+        Launch::Opened => Ok(()),
+        Launch::Missing => Err("Could not open with that application: the launcher is missing.".into()),
+        Launch::Failed(message) => Err(format!("Could not open with that application: {message}")),
+    }
 }
 
 /// Folders that hold mounted volumes on this platform.
@@ -505,6 +563,63 @@ mod tests {
                 ]
             );
         }
+    }
+
+    /// A stand-in launcher: a shell script with `body`, made executable.
+    #[cfg(unix)]
+    fn fake_launcher(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("launcher");
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_launcher_reports_success_its_error_or_that_it_is_missing() {
+        use std::process::Command;
+        let dir = tempdir().unwrap();
+        let ok = fake_launcher(dir.path(), "exit 0");
+        assert_eq!(launch(&mut Command::new(&ok)), Launch::Opened);
+
+        let fail = fake_launcher(
+            dir.path(),
+            r#"echo "gio: file:///tmp/a.xyz: No application is registered as handling this file" >&2; exit 2"#,
+        );
+        assert_eq!(
+            launch(&mut Command::new(&fail)),
+            Launch::Failed("No application is registered as handling this file".into())
+        );
+
+        let silent = fake_launcher(dir.path(), "exit 3");
+        assert!(matches!(
+            launch(&mut Command::new(&silent)),
+            Launch::Failed(message) if message.starts_with("The launcher failed")
+        ));
+
+        assert_eq!(
+            launch(&mut Command::new(dir.path().join("no-such-launcher"))),
+            Launch::Missing
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_detached_launcher_is_reaped_after_it_exits() {
+        use std::process::Command;
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let script = fake_launcher(dir.path(), &format!("touch '{}'", marker.display()));
+        spawn_detached(&mut Command::new(&script)).unwrap();
+        for _ in 0..200 {
+            if marker.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(marker.exists());
+        assert!(spawn_detached(&mut Command::new(dir.path().join("missing"))).is_err());
     }
 
     #[test]

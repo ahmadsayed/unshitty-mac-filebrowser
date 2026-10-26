@@ -93,6 +93,7 @@ test("open_file accepts local and downloaded files and reports missing handlers"
   expect(await invoke("open_file", { path: `${HOME}/Documents/Versioned/image.png` })).toBeUndefined();
   expect(await invoke("open_file", { path: "/tmp/opencode/mock-drive/photo.png" })).toBeUndefined();
   await expect(invoke("open_file", { path: `${HOME}/song.mp3` })).rejects.toMatch(/No application/);
+  await expect(invoke("open_file", { path: `${HOME}/nope.png` })).rejects.toMatch(/No such file/);
 });
 
 test("thumbnails are empty for files without a preview", async () => {

@@ -1495,6 +1495,9 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   ],
   open_file: (a) => {
     const path = str(a, "path");
+    // Downloaded remote files and opened versions live outside the fake filesystem.
+    const outside = path.startsWith("/tmp/") || path.startsWith(`${OPENED}/`);
+    if (!outside && !lookup(path)) throw "No such file or directory";
     if (path.endsWith(".mp3")) throw "No application knows how to open this file";
     console.log("mock open_file", path);
     return undefined;
