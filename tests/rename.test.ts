@@ -1,6 +1,6 @@
 // Batch rename: find/replace, prefix/suffix across a multi-selection.
 import { beforeAll, expect, test } from "vitest";
-import { $, $$, boot, chooseMenu, click, dialogHeading, goTo, item, key, menuLabels, mouse, names, respond, settle, type } from "./app";
+import { $, $$, boot, chooseMenu, click, dialogHeading, goTo, item, key, menuLabels, mouse, names, respond, settle, type, hit } from "./app";
 
 const HOME = "/Users/me";
 const DOCS = `${HOME}/Documents`;
@@ -17,8 +17,8 @@ async function rightClick(el: Element): Promise<void> {
 
 test("several selected files get a prefix and a suffix before the extension", async () => {
   await goTo(DOCS);
-  await click(item("Notes.md"));
-  await click(item("Roadmap.key"), { metaKey: true });
+  await click(hit("Notes.md"));
+  await click(hit("Roadmap.key"), { metaKey: true });
   await rightClick(item("Roadmap.key"));
   expect(menuLabels()).toContain("Rename…");
   await chooseMenu("Rename…");
@@ -41,8 +41,8 @@ test("several selected files get a prefix and a suffix before the extension", as
 
 test("a clashing new name is refused before anything is renamed", async () => {
   await goTo(DOCS);
-  await click(item("Budget 2026.xlsx"));
-  await click(item("copy-Notes (old).md"), { metaKey: true });
+  await click(hit("Budget 2026.xlsx"));
+  await click(hit("copy-Notes (old).md"), { metaKey: true });
   await rightClick(item("copy-Notes (old).md"));
   await chooseMenu("Rename…");
   await settle(10);

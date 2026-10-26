@@ -1,6 +1,6 @@
 // Duplicate, Create Link and Compress, all beside the selection.
 import { beforeAll, expect, test } from "vitest";
-import { $, $$, boot, chooseMenu, click, dialogHeading, goTo, item, key, mouse, names, respond, settle } from "./app";
+import { $, $$, boot, chooseMenu, click, dialogHeading, goTo, item, key, mouse, names, respond, settle, hit } from "./app";
 
 const HOME = "/Users/me";
 const DOCS = `${HOME}/Documents`;
@@ -30,8 +30,8 @@ test("Duplicate makes a copy and Create Link makes a symlink", async () => {
 
 test("Compress creates a zip and can switch to tar.gz", async () => {
   await goTo(DOCS);
-  await click(item("Notes.md"));
-  await click(item("Budget 2026.xlsx"), { metaKey: true });
+  await click(hit("Notes.md"));
+  await click(hit("Budget 2026.xlsx"), { metaKey: true });
   await rightClick(item("Budget 2026.xlsx"));
   await chooseMenu("Compress…");
   await settle(10);

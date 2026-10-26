@@ -1,6 +1,6 @@
 // Space opens the preview panel for a text file and closes it again.
 import { beforeAll, expect, test } from "vitest";
-import { $, boot, click, goTo, item, key, settle } from "./app";
+import { $, boot, click, goTo, item, key, settle, hit } from "./app";
 
 const HOME = "/Users/me";
 const pause = (ms = 260) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -23,7 +23,7 @@ beforeAll(async () => {
 
 test("Space previews the selected text file and Escape closes it", async () => {
   await goTo(`${HOME}/Documents`);
-  await click(item("Notes.md"));
+  await click(hit("Notes.md"));
   await key(" ");
   await settle(20);
   expect($("#preview-layer").hidden).toBe(false);
@@ -46,7 +46,7 @@ test("Space closes an open preview", async () => {
 });
 
 test("a PDF is previewed from its thumbnail", async () => {
-  await click(item("Quarterly report.pdf"));
+  await click(hit("Quarterly report.pdf"));
   await key(" ");
   await pause();
   await settle(10);

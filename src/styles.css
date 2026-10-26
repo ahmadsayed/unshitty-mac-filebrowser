@@ -621,8 +621,9 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   flex-shrink: 0;
 }
 
+/* As wide as the text, so a press beside a short name misses the item. */
 .grid-item .name {
-  width: 100%;
+  max-width: 100%;
   text-align: center;
   overflow-wrap: anywhere;
   display: -webkit-box;

@@ -2,7 +2,7 @@
 // and keep the read-only milestone free of version markers and write actions.
 import { beforeAll, expect, test, vi } from "vitest";
 import { driveLog, invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, click, closeOverlays, goTo, item, key, menuLabels, mouse, names, respond, selectedNames, settle, toasts, type } from "./app";
+import { $, $$, boot, click, closeOverlays, goTo, item, key, menuLabels, mouse, names, respond, selectedNames, settle, toasts, type, hit } from "./app";
 
 beforeAll(async () => {
   await boot();
@@ -55,7 +55,7 @@ test("Google Drive connects and browses the mock drive", async () => {
   const documents = $$("#view .item").find(
     (item) => item.querySelector(".name")?.textContent === "Documents",
   )!;
-  documents.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  documents.querySelector(".icon")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   await settle(20);
   expect(names()).toEqual(["nested.txt"]);
 
@@ -67,7 +67,7 @@ test("Google Drive connects and browses the mock drive", async () => {
   const hello = $$("#view .item").find(
     (item) => item.querySelector(".name")?.textContent === "hello.txt",
   )!;
-  hello.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  hello.querySelector(".icon")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   await settle(10);
   expect(
     [...document.querySelectorAll(".toast-title")].some((toast) =>
@@ -102,7 +102,7 @@ test("Google Drive connects and browses the mock drive", async () => {
 const DRIVE = "gdrive://mock/mock-root~My%20Drive";
 
 async function select(name: string): Promise<void> {
-  await click(item(name));
+  await click(hit(name));
 }
 
 test("New Folder in Drive has no Keep versions option and creates the folder", async () => {
@@ -178,7 +178,7 @@ test("Paste from Drive into a local folder downloads it", async () => {
 test("the Drive item menu offers writes and has no empty sections", async () => {
   await goTo(DRIVE);
   await select("Report.docx");
-  await mouse(item("Report.docx"), "contextmenu");
+  await mouse(hit("Report.docx"), "contextmenu");
   expect(menuLabels()).toEqual([
     "Open", "Open Item Location", "Cut", "Copy", "Rename…", "Move to Trash", "Properties",
   ]);
@@ -205,7 +205,7 @@ async function dragTo(name: string, target: Element, mods: MouseEventInit = {}):
     return null;
   };
   document.elementFromPoint = () => liveTarget();
-  await mouse(item(name), "mousedown", { clientX: 50, clientY: 60 });
+  await mouse(hit(name), "mousedown", { clientX: 50, clientY: 60 });
   window.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 300, ...mods }));
   await settle(10);
   window.dispatchEvent(new MouseEvent("mousemove", { clientX: 301, clientY: 301, ...mods }));

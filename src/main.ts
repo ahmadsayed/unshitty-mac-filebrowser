@@ -1914,32 +1914,15 @@ function indexFromEvent(e: MouseEvent): number {
   return item ? Number(item.dataset.index) : -1;
 }
 
-/** The grid cell under a point, including the gutter around each cell. */
-function gridIndexAtPoint(x: number, y: number): number {
-  if (prefs.view !== "grid" || !itemsLayer) return -1;
-  const rect = itemsLayer.getBoundingClientRect();
-  const px = x - rect.left;
-  const py = y - rect.top;
-  const half = layout.gap / 2;
-  const pitchX = layout.itemW + layout.gap;
-  const pitchY = layout.itemH + layout.gap;
-  const rows = Math.ceil(shown.length / layout.cols);
-  const left = layout.padX - half;
-  const top = layout.padY - half;
-  const right = layout.padX + layout.cols * pitchX - layout.gap + half;
-  const bottom = layout.padY + rows * pitchY - layout.gap + half;
-  if (px < left || py < top || px > right || py > bottom) return -1;
-  const col = Math.max(0, Math.min(layout.cols - 1, Math.floor((px - left) / pitchX)));
-  const row = Math.max(0, Math.floor((py - top) / pitchY));
-  const index = row * layout.cols + col;
-  return index < shown.length ? index : -1;
-}
-
-/** The item a left click acts on; the gutter around a grid cell snaps to it. */
+/**
+ * The item a press acts on. A grid tile is wider and taller than its icon and
+ * name, so only those count: a press on the rest of the tile or in the gutter
+ * starts a rubber band, which is otherwise hard to begin between items.
+ */
 function itemIndexAt(e: MouseEvent): number {
-  const exact = indexFromEvent(e);
-  if (exact >= 0 || e.button !== 0) return exact;
-  return gridIndexAtPoint(e.clientX, e.clientY);
+  const index = indexFromEvent(e);
+  if (index < 0 || prefs.view !== "grid") return index;
+  return (e.target as HTMLElement).closest(".grid-item > *") ? index : -1;
 }
 
 function onViewMouseDown(e: MouseEvent): void {
@@ -2055,7 +2038,7 @@ function onViewContextMenu(e: MouseEvent): void {
   cancelPendingNarrow();
   if (!hasEntries(location) || listingError !== null) return;
   const at = { x: e.clientX, y: e.clientY };
-  const index = indexFromEvent(e);
+  const index = itemIndexAt(e);
   if (index >= 0 && shown[index]) {
     // The one place a right-click selects: select the item that was
     // right-clicked, like GNOME Files, unless it is already part of a

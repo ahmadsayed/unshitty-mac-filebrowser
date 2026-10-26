@@ -38,6 +38,11 @@ export function item(name: string): HTMLElement {
   return found;
 }
 
+/** Where a user presses an item: its icon (a grid tile's blank area misses it). */
+export function hit(name: string): HTMLElement {
+  return item(name).querySelector<HTMLElement>(".icon")!;
+}
+
 export function selectedNames(): string[] {
   return rendered().filter((el) => el.classList.contains("selected")).map(nameOf);
 }
@@ -93,7 +98,7 @@ export async function click(target: Element, init: MouseEventInit = {}): Promise
 
 /** Open a folder by double-clicking its item. */
 export async function open(name: string): Promise<void> {
-  await mouse(item(name), "dblclick");
+  await mouse(hit(name), "dblclick");
   await settle(10);
 }
 

@@ -3,7 +3,7 @@
 // navigation inside a menu; Restore From Trash and Properties.
 import { beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, menuLabels, mouse, names, respond, selectedNames, settle, title } from "./app";
+import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, menuLabels, mouse, names, respond, selectedNames, settle, title, hit } from "./app";
 
 const HOME = "/Users/me";
 
@@ -193,14 +193,14 @@ test("a right-click over an open menu replaces it without the fade", async () =>
   await goTo(HOME);
   await rightClick(item("main.rs"));
   await mouse(layer(), "mousedown", { button: 2, clientX: 50, clientY: 50 });
-  await mouse(item("Empty folder"), "contextmenu", { button: 2 });
+  await mouse(hit("Empty folder"), "contextmenu", { button: 2 });
   expect(menuLabels()).toContain("Paste Into Folder");
   expect(fades()).toBe(false);
   await closeOverlays();
   // Header menus too.
   await click($("#btn-main-menu"));
   await mouse(layer(), "mousedown", { button: 2, clientX: 50, clientY: 50 });
-  await mouse(item("main.rs"), "contextmenu", { button: 2 });
+  await mouse(hit("main.rs"), "contextmenu", { button: 2 });
   expect(menuLabels()).toContain("Rename…");
   expect(fades()).toBe(false);
   await closeOverlays();

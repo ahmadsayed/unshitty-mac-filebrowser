@@ -3,7 +3,7 @@
 // commands until the test releases them (__mockOps).
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, click, closeOverlays, goTo, item, key, mouse, names, open, settle, toasts, type } from "./app";
+import { $, $$, boot, click, closeOverlays, goTo, item, key, mouse, names, open, settle, toasts, type, hit } from "./app";
 
 type MockOps = {
   hold(): void; held(): number; step(bytes: number): void; release(): void; reset(): void; failMeasure(fail: boolean): void;
@@ -25,9 +25,9 @@ afterEach(async () => {
 });
 
 async function select(name: string, add = false): Promise<void> {
-  await mouse(item(name), "mousedown", { button: 0, metaKey: add });
-  await mouse(item(name), "mouseup", { button: 0, metaKey: add });
-  await mouse(item(name), "click", { button: 0, metaKey: add });
+  await mouse(hit(name), "mousedown", { button: 0, metaKey: add });
+  await mouse(hit(name), "mouseup", { button: 0, metaKey: add });
+  await mouse(hit(name), "click", { button: 0, metaKey: add });
 }
 
 async function waitHeld(n = 1): Promise<void> {

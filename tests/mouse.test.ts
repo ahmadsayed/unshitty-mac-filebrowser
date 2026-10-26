@@ -1,7 +1,7 @@
 // Clicking, modifier clicks, rubber-band selection, the star button, wheel
 // zoom and the mouse back/forward buttons.
 import { beforeAll, expect, test } from "vitest";
-import { $, boot, goTo, item, key, mouse, names, prefs, selectedNames, settle, title } from "./app";
+import { $, boot, goTo, item, key, mouse, names, prefs, selectedNames, settle, title, hit } from "./app";
 
 const LIST_HEADER_H = 35;
 
@@ -11,9 +11,9 @@ beforeAll(async () => {
 });
 
 async function press(name: string, init: MouseEventInit = {}): Promise<void> {
-  await mouse(item(name), "mousedown", init);
+  await mouse(hit(name), "mousedown", init);
   window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, ...init }));
-  item(name).dispatchEvent(new MouseEvent("mouseup", { bubbles: true, ...init }));
+  hit(name).dispatchEvent(new MouseEvent("mouseup", { bubbles: true, ...init }));
   await settle();
 }
 
@@ -97,9 +97,9 @@ test("a right press selects the item under it unless it is already selected", as
   const all = names();
   await press(all[0]);
   await press(all[1], { metaKey: true });
-  await mouse(item(all[1]), "mousedown", { button: 2 });
+  await mouse(hit(all[1]), "mousedown", { button: 2 });
   expect(selectedNames()).toEqual([all[0], all[1]]);
-  await mouse(item(all[3]), "mousedown", { button: 2 });
+  await mouse(hit(all[3]), "mousedown", { button: 2 });
   item(all[3]).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }));
   await settle();
   expect(selectedNames()).toEqual([all[3]]);
@@ -141,47 +141,37 @@ test("mouse back and forward buttons navigate", async () => {
 
 test("double-clicking a folder opens it, a file opens it in its app", async () => {
   await goTo("/Users/me");
-  await mouse(item("Music"), "dblclick");
+  await mouse(hit("Music"), "dblclick");
   await settle(10);
   expect(title()).toBe("Music");
-  await mouse(item("Track 1.flac"), "dblclick", { shiftKey: true });
+  await mouse(hit("Track 1.flac"), "dblclick", { shiftKey: true });
   expect(title()).toBe("Music");
 });
 
-test("a click in the gutter between grid cells picks the nearer item", async () => {
+test("a grid item takes presses on its icon and name; the rest of its tile starts a rubber band", async () => {
   await goTo("/Users/me");
   await key("2", { mod: true });
   await settle(10);
-  const view = $("#view");
-  const cellW = parseFloat(view.style.getPropertyValue("--cell-w"));
-  const cellH = parseFloat(view.style.getPropertyValue("--cell-h"));
-  const cells = [...document.querySelectorAll<HTMLElement>("#view .item[data-index]")]
-    .sort((a, b) => Number(a.dataset.index) - Number(b.dataset.index));
-  const left = (el: HTMLElement) => parseFloat(el.style.left);
-  const top = (el: HTMLElement) => parseFloat(el.style.top);
   const all = names();
-  const clickAt = async (x: number, y: number) => {
-    await mouse(view, "mousedown", { clientX: x, clientY: y });
-    window.dispatchEvent(new MouseEvent("mouseup"));
-    await settle();
-  };
+  const tile = item(all[0]);
 
-  // Left half of the vertical gutter → the left cell; right half → the right one.
-  const gap = left(cells[1]) - left(cells[0]) - cellW;
-  const midX = left(cells[0]) + cellW + gap / 2;
-  const y = top(cells[0]) + cellH / 2;
-  await clickAt(midX - 1, y);
+  await mouse(tile.querySelector(".icon")!, "mousedown");
+  window.dispatchEvent(new MouseEvent("mouseup"));
+  await settle();
   expect(selectedNames()).toEqual([all[0]]);
-  await clickAt(midX + 1, y);
-  expect(selectedNames()).toEqual([all[1]]);
+  await mouse(tile.querySelector(".name")!, "mousedown");
+  window.dispatchEvent(new MouseEvent("mouseup"));
+  await settle();
+  expect(selectedNames()).toEqual([all[0]]);
 
-  // Upper half of the horizontal gutter → the row above; lower half → below.
-  const cols = cells.filter((el) => top(el) === top(cells[0])).length;
-  const gapY = top(cells[cols]) - top(cells[0]) - cellH;
-  const midY = top(cells[0]) + cellH + gapY / 2;
-  const x = left(cells[0]) + cellW / 2;
-  await clickAt(x, midY - 1);
-  expect(selectedNames()).toEqual([all[0]]);
-  await clickAt(x, midY + 1);
-  expect(selectedNames()).toEqual([all[cols]]);
+  // A press on the tile's blank area clears the selection and drags a band.
+  await mouse(tile, "mousedown", { clientX: 10, clientY: 10 });
+  expect(selectedNames()).toEqual([]);
+  window.dispatchEvent(new MouseEvent("mousemove", { clientX: 40, clientY: 40 }));
+  await settle();
+  expect($("#rubberband").hidden).toBe(false);
+  window.dispatchEvent(new MouseEvent("mouseup"));
+  await settle();
+  expect($("#rubberband").hidden).toBe(true);
+  await key("1", { mod: true });
 });

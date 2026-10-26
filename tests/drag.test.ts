@@ -3,7 +3,7 @@
 // spring-loaded folders and auto-scroll.
 import { afterEach, beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, goTo, item, key, mouse, names, settle, title } from "./app";
+import { $, $$, boot, goTo, item, key, mouse, names, settle, title, hit } from "./app";
 
 const HOME = "/Users/me";
 let pointAt: Element | null = null;
@@ -27,7 +27,7 @@ const sidebarRow = (location: string) => $$(".sidebar-row").find((r) => r.datase
 
 /** Press on `name`, move far enough to start a drag, hover `target`, release. */
 async function dragTo(name: string, target: Element | null, mods: MouseEventInit = {}, release = true): Promise<void> {
-  await mouse(item(name), "mousedown", { clientX: 50, clientY: 60 });
+  await mouse(hit(name), "mousedown", { clientX: 50, clientY: 60 });
   pointAt = target;
   window.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 300, ...mods }));
   await settle(10);
@@ -121,7 +121,7 @@ test("dragging near the bottom edge scrolls the view", async () => {
   await goTo(`${HOME}/D`);
   const scroller = $("#view-scroll");
   scroller.scrollTop = 0;
-  await mouse(item("four.txt"), "mousedown", { clientX: 50, clientY: 60 });
+  await mouse(hit("four.txt"), "mousedown", { clientX: 50, clientY: 60 });
   // jsdom's rects are all zero, so y = 10 sits inside the bottom edge band.
   window.dispatchEvent(new MouseEvent("mousemove", { clientX: 0, clientY: 10 }));
   await new Promise((r) => setTimeout(r, 120));
