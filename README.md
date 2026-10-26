@@ -38,90 +38,23 @@ files, so the photo thumbnails are placeholders.</sub>
 
 ## Features
 
-- GNOME 50 look: libadwaita colours (light and dark), Adwaita Sans, Adwaita-style
-  folder and file icons, header bar with path bar, split view button, popover
-  menus, dialogs, toasts and banners
-- Grid and list views, sorting (A–Z, Z–A, modified, size, type), hidden files
-  toggle; icon size by ⌘+/⌘−, Ctrl + wheel, or a trackpad pinch
-- Path bar with breadcrumbs; ⌘L to type a location; tabs (⌘T/⌘W) and Ctrl+Page
-  Up/Down to switch; ⌘N opens another window; type anywhere to search
-  recursively in the current folder (names, capped at 1,000 results)
-- Space previews text files and image/document thumbnails; Escape closes
-- Open With… lists the installed applications (macOS `.app` bundles, Linux
-  `.desktop` entries); Properties → Permissions… changes the read/write/execute
-  bits
-- Copy, cut, paste with Replace / Skip / Keep Both on name clashes; replacing
-  sends the old item to the Trash, never deletes it
-- An operations button in the header bar, as in GNOME Files: copies, moves,
-  trash batches, Empty Trash and opening Drive, SSH or shared files show a
-  progress bar, "12 MB of 80 MB — 1 minute left" and a Cancel button. Copied
-  items show up as they land, and a folder downloaded from Drive fills as you
-  watch; a cancelled copy leaves nothing half-written (a partial Drive folder
-  goes to the Trash), and a second paste waits for the first instead of being
-  dropped
-- Batch rename for several items: find/replace, prefix and suffix, with a live
-  preview and clash checking before anything is renamed
-- Extract archives with Extract Here or Extract to a new folder: zip/jar,
-  tar, tar.gz/tgz, tar.bz2/tbz2, tar.xz/txz, tar.zst/tzst, and single-file
-  gz/bz2/xz/zst; existing files are never overwritten
-- Duplicate, Create Link and Compress… (zip, tar.gz or tar.xz); New Document
-  copies a file from ~/Templates or creates an empty text file
-- Dragging an item out of the window starts a native file drag, so it can be
-  dropped on Finder, the desktop or another application
-- Drag and drop: drag items onto a folder, a sidebar entry or a path-bar
-  segment; hovering a folder opens it. Same disk moves, another disk copies;
-  hold ⌥ to copy or ⌘ to move. Dropping on Trash trashes. Files dragged in from
-  Finder land in the folder under the pointer
-- Thumbnails for images (HEIC too), videos, PDFs and office documents, made by
-  macOS Quick Look and cached on disk; toggle with "Show Thumbnails" in the menu
-- Rename, new folder, Move to Trash with an **Undo** button in the toast (or ⌘Z)
-- **Network (Experimental):** one place for remote locations. Its address bar
-  takes an SSH/SFTP server (`user@host` or `sftp://user@host`) or a
-  `share://` link someone sent you. For SSH, the agent and `~/.ssh` keys are
-  tried first, then a session-only password; unknown host keys need explicit
-  confirmation and are remembered. Browsing is read-only, and opening a file
-  downloads a temporary copy
-- **Folder Sharing (Experimental):** share a local folder read-only with an
-  “Anyone with the link” or “Specific person” `share://` link; received shares
-  appear in Network with who shared them and whether they're online, an offline
-  page and read-only menus. Copying files
-  out of a share and live refresh are still to come
-- Properties (right-click or ⌘I): type, size (folders are summed in the
-  background), location, modified/accessed/created dates, permissions, symlink
-  target and folder contents
-- Trash: Original Location and Trashed On columns, **Restore From Trash** (also
-  for items trashed in Finder, from its "Put Back" records), **Delete
-  Permanently…** and **Empty Trash…**, both after a confirmation
-- Open files in their default app (double-click or Enter); `.app` bundles launch,
-  with "Show Package Contents" in the context menu
-- Recent: files opened lately in any app (from Spotlight) or from here, newest
-  first, with their location; "Open Item Location" and "Remove from Recent"
-- Starred: star files and folders from the context menu or the star at the end
-  of each list row; Starred lists them all, and stars follow renames and moves
-  made in the app
-- **Google Drive (Experimental):** add your own Google OAuth client once
-  ([setup guide](docs/google-drive.md)), connect a Google account from the
-  sidebar and browse My Drive with the same views, breadcrumbs and thumbnails.
-  New Folder, Rename, Cut, Copy, Paste and drag and drop work inside Drive and
-  between Drive and local folders, with the usual Replace / Skip / Keep Both
-  prompt; a drop between Drive and a local folder copies unless you hold ⌘
-  (Shift on Linux) to move. Move to
-  Trash uses Drive's Trash and can be undone; nothing is ever deleted
-  permanently. Files open as a local snapshot; Google Docs open in the browser
-  and stay in Drive. The refresh token is kept in the OS keychain (with a
-  private file fallback)
-- **Keep Versions (Experimental):** tick "Keep versions" when creating a folder
-  to record every saved state of its files. Such folders show a second folder
-  layer behind the icon, with a small layer mark in the path bar and on sidebar
-  bookmarks. The context menu gains **Versions…** (text diff, Open Copy,
-  Restore Copy, Replace…) and **Deleted Files…** (open or restore a deleted
-  file). History is stored in `.versions/` inside the folder, compressed with
-  zstd deltas; it is local only and is **not a backup**
-- Bookmarks: "Add to Bookmarks" (⌘D) pins folders to the sidebar
-- Mounted volumes in the sidebar
-- Large folders stay fast: only the visible items are rendered
+- GNOME Files 50 look: libadwaita colours (light + dark), Adwaita Sans, Adwaita folder icons, header bar, popover menus, dialogs and toasts
+- Grid and list views; sort by name, date, size or type; hidden files toggle; icon size with ⌘+/⌘−, Ctrl+wheel or pinch
+- ⌘L to type a path; breadcrumb path bar; tabs (⌘T/⌘W); ⌘N new window; type to search file names in the current folder
+- Copy, cut, paste with **Replace / Skip / Keep Both** on name clashes — never silently overwrites
+- Drag and drop between folders, sidebar entries and the path bar; drag out to Finder; ⌥ to copy, ⌘ to move
+- Thumbnails for images (HEIC included), videos, PDFs and documents via Quick Look (macOS); toggle in the menu
+- Rename, new folder, Move to Trash — each with an **Undo** toast (⌘Z)
+- Batch rename: find/replace, prefix, suffix with live preview and clash check
+- Extract archives (zip, tar, tar.gz/bz2/xz/zst and single-file compressed files); Compress to zip/tar.gz/tar.xz
+- Properties (⌘I): size, dates, permissions, symlink target; change read/write/execute bits
+- Trash: restore from Trash (including Finder's “Put Back”), Delete Permanently and Empty Trash — both after confirmation
+- Recent (Spotlight on macOS), Starred, Bookmarks (⌘D), mounted volumes in the sidebar
+- **Network (Experimental):** SSH/SFTP browsing (read-only); **Folder Sharing (Experimental):** share a folder via `share://` link
+- **Google Drive (Experimental):** browse, copy and move files between Drive and local folders — [setup guide](docs/google-drive.md)
+- **Keep Versions (Experimental):** per-folder version history with diff, restore and deleted-file recovery — local only, not a backup
 
-Press ⌘? in the app for the full list of keyboard shortcuts.
+Press ⌘? for the full keyboard shortcut list.
 
 ## Download
 
@@ -233,43 +166,16 @@ exact build: after rebuilding, toggle the permission off and on again.
 
 ## Not supported yet
 
-Folder sharing is read-only: browsing and opening work, but copying files
-out and live refresh are still to come. Transfers run one at a time and can't
-be paused; on macOS, cancelling a local copy takes effect after the file being
-copied finishes. Undo covers only
-the last Move to Trash; the Trash view shows the home Trash, not the Trash
-folders of other drives. SFTP is read-only and session-only: no upload, rename,
-delete or saved servers, and no SMB/WebDAV browsing. Search matches
-file names only and is not a disk-wide content index. Preview covers text and
-thumbnails, not GNOME Sushi-style document or video playback. Open With lists
-installed applications but cannot set a new default handler. There are no
-Nautilus extensions yet; archive extraction and creation cover the formats listed
-above (not 7z, rar, deb, rpm or pkg).
-
-Google Drive has no shared drives, no Shared with me, no view of Drive's
-Trash (restore there, or use Undo right after Move to Trash), and no
-Drive-wide search. Google Docs, Sheets and Slides can't be copied to a local
-folder. Opening a Drive file writes a snapshot to the app cache; edits to that
-snapshot are not uploaded. Keep Versions does not apply to Drive items.
-
-Keep Versions (Experimental) is deliberately limited: history lives on the same
-disk as the files, so it is **not a backup**; changes made and overwritten while
-the app is closed are only noticed by the launch scan; versioned folders must be
-on a local disk; one app instance records a folder at a time (a second instance
-sees it read-only); retention is forever until **Clear History…** or **Stop
-Keeping Versions…**, which move `.versions/` to the Trash. **Open Copy** writes
-a read-only temporary copy to the app cache so an old version can be viewed in
-its default app; edits to that copy are not recorded. Splitting container
-formats, a "folder at time T" slider and previews of old images/documents are
-not implemented.
-
-On Linux, everything except the shell works the same way, but:
-
-- Thumbnails cover image formats only — there is no Quick Look equivalent, so
-  videos, PDFs and office documents get their file-kind icon instead.
-- "Recent" reads GTK's `recently-used.xbel`, so it only knows about files opened
-  by apps that maintain that list.
-- The window uses the desktop's own title bar rather than a libadwaita header bar.
+- Transfers run one at a time; no pause/resume. Undo covers only the last Move to Trash.
+- SFTP is read-only and session-only (no upload, rename, delete or saved servers). No SMB/WebDAV.
+- Folder Sharing: copying files out of a share and live refresh are not yet implemented.
+- Search matches file names only (not content); results capped at 1,000.
+- Preview covers text and thumbnails — no video or audio playback.
+- Open With lists apps but cannot change the system default handler.
+- No Nautilus extensions; no 7z, rar, deb, rpm or pkg archive support.
+- Google Drive: no Shared Drives, no "Shared with me", no Drive Trash view, no Drive-wide search. Google Docs/Sheets/Slides can't be exported to a local folder. Edits to a locally-opened Drive snapshot are not uploaded.
+- Keep Versions: history is local only (not a backup); changes made while the app is closed may be missed; one instance per versioned folder; no "folder at time T" view.
+- Linux: thumbnails are images only (no Quick Look); Recent reads `recently-used.xbel` only; window uses the desktop's native title bar.
 
 ## Credits and thanks
 
