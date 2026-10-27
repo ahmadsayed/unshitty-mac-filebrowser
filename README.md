@@ -36,6 +36,28 @@ operation goes through Rust.
 <sub>Screenshots are from the development preview (`npm run dev:mock`) with sample
 files, so the photo thumbnails are placeholders.</sub>
 
+## Why not Finder?
+
+Every file manager, editor and IDE agrees on how files work. Finder disagrees.
+
+| You want to… | Finder | Here |
+| --- | --- | --- |
+| Cut and paste | ⌘X is greyed out. ⌘C, then **⌥⌘V**. Forget the ⌥, enjoy your copy. | ⌘X, ⌘V |
+| Line up icons | Icons land anywhere, overlap, wander off-screen. View → Clean Up, per folder, forever. | A grid. Always. Folders first. |
+| Type a location | No address bar. ⇧⌘G opens a floating box. | ⌘L |
+| Copy a path | Right-click, **hold ⌥**, "Copy as Pathname". A secret handshake. | "Copy Location" in every menu |
+| See where you are | Title shows the folder name only. Path bar is off by default, and at the **bottom**. | Breadcrumbs on top, always |
+| Rename | Enter. Yes, Enter. | F2 |
+| Open | ⌘O or ⌘↓, because Enter was taken. | Enter |
+| Get Info | A tiny window off to the side. Select 20 files, get 20 windows. | One dialog, right where you are |
+| Search this folder | ⌘F searches the whole Mac. | Type, and the current folder is searched |
+| Copy a big folder | "Preparing to copy…" "Estimating time remaining…" | "12 MB of 80 MB — 1 minute left" |
+| Replace a folder | Gone. Not merged, not in the Trash. | Old one goes to the Trash |
+| Read an error | "Error code -8058." Thanks. | "A folder with that name already exists." |
+| Make a new file | Can't. New Folder only. | New Document |
+| Keep folders clean | `.DS_Store` in every folder, USB stick and Git repo. | Writes none |
+| Ignore clutter | Recents, AirDrop, iCloud nags and seven Tag colours you never asked for. | Home, Recent, Starred, Network, Trash |
+
 ## Features
 
 - GNOME Files 50 look: libadwaita colours (light + dark), Adwaita Sans, Adwaita folder icons, header bar, popover menus, dialogs and toasts
