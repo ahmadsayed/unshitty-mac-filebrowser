@@ -35,8 +35,8 @@ Every file manager, editor and IDE agrees on how files work. Finder disagrees.
 | See where you are | Title shows the folder name only. Path bar is off by default, and at the **bottom**. | Address bar on top: Explorer, Nautilus, Dolphin, every web browser | Breadcrumbs on top, always |
 | Rename | Enter. Yes, Enter. | F2 | F2 |
 | Open | ⌘O or ⌘↓, because Enter was taken. | Enter | Enter |
-| Get Info | A tiny window off to the side. Select 20 files, get 20 windows. | Alt+Enter | One dialog, right where you are |
-| Search this folder | ⌘F searches the whole Mac. | Ctrl+F | Type, and the current folder is searched |
+| Get Info | A tiny window off to the side. Select 20 files, get 20 windows. | Alt+Enter | ⌘I, one dialog |
+| Search this folder | ⌘F searches the whole Mac. | Ctrl+F | ⌘F, or just type |
 | Copy a big folder | "Preparing to copy…" "Estimating time remaining…" | Speed, size and time left: Explorer, Nautilus, Dolphin | "12 MB of 80 MB — 1 minute left" |
 | Replace a folder | Gone. Not merged, not in the Trash. | Merge: Explorer merges, Nautilus offers Merge, Dolphin offers Write Into | Old one goes to the Trash |
 | Read an error | "Error code -8058." Thanks. | A sentence: Nautilus, Dolphin | "A folder with that name already exists." |
