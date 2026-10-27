@@ -28,7 +28,7 @@ Every file manager, editor and IDE agrees on how files work. Finder disagrees.
 
 | You want to… | Finder | Everyone else | Here |
 | --- | --- | --- | --- |
-| Cut and paste | ⌘X is greyed out. ⌘C, then **⌥⌘V**. Forget the ⌥, enjoy your copy. | Ctrl+X, Ctrl+V | ⌘X, ⌘V |
+| Cut and paste | ⌘X is greyed out. ⌘C, then **⌥⌘V**. Forget the ⌥, enjoy your copy. | **⌘X, ⌘V in every other Mac app**, Ctrl+X, Ctrl+V elsewhere | ⌘X, ⌘V |
 | Line up icons | Icons land anywhere, overlap, wander off-screen. View → Clean Up, per folder, forever. | A sorted grid: Explorer, Nautilus, Dolphin | A grid. Always. Folders first. |
 | Type a location | No address bar. ⇧⌘G opens a floating box. | Ctrl+L (Safari: ⌘L) | ⌘L |
 | Copy a path | Right-click, **hold ⌥**, "Copy as Pathname". A secret handshake. | Ctrl+Shift+C | "Copy Location" in every menu |
