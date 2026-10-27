@@ -57,6 +57,9 @@ Every file manager, editor and IDE agrees on how files work. Finder disagrees.
 | Make a new file | Can't. New Folder only. | New → Text Document in Explorer, New Document in Nautilus, New File in VS Code | New Document |
 | Keep folders clean | `.DS_Store` in every folder, USB stick and Git repo. | Settings stay in the app: Nautilus, VS Code | Writes none |
 | Ignore clutter | Recents, AirDrop, iCloud nags and seven Tag colours you never asked for. | Places and your bookmarks: Nautilus, Dolphin | Home, Recent, Starred, Network, Trash |
+| Keep file history | Time Machine needs a drive, and document versions stay on that Mac. | Git, if it's code | Keep Versions: history lives in `.versions/` inside the folder, so it moves with the folder to any Mac or Linux machine |
+| Share a folder | AirDrop: Apple devices only, in the same room. | Upload it to someone's cloud | A `share://` link over the open-source [Iroh](https://www.iroh.computer/) protocol: peer to peer, any network, Mac or Linux |
+| Get a missing feature | Wait for "one more thing…" at a keynote, years after everyone else moved on. | Plugins, sometimes | Fork it, change it, build it. It's GPL-3.0 |
 
 ## Features
 
