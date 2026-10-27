@@ -26,6 +26,11 @@ More screenshots: [list view](docs/screenshots/list-light.png),
 
 Every file manager, editor and IDE agrees on how files work. Finder disagrees.
 
+**Ironically, this app is more consistent with the Mac than Finder is.** ⌘X
+cuts, like in every other Mac app. ⌘L goes to a location, like in Safari.
+Return opens the selected file, like in every Open dialog. Finder is the odd
+one out on its own platform.
+
 | You want to… | Finder | Everyone else | Here |
 | --- | --- | --- | --- |
 | Cut and paste | ⌘X is greyed out. ⌘C, then **⌥⌘V**. Forget the ⌥, enjoy your copy. | **⌘X, ⌘V in every other Mac app**, Ctrl+X, Ctrl+V elsewhere | ⌘X, ⌘V |
