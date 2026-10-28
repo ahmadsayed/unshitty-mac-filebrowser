@@ -17,7 +17,7 @@ const CONCURRENCY = 4;
 /** key → object URL and its size, or null when the file has no thumbnail. */
 const cache = new Map<string, { url: string; bytes: number } | null>();
 let cachedBytes = 0;
-const pending = new Map<string, { path: string; size: number; listeners: ((url: string | null) => void)[] }>();
+const pending = new Map<string, { path: string; size: number; onReady: (url: string | null) => void }>();
 const queue: string[] = [];
 let running = 0;
 
@@ -40,14 +40,18 @@ export function thumbCacheStats(): { entries: number; bytes: number } {
   return { entries: cache.size, bytes: cachedBytes };
 }
 
-/** Ask for a thumbnail; `onReady` runs once it's loaded (with null if there is none). */
+/**
+ * Ask for a thumbnail; `onReady` runs once it's loaded (with null if there is
+ * none). Asking again while it loads replaces the earlier `onReady`: the view
+ * repeats its requests on every render, and only the latest one is on screen.
+ */
 export function requestThumb(key: string, path: string, size: number, onReady: (url: string | null) => void): void {
   const entry = pending.get(key);
   if (entry) {
-    entry.listeners.push(onReady);
+    entry.onReady = onReady;
     return;
   }
-  pending.set(key, { path, size, listeners: [onReady] });
+  pending.set(key, { path, size, onReady });
   queue.push(key);
   pump();
 }
@@ -75,7 +79,7 @@ function pump(): void {
         running--;
         pending.delete(key);
         store(key, thumb);
-        job.listeners.forEach((fn) => fn(thumb && thumb.url));
+        job.onReady(thumb && thumb.url);
         pump();
       });
   }
