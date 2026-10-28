@@ -109,6 +109,8 @@ let searchSeq = 0;
 const SEARCH_LIMIT = 1000;
 
 const counts = new Map<string, number | null>();
+/** Bumped whenever `counts` changes; sorting by size depends on it. */
+let countsVersion = 0;
 /** Folders whose summary said they keep versions; drives the version badge. */
 const versionedFolders = new Set<string>();
 let backStack: string[] = [];
@@ -404,8 +406,15 @@ function fold(s: string): string {
   return s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
 }
 
+/** What `shown` was last built from: a presentation-only render (grid ↔ list,
+ * thumbnails) reuses it instead of sorting a huge folder again. */
+let shownFrom: unknown[] = [];
+
 function computeShown(): void {
   const q = searchQuery ? fold(searchQuery.trim()) : "";
+  const from = [entries, searchResults, q, location === RECENT, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && countsVersion];
+  if (from.every((value, i) => value === shownFrom[i])) return;
+  shownFrom = from;
   const fromResults = q && searchResults !== null;
   const list = !q ? entries : fromResults ? searchResults! : entries.filter((e) => fold(e.name).includes(q));
   shown = [...list].sort(compareEntries);
@@ -638,6 +647,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   entries = next;
   listingError = error;
   counts.clear();
+  countsVersion++;
   countsInFlight.clear();
   versionedFolders.clear();
   selected.clear();
@@ -1762,6 +1772,7 @@ async function requestCounts(paths: string[], resortWhenDone: boolean): Promise<
 /** Store a folder's count, and redraw its icon if its version badge changed. */
 function rememberSummary(path: string, summary: FolderSummary | null): void {
   counts.set(path, summary?.count ?? null);
+  countsVersion++;
   const versioned = !!summary?.versioned;
   if (versioned === versionedFolders.has(path)) return;
   if (versioned) versionedFolders.add(path);
@@ -1873,6 +1884,7 @@ function updateFloatingBar(): void {
 
 function fetchCount(path: string): void {
   counts.set(path, null);
+  countsVersion++;
   itemCounts([path], prefs.showHidden).then(([summary]) => {
     rememberSummary(path, summary);
     updateFloatingBar();
