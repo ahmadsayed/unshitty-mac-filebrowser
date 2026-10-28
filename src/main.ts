@@ -31,6 +31,7 @@ import {
 import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
+import { LAYOUT_SIZES, resolveTheme, themeChoice, type Theme, type ThemeChoice } from "./theme";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
@@ -54,6 +55,7 @@ const prefs = {
   gridZoom: 2,
   listZoom: 1,
   showThumbnails: true,
+  theme: "auto" as ThemeChoice,
 };
 
 function loadPrefs(): void {
@@ -62,6 +64,7 @@ function loadPrefs(): void {
   } catch {
     /* defaults */
   }
+  prefs.theme = themeChoice(prefs.theme);
 }
 
 function savePrefs(): void {
@@ -1567,11 +1570,6 @@ function itemEl(index: number): HTMLElement | null {
 // with 10k entries opens and scrolls like a small one.
 // ---------------------------------------------------------------------------
 
-const GRID_PAD = 12;
-const GRID_GAP = 6;
-/** Height of the sticky list header plus its bottom margin. */
-const LIST_HEADER_H = 35;
-
 interface Layout {
   cols: number;
   itemW: number;
@@ -1588,21 +1586,22 @@ let itemsLayer: HTMLElement | null = null;
 let windowRange = { start: 0, end: -1 };
 
 function computeLayout(): void {
+  const sizes = LAYOUT_SIZES[currentTheme];
   const width = scrollEl.clientWidth;
   const lineH = parseFloat(getComputedStyle(document.body).fontSize) * 1.3;
   if (prefs.view === "grid") {
     const icon = GRID_SIZES[prefs.gridZoom];
-    const inner = width - GRID_PAD * 2;
-    const cols = Math.max(1, Math.floor((inner + GRID_GAP) / (icon + 36 + GRID_GAP)));
-    const itemW = Math.floor((inner - GRID_GAP * (cols - 1)) / cols);
+    const inner = width - sizes.gridPad * 2;
+    const cols = Math.max(1, Math.floor((inner + sizes.gridGap) / (icon + 36 + sizes.gridGap)));
+    const itemW = Math.floor((inner - sizes.gridGap * (cols - 1)) / cols);
     // icon + gap + two lines of label + padding. Network adds one line for
     // "Shared by …", search one for the folder each result is in.
     const extraLine = location === NETWORK || searchQuery !== null;
     const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9 + (extraLine ? lineH : 0));
-    layout = { cols, itemW, itemH, gap: GRID_GAP, padX: GRID_PAD, padY: GRID_PAD, bodyTop: 0 };
+    layout = { cols, itemW, itemH, gap: sizes.gridGap, padX: sizes.gridPad, padY: sizes.gridPad, bodyTop: 0 };
   } else {
-    const itemH = Math.max(LIST_SIZES[prefs.listZoom] + 12, 34);
-    layout = { cols: 1, itemW: width - 12, itemH, gap: 0, padX: 6, padY: 0, bodyTop: LIST_HEADER_H };
+    const itemH = Math.max(LIST_SIZES[prefs.listZoom] + sizes.listPad, sizes.listMinRow);
+    layout = { cols: 1, itemW: width - 12, itemH, gap: 0, padX: 6, padY: 0, bodyTop: sizes.listHeader };
   }
 }
 
@@ -1663,6 +1662,69 @@ function scrollToIndex(i: number): void {
     scrollEl.scrollTop = y + layout.itemH + layout.padY - scrollEl.clientHeight;
   }
   renderWindow();
+}
+
+// ---------------------------------------------------------------------------
+// Themes (src/theme.ts): the look only, chosen in the main menu
+// ---------------------------------------------------------------------------
+
+let currentTheme: Theme = "gnome";
+
+/** Show the theme `prefs.theme` resolves to. CSS restyles everything at
+ *  once; the view is laid out again, since row sizes differ, with the same
+ *  first fully visible item at the top. */
+function applyTheme(): void {
+  const theme = resolveTheme(prefs.theme, isMac);
+  const root = document.documentElement;
+  if (theme === currentTheme && root.dataset.theme === theme) return;
+  const first = itemsLayer ? firstFullyVisible() : 0;
+  currentTheme = theme;
+  root.dataset.theme = theme;
+  if (!itemsLayer) return;
+  relayout();
+  if (scrollEl.scrollTop > 0) scrollEl.scrollTop = layout.bodyTop + itemPos(first).y - layout.padY;
+  renderWindow(true);
+}
+
+/** Index of the first item whose row is entirely in view. */
+function firstFullyVisible(): number {
+  const pitch = layout.itemH + layout.gap;
+  if (pitch <= 0) return 0;
+  const top = scrollEl.scrollTop - layout.bodyTop - layout.padY;
+  return Math.min(Math.max(0, Math.ceil(top / pitch)) * layout.cols, Math.max(0, shown.length - 1));
+}
+
+function chooseTheme(choice: ThemeChoice): void {
+  prefs.theme = choice;
+  savePrefs();
+  applyTheme();
+}
+
+const THEME_LABELS: [ThemeChoice, string][] = [["auto", "Automatic"], ["gnome", "GNOME"], ["macos", "macOS"]];
+
+function themeMenuItems(): MenuItem[] {
+  return [
+    { heading: "Theme" },
+    ...THEME_LABELS.map(([choice, label]) => ({ label, radio: prefs.theme === choice, action: () => chooseTheme(choice) })),
+  ];
+}
+
+/** Another window saved its preferences: follow its theme. Only the theme:
+ *  this window keeps its own view, sorting and hidden-files state. */
+function onPrefsChanged(event: StorageEvent): void {
+  if (event.key !== "prefs" || event.newValue === null) return;
+  let saved: { theme?: unknown };
+  try {
+    saved = JSON.parse(event.newValue) ?? {};
+  } catch {
+    return;
+  }
+  const choice = themeChoice(saved.theme);
+  if (choice === prefs.theme) return;
+  prefs.theme = choice;
+  if (resolveTheme(choice, isMac) === currentTheme) return;
+  closePopover();
+  applyTheme();
 }
 
 function applyZoom(): void {
@@ -2693,6 +2755,8 @@ function openMainMenu(anchor: HTMLElement): void {
     { separator: true },
     { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
     { label: "Show Thumbnails", check: prefs.showThumbnails, action: toggleThumbnails },
+    { separator: true },
+    ...themeMenuItems(),
     { separator: true },
     { label: "Keyboard Shortcuts", action: showShortcuts },
     { label: "About File Browser", action: showAbout },
@@ -5209,6 +5273,8 @@ function showMaximized(maximized: boolean): void {
 
 async function init(): Promise<void> {
   loadPrefs();
+  applyTheme();
+  window.addEventListener("storage", onPrefsChanged);
   installIconSprite();
   if (isMac) document.documentElement.classList.add("platform-mac");
   void setupWindowButtons();
