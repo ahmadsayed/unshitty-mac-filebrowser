@@ -15,7 +15,13 @@ the other half: what you do, and what you can expect from them.
 | Prepares releases and tests the draft | Ask for a release; say when to publish |
 
 **Nothing reaches `main` unless you merged it.** Agents push only their task
-branches and never merge.
+branches, and merge only when you tell them to ("merge"). GitHub enforces the
+first part: `main` is protected, so a direct push is refused for everyone,
+you included, as are force pushes and deleting `main`. A PR needs no
+approval (GitHub won't let you approve your own), and tags, so releases, are
+unaffected. Agents act through your `gh` account, so GitHub can't stop one
+from merging a PR: that part stays a rule in AGENTS.md. To change the
+protection: Settings › Branches on GitHub.
 
 ## Life of a task
 
