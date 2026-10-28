@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Finish a task started with scripts/new-task.sh: once its work is on
-# origin/main, delete its worktree (build output included), its local branch
-# and its branch on GitHub, if pushed. Refuses while anything would be lost:
-# uncommitted files, or commits that are not on origin/main, directly or as
-# an identical change (rebased or cherry-picked).
+# Finalize a task started with scripts/new-task.sh, once its PR is merged:
+# delete its worktree (build output included), its local branch and its
+# branch on GitHub, then fast-forward the main checkout if it is clean.
+# Refuses while anything would be lost: uncommitted files, or commits that
+# are on neither origin/main (directly, rebased or cherry-picked) nor a
+# merged PR (a squash merge).
 #
 #   scripts/end-task.sh appimage-env
 set -euo pipefail
@@ -37,12 +38,20 @@ if [[ -n $changes ]]; then
 fi
 
 git -C "$root" fetch --quiet origin
-# "+" lines are commits with no identical change on origin/main.
+# "+" lines are commits with no identical change on origin/main. A squash
+# merge leaves them all "+", so a PR merged on GitHub from exactly this
+# branch's last commit counts as merged too.
 unmerged=$(git -C "$root" cherry -v origin/main "$branch" | grep '^+' || true)
 if [[ -n $unmerged ]]; then
-  echo "$branch has commits that are not on origin/main; merge them first:" >&2
-  echo "$unmerged" >&2
-  exit 1
+  head=$(git -C "$root" rev-parse "$branch")
+  merged_pr=$(gh pr list --head "$branch" --state merged --json number,headRefOid \
+    --jq ".[] | select(.headRefOid == \"$head\") | .number" 2>/dev/null | head -1)
+  if [[ -z $merged_pr ]]; then
+    echo "$branch has commits that are not on origin/main, and no merged PR of its last commit:" >&2
+    echo "$unmerged" >&2
+    exit 1
+  fi
+  echo "PR #$merged_pr merged $branch"
 fi
 
 rm -f "$dir/node_modules"
@@ -54,3 +63,12 @@ if git -C "$root" ls-remote --exit-code --heads origin "$branch" >/dev/null; the
   echo "Deleted $branch on GitHub"
 fi
 echo "Removed $dir and branch $branch"
+
+# Bring the main checkout up to date, only when that can't disturb anything:
+# it may hold the human's own uncommitted work.
+if [[ $(git -C "$root" branch --show-current) == main && -z $(git -C "$root" status --porcelain) ]]; then
+  git -C "$root" merge --quiet --ff-only origin/main &&
+    echo "main is now at $(git -C "$root" log -1 --format='%h %s')"
+else
+  echo "Left the main checkout alone (not on main, or it has changes); update it with: git pull --ff-only"
+fi
