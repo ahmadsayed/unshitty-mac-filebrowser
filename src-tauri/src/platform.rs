@@ -49,11 +49,68 @@ pub fn wait_or_kill_unless(
     }
 }
 
-/// Start an external helper (qlmanage, mdfind). A spawn that fails with
-/// "text file busy" (ETXTBSY) is retried briefly: it happens when another
-/// thread forks while the program file is still open for writing, which the
-/// tests' stand-in scripts hit when the suite runs in parallel.
+/// What to change in the environment `vars` so a program from the host
+/// system runs as if started outside the AppImage: each value is set anew,
+/// or unset with `None`. Empty when not running from an AppImage.
+///
+/// The AppImage's AppRun points `LD_LIBRARY_PATH`, `PATH`, `XDG_DATA_DIRS`,
+/// GTK's and GIO's variables and more into its mount, `$APPDIR`. Inherited,
+/// they make the host's `gio` load the AppImage's older GLib and fail
+/// ("undefined symbol"), and would hand the same libraries to the app it
+/// opens. The original values aren't kept, so the mount's entries are taken
+/// out of each list, and variables left empty are unset.
+fn host_env_changes(
+    vars: impl IntoIterator<Item = (String, String)>,
+) -> Vec<(String, Option<String>)> {
+    let vars: Vec<(String, String)> = vars.into_iter().collect();
+    let appdir = vars
+        .iter()
+        .find(|(key, _)| key == "APPDIR")
+        .map(|(_, value)| value.trim_end_matches('/'))
+        .filter(|appdir| !appdir.is_empty());
+    let Some(appdir) = appdir else {
+        return Vec::new();
+    };
+    let inside = |entry: &str| entry == appdir || entry.starts_with(&format!("{appdir}/"));
+    let mut changes = Vec::new();
+    for (key, value) in &vars {
+        if matches!(key.as_str(), "APPDIR" | "APPIMAGE" | "ARGV0") {
+            changes.push((key.clone(), None));
+            continue;
+        }
+        if !value.split(':').any(inside) {
+            continue;
+        }
+        let kept: Vec<&str> = value.split(':').filter(|e| !e.is_empty() && !inside(e)).collect();
+        changes.push((key.clone(), (!kept.is_empty()).then(|| kept.join(":"))));
+    }
+    changes
+}
+
+fn apply_env_changes(command: &mut std::process::Command, changes: Vec<(String, Option<String>)>) {
+    for (key, value) in changes {
+        match value {
+            Some(value) => command.env(key, value),
+            None => command.env_remove(key),
+        };
+    }
+}
+
+/// Give `command` the host's environment rather than the AppImage's (see
+/// `host_env_changes`); a no-op outside an AppImage.
+pub fn host_env(command: &mut std::process::Command) {
+    let vars = std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)));
+    apply_env_changes(command, host_env_changes(vars));
+}
+
+/// Start an external helper (qlmanage, mdfind, gio, xdg-open) with the
+/// host's environment. A spawn that fails with "text file busy" (ETXTBSY) is
+/// retried briefly: it happens when another thread forks while the program
+/// file is still open for writing, which the tests' stand-in scripts hit
+/// when the suite runs in parallel.
 pub fn spawn_helper(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    host_env(command);
     let mut attempt = 0;
     loop {
         match command.spawn() {
@@ -379,7 +436,9 @@ pub fn window_buttons() -> WindowButtons {
             end: Vec::new(),
         };
     }
-    let output = std::process::Command::new("gsettings")
+    let mut gsettings = std::process::Command::new("gsettings");
+    host_env(&mut gsettings);
+    let output = gsettings
         .args(["get", "org.gnome.desktop.wm.preferences", "button-layout"])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -896,6 +955,71 @@ mod tests {
         let mut child = spawn_helper(&mut std::process::Command::new(&path)).unwrap();
         assert!(child.wait().unwrap().success());
         release.join().unwrap();
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn host_programs_lose_what_the_appimage_added_to_the_environment() {
+        // What the AppImage's AppRun sets (from a real 0.5.1 launch), next
+        // to the user's own variables.
+        let m = "/tmp/.mount_file-bgdPIhE";
+        let env = vars(&[
+            ("APPDIR", m),
+            ("APPIMAGE", "/home/me/.local/bin/file-browser.AppImage"),
+            ("ARGV0", "/home/me/.local/bin/file-browser.AppImage"),
+            ("LD_LIBRARY_PATH", &format!("{m}/usr/lib/:{m}/usr/lib/x86_64-linux-gnu/")),
+            ("PATH", &format!("{m}/usr/bin/:{m}/bin/:/home/me/.cargo/bin:/usr/bin")),
+            ("XDG_DATA_DIRS", &format!("{m}/usr/share/:{m}/usr/share:/usr/share:/usr/local/share/")),
+            ("GTK_DATA_PREFIX", m),
+            ("GIO_MODULE_DIR", &format!("{m}//usr/lib/gio/modules")),
+            ("PYTHONPATH", &format!("{m}/usr/share/pyshared/:")),
+            ("HOME", "/home/me"),
+            // Another folder whose name merely starts like the mount stays.
+            ("MY_TOOLS", &format!("{m}-other/bin:/opt/tools")),
+        ]);
+        let mut changes = host_env_changes(env);
+        changes.sort();
+        let set = |k: &str, v: &str| (k.to_string(), Some(v.to_string()));
+        let unset = |k: &str| (k.to_string(), None);
+        assert_eq!(
+            changes,
+            vec![
+                unset("APPDIR"),
+                unset("APPIMAGE"),
+                unset("ARGV0"),
+                unset("GIO_MODULE_DIR"),
+                unset("GTK_DATA_PREFIX"),
+                unset("LD_LIBRARY_PATH"),
+                set("PATH", "/home/me/.cargo/bin:/usr/bin"),
+                unset("PYTHONPATH"),
+                set("XDG_DATA_DIRS", "/usr/share:/usr/local/share/"),
+            ]
+        );
+    }
+
+    #[test]
+    fn outside_an_appimage_the_environment_is_left_alone() {
+        let env = vars(&[("PATH", "/usr/bin"), ("LD_LIBRARY_PATH", "/opt/lib")]);
+        assert!(host_env_changes(env).is_empty());
+        assert!(host_env_changes(vars(&[("APPDIR", ""), ("PATH", "/usr/bin")])).is_empty());
+    }
+
+    #[test]
+    fn a_command_gets_the_host_environment() {
+        let mut command = std::process::Command::new("gio");
+        apply_env_changes(
+            &mut command,
+            vec![
+                ("LD_LIBRARY_PATH".to_string(), None),
+                ("PATH".to_string(), Some("/usr/bin".to_string())),
+            ],
+        );
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.contains(&(std::ffi::OsStr::new("LD_LIBRARY_PATH"), None)));
+        assert!(envs.contains(&(std::ffi::OsStr::new("PATH"), Some(std::ffi::OsStr::new("/usr/bin")))));
     }
 
     #[cfg(unix)]
