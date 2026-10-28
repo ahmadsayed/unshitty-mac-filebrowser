@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use n0_future::{BufferedStreamExt, StreamExt, stream};
 use serde::Serialize;
 use tokio::sync::OnceCell;
 use zeroize::Zeroizing;
@@ -17,6 +18,9 @@ use crate::share::identity;
 use crate::share::link::{LinkKind, ShareId, ShareLink};
 use crate::share::location::{ShareLocation, safe_name};
 use crate::share::registry::{AccessEntry, Received, ReceivedList, Registry, Share};
+
+/// How many received shares are checked at once when listing them.
+const RECEIVED_CHECKS: usize = 8;
 
 struct Node {
     host: Host,
@@ -300,11 +304,16 @@ impl ShareState {
             return Ok(Vec::new());
         }
         let node = self.node(versions_hint).await?;
-        let mut out = Vec::with_capacity(list.items.len());
+        // A sharer that is offline costs a whole connect timeout, so check
+        // several at once instead of letting them add up.
+        let mut checks = Vec::with_capacity(list.items.len());
         for item in &list.items {
-            out.push(received_view(item, node.guest.status(item).await));
+            checks.push(async move { received_view(item, node.guest.status(item).await) });
         }
-        Ok(out)
+        Ok(stream::iter(checks)
+            .buffered_ordered(RECEIVED_CHECKS)
+            .collect()
+            .await)
     }
 
     pub fn remove_received(&self, id: &str) -> Result<(), String> {
@@ -492,6 +501,41 @@ mod tests {
         assert!(state.shares(no_hint()).await.unwrap().is_empty());
         assert!(state.received(no_hint()).await.unwrap().is_empty());
         assert!(!tmp.path().join("config/share-key").exists());
+    }
+
+    #[tokio::test]
+    async fn offline_received_shares_are_checked_together() {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let tmp = tempfile::tempdir().unwrap();
+            let host = test_state(tmp.path(), "host");
+            let guest = test_state(tmp.path(), "guest");
+            for name in ["One", "Two", "Three"] {
+                let folder = tmp.path().join(name);
+                fs::create_dir_all(&folder).unwrap();
+                let info = host.share_folder(&folder, |_| false, no_hint()).await.unwrap();
+                let link = host
+                    .create_link(&info.id, "anyone", None, None, no_hint())
+                    .await
+                    .unwrap();
+                guest.add_received(&link.link, None, no_hint()).await.unwrap();
+            }
+            stop_node(host).await;
+
+            // Each check of a sharer that is gone waits out the connect
+            // timeout; one after another, three would take three of them.
+            let started = std::time::Instant::now();
+            let received = guest.received(no_hint()).await.unwrap();
+            let elapsed = started.elapsed();
+            assert_eq!(
+                received.iter().map(|r| r.folder.as_str()).collect::<Vec<_>>(),
+                vec!["One", "Two", "Three"]
+            );
+            assert!(received.iter().all(|r| r.status == "offline"), "{received:?}");
+            assert!(elapsed < crate::share::guest::CONNECT_TIMEOUT * 2, "took {elapsed:?}");
+            stop_node(guest).await;
+        })
+        .await
+        .expect("timed out");
     }
 
     #[tokio::test]

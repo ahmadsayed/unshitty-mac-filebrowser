@@ -494,6 +494,20 @@ test("protected sharing commands detect protection, require unlocking and preser
   mock.reset();
 });
 
+test("listing received shares can be held like a slow sharer", async () => {
+  const mock = (globalThis as unknown as { __mockShare: { holdReceived(hold: boolean): void } }).__mockShare;
+  mock.holdReceived(true);
+  let answered = false;
+  const listing = invoke("list_received").then((list) => {
+    answered = true;
+    return list;
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(answered).toBe(false);
+  mock.holdReceived(false);
+  expect(await listing).toEqual([]);
+});
+
 type MockOps = { hold(): void; held(): number; step(bytes: number): void; release(): void; reset(): void };
 const mockOps = () => (globalThis as unknown as { __mockOps: MockOps }).__mockOps;
 

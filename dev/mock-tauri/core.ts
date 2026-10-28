@@ -287,6 +287,8 @@ let mockShares: Array<{
   access: Array<{ id: string; kind: "anyone" | "person"; name: string; link: string; bound: boolean; protected: boolean }>;
 }> = [];
 let mockReceived: Array<{ id: string; link: string; ticket: string; folder: string; sharer: string }> = [];
+let receivedHeld = false;
+const receivedWaiters: (() => void)[] = [];
 let mockShareSeq = 0;
 let mockLinkSeq = 0;
 let mockSharersOnline = true;
@@ -495,7 +497,11 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     mockReceived.push(item);
     return receivedView(item);
   },
-  list_received: () => mockReceived.map(receivedView),
+  // Held by tests to stand in for sharers that take a connect timeout to answer.
+  list_received: async () => {
+    if (receivedHeld) await new Promise<void>((resolve) => receivedWaiters.push(resolve));
+    return mockReceived.map(receivedView);
+  },
   remove_received: (a) => {
     mockReceived = mockReceived.filter((item) => item.id !== str(a, "id"));
   },
@@ -514,6 +520,10 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
   },
   setNoAccess(value: boolean) {
     mockNoAccess = value;
+  },
+  holdReceived(hold: boolean) {
+    receivedHeld = hold;
+    if (!hold) receivedWaiters.splice(0).forEach((resolve) => resolve());
   },
   change(_path: string) {},
   reset() {

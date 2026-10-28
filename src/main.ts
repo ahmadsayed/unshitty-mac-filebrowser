@@ -5023,7 +5023,6 @@ async function buildSidebar(): Promise<void> {
   } catch {
     driveAccount = null;
   }
-  await refreshShares();
 
   const tryDir = async (fn: () => Promise<string>) => {
     try {
@@ -5289,7 +5288,13 @@ async function init(): Promise<void> {
     requested && (requested.startsWith("/") || isPseudo(requested) || isCloud(requested) || isSharePath(requested))
       ? requested
       : home || "/";
+  // Checking received shares waits on every sharer, a connect timeout for
+  // each offline one, so only a share needs it before the first view. The
+  // emblems on shared folders appear once it is done.
+  const shares = refreshShares();
+  if (isSharePath(initial)) await shares;
   await navigate(initial, { history: "none" });
+  void shares.then(() => renderWindow(true));
   tabs.push(tabSnapshot());
   activeTab = 0;
   renderTabbar();
