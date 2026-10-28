@@ -343,9 +343,11 @@ mod tests {
     #[test]
     fn decoding_one_at_a_time_still_produces_every_thumbnail() {
         // The decode lock serializes work; concurrent requests must all
-        // succeed, just in sequence.
+        // succeed, just in sequence. Call the decoder directly: thumbnail()
+        // can take Quick Look on macOS and never exercise this lock.
         let dir = tempdir().unwrap();
         let cache = dir.path().join("cache");
+        fs::create_dir(&cache).unwrap();
         let paths: Vec<PathBuf> = (0..4)
             .map(|i| {
                 let p = dir.path().join(format!("photo-{i}.png"));
@@ -358,11 +360,15 @@ mod tests {
             .into_iter()
             .map(|p| {
                 let cache = cache.clone();
-                std::thread::spawn(move || thumbnail(&p, 96, &cache).map(|t| t.is_some()))
+                std::thread::spawn(move || {
+                    let out = cache.join(p.file_name().unwrap());
+                    assert!(decode_image(&p, 96, &out));
+                    assert_eq!(image::image_dimensions(&out).unwrap(), (96, 96));
+                })
             })
             .collect();
         for h in handles {
-            assert_eq!(h.join().unwrap(), Ok(true));
+            h.join().unwrap();
         }
     }
 

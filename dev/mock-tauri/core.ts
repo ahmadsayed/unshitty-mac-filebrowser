@@ -284,13 +284,46 @@ let mockShareName: string | null = null;
 let mockShares: Array<{
   id: string;
   path: string;
-  access: Array<{ id: string; kind: "anyone" | "person"; name: string; link: string; bound: boolean }>;
+  access: Array<{ id: string; kind: "anyone" | "person"; name: string; link: string; bound: boolean; protected: boolean }>;
 }> = [];
 let mockReceived: Array<{ id: string; link: string; ticket: string; folder: string; sharer: string }> = [];
 let mockShareSeq = 0;
 let mockLinkSeq = 0;
 let mockSharersOnline = true;
 let mockNoAccess = false;
+
+// Simulate unlocking in memory. Real cryptography is exercised by Rust tests.
+const mockProtectedLinks = new Map<string, { ticket: string; passphrase: string }>();
+let mockProtectedSeq = 0;
+
+function mockShareTicket(text: string): string {
+  let link = text.trim();
+  if (link.startsWith("<") && link.endsWith(">")) link = link.slice(1, -1).trim();
+  link = link.toLowerCase();
+  const ticket = link.startsWith("share://") ? link.slice("share://".length).replace(/\/$/, "") : "";
+  if (!ticket || !/^[a-z0-9-]+$/.test(ticket) || ticket.startsWith("bad")) throw "This isn't a share link.";
+  if (ticket.startsWith("future")) throw "This link needs a newer version of Files.";
+  if (ticket.startsWith("locked") && !mockProtectedLinks.has(ticket)) throw "This isn't a share link.";
+  return ticket;
+}
+
+function protectMockShare(link: string, passphrase: string): string {
+  if (!passphrase) throw "Enter a passphrase.";
+  if (new TextEncoder().encode(passphrase).length > 1024) throw "Use a passphrase of at most 1,024 bytes.";
+  const ticket = mockShareTicket(link);
+  const protectedLink = mockLink(`locked${++mockProtectedSeq}`);
+  mockProtectedLinks.set(protectedLink.slice("share://".length), { ticket, passphrase });
+  return protectedLink;
+}
+
+function unlockMockShare(link: string, passphrase?: string): string {
+  const ticket = mockShareTicket(link);
+  const protectedLink = mockProtectedLinks.get(ticket);
+  if (!protectedLink) return ticket;
+  if (passphrase === undefined || passphrase === null) throw "This share link requires a passphrase.";
+  if (passphrase !== protectedLink.passphrase) throw "Incorrect passphrase or damaged share link.";
+  return protectedLink.ticket;
+}
 
 function listShare(path: string): Entry[] {
   if (!mockSharersOnline) throw "Ahmed is offline.";
@@ -342,7 +375,7 @@ function shareProperties(path: string) {
   };
 }
 
-function accessView(entry: { id: string; kind: "anyone" | "person"; name: string; bound: boolean }) {
+function accessView(entry: { id: string; kind: "anyone" | "person"; name: string; bound: boolean; protected: boolean }) {
   const state = entry.bound ? (mockSharersOnline ? "online" : "offline") : "unused";
   return {
     id: entry.id,
@@ -350,6 +383,7 @@ function accessView(entry: { id: string; kind: "anyone" | "person"; name: string
     name: entry.name,
     state,
     visitors: entry.bound ? 1 : 0,
+    protected: entry.protected,
   };
 }
 
@@ -408,18 +442,29 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
   create_link: (a) => {
     const share = mockShares.find((item) => item.id === str(a, "share"));
     if (!share) throw "This folder is no longer shared.";
-    const kind = str(a, "kind") === "person" ? "person" : "anyone";
+    const kind = str(a, "kind");
+    if (kind !== "anyone" && kind !== "person") throw "Unknown link kind.";
+    const person = (a.person as string | undefined)?.trim();
+    if (kind === "person" && !person) throw "Enter a name for this person.";
+    const passphrase = a.passphrase as string | undefined;
+    if (kind === "anyone" && passphrase == null) {
+      const existing = share.access.find((entry) => entry.kind === "anyone" && !entry.protected);
+      if (existing) return { link: existing.link, entry: accessView(existing) };
+    }
     const entry = {
       id: `entry-${++mockLinkSeq}`,
       kind: kind as "anyone" | "person",
-      name: kind === "person" ? (a.person as string) ?? "Guest" : "",
+      name: kind === "person" ? person! : "Anyone with the link",
       link: "",
       bound: false,
+      protected: passphrase != null,
     };
     entry.link = mockLink(`own${share.id}${entry.id}`);
+    if (passphrase != null) entry.link = protectMockShare(entry.link, passphrase);
     share.access.push(entry);
     return { link: entry.link, entry: accessView(entry) };
   },
+  share_link_requires_passphrase: (a) => mockProtectedLinks.has(mockShareTicket(str(a, "link"))),
   share_link: (a) => {
     const share = mockShares.find((item) => item.id === str(a, "share"));
     const entry = share?.access.find((item) => item.id === str(a, "entry"));
@@ -434,12 +479,8 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     mockShares = mockShares.filter((item) => item.id !== str(a, "share"));
   },
   add_received: (a) => {
-    let link = str(a, "link").trim();
-    if (link.startsWith("<") && link.endsWith(">")) link = link.slice(1, -1).trim();
-    link = link.toLowerCase();
-    const ticket = link.startsWith("share://") ? link.slice("share://".length).replace(/\/$/, "") : null;
-    // A ticket starting "bad" stands for one that doesn't decode.
-    if (!ticket || !/^[a-z0-9-]+$/.test(ticket) || ticket.startsWith("bad")) throw "This isn't a share link.";
+    const link = str(a, "link");
+    const ticket = unlockMockShare(link, a.passphrase as string | undefined);
     if (ticket.startsWith("own")) throw "This is your own shared folder.";
     if (mockReceived.some((item) => item.ticket === ticket)) {
       throw "This folder is already in Network.";
@@ -467,6 +508,7 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
 };
 
 (globalThis as Record<string, unknown>).__mockShare = {
+  protect: protectMockShare,
   setOnline(online: boolean) {
     mockSharersOnline = online;
   },
@@ -475,6 +517,8 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
   },
   change(_path: string) {},
   reset() {
+    mockProtectedLinks.clear();
+    mockProtectedSeq = 0;
     mockShareName = null;
     mockShares = [];
     mockReceived = [];

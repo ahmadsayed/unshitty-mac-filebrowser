@@ -1,6 +1,6 @@
 [package]
 name = "filebrowser"
-version = "0.4.2"
+version = "0.5.0"
 description = "A GNOME Files-style file browser for macOS and Linux"
 authors = ["you"]
 edition = "2024"
@@ -49,6 +49,9 @@ bao-tree = "0.16"
 n0-future = "0.3"
 postcard = { version = "1", features = ["use-std"] }
 data-encoding = "2"
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "zeroize"] }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+zeroize = "1"
 tokio = { version = "1", features = ["sync", "rt", "time"] }
 
 

@@ -25,6 +25,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::watch;
+use zeroize::Zeroizing;
 
 /// Concurrent visitors (distinct keys with an open connection), D13.
 pub const MAX_VISITORS: usize = 32;
@@ -803,29 +804,41 @@ impl Host {
         done.map(|()| id)
     }
 
-    /// A new link (the Anyone link is reused), saved before it is returned.
+    /// A new invitation, saved before returning it. Encrypt outside the state
+    /// lock so key derivation cannot stall authorization or other visitors.
     pub async fn create_link(
         &self,
         share: &ShareId,
         kind: LinkKind,
         person: Option<String>,
+        passphrase: Option<Zeroizing<String>>,
     ) -> Result<(String, AccessEntry), String> {
-        let (entry, sharer) = {
+        let mut entry = AccessEntry::new(kind, person.as_deref())?;
+        let sharer = {
+            let st = self.inner.lock();
+            st.folder(share).ok_or("This folder isn't shared.")?;
+            st.registry.name.clone().unwrap_or_default()
+        };
+        if let Some(passphrase) = passphrase {
+            let ticket = ShareLink {
+                addr: self.addr(),
+                share: *share,
+                token: entry.token,
+                kind,
+                sharer: sharer.clone(),
+            };
+            entry.encrypted_link = Some(ticket.protect(passphrase).await?);
+        }
+        let entry = {
             let mut st = self.inner.lock();
             let mut next = st.registry.clone();
-            let entry = next.create_link(share, kind, person.as_deref())?;
+            let entry = next.add_link(share, entry)?;
             next.save(&self.inner.registry_path)?;
             st.registry = next;
-            (entry, st.registry.name.clone().unwrap_or_default())
+            entry
         };
-        let link = ShareLink {
-            addr: self.addr(),
-            share: *share,
-            token: entry.token,
-            kind,
-            sharer,
-        };
-        Ok((link.encode(), entry))
+        let link = entry.link(self.addr(), *share, sharer);
+        Ok((link, entry))
     }
 
     /// Delete one link; whoever loses access is disconnected at once. An
@@ -975,7 +988,7 @@ mod tests {
 
     async fn link(host: &Host, share: ShareId) -> (ShareLink, AccessEntry) {
         let (text, entry) = host
-            .create_link(&share, LinkKind::Person, Some("Bob".into()))
+            .create_link(&share, LinkKind::Person, Some("Bob".into()), None)
             .await
             .unwrap();
         (ShareLink::decode(&text).unwrap(), entry)

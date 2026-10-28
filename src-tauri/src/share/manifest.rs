@@ -614,7 +614,8 @@ mod tests {
         fs::set_permissions(p.join("locked"), fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    #[cfg(unix)]
+    // Linux permits non-UTF-8 names; macOS filesystems refuse creating them.
+    #[cfg(target_os = "linux")]
     #[test]
     fn non_utf8_names_are_left_out() {
         use std::os::unix::ffi::OsStrExt;

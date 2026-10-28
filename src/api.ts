@@ -217,6 +217,7 @@ export interface AccessEntry {
   name: string;
   state: LinkState;
   visitors: number;
+  protected: boolean;
 }
 
 export interface ShareInfo {
@@ -268,9 +269,14 @@ export async function listShares(): Promise<ShareSummary[]> {
 export async function createShareLink(
   share: string,
   kind: "anyone" | "person",
-  person?: string
+  person?: string,
+  passphrase?: string
 ): Promise<LinkResult> {
-  return invoke<LinkResult>("create_link", { share, kind, person });
+  return invoke<LinkResult>("create_link", { share, kind, person, passphrase });
+}
+
+export async function shareLinkRequiresPassphrase(link: string): Promise<boolean> {
+  return invoke<boolean>("share_link_requires_passphrase", { link });
 }
 
 export async function shareLinkFor(share: string, entry: string): Promise<string> {
@@ -285,8 +291,8 @@ export async function stopSharing(share: string): Promise<void> {
   return invoke<void>("stop_sharing", { share });
 }
 
-export async function addReceived(link: string): Promise<ReceivedShare> {
-  return invoke<ReceivedShare>("add_received", { link });
+export async function addReceived(link: string, passphrase?: string): Promise<ReceivedShare> {
+  return invoke<ReceivedShare>("add_received", { link, passphrase });
 }
 
 export async function listReceived(): Promise<ReceivedShare[]> {

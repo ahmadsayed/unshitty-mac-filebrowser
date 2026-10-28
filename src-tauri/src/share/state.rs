@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tokio::sync::OnceCell;
+use zeroize::Zeroizing;
 
 use crate::share::guest::{Guest, Status};
 use crate::share::host::{Host, VersionsHint};
@@ -40,6 +41,7 @@ pub struct AccessView {
     pub name: String,
     pub state: &'static str,
     pub visitors: usize,
+    pub protected: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,10 +106,9 @@ impl ShareState {
             .get_or_try_init(|| async {
                 let identity = identity::load_or_create(&self.config_dir)?;
                 #[cfg(test)]
-                let preset = iroh::endpoint::presets::Minimal;
+                let endpoint = crate::share::test_endpoint_for(identity.key.clone()).await;
                 #[cfg(not(test))]
-                let preset = iroh::endpoint::presets::N0;
-                let endpoint = iroh::Endpoint::builder(preset)
+                let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
                     .secret_key(identity.key.clone())
                     .bind()
                     .await
@@ -203,8 +204,10 @@ impl ShareState {
         share: &str,
         kind: &str,
         person: Option<String>,
+        passphrase: Option<String>,
         versions_hint: VersionsHint,
     ) -> Result<LinkResult, String> {
+        let passphrase = passphrase.map(Zeroizing::new);
         let id = parse_share_id(share)?;
         let kind = match kind {
             "anyone" => LinkKind::Anyone,
@@ -212,7 +215,7 @@ impl ShareState {
             _ => return Err("Unknown link kind.".into()),
         };
         let node = self.node(versions_hint).await?;
-        let (link, entry) = node.host.create_link(&id, kind, person).await?;
+        let (link, entry) = node.host.create_link(&id, kind, person, passphrase).await?;
         let online = node.host.online();
         Ok(LinkResult {
             link,
@@ -239,14 +242,7 @@ impl ShareState {
             .find(|access| access.id == entry)
             .ok_or_else(|| "This link no longer exists.".to_string())?;
         let node = self.node(versions_hint).await?;
-        Ok(ShareLink {
-            addr: node.host.addr(),
-            share: id,
-            token: access.token,
-            kind: access.kind,
-            sharer: registry.name.clone().unwrap_or_default(),
-        }
-        .encode())
+        Ok(access.link(node.host.addr(), id, registry.name.clone().unwrap_or_default()))
     }
 
     pub async fn remove_access(
@@ -273,9 +269,10 @@ impl ShareState {
     pub async fn add_received(
         &self,
         text: &str,
+        passphrase: Option<String>,
         versions_hint: VersionsHint,
     ) -> Result<ReceivedShare, String> {
-        let link = ShareLink::decode(text)?;
+        let link = ShareLink::decode_pasted(text, passphrase).await?;
         let mut list = self.read_received()?;
         if list
             .items
@@ -418,6 +415,7 @@ fn access_view(entry: &AccessEntry, online: &[iroh::PublicKey]) -> AccessView {
         name: entry.name.clone(),
         state,
         visitors: entry.visitors.len(),
+        protected: entry.encrypted_link.is_some(),
     }
 }
 
@@ -467,6 +465,24 @@ mod tests {
         Box::new(|_, _, _| None)
     }
 
+    fn test_state(root: &Path, name: &str) -> ShareState {
+        ShareState::new(root.join(format!("{name}-config")), root.join(format!("{name}-cache")))
+    }
+
+    async fn stop_node(state: ShareState) {
+        if let Some(node) = state.node.into_inner() {
+            node.host.shutdown().await;
+            drop(node.guest);
+        }
+    }
+
+    async fn test_share(host: &ShareState, root: &Path) -> ShareInfo {
+        let folder = root.join("Shared");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("private.txt"), b"private file contents").unwrap();
+        host.share_folder(&folder, |_| false, no_hint()).await.unwrap()
+    }
+
     #[tokio::test]
     async fn the_node_starts_only_when_needed() {
         let tmp = tempfile::tempdir().unwrap();
@@ -496,7 +512,7 @@ mod tests {
                 .unwrap();
             assert_eq!(info.status, "ok");
             let link = host
-                .create_link(&info.id, "anyone", None, no_hint())
+                .create_link(&info.id, "anyone", None, None, no_hint())
                 .await
                 .unwrap();
             assert!(link.link.starts_with("share://"));
@@ -511,7 +527,7 @@ mod tests {
                 tmp.path().join("guest-config"),
                 tmp.path().join("guest-cache"),
             );
-            let received = guest.add_received(&link.link, no_hint()).await.unwrap();
+            let received = guest.add_received(&link.link, None, no_hint()).await.unwrap();
             assert_eq!(received.folder, "Shared");
             assert_eq!(
                 guest.received(no_hint()).await.unwrap()[0].status,
@@ -552,6 +568,101 @@ mod tests {
         .expect("timed out");
     }
 
+    #[tokio::test]
+    async fn a_protected_person_link_unlocks_before_claiming_and_remembers_the_device() {
+        tokio::time::timeout(Duration::from_secs(180), async {
+            let tmp = tempfile::tempdir().unwrap();
+            let host = test_state(tmp.path(), "host");
+            let info = test_share(&host, tmp.path()).await;
+            let passphrase = "a violet river beneath the lantern";
+            let made = host.create_link(
+                &info.id, "person", Some("Sara".into()), Some(passphrase.into()), no_hint(),
+            ).await.unwrap();
+            assert!(made.entry.protected);
+            assert_eq!(host.link(&info.id, &made.entry.id, no_hint()).await.unwrap(), made.link);
+            let saved = fs::read_to_string(host.shares_path()).unwrap();
+            assert!(saved.contains(&made.link));
+            assert!(!saved.contains(passphrase));
+
+            let guest = test_state(tmp.path(), "guest");
+            assert_eq!(
+                guest.add_received(&made.link, None, no_hint()).await.unwrap_err(),
+                super::super::link::PASSPHRASE_REQUIRED,
+            );
+            assert_eq!(
+                guest.add_received(&made.link, Some("Sara".into()), no_hint()).await.unwrap_err(),
+                "Incorrect passphrase or damaged share link.",
+            );
+            assert!(guest.node.get().is_none());
+            assert!(!guest.config_dir.exists());
+            assert!(host.read_registry().unwrap().shares[0].access[0].bound.is_none());
+
+            let received = guest.add_received(&made.link, Some(passphrase.into()), no_hint()).await.unwrap();
+            let root = format!("share://{}", received.id);
+            let entries = guest.list_dir(&root, false, no_hint()).await.unwrap();
+            assert_eq!(entries[0].name, "private.txt");
+            let copy = guest.open(&entries[0].path, no_hint(), &crate::progress::Progress::default()).await.unwrap();
+            assert_eq!(fs::read(copy).unwrap(), b"private file contents");
+            let saved = fs::read_to_string(guest.received_path()).unwrap();
+            assert!(!saved.contains(passphrase));
+            assert!(!saved.contains(&made.link)); // the authorized device stores its unlocked capability
+
+            let other = test_state(tmp.path(), "other");
+            assert_eq!(
+                other.add_received(&made.link, Some(passphrase.into()), no_hint()).await.unwrap_err(),
+                "This link was already used on another computer.",
+            );
+            assert!(!other.received_path().exists());
+            stop_node(other).await;
+
+            stop_node(guest).await;
+            let guest = test_state(tmp.path(), "guest");
+            assert_eq!(guest.received(no_hint()).await.unwrap()[0].status, "online");
+            assert_eq!(guest.list_dir(&root, false, no_hint()).await.unwrap().len(), 1);
+            host.remove_access(&info.id, &made.entry.id, no_hint()).await.unwrap();
+            assert_eq!(guest.received(no_hint()).await.unwrap()[0].status, "no-access");
+            stop_node(guest).await;
+            stop_node(host).await;
+        }).await.expect("protected person flow timed out");
+    }
+
+    #[tokio::test]
+    async fn protected_anyone_links_are_fresh_and_copy_encrypted_after_restart() {
+        tokio::time::timeout(Duration::from_secs(180), async {
+            let tmp = tempfile::tempdir().unwrap();
+            let host = test_state(tmp.path(), "host");
+            let info = test_share(&host, tmp.path()).await;
+            let plain = host.create_link(&info.id, "anyone", None, None, no_hint()).await.unwrap();
+            assert!(!plain.entry.protected);
+            let passphrase = "a strong separate invitation secret";
+            let first = host.create_link(&info.id, "anyone", None, Some(passphrase.into()), no_hint()).await.unwrap();
+            let second = host.create_link(&info.id, "anyone", None, Some(passphrase.into()), no_hint()).await.unwrap();
+            let again = host.create_link(&info.id, "anyone", None, None, no_hint()).await.unwrap();
+            assert_eq!(again.link, plain.link);
+            let registry = host.read_registry().unwrap();
+            let tokens: std::collections::HashSet<_> = registry.shares[0].access.iter().map(|e| e.token).collect();
+            assert_eq!(tokens.len(), 3);
+
+            let a = test_state(tmp.path(), "a");
+            let b = test_state(tmp.path(), "b");
+            a.add_received(&first.link, Some(passphrase.into()), no_hint()).await.unwrap();
+            b.add_received(&second.link, Some(passphrase.into()), no_hint()).await.unwrap();
+            host.remove_access(&info.id, &first.entry.id, no_hint()).await.unwrap();
+            assert_eq!(a.received(no_hint()).await.unwrap()[0].status, "no-access");
+            assert_eq!(b.received(no_hint()).await.unwrap()[0].status, "online");
+            stop_node(a).await;
+            stop_node(b).await;
+            stop_node(host).await;
+
+            let restarted = test_state(tmp.path(), "host");
+            let copied = restarted.link(&info.id, &second.entry.id, no_hint()).await.unwrap();
+            assert_eq!(copied, second.link);
+            assert!(ShareLink::requires_passphrase(&copied).unwrap());
+            assert_eq!(restarted.read_registry().unwrap().shares[0].access.len(), 2);
+            stop_node(restarted).await;
+        }).await.expect("protected anyone flow timed out");
+    }
+
     #[test]
     fn access_states_follow_the_visitor_keys() {
         let key = iroh::SecretKey::from_bytes(&[7; 32]).public();
@@ -562,6 +673,7 @@ mod tests {
             token: [0; 32],
             bound,
             visitors,
+            encrypted_link: None,
         };
 
         assert_eq!(access_view(&entry(LinkKind::Anyone, None, vec![]), &[]).state, "unused");

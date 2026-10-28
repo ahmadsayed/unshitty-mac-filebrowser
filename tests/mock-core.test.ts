@@ -470,6 +470,30 @@ test("unknown commands are reported", async () => {
   await expect(invoke("nope")).rejects.toMatch(/unknown command nope/);
 });
 
+test("protected sharing commands detect protection, require unlocking and preserve copied links", async () => {
+  const mock = (globalThis as unknown as {
+    __mockShare: { reset(): void; protect(link: string, passphrase: string): string };
+  }).__mockShare;
+  mock.reset();
+  const share = await invoke<{ id: string }>("share_folder", { path: `${HOME}/Documents` });
+  const plain = await invoke<{ link: string; entry: { id: string; protected: boolean } }>("create_link", { share: share.id, kind: "anyone" });
+  const made = await invoke<typeof plain>("create_link", { share: share.id, kind: "anyone", passphrase: "violet river lantern" });
+  expect(made.entry.protected).toBe(true);
+  expect(made.entry.id).not.toBe(plain.entry.id);
+  expect(await invoke("share_link", { share: share.id, entry: made.entry.id })).toBe(made.link);
+  expect(await invoke("share_link_requires_passphrase", { link: plain.link })).toBe(false);
+  expect(await invoke("share_link_requires_passphrase", { link: `<${made.link.toUpperCase()}/>` })).toBe(true);
+  await expect(invoke("share_link_requires_passphrase", { link: "bad" })).rejects.toMatch(/share link/);
+  await expect(invoke("share_link_requires_passphrase", { link: "share://future" })).rejects.toMatch(/newer version/);
+  await expect(invoke("create_link", { share: share.id, kind: "person", person: "Sara", passphrase: "" })).rejects.toMatch(/Enter a passphrase/);
+  const remote = mock.protect("share://mockprotected", "A separate passphrase");
+  await expect(invoke("add_received", { link: remote })).rejects.toMatch(/requires a passphrase/);
+  await expect(invoke("add_received", { link: remote, passphrase: "Ahmed" })).rejects.toMatch(/Incorrect passphrase/);
+  expect(await invoke("list_received")).toEqual([]);
+  expect(await invoke("add_received", { link: remote, passphrase: "A separate passphrase" })).toMatchObject({ folder: "Photos", status: "online" });
+  mock.reset();
+});
+
 type MockOps = { hold(): void; held(): number; step(bytes: number): void; release(): void; reset(): void };
 const mockOps = () => (globalThis as unknown as { __mockOps: MockOps }).__mockOps;
 

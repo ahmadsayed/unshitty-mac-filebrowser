@@ -1401,10 +1401,16 @@ async fn create_link(
     share: String,
     kind: String,
     person: Option<String>,
+    passphrase: Option<String>,
 ) -> Result<share::state::LinkResult, String> {
     state
-        .create_link(&share, &kind, person, share_versions_hint(&app))
+        .create_link(&share, &kind, person, passphrase, share_versions_hint(&app))
         .await
+}
+
+#[tauri::command]
+fn share_link_requires_passphrase(link: String) -> Result<bool, String> {
+    share::link::ShareLink::requires_passphrase(&link)
 }
 
 #[tauri::command]
@@ -1447,9 +1453,10 @@ async fn add_received(
     app: tauri::AppHandle,
     state: tauri::State<'_, share::state::ShareState>,
     link: String,
+    passphrase: Option<String>,
 ) -> Result<share::state::ReceivedShare, String> {
     state
-        .add_received(&link, share_versions_hint(&app))
+        .add_received(&link, passphrase, share_versions_hint(&app))
         .await
 }
 
@@ -1614,6 +1621,7 @@ pub fn run() {
             share_info,
             list_shares,
             create_link,
+            share_link_requires_passphrase,
             share_link,
             remove_access,
             stop_sharing,

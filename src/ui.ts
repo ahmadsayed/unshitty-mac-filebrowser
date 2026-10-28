@@ -305,6 +305,10 @@ export function openDialog(opts: {
   }
 
   const onKey = (e: KeyboardEvent) => {
+    // A nested prompt alone handles Enter/Escape; the dialog underneath must
+    // not submit or close while its caller is waiting for that prompt.
+    const dialogs = document.querySelectorAll(".dialog-layer");
+    if (dialogs[dialogs.length - 1] !== layer) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();

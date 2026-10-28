@@ -123,9 +123,38 @@ pub struct AccessEntry {
     /// Anyone links: every computer that opened it.
     #[serde(default, serialize_with = "ser_keys", deserialize_with = "de_keys")]
     pub visitors: Vec<iroh::PublicKey>,
+    /// The exact protected invitation for Copy Link; never store its passphrase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_link: Option<String>,
 }
 
 impl AccessEntry {
+    pub fn new(kind: LinkKind, person: Option<&str>) -> Result<Self, String> {
+        let name = match kind {
+            LinkKind::Anyone => "Anyone with the link".to_string(),
+            LinkKind::Person => match person.map(str::trim) {
+                Some(n) if !n.is_empty() => n.to_string(),
+                _ => return Err("Enter a name for this person.".into()),
+            },
+        };
+        Ok(Self {
+            id: short_id(),
+            kind,
+            name,
+            token: random_token(),
+            bound: None,
+            visitors: Vec::new(),
+            encrypted_link: None,
+        })
+    }
+
+    /// Protected invitations must always be copied in their encrypted form.
+    pub fn link(&self, addr: iroh::EndpointAddr, share: ShareId, sharer: String) -> String {
+        self.encrypted_link.clone().unwrap_or_else(|| {
+            ShareLink { addr, share, token: self.token, kind: self.kind, sharer }.encode()
+        })
+    }
+
     fn keys(&self) -> Vec<iroh::PublicKey> {
         match self.kind {
             LinkKind::Anyone => self.visitors.clone(),
@@ -207,33 +236,21 @@ impl Registry {
         Ok(id)
     }
 
-    pub fn create_link(
+    /// Reuse only the unprotected Anyone invitation. Protected invitations
+    /// always carry fresh tokens, independent of earlier plaintext links.
+    pub fn add_link(
         &mut self,
         share: &ShareId,
-        kind: LinkKind,
-        person: Option<&str>,
+        entry: AccessEntry,
     ) -> Result<AccessEntry, String> {
         let s = self.share_mut(share).ok_or("This folder isn't shared.")?;
-        if kind == LinkKind::Anyone {
-            if let Some(e) = s.access.iter().find(|e| e.kind == LinkKind::Anyone) {
+        if entry.kind == LinkKind::Anyone && entry.encrypted_link.is_none() {
+            if let Some(e) = s.access.iter().find(|e| {
+                e.kind == LinkKind::Anyone && e.encrypted_link.is_none()
+            }) {
                 return Ok(e.clone());
             }
         }
-        let name = match kind {
-            LinkKind::Anyone => "Anyone with the link".to_string(),
-            LinkKind::Person => match person.map(str::trim) {
-                Some(n) if !n.is_empty() => n.to_string(),
-                _ => return Err("Enter a name for this person.".into()),
-            },
-        };
-        let entry = AccessEntry {
-            id: short_id(),
-            kind,
-            name,
-            token: random_token(),
-            bound: None,
-            visitors: Vec::new(),
-        };
         s.access.push(entry.clone());
         Ok(entry)
     }
@@ -436,6 +453,18 @@ mod tests {
         Ok(())
     }
 
+    // Prepare and register ordinary invitations for the authorization tests.
+    impl Registry {
+        fn create_link(
+            &mut self,
+            share: &ShareId,
+            kind: LinkKind,
+            person: Option<&str>,
+        ) -> Result<AccessEntry, String> {
+            self.add_link(share, AccessEntry::new(kind, person)?)
+        }
+    }
+
     fn link_for(n: u8, share: u8) -> ShareLink {
         ShareLink {
             addr: iroh::EndpointAddr::new(key(n)),
@@ -533,6 +562,53 @@ mod tests {
     }
 
     #[test]
+    fn protected_anyone_invitations_have_independent_tokens_and_revocation() {
+        let (mut r, id) = setup();
+        let plain = r.create_link(&id, LinkKind::Anyone, None).unwrap();
+        let mut protected = AccessEntry::new(LinkKind::Anyone, None).unwrap();
+        protected.encrypted_link = Some("an encrypted ticket".into());
+        let protected = r.add_link(&id, protected).unwrap();
+        assert_ne!(plain.token, protected.token);
+        let again = r.create_link(&id, LinkKind::Anyone, None).unwrap();
+        assert_eq!(again.id, plain.id);
+        assert_eq!(r.shares[0].access.len(), 2);
+        assert_eq!(r.claim(&id, &plain.token, key(1), ok), Claimed::Ok);
+        assert_eq!(r.claim(&id, &protected.token, key(2), ok), Claimed::Ok);
+        assert_eq!(r.remove_access(&id, &protected.id), vec![key(2)]);
+        assert!(r.allowed(&id, &key(1)));
+        assert!(!r.allowed(&id, &key(2)));
+        assert_eq!(r.claim(&id, &protected.token, key(3), ok), Claimed::Denied(INVALID));
+    }
+
+    #[test]
+    fn older_registries_without_protection_fields_still_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("shares.json");
+        let old = serde_json::json!({
+            "name": "Ahmed",
+            "shares": [{
+                "id": "01".repeat(16),
+                "path": tmp.path(),
+                "access": [{
+                    "id": "old-link",
+                    "kind": "Anyone",
+                    "name": "Anyone with the link",
+                    "token": "02".repeat(32),
+                    "bound": null,
+                    "visitors": []
+                }]
+            }]
+        });
+        std::fs::write(&path, old.to_string()).unwrap();
+        let mut registry = Registry::load(&path).unwrap();
+        let entry = &registry.shares[0].access[0];
+        assert!(entry.encrypted_link.is_none());
+        let text = entry.link(iroh::EndpointAddr::new(key(1)), [1; 16], "Ahmed".into());
+        assert_eq!(ShareLink::decode(&text).unwrap().token, [2; 32]);
+        assert_eq!(registry.claim(&[1; 16], &[2; 32], key(2), ok), Claimed::Ok);
+    }
+
+    #[test]
     fn removing_the_anyone_link_cuts_off_its_visitors() {
         let (mut r, id) = setup();
         let e = r.create_link(&id, LinkKind::Anyone, None).unwrap();
@@ -565,6 +641,8 @@ mod tests {
         std::fs::write(&file, "x").unwrap();
         let trash = tmp.path().join("Trash");
         std::fs::create_dir(&trash).unwrap();
+        // The predicate receives canonical paths (/var is /private/var on macOS).
+        let trash = trash.canonicalize().unwrap();
         let ver = tmp.path().join(".versions").join("x");
         std::fs::create_dir_all(&ver).unwrap();
         let link = tmp.path().join("link");

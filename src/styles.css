@@ -1991,6 +1991,26 @@ kbd {
   overflow-y: auto;
 }
 
+.share-protection {
+  min-width: 0;
+  margin: 0 0 12px;
+  padding: 0;
+  border: none;
+}
+
+.share-passphrase-fields:not([hidden]) {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.share-protection-hint {
+  margin: 0;
+  font-size: 9.5pt;
+  line-height: 1.4;
+  opacity: var(--dim);
+}
+
 .share-empty {
   padding: 10px 0;
   opacity: var(--dim);
@@ -2084,4 +2104,3 @@ kbd {
 
 .operation-empty { padding: 6px; }
 .operation-cancel { min-width: 28px; width: 28px; height: 28px; flex-shrink: 0; }
-

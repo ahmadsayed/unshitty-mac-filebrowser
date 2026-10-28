@@ -24,7 +24,7 @@ import {
   openExternal,
   setPermissions,
   shareIdentity, setShareName, shareFolder, shareInfo, listShares, createShareLink,
-  shareLinkFor, removeShareAccess, stopSharing, addReceived, listReceived, removeReceived,
+  shareLinkFor, shareLinkRequiresPassphrase, removeShareAccess, stopSharing, addReceived, listReceived, removeReceived,
   type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
@@ -33,6 +33,7 @@ import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
+import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
 // ---------------------------------------------------------------------------
@@ -940,6 +941,7 @@ async function submitPathEntry(): Promise<void> {
   const raw = pathEntry.value.trim();
   if (isShareLink(raw)) {
     const result = await resolveShareLink(raw);
+    if (!result) return;
     if ("error" in result) {
       showToast(result.error);
       pathEntry.focus();
@@ -1254,10 +1256,21 @@ async function ownSharePath(link: string): Promise<string | null> {
  */
 async function resolveShareLink(
   text: string
-): Promise<{ path: string; added: boolean } | { error: string }> {
+): Promise<{ path: string; added: boolean } | { error: string } | null> {
   const link = text.trim();
   try {
-    const received = await addReceived(link);
+    if (await shareLinkRequiresPassphrase(link)) {
+      return await promptSharePassphrase((passphrase) => receiveShareLink(link, passphrase));
+    }
+    return await receiveShareLink(link);
+  } catch (err) {
+    return { error: cleanError(err) };
+  }
+}
+
+async function receiveShareLink(link: string, passphrase?: string): Promise<{ path: string; added: boolean }> {
+  try {
+    const received = await addReceived(link, passphrase);
     await refreshShares();
     return { path: `${SHARE_PREFIX}${received.id}`, added: true };
   } catch (err) {
@@ -1266,7 +1279,7 @@ async function resolveShareLink(
       const local = await ownSharePath(link);
       if (local) return { path: local, added: false };
     }
-    return { error: message };
+    throw message;
   }
 }
 
@@ -1288,7 +1301,7 @@ function renderNetworkPaste(overlay: Element): void {
 
   const connect = async () => {
     const link = input.value.trim();
-    if (!link) return;
+    if (!link || button.disabled) return;
     error.textContent = "";
     if (!isShareLink(link)) {
       // Anything else is a server address; the dialog asks for what it needs.
@@ -1299,6 +1312,7 @@ function renderNetworkPaste(overlay: Element): void {
     error.textContent = "";
     try {
       const result = await resolveShareLink(link);
+      if (!result) return;
       if ("error" in result) {
         error.textContent = result.error;
         return;
@@ -4591,9 +4605,11 @@ function shareAccessHtml(info: ShareInfo): string {
       const visitors = entry.kind === "anyone" && entry.visitors
         ? ` · ${entry.visitors} ${entry.visitors === 1 ? "computer" : "computers"}`
         : "";
+      const protection = entry.protected ? " · Passphrase protected" : "";
       return `<div class="share-access-row">` +
         `<div><div class="share-access-name">${escapeHtml(name)}</div>` +
-        `<div class="share-access-state">${escapeHtml(accessState(entry) + visitors)}</div></div>` +
+        `<div class="share-access-state">${escapeHtml(accessState(entry) + visitors + protection)}</div></div>` +
+        `<button class="btn share-copy" data-copy="${escapeHtml(entry.id)}">Copy Link</button>` +
         `<button class="flat-btn share-remove" data-remove="${escapeHtml(entry.id)}" ` +
         `title="Remove access" aria-label="Remove access">${sym("window-close")}</button></div>`;
     })
@@ -4624,13 +4640,23 @@ async function showShareDialog(entry: Entry): Promise<void> {
   preparing.close();
 
   const extra = document.createElement("div");
-  extra.className = "share-access-list";
+  const protection = createShareProtection();
+  const accessList = document.createElement("div");
+  accessList.className = "share-access-list";
+  extra.append(protection.element, accessList);
   const render = () => {
-    extra.innerHTML = shareAccessHtml(info);
+    accessList.innerHTML = shareAccessHtml(info);
   };
   render();
 
   let dialog: ReturnType<typeof openDialog>;
+  let busy = false;
+  const setBusy = (value: boolean) => {
+    busy = value;
+    protection.element.disabled = value;
+    for (const id of ["anyone", "person", "stop", "close"]) dialog.setResponseEnabled(id, !value);
+    accessList.querySelectorAll<HTMLButtonElement>("button").forEach((button) => { button.disabled = value; });
+  };
   const copyToClipboard = async (link: string) => {
     try {
       await navigator.clipboard.writeText(link);
@@ -4639,40 +4665,23 @@ async function showShareDialog(entry: Entry): Promise<void> {
       showToast(`Could not copy the link: ${cleanError(err)}`);
     }
   };
-  const copyAnyone = async () => {
-    let link: string;
+  const createLink = async (kind: "anyone" | "person") => {
+    const passphrase = protection.read();
+    if (passphrase === null) return;
+    setBusy(true);
     try {
-      let entry = info.access.find((access) => access.kind === "anyone");
-      if (entry) {
-        link = await shareLinkFor(info.id, entry.id);
-      } else {
-        const made = await createShareLink(info.id, "anyone");
-        entry = made.entry;
-        info.access.push(entry);
-        link = made.link;
-      }
+      const person = kind === "person" ? await promptPersonName() : undefined;
+      if (person === null) return;
+      const made = await createShareLink(info.id, kind, person, passphrase);
+      if (!info.access.some((entry) => entry.id === made.entry.id)) info.access.push(made.entry);
+      protection.clear();
       render();
+      await copyToClipboard(made.link);
     } catch (err) {
       showToast(`Could not create the link: ${cleanError(err)}`);
-      return;
+    } finally {
+      setBusy(false);
     }
-    await copyToClipboard(link);
-  };
-
-  const addPerson = async () => {
-    const person = await promptPersonName();
-    if (!person) return;
-    let link: string;
-    try {
-      const made = await createShareLink(info.id, "person", person);
-      info.access.push(made.entry);
-      render();
-      link = made.link;
-    } catch (err) {
-      showToast(`Could not create the link: ${cleanError(err)}`);
-      return;
-    }
-    await copyToClipboard(link);
   };
 
   const confirmStop = () => {
@@ -4690,6 +4699,7 @@ async function showShareDialog(entry: Entry): Promise<void> {
             stopSharing(info.id)
           .then(async () => {
             dialog.close();
+            protection.clear();
             await refreshShares();
             renderWindow(true);
             showToast("Stopped sharing");
@@ -4699,7 +4709,15 @@ async function showShareDialog(entry: Entry): Promise<void> {
     });
   };
 
-  extra.addEventListener("click", (event) => {
+  accessList.addEventListener("click", (event) => {
+    if (busy) return;
+    const copy = (event.target as HTMLElement).closest<HTMLElement>("[data-copy]");
+    if (copy?.dataset.copy) {
+      shareLinkFor(info.id, copy.dataset.copy)
+        .then(copyToClipboard)
+        .catch((err) => showToast(`Could not copy the link: ${cleanError(err)}`));
+      return;
+    }
     const button = (event.target as HTMLElement).closest<HTMLElement>("[data-remove]");
     if (!button?.dataset.remove) return;
     const id = button.dataset.remove;
@@ -4727,13 +4745,9 @@ async function showShareDialog(entry: Entry): Promise<void> {
     defaultResponse: "close",
     closeResponse: "close",
     onResponse: async (id) => {
-      if (id === "anyone") {
-        await copyAnyone();
-        void refreshShares().then(() => renderWindow(true));
-        return false;
-      }
-      if (id === "person") {
-        await addPerson();
+      if (busy) return false;
+      if (id === "anyone" || id === "person") {
+        await createLink(id);
         void refreshShares().then(() => renderWindow(true));
         return false;
       }
@@ -4741,6 +4755,7 @@ async function showShareDialog(entry: Entry): Promise<void> {
         confirmStop();
         return false;
       }
+      protection.clear();
     },
   });
 }

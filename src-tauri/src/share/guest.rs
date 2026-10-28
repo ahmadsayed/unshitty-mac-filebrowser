@@ -664,7 +664,7 @@ mod tests {
 
     async fn link(host: &Host, share: ShareId) -> (ShareLink, AccessEntry) {
         let (text, entry) = host
-            .create_link(&share, LinkKind::Person, Some("Bob".into()))
+            .create_link(&share, LinkKind::Person, Some("Bob".into()), None)
             .await
             .unwrap();
         (ShareLink::decode(&text).unwrap(), entry)

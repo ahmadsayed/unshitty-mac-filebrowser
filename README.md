@@ -65,7 +65,8 @@ one out on its own platform.
   and every saved state of its files is kept in `.versions/` inside it. Diff,
   restore, or bring back deleted files. Local only, **not a backup**.
 - **Folder Sharing (Experimental):** share a folder read-only with a
-  `share://` link, for anyone or one person. Received shares show up in Network.
+  `share://` link, for anyone or one person, with optional passphrase-encrypted
+  invitations. Received shares show up in Network ([sharing guide](docs/folder-sharing.md)).
 - **Network (Experimental):** browse SSH/SFTP servers read-only.
 - **Google Drive (Experimental):** browse, copy, move and trash in My Drive
   with your own OAuth client ([setup](docs/google-drive.md)).
@@ -109,6 +110,8 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 
 - Search matches names only, not file contents.
 - SFTP and shares are read-only; no SMB or WebDAV.
+- Share passphrases unlock invitations once; they do not encrypt local settings
+  or downloaded copies. Sharing requires the sharer's app to stay open.
 - Preview has no video or audio playback.
 - Google Drive: no Shared Drives, "Shared with me" or Drive-wide search.
 - Keep Versions may miss changes made while the app is closed.

@@ -7,6 +7,10 @@
 `2026-10-24-google-drive-design.md` (the `gdrive://` location pattern this
 reuses), `AGENTS.md` (rules every change must keep)
 
+**Extension (2026-10-28):** [Optional passphrases](2026-10-28-share-passphrases-design.md)
+adds encrypted version 2 invitations, local unlocking before Claim, and
+per-invitation protection metadata. The control protocol remains version 1.
+
 ## Intent and the why
 
 The user wants to share a specific folder with someone else so that person
