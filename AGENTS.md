@@ -43,6 +43,8 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `dev/mock-tauri/` | In-memory fake backend for browser previews and the frontend tests |
 | `tests/` | Vitest frontend tests: the real app in jsdom against `dev/mock-tauri/` (`tests/app.ts` boots and drives it) |
 | `scripts/crap-gate.mjs` | CRAP gate run by `.githooks/pre-commit` |
+| `scripts/session-start.sh` | Where the project stands, from fresh data: main vs GitHub, worktrees, merged branches, drafts, issues |
+| `scripts/new-task.sh`, `scripts/end-task.sh` | A worktree per task in `.worktrees/<name>`, removed once its work is on `origin/main` |
 
 ## Commands
 
@@ -199,6 +201,70 @@ the DOM. Code that adds a mock command needs a case in
   imperative subject, a body explaining what and why.
 - Keep the README's feature list and "Not supported yet" section in sync with
   behaviour changes.
+
+## Life of a task
+
+0. **Start from fresh data.** At the start of a session, and before answering
+   any question about the project's state (what's left, issues, what was
+   merged, what a release contains), run `scripts/session-start.sh`. Never
+   answer from memory or from a checkout that may be behind; if the fetch
+   fails, say the data may be stale. Act on what it reports: finish merged
+   worktrees, mention drafts and branches that can go.
+1. **Work in a worktree of your own**, never in the main checkout: it may
+   hold the human's uncommitted work. `scripts/new-task.sh <kind> <name>`
+   (`feat`, `fix`, `perf`, `refactor`, `docs`, `chore`) creates
+   `.worktrees/<name>` from `origin/main` with `node_modules` linked. Look for
+   an open issue that covers the task and name it in the commits.
+2. **Test first**, then make the change, then run the checks under
+   [Commands](#commands). For a bug, reproduce it before fixing and say how.
+3. **Test the real thing, not only the mock.** Mock and unit tests don't run
+   the packaged app, its environment or the host's programs (the 0.5.1
+   AppImage couldn't open files: host `gio` loaded its bundled GLib). When a
+   change touches packaging, launching other programs, the filesystem or the
+   platform, run the real app (`npm run tauri dev`, or the built bundle) or
+   ask the human to, saying exactly what to try and what they should see.
+4. **Record what isn't verified.** Work that can't be checked here (macOS
+   from Linux and the reverse, a real launch, real network shares) is
+   merged as done-but-unverified: say so in the commit, and keep it on an
+   open issue labelled `needs-verification` with a checklist line per point,
+   so it isn't lost in a chat. Remove the label when every point is checked.
+5. **Link the work to its issue.** `Closes #<n>` when the commit or PR
+   resolves the whole issue; `Refs #<n>` while something stays open (a
+   verification, a later part). When closing by hand, comment with the
+   commits that fixed it and where the rest went.
+6. **Finish.** Once the work is on `origin/main`, run
+   `scripts/end-task.sh <name>` from the main checkout. It refuses while
+   anything would be lost (uncommitted files, commits not on `origin/main`)
+   and deletes the worktree, the local branch and the pushed branch.
+7. **Tell the human** what changed, how it was checked, what isn't verified
+   and what they have to do (test something, decide, publish).
+
+Run `gh`, `git` and the scripts as plain commands, without `cd …&&`, `;` or
+variables around them: permission rules match whole commands.
+
+## Releases
+
+Release only when the human asks, and only after something significant.
+
+1. `scripts/session-start.sh`: `main` is what you mean to ship, nothing
+   unmerged is left in worktrees, no draft from an earlier attempt lingers.
+2. Bump the version in `package.json`, `src-tauri/Cargo.toml`,
+   `src-tauri/Cargo.lock` (the `filebrowser` package only),
+   `src-tauri/tauri.conf.json` and `docs/linux-appimage.md`; commit
+   `chore: release X.Y.Z` with a body listing what's new.
+3. Tag `vX.Y.Z` (annotated) on that commit and push it. The Release workflow
+   checks the tag matches the version, runs the tests, builds macOS and Linux
+   and creates a **draft** release.
+4. **Smoke-test the draft before publishing.** Download its package for this
+   machine (verify the size and SHA-256 against the release's digest), install
+   it the way users do (`scripts/install-linux-appimage.sh` for the
+   AppImage), quit any running copy, and in the installed app: open a folder,
+   open a file with its default app and with Open With, search, and show
+   thumbnails of a photo folder. Ask the human to do the same on the other
+   platform, or note it on a `needs-verification` issue.
+5. Publish (`gh release edit vX.Y.Z --draft=false`) only when the human says
+   so. A draft can be fixed by deleting it and moving the tag to the fix; a
+   **published** tag never moves: ship a new patch version instead.
 
 ## Licensing
 
