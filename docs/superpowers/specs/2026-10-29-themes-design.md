@@ -76,6 +76,7 @@ from constants into a per-theme table read by `computeLayout`:
 
 | Size | GNOME | macOS |
 |---|---|---|
+| List row padding (row = icon + padding) | 12 px (today) | 8 px |
 | Minimum list row height | 34 px (today) | 24 px |
 | List header height | 35 px (today's `LIST_HEADER_H`) | 28 px |
 | Grid padding / gap | 12 / 6 px (today) | 12 / 6 px |
