@@ -2695,7 +2695,7 @@ function openMainMenu(anchor: HTMLElement): void {
     { label: "Show Thumbnails", check: prefs.showThumbnails, action: toggleThumbnails },
     { separator: true },
     { label: "Keyboard Shortcuts", action: showShortcuts },
-    { label: "About Files", action: showAbout },
+    { label: "About File Browser", action: showAbout },
   ]);
 }
 
@@ -4360,7 +4360,7 @@ function showAbout(): void {
   const extra = document.createElement("div");
   extra.className = "about";
   extra.innerHTML = `<svg class="about-icon" viewBox="0 0 64 64"><use href="#fc-folder-home"/></svg>
-    <p>A GNOME Files look-alike for macOS.<br/>Version ${escapeHtml(__APP_VERSION__)}</p>
+    <p>A GNOME Files look-alike for macOS and Linux.<br/>Version ${escapeHtml(__APP_VERSION__)}</p>
     <p class="dim">An independent hobby project, not affiliated with or endorsed by the
       GNOME Project, Apple or anyone else. Design credit goes to the GNOME Files team.</p>
     <p class="dim">Licensed under the GNU General Public License, version 3 or later.

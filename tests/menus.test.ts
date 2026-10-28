@@ -160,6 +160,16 @@ test("the main menu and the view menu show check and radio items", async () => {
   await chooseMenu("A–Z");
 });
 
+test("the main menu's About item names the app File Browser", async () => {
+  await goTo(HOME);
+  await click($("#btn-main-menu"));
+  expect(menuLabels()).toContain("About File Browser");
+  await chooseMenu("About File Browser");
+  expect(dialogHeading()).toBe("File Browser");
+  expect($(".dialog-layer").textContent).toContain("for macOS and Linux");
+  await closeOverlays();
+});
+
 test("Properties of a folder shows its size", async () => {
   await goTo(HOME);
   await rightClick(item("Desktop"));
