@@ -1,7 +1,10 @@
 /* =============================================================================
-   GNOME Files 50 look-alike — libadwaita 1.8 colours, metrics and widgets.
+   GNOME Files 50 look-alike: layout, views and widgets. Colours, sizes and
+   shapes that differ between themes are tokens from src/themes/.
    Light + dark follow prefers-color-scheme.
    ============================================================================= */
+
+@import "./themes/gnome.css";
 
 @font-face {
   font-family: "Adwaita Sans";
@@ -17,93 +20,6 @@
   padding: 0;
 }
 
-/* ----- libadwaita named colours (light) ----- */
-:root {
-  --accent-bg: #3584e4;
-  --accent-fg: #ffffff;
-  --accent: #1c71d8;
-  --destructive: #c01c28;
-  --success: #2ec27e;
-
-  --window-bg: #fafafb;
-  --window-fg: rgba(0, 0, 6, 0.8);
-  --view-bg: #ffffff;
-  --view-fg: rgba(0, 0, 6, 0.8);
-  --headerbar-bg: #ffffff;
-  --headerbar-shade: rgba(0, 0, 6, 0.12);
-  --sidebar-bg: #ebebed;
-  --sidebar-fg: rgba(0, 0, 6, 0.8);
-  --sidebar-shade: rgba(0, 0, 6, 0.07);
-  --popover-bg: #ffffff;
-  --popover-fg: rgba(0, 0, 6, 0.8);
-  --dialog-bg: #fafafb;
-  --card-bg: #ffffff;
-  --card-shade: rgba(0, 0, 6, 0.07);
-  --osd-bg: rgba(0, 0, 6, 0.8);
-  --osd-fg: #ffffff;
-  --shade: rgba(0, 0, 6, 0.07);
-  --border: rgba(0, 0, 6, 0.15);
-
-  --hover: rgba(0, 0, 6, 0.07);
-  --active: rgba(0, 0, 6, 0.16);
-  --sidebar-selected: rgba(0, 0, 6, 0.1);
-  --item-hover: rgba(0, 0, 6, 0.04);
-  --item-selected: rgba(53, 132, 228, 0.18);
-  --item-selected-hover: rgba(53, 132, 228, 0.24);
-  --item-selected-solid: color-mix(in srgb, #3584e4 18%, var(--view-bg));
-  --item-selected-hover-solid: color-mix(in srgb, #3584e4 24%, var(--view-bg));
-  --fill: rgba(0, 0, 6, 0.08);
-  --dim: 0.55;
-
-  --font: "Adwaita Sans", "Inter", -apple-system, system-ui, sans-serif;
-  --icon-size: 96px;
-  --list-icon-size: 32px;
-  --popover-shadow: 0 1px 5px 1px rgba(0, 0, 6, 0.09), 0 2px 14px 3px rgba(0, 0, 6, 0.05);
-  --dialog-shadow: 0 0 0 1px rgba(0, 0, 6, 0.03), 0 4px 16px 4px rgba(0, 0, 6, 0.1), 0 10px 40px 10px rgba(0, 0, 6, 0.1);
-
-  color-scheme: light dark;
-}
-
-/* ----- libadwaita named colours (dark) ----- */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --accent: #78aeed;
-    --destructive: #ff7b63;
-    --success: #57e389;
-
-    --window-bg: #222226;
-    --window-fg: #ffffff;
-    --view-bg: #1d1d20;
-    --view-fg: #ffffff;
-    --headerbar-bg: #2e2e32;
-    --headerbar-shade: rgba(0, 0, 6, 0.36);
-    --sidebar-bg: #2e2e32;
-    --sidebar-fg: #ffffff;
-    --sidebar-shade: rgba(0, 0, 6, 0.25);
-    --popover-bg: #36363a;
-    --popover-fg: #ffffff;
-    --dialog-bg: #36363a;
-    --card-bg: rgba(255, 255, 255, 0.08);
-    --card-shade: rgba(0, 0, 6, 0.36);
-    --osd-bg: rgba(255, 255, 255, 0.92);
-    --osd-fg: rgba(0, 0, 6, 0.8);
-    --shade: rgba(0, 0, 6, 0.25);
-    --border: rgba(255, 255, 255, 0.15);
-
-    --hover: rgba(255, 255, 255, 0.07);
-    --active: rgba(255, 255, 255, 0.16);
-    --sidebar-selected: rgba(255, 255, 255, 0.1);
-    --item-hover: rgba(255, 255, 255, 0.04);
-    --item-selected: rgba(53, 132, 228, 0.3);
-    --item-selected-hover: rgba(53, 132, 228, 0.38);
-    --item-selected-solid: color-mix(in srgb, #3584e4 30%, var(--view-bg));
-    --item-selected-hover-solid: color-mix(in srgb, #3584e4 38%, var(--view-bg));
-    --fill: rgba(255, 255, 255, 0.1);
-    --popover-shadow: 0 0 0 1px rgba(0, 0, 6, 0.4), 0 1px 5px 1px rgba(0, 0, 6, 0.3), 0 2px 14px 3px rgba(0, 0, 6, 0.2);
-    --dialog-shadow: 0 0 0 1px rgba(0, 0, 6, 0.4), 0 4px 16px 4px rgba(0, 0, 6, 0.3), 0 10px 40px 10px rgba(0, 0, 6, 0.3);
-  }
-}
-
 html, body {
   height: 100%;
   overflow: hidden;
@@ -111,7 +27,7 @@ html, body {
 
 body {
   font-family: var(--font);
-  font-size: 11pt;
+  font-size: var(--font-size);
   line-height: normal;
   font-feature-settings: "tnum" 0, "cv11" 1;
   color: var(--window-fg);
@@ -173,14 +89,14 @@ button, input {
 /* ----- Buttons (libadwaita .flat / default / suggested) ----- */
 .flat-btn {
   min-width: 34px;
-  height: 34px;
+  height: var(--button-height);
   padding: 0 9px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-button);
   background: transparent;
   flex-shrink: 0;
   transition: background-color 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
@@ -193,10 +109,10 @@ button, input {
 .flat-btn:disabled .sym { opacity: 0.5; }
 
 .btn {
-  height: 34px;
+  height: var(--button-height);
   padding: 0 17px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-button);
   background: var(--fill);
   font-weight: 700;
   transition: background-color 0.2s;
@@ -220,10 +136,10 @@ button, input {
 
 /* ----- Entries ----- */
 .entry {
-  height: 34px;
+  height: var(--button-height);
   padding: 0 9px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-button);
   background: var(--fill);
   min-width: 0;
   outline: 2px solid transparent;
@@ -254,7 +170,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 }
 
 .sidebar-header {
-  height: 47px;
+  height: var(--headerbar-height);
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -333,12 +249,12 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 }
 
 .sidebar-row {
-  height: 36px;
+  height: var(--sidebar-row-height);
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 0 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-item);
   transition: background-color 0.2s;
 }
 
@@ -379,7 +295,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 }
 
 .headerbar {
-  height: 47px;
+  height: var(--headerbar-height);
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -475,7 +391,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 /* ----- Split button (view toggle + options arrow) ----- */
 .split-btn {
   display: flex;
-  border-radius: 6px;
+  border-radius: var(--radius-button);
 }
 
 .split-btn > .flat-btn:first-child {
@@ -499,10 +415,10 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 .pathbar {
   width: 100%;
   max-width: 720px;
-  height: 34px;
+  height: var(--button-height);
   display: flex;
   align-items: center;
-  border-radius: 6px;
+  border-radius: var(--radius-button);
   background: var(--fill);
   overflow: hidden;
   position: relative;
@@ -556,7 +472,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   background: transparent;
   padding: 0 11px;
   min-width: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-button);
   outline: 2px solid color-mix(in srgb, var(--accent-bg) 50%, transparent);
   outline-offset: -2px;
   user-select: text;
@@ -569,12 +485,12 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 .searchbar {
   width: 100%;
   max-width: 720px;
-  height: 34px;
+  height: var(--button-height);
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 0 9px;
-  border-radius: 6px;
+  border-radius: var(--radius-button);
   background: var(--fill);
   outline: 2px solid color-mix(in srgb, var(--accent-bg) 50%, transparent);
   outline-offset: -2px;
@@ -736,7 +652,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   position: sticky;
   top: 0;
   z-index: 1;
-  height: 32px;
+  height: var(--list-header-height);
   margin: 0 0 3px;
   padding: 0 18px;
   background: var(--view-bg);
@@ -794,7 +710,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   width: var(--cell-w);
   height: var(--cell-h);
   padding: 0 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-item);
   transition: background-color 0.1s;
 }
 
@@ -1048,7 +964,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   min-width: 180px;
   max-width: 400px;
   padding: 6px;
-  border-radius: 12px;
+  border-radius: var(--radius-popover);
   background: var(--popover-bg);
   color: var(--popover-fg);
   box-shadow: var(--popover-shadow);
@@ -1087,7 +1003,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   gap: 8px;
   padding: 0 12px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-item);
   background: transparent;
   text-align: left;
   white-space: nowrap;
@@ -1177,7 +1093,7 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   width: min(372px, calc(100vw - 24px));
   max-height: calc(100vh - 24px);
   overflow: auto;
-  border-radius: 15px;
+  border-radius: var(--radius-dialog);
   background: var(--dialog-bg);
   color: var(--window-fg);
   box-shadow: var(--dialog-shadow);
