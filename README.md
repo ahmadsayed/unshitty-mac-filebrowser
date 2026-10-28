@@ -31,6 +31,12 @@ cuts, like in every other Mac app. ⌘L goes to a location, like in Safari.
 Return opens the selected file, like in every Open dialog. Finder is the odd
 one out on its own platform.
 
+> [!TIP]
+> **Our most advanced feature:** click the red button and File Browser
+> actually quits, and your memory is freed. We know this is mind-blowing on a
+> Mac, where closing a window means "keep running, just out of sight". It took
+> years of research. (It took zero lines of code.)
+
 | You want to… | Finder | Everyone else | Here |
 | --- | --- | --- | --- |
 | Cut and paste | ⌘X is greyed out. ⌘C, then **⌥⌘V**. Forget the ⌥, enjoy your copy. | **⌘X, ⌘V in every other Mac app**, Ctrl+X, Ctrl+V elsewhere | ⌘X, ⌘V |
@@ -50,6 +56,7 @@ one out on its own platform.
 | Ignore clutter | Recents, AirDrop, iCloud nags and seven Tag colours you never asked for. | Places and your bookmarks: Nautilus, Dolphin | Home, Recent, Starred, Network, Trash |
 | Keep file history | Time Machine needs a drive, and document versions stay on that Mac. | Git, if it's code | Keep Versions: history lives in `.versions/` inside the folder, so it moves with the folder to any Mac or Linux machine |
 | Share a folder | AirDrop: Apple devices only, in the same room. | Upload it to someone's cloud | A `share://` link over the open-source [Iroh](https://www.iroh.computer/) protocol: peer to peer, any network, Mac or Linux |
+| Close it | The red button closes the window; the app stays in memory. Finder can't be quit at all. | Most Windows and Linux apps quit with their last window | The app quits, the memory is freed |
 | Get a missing feature | Wait for "one more thing…" at a keynote, years after everyone else moved on. | Plugins, sometimes | Fork it, change it, build it. It's GPL-3.0 |
 
 ## Also in the box
