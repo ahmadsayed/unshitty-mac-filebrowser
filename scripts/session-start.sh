@@ -10,6 +10,13 @@ git -C "$root" fetch --quiet --prune origin || echo "!! git fetch failed: everyt
 
 # Commits of $1 with no identical change on origin/main.
 unmerged() { git -C "$root" cherry origin/main "$1" 2>/dev/null | grep -c '^+'; }
+# The PR merged on GitHub from exactly the last commit of branch $1 (a squash
+# merge leaves its commits "unmerged" above).
+merged_pr() {
+  command -v gh >/dev/null || return 0
+  gh pr list --head "$1" --state merged --json number,headRefOid \
+    --jq ".[] | select(.headRefOid == \"$(git -C "$root" rev-parse "$1")\") | .number" 2>/dev/null | head -1
+}
 
 echo "== Main checkout ($root)"
 read -r ahead behind < <(git -C "$root" rev-list --left-right --count main...origin/main)
@@ -24,7 +31,9 @@ git -C "$root" worktree list --porcelain | awk '/^worktree /{print $2}' | while 
   changes=$(git -C "$dir" status --porcelain | wc -l)
   left=$(unmerged "$branch")
   state="$left commit(s) not on origin/main, $changes uncommitted"
-  [[ $left -eq 0 && $changes -eq 0 ]] && state="merged: finish with scripts/end-task.sh $(basename "$dir")"
+  if [[ $changes -eq 0 ]] && { [[ $left -eq 0 ]] || [[ -n $(merged_pr "$branch") ]]; }; then
+    state="merged: finalize with scripts/end-task.sh $(basename "$dir")"
+  fi
   echo "${dir#"$root"/} ($branch): $state"
 done
 
@@ -37,6 +46,8 @@ git -C "$root" for-each-ref --format='%(refname:short)' refs/heads refs/remotes/
 done
 
 if command -v gh >/dev/null; then
+  echo "== Open PRs (waiting for the human's review and merge)"
+  gh pr list --state open || echo "!! gh pr list failed"
   echo "== Draft releases (not visible to users until published)"
   gh release list --limit 10 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' || echo "!! gh release list failed"
   echo "== Release builds not finished (queued or running)"

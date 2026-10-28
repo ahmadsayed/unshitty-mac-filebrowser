@@ -44,7 +44,10 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `tests/` | Vitest frontend tests: the real app in jsdom against `dev/mock-tauri/` (`tests/app.ts` boots and drives it) |
 | `scripts/crap-gate.mjs` | CRAP gate run by `.githooks/pre-commit` |
 | `scripts/session-start.sh` | Where the project stands, from fresh data: main vs GitHub, worktrees, merged branches, drafts, issues |
-| `scripts/new-task.sh`, `scripts/end-task.sh` | A worktree per task in `.worktrees/<name>`, removed once its work is on `origin/main` |
+| `scripts/new-task.sh`, `scripts/end-task.sh` | A worktree per task in `.worktrees/<name>`; finalized (worktree and branches deleted) once its PR is merged |
+| `scripts/mock-screenshot.mjs`, `scripts/pr-screenshots.sh` | PR screenshots: capture the mock preview, upload to the `captures` branch |
+| `.github/pull_request_template.md` | The PR body every task follows |
+| `HUMANS.md` | The human's side of the workflow: review, merge, test, release |
 
 ## Commands
 
@@ -204,55 +207,109 @@ the DOM. Code that adds a mock command needs a case in
 
 ## Life of a task
 
+**Nothing lands on `main` that the human didn't merge.** Every change, docs
+and release bumps included, goes through a pull request; agents never push
+to `main` and never merge.
+
 0. **Start from fresh data.** At the start of a session, and before answering
-   any question about the project's state (what's left, issues, what was
-   merged, what a release contains), run `scripts/session-start.sh`. Never
-   answer from memory or from a checkout that may be behind; if the fetch
-   fails, say the data may be stale. Act on what it reports: finish merged
-   worktrees, mention drafts and branches that can go.
+   any question about the project's state (what's left, issues, PRs, what
+   was merged, what a release contains), run `scripts/session-start.sh`.
+   Never answer from memory or from a checkout that may be behind; if the
+   fetch fails, say the data may be stale. Act on what it reports: finalize
+   merged tasks (step 8), mention open PRs, drafts and branches that can go.
 1. **Work in a worktree of your own**, never in the main checkout: it may
    hold the human's uncommitted work. `scripts/new-task.sh <kind> <name>`
    (`feat`, `fix`, `perf`, `refactor`, `docs`, `chore`) creates
-   `.worktrees/<name>` from `origin/main` with `node_modules` linked. Look for
-   an open issue that covers the task and name it in the commits.
-2. **Test first**, then make the change, then run the checks under
-   [Commands](#commands). For a bug, reproduce it before fixing and say how.
+   `.worktrees/<name>` on branch `<kind>/<name>` from `origin/main`, with
+   `node_modules` linked. Look for an open issue that covers the task.
+2. **Test first**, then make the change in small commits, then run the
+   checks under [Commands](#commands). For a bug, reproduce it before fixing
+   and say how.
 3. **Test the real thing, not only the mock.** Mock and unit tests don't run
    the packaged app, its environment or the host's programs (the 0.5.1
    AppImage couldn't open files: host `gio` loaded its bundled GLib). When a
    change touches packaging, launching other programs, the filesystem or the
    platform, run the real app (`npm run tauri dev`, or the built bundle) or
    ask the human to, saying exactly what to try and what they should see.
-4. **Record what isn't verified.** Work that can't be checked here (macOS
-   from Linux and the reverse, a real launch, real network shares) is
-   merged as done-but-unverified: say so in the commit, and keep it on an
-   open issue labelled `needs-verification` with a checklist line per point,
-   so it isn't lost in a chat. Remove the label when every point is checked.
-5. **Link the work to its issue.** `Closes #<n>` when the commit or PR
-   resolves the whole issue; `Refs #<n>` while something stays open (a
-   verification, a later part). When closing by hand, comment with the
-   commits that fixed it and where the rest went.
-6. **Finish.** Once the work is on `origin/main`, run
-   `scripts/end-task.sh <name>` from the main checkout. It refuses while
-   anything would be lost (uncommitted files, commits not on `origin/main`)
-   and deletes the worktree, the local branch and the pushed branch.
-7. **Tell the human** what changed, how it was checked, what isn't verified
-   and what they have to do (test something, decide, publish).
+4. **Take screenshots** of anything visible: before (from `main`) and after,
+   with `npm run dev:mock` running: `node scripts/mock-screenshot.mjs <path>
+   <file.png>` (`--dark` for dark mode). Look at them before using them.
+5. **Open the PR** ([Pull requests](#pull-requests)): push the branch,
+   upload the screenshots, fill in the template.
+6. **Review your own PR** and post the review as a comment, then hand over
+   to the human: the link, the verdict, what to look at or test. Stop there.
+7. **The human reviews and merges.** If they ask for changes, commit them on
+   the same branch, push, and update the review comment.
+8. **Finalize after the merge**, from the main checkout:
+   `scripts/end-task.sh <name>`. It checks the work is on `origin/main` (or
+   in a merged PR, for a squash merge), deletes the worktree, the local
+   branch and the branch on GitHub, and fast-forwards the main checkout if
+   it is clean. Then reply on the issue if the merge didn't close it, and
+   tell the human it's done.
+
+**Record what isn't verified.** Work that can't be checked here (macOS from
+Linux and the reverse, a real launch, real network shares) is merged as
+done-but-unverified: the PR's "Not verified" section says so, and an open
+issue labelled `needs-verification` keeps a checklist line per point, so it
+isn't lost in a chat. Remove the label when every point is checked.
 
 Run `gh`, `git` and the scripts as plain commands, without `cd …&&`, `;` or
 variables around them: permission rules match whole commands.
+
+## Pull requests
+
+- **Title:** conventional and short, like a commit subject
+  (`fix: open files from the Linux AppImage`).
+- **Body:** follow `.github/pull_request_template.md`, readable in two
+  minutes. Write it to a file outside the repository (the scratchpad) and
+  run `gh pr create --base main --title "…" --body-file <file>`.
+- **Issues:** one line each at the top: `Closes #<n>` when the PR resolves
+  all of it, `Refs #<n>` when a part or a verification stays open, `No
+  issue` otherwise.
+- **Screenshots:** `scripts/pr-screenshots.sh before.png after.png` stores
+  them on the `captures` branch (never `main`), in a folder named after the
+  task branch, and prints the Markdown to paste. Light and dark when colours
+  change; "No visible change" otherwise.
+- **How it was checked:** tick only what really ran, with the test counts.
+  "Real app" names what was tried and by whom, or why it wasn't needed.
+- **Self-review comment**, posted with `gh pr comment <n> --body-file <file>`
+  once the PR is open:
+
+  ```markdown
+  ## Review
+
+  **Verdict: ✅ ready to merge** (or ⚠️ needs a decision / ❌ blocked)
+
+  | Check | Result |
+  |---|---|
+  | Mergeable with main, no conflict | ✅ |
+  | Checks run locally (tsc, build, npm test, cargo test, CRAP gate) | ✅ N + M passed |
+  | Mock preview and screenshots inspected | ✅ / no UI change |
+  | Real app, where packaging or other programs are involved | ✅ … / not needed: … |
+  | Rules of this file (data safety, huge folders, GNOME look, security) | ✅ |
+  | Docs (README, AGENTS.md, HUMANS.md) in sync | ✅ |
+
+  ### Findings
+  - Fixed: …
+  - For the human to decide: … (options A / B)
+  ```
+
+  Fix what you find before posting; anything you can't settle is ⚠️ with
+  options, never improvised.
 
 ## Releases
 
 Release only when the human asks, and only after something significant.
 
-1. `scripts/session-start.sh`: `main` is what you mean to ship, nothing
-   unmerged is left in worktrees, no draft from an earlier attempt lingers.
-2. Bump the version in `package.json`, `src-tauri/Cargo.toml`,
-   `src-tauri/Cargo.lock` (the `filebrowser` package only),
-   `src-tauri/tauri.conf.json` and `docs/linux-appimage.md`; commit
-   `chore: release X.Y.Z` with a body listing what's new.
-3. Tag `vX.Y.Z` (annotated) on that commit and push it. The Release workflow
+1. `scripts/session-start.sh`: `main` is what you mean to ship, no open PR
+   or worktree holds work meant for it, no draft from an earlier attempt
+   lingers.
+2. In a `chore` task (`release-X.Y.Z`), bump the version in `package.json`,
+   `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` (the `filebrowser` package
+   only), `src-tauri/tauri.conf.json` and `docs/linux-appimage.md`, and open
+   the PR `chore: release X.Y.Z` listing what's new. The human merges it.
+3. Tag `vX.Y.Z` (annotated) on the merged commit of `origin/main` and push
+   the tag. The Release workflow
    checks the tag matches the version, runs the tests, builds macOS and Linux
    and creates a **draft** release.
 4. **Smoke-test the draft before publishing.** Download its package for this
