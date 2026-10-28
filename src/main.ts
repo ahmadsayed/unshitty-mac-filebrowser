@@ -2,7 +2,7 @@ import { CANCELLED, endOperation, finishItem, initOperationsButton, opTitle, set
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
-  listDir, searchDir, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
+  listDir, searchDir, cancelSearch, type SearchSummary, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
   extractArchive,
   newWindow,
   windowButtons,
@@ -105,6 +105,8 @@ let searchQuery: string | null = null;
 let searchResults: Entry[] | null = null;
 let searchTimer = 0;
 let searchSeq = 0;
+/** Whether a recursive search is still sending results. */
+let searching = false;
 /** Cap on recursive results, so a broad query can't build an endless view. */
 const SEARCH_LIMIT = 1000;
 
@@ -403,7 +405,8 @@ function compareEntries(a: Entry, b: Entry): number {
 }
 
 function fold(s: string): string {
-  return s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+  // Strips combining marks exactly as the backend's search does.
+  return s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 }
 
 /** What `shown` was last built from: a presentation-only render (grid ↔ list,
@@ -1014,6 +1017,9 @@ function closeSearch(rerender = true): void {
   searchResults = null;
   searchSeq += 1;
   clearTimeout(searchTimer);
+  if (searching) void cancelSearch().catch(() => {});
+  setSearching(false);
+  showSearchStop(null);
   searchEntry.value = "";
   searchbarEl.hidden = true;
   pathbarEl.hidden = false;
@@ -1043,32 +1049,77 @@ function onSearchInput(): void {
   searchResults = null;
   searchSeq += 1;
   clearTimeout(searchTimer);
+  showSearchStop(null);
   const query = searchQuery.trim();
-  const seq = searchSeq;
-  if (query && canSearchRecursively()) {
+  const recursive = !!query && canSearchRecursively();
+  if (searching && !recursive) void cancelSearch().catch(() => {});
+  setSearching(recursive);
+  if (recursive) {
     // Wait for a pause, then replace the quick local matches with the
-    // recursive backend results.
-    searchTimer = window.setTimeout(() => {
-      if (seq !== searchSeq || searchQuery === null) return;
-      const at = location;
-      searchDir(at, query, prefs.showHidden, SEARCH_LIMIT)
-        .then((results) => {
-          if (seq !== searchSeq || searchQuery === null || location !== at) return;
-          searchResults = results;
-          renderView();
-          selectFirstMatch();
-        })
-        .catch((err) => {
-          if (seq !== searchSeq || searchQuery === null) return;
-          searchResults = [];
-          renderView();
-          showToast(`Could not search: ${cleanError(err)}`);
-        });
-    }, 160);
+    // recursive backend results as they arrive.
+    const seq = searchSeq;
+    searchTimer = window.setTimeout(() => runSearch(seq, query), 160);
   }
   renderView();
   // Like GNOME Files, the first local match is selected while search runs.
   selectFirstMatch();
+}
+
+function runSearch(seq: number, query: string): void {
+  const at = location;
+  const current = () => seq === searchSeq && searchQuery !== null && location === at;
+  if (!current()) return;
+  searchDir(at, query, prefs.showHidden, SEARCH_LIMIT, (batch) => {
+    if (current()) addSearchResults(batch);
+  })
+    .then((summary) => {
+      if (!current()) return;
+      setSearching(false);
+      if (searchResults === null) addSearchResults([]);
+      else renderViewKeepingScroll(); // "Searching…" becomes "No Results Found"
+      showSearchStop(summary);
+    })
+    .catch((err) => {
+      if (!current()) return;
+      setSearching(false);
+      searchResults = [];
+      renderView();
+      showToast(`Could not search: ${cleanError(err)}`);
+    });
+}
+
+/** Add streamed results. The first batch replaces the quick local matches;
+ *  later ones keep the cursor and anchor on the same items as the list grows. */
+function addSearchResults(batch: Entry[]): void {
+  if (searchResults === null) {
+    searchResults = batch;
+    renderView();
+    selectFirstMatch();
+    return;
+  }
+  const cursorPath = shown[cursorIndex]?.path;
+  const anchorPath = shown[anchorIndex]?.path;
+  searchResults = searchResults.concat(batch);
+  renderViewKeepingScroll();
+  cursorIndex = shown.findIndex((e) => e.path === cursorPath);
+  anchorIndex = shown.findIndex((e) => e.path === anchorPath);
+  updateSelection();
+}
+
+function setSearching(on: boolean): void {
+  searching = on;
+  searchbarEl.classList.toggle("busy", on);
+}
+
+/** Say when a search stopped before looking everywhere, so a short list isn't
+ *  mistaken for every match. */
+function showSearchStop(summary: SearchSummary | null): void {
+  const banner = $("#search-banner");
+  banner.hidden = !summary?.stopped;
+  if (!summary?.stopped) return;
+  $("#search-banner-text").textContent = summary.stopped === "results"
+    ? `Showing the first ${SEARCH_LIMIT.toLocaleString("en-US")} results. Try a more specific search.`
+    : `Search stopped after looking at ${summary.scanned.toLocaleString("en-US")} items. Try a more specific search or a smaller folder.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1098,6 +1149,8 @@ function renderView(): void {
     viewEl.innerHTML = statusPage(pseudo.icon, pseudo.title, pseudo.text);
   } else if (listingError !== null) {
     viewEl.innerHTML = statusPage("dialog-error", "Unable to Access Location", listingError);
+  } else if (shown.length === 0 && searchQuery && searching) {
+    viewEl.innerHTML = statusPage("system-search", "Searching…", "");
   } else if (shown.length === 0 && searchQuery) {
     viewEl.innerHTML = statusPage("system-search", "No Results Found", "Try a different search.");
   } else if (shown.length === 0 && location === trashPath) {
@@ -1388,7 +1441,8 @@ function itemHtml(i: number): string {
   const sel = selected.has(e.path);
   if (prefs.view === "grid") {
     const detail = location === NETWORK ? networkDetail(e) : "";
-    const shared = detail ? `<div class="shared-by">${escapeHtml(detail)}</div>` : "";
+    const shared = detail ? `<div class="shared-by">${escapeHtml(detail)}</div>`
+      : searchQuery !== null ? `<div class="shared-by where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</div>` : "";
     return `<div class="grid-item item${cls}" data-index="${i}" role="option" aria-selected="${sel}" title="${escapeHtml(e.name)}" ${pos}>` +
       `<div class="icon">${iconHtml(e)}</div>` +
       `<div class="name">${escapeHtml(e.name)}</div>${shared}</div>`;
@@ -1542,8 +1596,9 @@ function computeLayout(): void {
     const cols = Math.max(1, Math.floor((inner + GRID_GAP) / (icon + 36 + GRID_GAP)));
     const itemW = Math.floor((inner - GRID_GAP * (cols - 1)) / cols);
     // icon + gap + two lines of label + padding. Network adds one line for
-    // "Shared by …".
-    const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9 + (location === NETWORK ? lineH : 0));
+    // "Shared by …", search one for the folder each result is in.
+    const extraLine = location === NETWORK || searchQuery !== null;
+    const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9 + (extraLine ? lineH : 0));
     layout = { cols, itemW, itemH, gap: GRID_GAP, padX: GRID_PAD, padY: GRID_PAD, bodyTop: 0 };
   } else {
     const itemH = Math.max(LIST_SIZES[prefs.listZoom] + 12, 34);

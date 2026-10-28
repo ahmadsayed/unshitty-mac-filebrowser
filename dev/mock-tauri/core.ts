@@ -715,14 +715,25 @@ function list(path: string, showHidden: boolean): Entry[] {
 }
 
 /** Recursive name search, bounded like the Rust command. */
-function search(path: string, query: string, showHidden: boolean, limit: number): Entry[] {
+/** Lowercase without accents, like the backend's `fold`. */
+function fold(s: string): string {
+  return s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+}
+
+/** How many items one search looks at before giving up (the backend's `MAX_SEARCH_SCANNED`). */
+const MAX_SEARCH_SCANNED = 100_000;
+/** The mock sends matches in batches of this many, so the app sees results stream in. */
+const SEARCH_BATCH = 50;
+
+function search(path: string, query: string, showHidden: boolean, limit: number, channel?: Channel<Entry[]>) {
   const node = lookup(path);
   if (!node || !node.dir) throw `Failed to read directory: No such file or directory (os error 2)`;
-  const needle = query.trim().toLowerCase();
-  if (!needle) return [];
+  const needle = fold(query.trim());
   const out: Entry[] = [];
-  const stack = [path.replace(/\/$/, "")];
-  while (stack.length && out.length < limit) {
+  let stopped: "results" | "scanned" | null = null;
+  let scanned = 0;
+  const stack = needle ? [path.replace(/\/$/, "")] : [];
+  walk: while (stack.length) {
     const dir = stack.pop()!;
     let entries: Entry[];
     try {
@@ -731,12 +742,15 @@ function search(path: string, query: string, showHidden: boolean, limit: number)
       continue;
     }
     for (const entry of entries) {
-      if (out.length >= limit) break;
-      if (entry.name.toLowerCase().includes(needle)) out.push(entry);
+      stopped = out.length >= limit ? "results" : scanned >= MAX_SEARCH_SCANNED ? "scanned" : null;
+      if (stopped) break walk;
+      scanned += 1;
+      if (fold(entry.name).includes(needle)) out.push(entry);
       if (entry.is_dir && !entry.is_symlink) stack.push(entry.path);
     }
   }
-  return out;
+  for (let i = 0; i < out.length; i += SEARCH_BATCH) channel?.onmessage(out.slice(i, i + SEARCH_BATCH));
+  return { stopped, scanned };
 }
 
 function parentAndName(path: string): [Node | undefined, string] {
@@ -1456,7 +1470,9 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
       str(a, "query"),
       a.showHidden as boolean,
       a.limit as number,
+      a.onResults as Channel<Entry[]> | undefined,
     ),
+  cancel_search: () => {},
   item_counts: (a) =>
     (a.paths as string[]).map((path) =>
       path.startsWith("gdrive://") || path.startsWith("share://") || path.startsWith("sftp://")

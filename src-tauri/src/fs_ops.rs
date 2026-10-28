@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::char::is_combining_mark;
 
 #[cfg(target_os = "linux")]
 use crate::progress::copy_counted;
@@ -280,27 +283,64 @@ fn same_file(_a: &Path, _b: &Path) -> bool {
     false
 }
 
-/// Recursively find entries whose name contains `query`, case-insensitively.
+/// Lowercase with accents removed, so "cafe" finds "Café". Matches the
+/// frontend's `fold`, which filters the folder before these results arrive.
+pub fn fold(s: &str) -> String {
+    s.nfd()
+        .filter(|c| !is_combining_mark(*c))
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// Why a search ended before looking everywhere.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchStop {
+    /// It found `limit` matches.
+    Results,
+    /// It looked through `MAX_SEARCH_SCANNED` items.
+    Scanned,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct SearchSummary {
+    /// None when the search covered the whole folder (or was cancelled).
+    pub stopped: Option<SearchStop>,
+    pub scanned: usize,
+}
+
+/// How many items one search looks at before giving up.
+pub const MAX_SEARCH_SCANNED: usize = 100_000;
+/// How often found entries are handed to `found` while a search runs.
+const SEARCH_BATCH_EVERY: Duration = Duration::from_millis(100);
+
+/// Recursively find entries whose name contains `query`, ignoring case and
+/// accents. Matches go to `found` in batches as the search runs, so the first
+/// ones show up before it ends; `cancelled` is checked for every item.
 /// Symlinked folders are returned but not descended into, so a link loop can't
 /// make search run forever; unreadable subfolders are skipped. Stops after
 /// `limit` results (the UI asks for a bounded number).
 pub fn search_dir(
-    path: String,
-    query: String,
+    path: &str,
+    query: &str,
     show_hidden: bool,
     limit: usize,
-) -> Result<Vec<Entry>, String> {
-    let root = Path::new(&path);
-    let needle = query.trim().to_lowercase();
+    found: &mut dyn FnMut(Vec<Entry>),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<SearchSummary, String> {
+    let root = Path::new(path);
+    let needle = fold(query.trim());
+    let mut walk = SearchWalk {
+        batch: Vec::new(),
+        sent: 0,
+        scanned: 0,
+        last_sent: Instant::now(),
+        found,
+    };
     if needle.is_empty() {
-        return Ok(Vec::new());
+        return Ok(walk.summary(None));
     }
-
     let mut stack = vec![root.to_path_buf()];
-    let mut out = Vec::new();
-    let mut scanned = 0usize;
-    const MAX_SCANNED: usize = 100_000;
-
     while let Some(dir) = stack.pop() {
         let read_dir = match std::fs::read_dir(&dir) {
             Ok(read_dir) => read_dir,
@@ -310,31 +350,75 @@ pub fn search_dir(
             Err(_) => continue,
         };
         for item in read_dir.flatten() {
-            if out.len() >= limit || scanned >= MAX_SCANNED {
-                return Ok(out);
+            if cancelled() {
+                return Ok(walk.summary(None));
             }
-            scanned += 1;
+            if let Some(stop) = walk.stop(limit) {
+                return Ok(walk.summary(Some(stop)));
+            }
+            walk.scanned += 1;
             let name = item.file_name().to_string_lossy().to_string();
-            if name == crate::versions::VERSIONS_DIR {
-                continue;
-            }
-            if name.starts_with('.') && !show_hidden {
+            if name == crate::versions::VERSIONS_DIR || (name.starts_with('.') && !show_hidden) {
                 continue;
             }
             let child = item.path();
-            let Some(entry) = make_entry(&child, name.clone()) else {
+            let Some(entry) = make_entry(&child, name) else {
                 continue;
             };
-            let descend = entry.is_dir && !entry.is_symlink;
-            if name.to_lowercase().contains(&needle) {
-                out.push(entry);
-            }
-            if descend {
+            if entry.is_dir && !entry.is_symlink {
                 stack.push(child);
+            }
+            if fold(&entry.name).contains(&needle) {
+                walk.add(entry);
             }
         }
     }
-    Ok(out)
+    Ok(walk.summary(None))
+}
+
+/// The running state of `search_dir`: counts and the batch not yet sent.
+struct SearchWalk<'a> {
+    batch: Vec<Entry>,
+    sent: usize,
+    scanned: usize,
+    last_sent: Instant,
+    found: &'a mut dyn FnMut(Vec<Entry>),
+}
+
+impl SearchWalk<'_> {
+    fn stop(&self, limit: usize) -> Option<SearchStop> {
+        if self.sent + self.batch.len() >= limit {
+            Some(SearchStop::Results)
+        } else if self.scanned >= MAX_SEARCH_SCANNED {
+            Some(SearchStop::Scanned)
+        } else {
+            None
+        }
+    }
+
+    fn add(&mut self, entry: Entry) {
+        self.batch.push(entry);
+        if self.last_sent.elapsed() >= SEARCH_BATCH_EVERY {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        self.last_sent = Instant::now();
+        if self.batch.is_empty() {
+            return;
+        }
+        self.sent += self.batch.len();
+        (self.found)(std::mem::take(&mut self.batch));
+    }
+
+    fn summary(&mut self, stopped: Option<SearchStop>) -> SearchSummary {
+        self.flush();
+        SearchSummary {
+            stopped,
+            scanned: self.scanned,
+        }
+    }
 }
 
 /// What the "N items" column needs about a folder: how many entries it has,
@@ -726,6 +810,32 @@ mod tests {
         assert_eq!(entries_for(&paths, false)[0].size, 5);
     }
 
+    /// Run a search to the end, returning the batches it sent and its summary.
+    fn search(
+        dir: &Path,
+        query: &str,
+        show_hidden: bool,
+        limit: usize,
+    ) -> (Vec<Vec<Entry>>, SearchSummary) {
+        let mut batches = Vec::new();
+        let summary = search_dir(
+            &dir.to_string_lossy(),
+            query,
+            show_hidden,
+            limit,
+            &mut |batch| batches.push(batch),
+            &|| false,
+        )
+        .unwrap();
+        (batches, summary)
+    }
+
+    fn found_names(batches: Vec<Vec<Entry>>) -> Vec<String> {
+        let mut names: Vec<String> = batches.into_iter().flatten().map(|e| e.name).collect();
+        names.sort();
+        names
+    }
+
     #[test]
     fn search_is_recursive_and_skips_hidden_or_internal_folders() {
         let dir = tempdir().unwrap();
@@ -739,46 +849,104 @@ mod tests {
         fs::create_dir(dir.path().join(".versions")).unwrap();
         fs::write(dir.path().join(".versions/alpha-old.txt"), "e").unwrap();
 
-        let mut names: Vec<String> = search_dir(
-            dir.path().to_string_lossy().to_string(),
-            "alpha".into(),
-            false,
-            100,
-        )
-        .unwrap()
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
-        names.sort();
+        let (batches, summary) = search(dir.path(), "alpha", false, 100);
         assert_eq!(
-            names,
+            found_names(batches),
             ["ALPHA-three.txt", "Alpha.txt", "alpha-two.txt"]
         );
+        assert_eq!(summary.stopped, None);
 
-        let with_hidden = search_dir(
-            dir.path().to_string_lossy().to_string(),
-            "alpha".into(),
-            true,
-            100,
-        )
-        .unwrap();
-        assert!(with_hidden.iter().any(|e| e.name == "alpha-secret.txt"));
-        assert!(!with_hidden.iter().any(|e| e.name == "alpha-old.txt"));
+        let with_hidden = found_names(search(dir.path(), "alpha", true, 100).0);
+        assert!(with_hidden.contains(&"alpha-secret.txt".to_string()));
+        assert!(!with_hidden.contains(&"alpha-old.txt".to_string()));
     }
 
     #[test]
-    fn search_stops_at_the_limit() {        let dir = tempdir().unwrap();
+    fn search_ignores_accents_and_case_both_ways() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Café Menu.pdf"), "a").unwrap();
+        // macOS file systems may hand back names already decomposed.
+        fs::write(dir.path().join("Re\u{301}sume\u{301}.txt"), "b").unwrap();
+        fs::write(dir.path().join("cafe-notes.txt"), "c").unwrap();
+        assert_eq!(
+            found_names(search(dir.path(), "CAFE", false, 100).0),
+            ["Café Menu.pdf", "cafe-notes.txt"]
+        );
+        assert_eq!(found_names(search(dir.path(), "café", false, 100).0).len(), 2);
+        assert_eq!(found_names(search(dir.path(), "résumé", false, 100).0).len(), 1);
+        assert_eq!(fold("Ångström"), "angstrom");
+    }
+
+    #[test]
+    fn search_stops_at_the_limit_and_says_so() {
+        let dir = tempdir().unwrap();
         for i in 0..20 {
             fs::write(dir.path().join(format!("match-{i}.txt")), "x").unwrap();
         }
-        let found = search_dir(
-            dir.path().to_string_lossy().to_string(),
-            "match".into(),
+        let (batches, summary) = search(dir.path(), "match", false, 5);
+        assert_eq!(found_names(batches).len(), 5);
+        assert_eq!(summary.stopped, Some(SearchStop::Results));
+        // Finding everything there is is not a stop, even at exactly the limit.
+        let (_, all) = search(dir.path(), "match", false, 20);
+        assert_eq!(all.stopped, None);
+        assert_eq!(all.scanned, 20);
+    }
+
+    #[test]
+    fn search_stops_when_cancelled_and_ignores_an_empty_query() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let mut sent = 0;
+        let summary = search_dir(
+            &dir.path().to_string_lossy(),
+            "a",
             false,
-            5,
+            10,
+            &mut |batch| sent += batch.len(),
+            &|| true,
         )
         .unwrap();
-        assert_eq!(found.len(), 5);
+        assert_eq!((sent, summary.stopped, summary.scanned), (0, None, 0));
+        let (batches, empty) = search(dir.path(), "  ", false, 10);
+        assert!(batches.is_empty());
+        assert_eq!(empty, SearchSummary { stopped: None, scanned: 0 });
+    }
+
+    #[test]
+    fn search_of_an_unreadable_folder_is_an_error() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("gone");
+        let result = search_dir(&missing.to_string_lossy(), "a", false, 10, &mut |_| {}, &|| false);
+        assert!(result.unwrap_err().starts_with("Failed to read directory"));
+    }
+
+    #[test]
+    fn search_sends_matches_in_batches_while_it_runs() {
+        let mut got = Vec::new();
+        let mut walk = SearchWalk {
+            batch: Vec::new(),
+            sent: 0,
+            scanned: 0,
+            last_sent: Instant::now() - SEARCH_BATCH_EVERY,
+            found: &mut |batch: Vec<Entry>| got.push(batch.len()),
+        };
+        let entry = |name: &str| Entry {
+            name: name.into(),
+            path: format!("/tmp/{name}"),
+            is_dir: false,
+            size: 1,
+            modified: 0,
+            is_hidden: false,
+            is_symlink: false,
+            cloud: None,
+        };
+        walk.add(entry("a")); // due: sent at once
+        walk.add(entry("b")); // waits for the next batch
+        assert_eq!(walk.stop(2), Some(SearchStop::Results));
+        walk.scanned = MAX_SEARCH_SCANNED;
+        assert_eq!(walk.stop(10), Some(SearchStop::Scanned));
+        assert_eq!(walk.summary(None).scanned, MAX_SEARCH_SCANNED);
+        assert_eq!(got, [1, 1]);
     }
 
     #[test]

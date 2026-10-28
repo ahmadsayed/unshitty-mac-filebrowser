@@ -14,8 +14,9 @@ mod trash_ops;
 mod versions;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use progress::ProgressUpdate;
 use tauri::ipc::Channel;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -324,14 +325,53 @@ async fn sftp_open(
     result?
 }
 
+/// The search running in each window: starting another, or `cancel_search`,
+/// stops it, so typing doesn't leave old searches walking the disk.
+#[derive(Default)]
+struct Searches(Mutex<HashMap<String, Arc<AtomicBool>>>);
+
+impl Searches {
+    /// Stop `window`'s running search and return the flag for its next one.
+    fn restart(&self, window: &str) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut running = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(old) = running.insert(window.to_string(), flag.clone()) {
+            old.store(true, Ordering::Relaxed);
+        }
+        flag
+    }
+}
+
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn search_dir(
+    app: tauri::AppHandle,
+    window: tauri::Window,
     path: String,
     query: String,
     show_hidden: bool,
     limit: usize,
-) -> Result<Vec<fs_ops::Entry>, String> {
-    blocking(move || fs_ops::search_dir(path, query, show_hidden, limit)).await?
+    on_results: Channel<Vec<fs_ops::Entry>>,
+) -> Result<fs_ops::SearchSummary, String> {
+    let stop = app.state::<Searches>().restart(window.label());
+    blocking(move || {
+        fs_ops::search_dir(
+            &path,
+            &query,
+            show_hidden,
+            limit,
+            &mut |batch| {
+                let _ = on_results.send(batch);
+            },
+            &|| stop.load(Ordering::Relaxed),
+        )
+    })
+    .await?
+}
+
+#[tauri::command]
+fn cancel_search(app: tauri::AppHandle, window: tauri::Window) {
+    app.state::<Searches>().restart(window.label());
 }
 
 #[tauri::command]
@@ -1538,6 +1578,7 @@ pub fn run() {
             app.manage(VersionsState::new(config_dir.join("versioned.json")));
             app.manage(progress::Registry::default());
             app.manage(thumbnails::Requests::default());
+            app.manage(Searches::default());
             app.manage(CloudState::new(&config_dir));
             app.manage(sftp::SftpState::new(
                 config_dir.join("sftp_known_hosts"),
@@ -1580,6 +1621,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_dir,
             search_dir,
+            cancel_search,
             sftp_connect,
             sftp_servers,
             sftp_disconnect,

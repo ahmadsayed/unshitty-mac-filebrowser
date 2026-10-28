@@ -413,24 +413,40 @@ test("permissions can be read and changed", async () => {  const path = `${HOME}
   await expect(invoke("set_permissions", { path, mode: 0o1000 })).rejects.toMatch(/Invalid permissions/);
 });
 
-test("search_dir walks subfolders and respects hidden files", async () => {
-  const found = await invoke<Array<{ name: string; path: string }>>("search_dir", {
-    path: HOME,
-    query: "README",
-    showHidden: false,
-    limit: 20,
+type Found = { name: string; path: string };
+
+/** Run the mock search, collecting the batches it streams. */
+async function searchAll(path: string, query: string, limit = 20, showHidden = false) {
+  const batches: Found[][] = [];
+  const onResults = new Channel<Found[]>();
+  onResults.onmessage = (batch) => batches.push(batch);
+  const summary = await invoke<{ stopped: string | null; scanned: number }>("search_dir", {
+    path, query, showHidden, limit, onResults,
   });
+  return { batches, found: batches.flat(), summary };
+}
+
+test("search_dir walks subfolders and respects hidden files", async () => {
+  const { found, summary } = await searchAll(HOME, "README");
   expect(found.map((entry) => entry.path)).toContain(
     `${HOME}/Documents/Projects/unshitty-mac-filebrowser/README.md`,
   );
+  expect(summary.stopped).toBeNull();
+  expect((await searchAll(HOME, ".DS_Store")).found).toHaveLength(0);
+});
 
-  const hidden = await invoke<Array<{ name: string }>>("search_dir", {
-    path: HOME,
-    query: ".DS_Store",
-    showHidden: false,
-    limit: 20,
-  });
-  expect(hidden).toHaveLength(0);
+test("search_dir ignores accents, streams batches and says why it stopped", async () => {
+  await invoke("make_dir", { path: `${HOME}/Café Notes` });
+  expect((await searchAll(HOME, "cafe")).found.map((e) => e.name)).toContain("Café Notes");
+  expect((await searchAll(HOME, "CAFÉ")).found.map((e) => e.name)).toContain("Café Notes");
+
+  const big = await searchAll("/big", "file", 120);
+  expect(big.found).toHaveLength(120);
+  expect(big.batches.length).toBeGreaterThan(1);
+  expect(big.summary.stopped).toBe("results");
+  expect((await searchAll("/big", "folder 99", 1000)).summary).toEqual({ stopped: null, scanned: 10_000 });
+  expect((await searchAll("/big", " ")).summary).toEqual({ stopped: null, scanned: 0 });
+  await expect(invoke("cancel_search")).resolves.toBeUndefined();
 });
 
 test("sharing commands create links, receive, go offline and clean up", async () => {  const mock = (globalThis as unknown as { __mockShare: { setOnline(v: boolean): void; reset(): void } }).__mockShare;

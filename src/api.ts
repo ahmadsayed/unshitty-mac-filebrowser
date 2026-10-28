@@ -47,13 +47,32 @@ export async function listDir(
 }
 
 /** Recursively find entries whose name contains `query`. */
+/** Why a search ended before looking everywhere: it found `limit` matches,
+ *  or it looked at as many items as one search may. */
+export type SearchStop = "results" | "scanned";
+
+export interface SearchSummary {
+  stopped: SearchStop | null;
+  scanned: number;
+}
+
+/** Search `path` recursively by name. Matches arrive in batches through
+ *  `onFound` while the search runs; a new search in this window stops it. */
 export async function searchDir(
   path: string,
   query: string,
   showHidden: boolean,
-  limit: number
-): Promise<Entry[]> {
-  return invoke<Entry[]>("search_dir", { path, query, showHidden, limit });
+  limit: number,
+  onFound: (batch: Entry[]) => void
+): Promise<SearchSummary> {
+  const onResults = new Channel<Entry[]>();
+  onResults.onmessage = onFound;
+  return invoke<SearchSummary>("search_dir", { path, query, showHidden, limit, onResults });
+}
+
+/** Stop this window's running search. */
+export async function cancelSearch(): Promise<void> {
+  return invoke("cancel_search");
 }
 
 export interface ExtractResult {
