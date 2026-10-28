@@ -968,6 +968,28 @@ function measure(paths: string[]): { bytes: number; items: number } {
   return total;
 }
 
+// Thumbnails can be held open by tests, standing in for a slow Quick Look,
+// and every request and cancellation is logged.
+let thumbsHeld = false;
+const heldThumbs = new Map<number, () => void>();
+const thumbLog = { requested: [] as string[], cancelled: [] as number[] };
+
+(globalThis as Record<string, unknown>).__mockThumbs = {
+  log: thumbLog,
+  hold(hold: boolean) {
+    thumbsHeld = hold;
+    if (hold) return;
+    for (const resolve of heldThumbs.values()) resolve();
+    heldThumbs.clear();
+  },
+  held: () => heldThumbs.size,
+  reset() {
+    this.hold(false);
+    thumbLog.requested.length = 0;
+    thumbLog.cancelled.length = 0;
+  },
+};
+
 (globalThis as Record<string, unknown>).__mockOps = {
   hold() {
     holding = true;
@@ -1610,11 +1632,24 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     { name: "Macintosh HD", path: "/Volumes/Macintosh HD" },
   ],
   trash_dir: () => TRASH,
-  thumbnail: (a) => {
+  thumbnail: async (a) => {
     const path = str(a, "path");
-    return path.startsWith("gdrive://") || path.startsWith("share://") || path.startsWith("sftp://")
-      ? Promise.resolve(new ArrayBuffer(0))
-      : mockThumbnail(path, a.size as number);
+    if (path.startsWith("gdrive://") || path.startsWith("share://") || path.startsWith("sftp://")) return new ArrayBuffer(0);
+    const ticket = a.ticket as number | undefined;
+    thumbLog.requested.push(path);
+    if (thumbsHeld && ticket !== undefined) {
+      await new Promise<void>((resolve) => heldThumbs.set(ticket, resolve));
+      // Cancelled while it waited: the backend answers with no image.
+      if (thumbLog.cancelled.includes(ticket)) return new ArrayBuffer(0);
+    }
+    return mockThumbnail(path, a.size as number);
+  },
+  cancel_thumbnails: (a) => {
+    for (const ticket of a.tickets as number[]) {
+      thumbLog.cancelled.push(ticket);
+      heldThumbs.get(ticket)?.();
+      heldThumbs.delete(ticket);
+    }
   },
   path_info: (a) =>
     (a.paths as string[]).map((path) => {

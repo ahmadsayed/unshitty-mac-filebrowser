@@ -24,11 +24,20 @@ pub const WRITE_ONLY_FOLDER: &str = if IS_MACOS {
 /// exited on its own. External helpers (qlmanage, mdfind) can hang on unusual
 /// input, and a stuck one must never hold a worker thread forever.
 pub fn wait_or_kill(child: &mut std::process::Child, timeout: std::time::Duration) -> bool {
+    wait_or_kill_unless(child, timeout, &|| false)
+}
+
+/// `wait_or_kill`, also killing `child` as soon as `stop` returns true.
+pub fn wait_or_kill_unless(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+    stop: &dyn Fn() -> bool,
+) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(_)) => return true,
-            Ok(None) if std::time::Instant::now() < deadline => {
+            Ok(None) if std::time::Instant::now() < deadline && !stop() => {
                 std::thread::sleep(std::time::Duration::from_millis(20))
             }
             _ => {

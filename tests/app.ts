@@ -8,6 +8,26 @@ import { join } from "node:path";
 const html = readFileSync(join(process.cwd(), "index.html"), "utf8");
 const body = html.slice(html.indexOf("<body>") + "<body>".length, html.indexOf("</body>"));
 
+/** Stand in for OffscreenCanvas, which jsdom lacks, so the mock backend can
+ *  "draw" thumbnails: every drawing call is accepted and does nothing. */
+export function installFakeCanvas(): void {
+  const anything: unknown = new Proxy(function () {}, {
+    // No `then`, so nothing mistakes it for a promise.
+    get: (_target, prop) => (prop === "then" ? undefined : prop === "data" ? new Uint8ClampedArray(16) : anything),
+    apply: () => anything,
+    set: () => true,
+  });
+  class FakeCanvas {
+    getContext() {
+      return anything;
+    }
+    convertToBlob() {
+      return Promise.resolve({ arrayBuffer: async () => new ArrayBuffer(8) });
+    }
+  }
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeCanvas;
+}
+
 /** Wait for pending backend calls and renders to finish. */
 export async function settle(rounds = 6): Promise<void> {
   for (let i = 0; i < rounds; i++) await new Promise((r) => setTimeout(r, 0));

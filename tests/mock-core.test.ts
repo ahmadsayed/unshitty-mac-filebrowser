@@ -2,6 +2,7 @@
 // every command it serves, including its errors.
 import { expect, test, vi } from "vitest";
 import { Channel, invoke } from "../dev/mock-tauri/core";
+import { installFakeCanvas } from "./app";
 
 const HOME = "/Users/me";
 type Entry = { name: string; path: string; is_dir: boolean; size: number; is_hidden: boolean };
@@ -111,6 +112,30 @@ test("window buttons follow the button layout; window_control toggles maximize",
 test("thumbnails are empty for files without a preview", async () => {
   const buf = await invoke<ArrayBuffer>("thumbnail", { path: `${HOME}/main.rs`, size: 64 });
   expect(buf.byteLength).toBe(0);
+});
+
+test("held thumbnails wait until released, and cancelled ones come back empty", async () => {
+  type MockThumbs = { hold(v: boolean): void; held(): number; reset(): void; log: { requested: string[]; cancelled: number[] } };
+  const thumbs = (globalThis as unknown as { __mockThumbs: MockThumbs }).__mockThumbs;
+  const photo = `${HOME}/Pictures/Camera/DSC 1.jpg`;
+  installFakeCanvas();
+  thumbs.reset();
+  thumbs.hold(true);
+  const kept = invoke<ArrayBuffer>("thumbnail", { path: photo, size: 64, ticket: 1 });
+  const dropped = invoke<ArrayBuffer>("thumbnail", { path: photo, size: 64, ticket: 2 });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(thumbs.held()).toBe(2);
+  await invoke("cancel_thumbnails", { tickets: [2, 99] });
+  expect((await dropped).byteLength).toBe(0);
+  expect(thumbs.held()).toBe(1);
+  thumbs.hold(false);
+  expect((await kept).byteLength).toBeGreaterThan(0);
+  // A request without a ticket (the preview) is never held.
+  thumbs.hold(true);
+  expect((await invoke<ArrayBuffer>("thumbnail", { path: photo, size: 64 })).byteLength).toBeGreaterThan(0);
+  expect(thumbs.log).toEqual({ requested: [photo, photo, photo], cancelled: [2, 99] });
+  thumbs.reset();
+  delete (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
 });
 
 test("copy_entry and move_entry copy, move, replace and refuse", async () => {

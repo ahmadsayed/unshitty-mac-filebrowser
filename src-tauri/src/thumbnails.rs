@@ -9,12 +9,17 @@
 //! Cache entries are keyed on path, size, modification time and requested
 //! size, so editing a file produces a fresh thumbnail. Files that have no
 //! thumbnail leave an empty `.none` marker so they aren't retried each time.
+//!
+//! The view cancels requests for items it no longer shows: a cancelled
+//! request kills its Quick Look helper or skips its decode, and leaves
+//! nothing in the cache.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 /// Stable 64-bit FNV-1a, so cache names survive Rust upgrades.
@@ -38,9 +43,24 @@ fn cache_key(path: &Path, meta: &fs::Metadata, size: u32) -> String {
     format!("{:016x}-{}", fnv1a(id.as_bytes()), size)
 }
 
+/// The error of a request cancelled before its thumbnail was made.
+pub const CANCELLED: &str = "Cancelled.";
+
+/// `thumbnail_unless` for a request that is never cancelled.
+#[cfg(test)]
+fn thumbnail(path: &Path, size: u32, cache_dir: &Path) -> Result<Option<PathBuf>, String> {
+    thumbnail_unless(path, size, cache_dir, &|| false)
+}
+
 /// Path of a PNG thumbnail no larger than `size`×`size` for `path`, creating
-/// it in `cache_dir` if needed. `Ok(None)` means this file has no thumbnail.
-pub fn thumbnail(path: &Path, size: u32, cache_dir: &Path) -> Result<Option<PathBuf>, String> {
+/// it in `cache_dir` if needed. `Ok(None)` means this file has no thumbnail;
+/// `Err(CANCELLED)` that `stop` said the view no longer wants it.
+pub fn thumbnail_unless(
+    path: &Path,
+    size: u32,
+    cache_dir: &Path,
+    stop: &dyn Fn() -> bool,
+) -> Result<Option<PathBuf>, String> {
     let meta =
         fs::metadata(path).map_err(|e| format!("Cannot read “{}”: {}", path.display(), e))?;
     if !meta.is_file() {
@@ -57,9 +77,15 @@ pub fn thumbnail(path: &Path, size: u32, cache_dir: &Path) -> Result<Option<Path
     }
     fs::create_dir_all(cache_dir).map_err(|e| format!("Cannot create thumbnail cache: {}", e))?;
 
-    if (cfg!(target_os = "macos") && quick_look(path, size, &out)) || decode_image(path, size, &out)
+    if (cfg!(target_os = "macos") && quick_look(path, size, &out, stop))
+        || decode_image(path, size, &out, stop)
     {
         return Ok(Some(out));
+    }
+    // A cancelled request says nothing about the file: don't remember it
+    // as thumbnailless.
+    if stop() {
+        return Err(CANCELLED.into());
     }
     let _ = fs::write(&none, b"");
     Ok(None)
@@ -67,22 +93,33 @@ pub fn thumbnail(path: &Path, size: u32, cache_dir: &Path) -> Result<Option<Path
 
 /// Ask Quick Look for a thumbnail. Gives up after a timeout: qlmanage can
 /// hang on unusual files, and a thumbnail is never worth a stuck worker.
-fn quick_look(path: &Path, size: u32, out: &Path) -> bool {
+fn quick_look(path: &Path, size: u32, out: &Path, stop: &dyn Fn() -> bool) -> bool {
     quick_look_with(
         Path::new("/usr/bin/qlmanage"),
         path,
         size,
         out,
         Duration::from_secs(15),
+        stop,
     )
 }
 
 /// `quick_look` with the program and timeout passed in, so it can be tested
 /// with a stand-in for qlmanage on any platform.
-fn quick_look_with(program: &Path, path: &Path, size: u32, out: &Path, timeout: Duration) -> bool {
+fn quick_look_with(
+    program: &Path,
+    path: &Path,
+    size: u32,
+    out: &Path,
+    timeout: Duration,
+    stop: &dyn Fn() -> bool,
+) -> bool {
     let Some(name) = path.file_name() else {
         return false;
     };
+    if stop() {
+        return false;
+    }
     let work = out.with_extension("ql");
     let _ = fs::remove_dir_all(&work);
     if fs::create_dir_all(&work).is_err() {
@@ -99,7 +136,8 @@ fn quick_look_with(program: &Path, path: &Path, size: u32, out: &Path, timeout: 
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let child = crate::platform::spawn_helper(&mut command);
-    let ok = child.is_ok_and(|mut child| crate::platform::wait_or_kill(&mut child, timeout));
+    let ok = child
+        .is_ok_and(|mut child| crate::platform::wait_or_kill_unless(&mut child, timeout, stop));
     // qlmanage writes "<file name>.png" into the output folder.
     let mut produced = name.to_os_string();
     produced.push(".png");
@@ -124,11 +162,12 @@ const MAX_PIXELS: u64 = 80_000_000;
 
 /// Decode a common image format directly (respecting EXIF rotation) and
 /// shrink it to fit `size`. Small images are kept at their own size.
-fn decode_image(path: &Path, size: u32, out: &Path) -> bool {
+/// A request cancelled while it waits for its turn is skipped.
+fn decode_image(path: &Path, size: u32, out: &Path, stop: &dyn Fn() -> bool) -> bool {
     DECODES_WAITING.fetch_add(1, Ordering::SeqCst);
     let decoded = {
         let _guard = DECODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        decode_image_now(path, size, out)
+        !stop() && decode_image_now(path, size, out)
     };
     // Trim once the queue has drained, not after every decode: a trim walks
     // the whole heap, and while scrolling a photo folder the next decode is
@@ -225,6 +264,71 @@ pub fn prune(cache_dir: &Path, max_age: Duration) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Requests in progress, so a window can cancel the ones it no longer shows
+// ---------------------------------------------------------------------------
+
+type Running = HashMap<(String, u64), Arc<AtomicBool>>;
+
+/// Thumbnail requests running now, keyed by window and the window's ticket.
+#[derive(Clone, Default)]
+pub struct Requests {
+    running: Arc<Mutex<Running>>,
+}
+
+/// One running request; it is forgotten when this is dropped.
+pub struct Request {
+    requests: Requests,
+    key: (String, u64),
+    stop: Arc<AtomicBool>,
+}
+
+impl Requests {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Running> {
+        self.running.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn start(&self, window: &str, ticket: u64) -> Request {
+        let key = (window.to_string(), ticket);
+        let stop = Arc::new(AtomicBool::new(false));
+        self.lock().insert(key.clone(), stop.clone());
+        Request { requests: self.clone(), key, stop }
+    }
+
+    /// Cancel `window`'s requests with these tickets; finished ones are ignored.
+    pub fn cancel(&self, window: &str, tickets: &[u64]) {
+        let running = self.lock();
+        for ticket in tickets {
+            if let Some(stop) = running.get(&(window.to_string(), *ticket)) {
+                stop.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn running(&self) -> usize {
+        self.lock().len()
+    }
+}
+
+impl Request {
+    #[cfg(test)]
+    fn cancelled(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
+    /// The flag to poll from the thread doing the work.
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
+    }
+}
+
+impl Drop for Request {
+    fn drop(&mut self) {
+        self.requests.lock().remove(&self.key);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,7 +358,8 @@ mod tests {
             &src,
             256,
             &out,
-            Duration::from_secs(5)
+            Duration::from_secs(5),
+            &|| false
         ));
         assert_eq!(fs::read_to_string(&out).unwrap(), "png\n");
         assert!(
@@ -276,7 +381,8 @@ mod tests {
             &src,
             256,
             &out,
-            Duration::from_secs(5)
+            Duration::from_secs(5),
+            &|| false
         ));
         let stuck = fake_program(dir.path(), "exec sleep 10");
         assert!(!quick_look_with(
@@ -284,17 +390,19 @@ mod tests {
             &src,
             256,
             &out,
-            Duration::from_millis(100)
+            Duration::from_millis(100),
+            &|| false
         ));
         assert!(!quick_look_with(
             &dir.path().join("missing"),
             &src,
             256,
             &out,
-            Duration::from_secs(1)
+            Duration::from_secs(1),
+            &|| false
         ));
         assert!(
-            !quick_look_with(&silent, Path::new("/"), 256, &out, Duration::from_secs(1)),
+            !quick_look_with(&silent, Path::new("/"), 256, &out, Duration::from_secs(1), &|| false),
             "no file name"
         );
         assert!(!out.exists());
@@ -362,7 +470,7 @@ mod tests {
                 let cache = cache.clone();
                 std::thread::spawn(move || {
                     let out = cache.join(p.file_name().unwrap());
-                    assert!(decode_image(&p, 96, &out));
+                    assert!(decode_image(&p, 96, &out, &|| false));
                     assert_eq!(image::image_dimensions(&out).unwrap(), (96, 96));
                 })
             })
@@ -453,6 +561,71 @@ mod tests {
                 .is_none()
         );
         assert!(thumbnail(&dir.path().join("gone.png"), 128, &dir.path().join("cache")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_quick_look_stops_the_helper_at_once() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("movie.mov");
+        fs::write(&src, b"x").unwrap();
+        let out = dir.path().join("thumb.png");
+        let stuck = fake_program(dir.path(), "exec sleep 10");
+        let started = std::time::Instant::now();
+        let stop = || started.elapsed() > Duration::from_millis(100);
+        assert!(!quick_look_with(&stuck, &src, 256, &out, Duration::from_secs(15), &stop));
+        assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
+        assert!(!out.exists());
+        assert!(!dir.path().join("thumb.ql").exists());
+    }
+
+    #[test]
+    fn a_decode_cancelled_while_waiting_its_turn_is_skipped() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("photo.png");
+        write_png(&src, 300, 300);
+        let out = dir.path().join("thumb.png");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let turn = DECODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let waiting = {
+            let (src, out, stop) = (src.clone(), out.clone(), stop.clone());
+            std::thread::spawn(move || decode_image(&src, 128, &out, &|| stop.load(Ordering::SeqCst)))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        stop.store(true, Ordering::SeqCst);
+        drop(turn);
+        assert!(!waiting.join().unwrap());
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn a_cancelled_thumbnail_is_not_remembered_as_missing() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("photo.png");
+        write_png(&src, 300, 300);
+        let cache = dir.path().join("cache");
+        assert_eq!(thumbnail_unless(&src, 128, &cache, &|| true), Err(CANCELLED.to_string()));
+        let left = fs::read_dir(&cache).map(|d| d.count()).unwrap_or(0);
+        assert_eq!(left, 0, "no thumbnail and no .none marker");
+        // Asked again later, it is made as usual.
+        assert!(thumbnail(&src, 128, &cache).unwrap().is_some());
+    }
+
+    #[test]
+    fn requests_are_cancelled_per_window_and_forgotten_when_done() {
+        let requests = Requests::default();
+        let a1 = requests.start("main", 1);
+        let a2 = requests.start("main", 2);
+        let b1 = requests.start("other", 1);
+        requests.cancel("main", &[1, 7]);
+        assert!(a1.cancelled());
+        assert!(!a2.cancelled());
+        assert!(!b1.cancelled(), "another window's ticket 1 is a different request");
+        drop((a1, a2, b1));
+        assert_eq!(requests.running(), 0);
+        // Cancelling a finished request does nothing and keeps nothing.
+        requests.cancel("main", &[2]);
+        assert_eq!(requests.running(), 0);
     }
 
     #[test]

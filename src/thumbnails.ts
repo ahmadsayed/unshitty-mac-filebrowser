@@ -1,7 +1,7 @@
 // Loads file thumbnails from the backend and keeps them as blob URLs.
 // Requests run a few at a time and only for items that are on screen; the
 // URL cache is bounded and frees the least recently shown images.
-import { thumbnail } from "./api";
+import { cancelThumbnails, thumbnail } from "./api";
 
 /**
  * Memory the cached images may use. Thumbnails are PNGs: photos average
@@ -19,7 +19,9 @@ const cache = new Map<string, { url: string; bytes: number } | null>();
 let cachedBytes = 0;
 const pending = new Map<string, { path: string; size: number; onReady: (url: string | null) => void }>();
 const queue: string[] = [];
-let running = 0;
+/** Requests the backend is working on: key → the ticket that names it. */
+const running = new Map<string, number>();
+let nextTicket = 1;
 
 export function thumbKey(path: string, modified: number, bytes: number, size: number): string {
   return `${path}\n${modified}\n${bytes}\n${size}`;
@@ -56,27 +58,46 @@ export function requestThumb(key: string, path: string, size: number, onReady: (
   pump();
 }
 
-/** Forget queued requests that are no longer on screen. */
+/**
+ * Keep only the requests in `keys`, most wanted first. Queued ones are
+ * dropped or reordered to match; running ones are cancelled in the backend
+ * and give up their slot at once, so a folder left behind can't hold up the
+ * next one's thumbnails.
+ */
 export function keepOnly(keys: Set<string>): void {
-  for (let i = queue.length - 1; i >= 0; i--) {
-    if (!keys.has(queue[i])) {
-      pending.delete(queue[i]);
-      queue.splice(i, 1);
-    }
+  const queued = new Set(queue);
+  for (const key of queued) if (!keys.has(key)) pending.delete(key);
+  queue.splice(0, queue.length, ...[...keys].filter((key) => queued.has(key)));
+  const tickets: number[] = [];
+  for (const [key, ticket] of running) {
+    if (keys.has(key)) continue;
+    running.delete(key);
+    pending.delete(key);
+    tickets.push(ticket);
   }
+  if (!tickets.length) return;
+  cancelThumbnails(tickets).catch(() => {});
+  pump();
 }
 
 function pump(): void {
-  while (running < CONCURRENCY && queue.length) {
+  while (running.size < CONCURRENCY && queue.length) {
     const key = queue.shift()!;
     const job = pending.get(key);
     if (!job) continue;
-    running++;
-    thumbnail(job.path, job.size)
+    const ticket = nextTicket++;
+    running.set(key, ticket);
+    thumbnail(job.path, job.size, ticket)
       .then((buf) => (buf.byteLength ? { url: URL.createObjectURL(new Blob([buf], { type: "image/png" })), bytes: buf.byteLength } : null))
       .catch(() => null)
       .then((thumb) => {
-        running--;
+        // Cancelled: its slot is already free, and an empty answer would
+        // wrongly mark the file as having no thumbnail.
+        if (running.get(key) !== ticket) {
+          if (thumb) URL.revokeObjectURL(thumb.url);
+          return;
+        }
+        running.delete(key);
         pending.delete(key);
         store(key, thumb);
         job.onReady(thumb && thumb.url);

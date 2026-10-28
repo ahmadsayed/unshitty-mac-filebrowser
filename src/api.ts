@@ -621,9 +621,15 @@ export async function cancelFolderSize(walk: number): Promise<void> {
   return invoke<void>("cancel_folder_size", { walk });
 }
 
-/** PNG bytes of a thumbnail no larger than `size` px; empty when there is none. */
-export async function thumbnail(path: string, size: number): Promise<ArrayBuffer> {
-  return invoke<ArrayBuffer>("thumbnail", { path, size });
+/** PNG bytes of a thumbnail no larger than `size` px; empty when there is
+ *  none or the request was cancelled. `ticket` names it for cancelling. */
+export async function thumbnail(path: string, size: number, ticket?: number): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("thumbnail", { path, size, ticket });
+}
+
+/** Stop thumbnail requests that are no longer on screen. */
+export async function cancelThumbnails(tickets: number[]): Promise<void> {
+  return invoke<void>("cancel_thumbnails", { tickets });
 }
 
 // ---------------------------------------------------------------------------

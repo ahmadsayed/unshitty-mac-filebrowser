@@ -1468,11 +1468,16 @@ function iconHtml(e: Entry): string {
 }
 
 /** Request thumbnails for the rendered items; queued ones scrolled away are dropped. */
-function loadThumbs(start: number, end: number): void {
+function loadThumbs(start: number, end: number, visible: { start: number; end: number }): void {
   if (!prefs.showThumbnails) return;
   const size = thumbSize();
   const keys = new Set<string>();
-  for (let i = start; i <= end; i++) {
+  // Visible rows first, then the overscan around them: the order is the
+  // queue's priority (see keepOnly).
+  const order: number[] = [];
+  for (let i = visible.start; i <= visible.end; i++) order.push(i);
+  for (let i = start; i <= end; i++) if (i < visible.start || i > visible.end) order.push(i);
+  for (const i of order) {
     const e = shown[i];
     if (!wantsThumb(e)) continue;
     const key = thumbKeyFor(e, size);
@@ -1570,8 +1575,10 @@ function renderWindow(force = false): void {
   const pitch = layout.itemH + layout.gap;
   const top = scrollEl.scrollTop - layout.bodyTop - layout.padY;
   const overscan = prefs.view === "grid" ? 2 : 8;
-  const firstRow = Math.max(0, Math.floor(top / pitch) - overscan);
-  const lastRow = Math.floor((top + scrollEl.clientHeight) / pitch) + overscan;
+  const firstVisible = Math.max(0, Math.floor(top / pitch));
+  const lastVisible = Math.floor((top + scrollEl.clientHeight) / pitch);
+  const firstRow = Math.max(0, firstVisible - overscan);
+  const lastRow = lastVisible + overscan;
   const start = firstRow * layout.cols;
   const end = Math.min(shown.length - 1, (lastRow + 1) * layout.cols - 1);
   if (!force && start === windowRange.start && end === windowRange.end) return;
@@ -1579,7 +1586,10 @@ function renderWindow(force = false): void {
   const html: string[] = [];
   for (let i = start; i <= end; i++) html.push(itemHtml(i));
   itemsLayer.innerHTML = html.join("");
-  loadThumbs(start, end);
+  loadThumbs(start, end, {
+    start: firstVisible * layout.cols,
+    end: Math.min(end, (lastVisible + 1) * layout.cols - 1),
+  });
   // Both views: list view shows the counts, and either view shows the
   // version badge that comes with them. Only rendered folders are asked.
   const dirs: string[] = [];

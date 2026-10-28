@@ -1156,9 +1156,17 @@ fn opened_versions_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 /// PNG bytes of a thumbnail for `path`, at most `size` pixels square; empty
-/// when the file has no thumbnail. Raw bytes avoid JSON-encoding the image.
+/// when the file has no thumbnail or the request was cancelled. Raw bytes
+/// avoid JSON-encoding the image. `ticket`, when given, names the request
+/// for `cancel_thumbnails`.
 #[tauri::command]
-async fn thumbnail(app: tauri::AppHandle, path: String, size: u32) -> tauri::ipc::Response {
+async fn thumbnail(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+    size: u32,
+    ticket: Option<u64>,
+) -> tauri::ipc::Response {
     let size = size.clamp(32, 1024);
     let png = if cloud::is_cloud(&path) {
         blocking(move || {
@@ -1170,10 +1178,14 @@ async fn thumbnail(app: tauri::AppHandle, path: String, size: u32) -> tauri::ipc
     } else if share::location::is_share(&path) || sftp::is_sftp(&path) {
         Vec::new()
     } else {
+        // Registered until it finishes, so the window can cancel it.
+        let request = ticket.map(|t| app.state::<thumbnails::Requests>().start(window.label(), t));
+        let stop = request.as_ref().map(thumbnails::Request::stop_flag);
         blocking(move || {
+            let stop = || stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::SeqCst));
             thumbnail_dir(&app)
                 .and_then(|dir| {
-                    thumbnails::thumbnail(Path::new(&path), size, &dir)
+                    thumbnails::thumbnail_unless(Path::new(&path), size, &dir, &stop)
                         .ok()
                         .flatten()
                 })
@@ -1184,6 +1196,17 @@ async fn thumbnail(app: tauri::AppHandle, path: String, size: u32) -> tauri::ipc
         .unwrap_or_default()
     };
     tauri::ipc::Response::new(png)
+}
+
+/// Cancel this window's thumbnail requests with these tickets: the items
+/// scrolled away or the folder was left.
+#[tauri::command]
+fn cancel_thumbnails(
+    window: tauri::WebviewWindow,
+    requests: tauri::State<thumbnails::Requests>,
+    tickets: Vec<u64>,
+) {
+    requests.cancel(window.label(), &tickets);
 }
 
 /// Mounted volumes for the sidebar: `/Volumes` on macOS, the udisks2 mount
@@ -1514,6 +1537,7 @@ pub fn run() {
             let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("/"));
             app.manage(VersionsState::new(config_dir.join("versioned.json")));
             app.manage(progress::Registry::default());
+            app.manage(thumbnails::Requests::default());
             app.manage(CloudState::new(&config_dir));
             app.manage(sftp::SftpState::new(
                 config_dir.join("sftp_known_hosts"),
@@ -1605,6 +1629,7 @@ pub fn run() {
             add_recent,
             forget_recent,
             thumbnail,
+            cancel_thumbnails,
             volumes,
             drive_accounts,
             drive_disconnect,
