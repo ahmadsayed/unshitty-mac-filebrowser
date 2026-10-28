@@ -208,8 +208,11 @@ the DOM. Code that adds a mock command needs a case in
 ## Life of a task
 
 **Nothing lands on `main` that the human didn't merge.** Every change, docs
-and release bumps included, goes through a pull request; agents never push
-to `main` and never merge.
+and release bumps included, goes through a pull request. `main` is protected
+on GitHub (a PR is required, admins included; no force push or deletion), so
+a direct push is refused. Agents never merge unless the human says so in the
+conversation; GitHub can't enforce that part, since agents use the human's
+`gh` account.
 
 0. **Start from fresh data.** At the start of a session, and before answering
    any question about the project's state (what's left, issues, PRs, what
