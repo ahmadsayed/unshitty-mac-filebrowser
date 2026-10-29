@@ -1,7 +1,8 @@
 # File Browser
 
 A file browser for **macOS and Linux** that works like **GNOME Files 50**, for
-people who find Finder hard to live with. Rust does every filesystem operation;
+people who find Finder hard to live with. It looks like GNOME on Linux and like
+macOS on a Mac (pick either from the main menu). Rust does every filesystem operation;
 the interface is plain TypeScript in a system webview.
 
 > [!NOTE]
@@ -72,6 +73,9 @@ one out on its own platform.
   with your own OAuth client ([setup](docs/google-drive.md)).
 - **Trash done right:** Undo (⌘Z), Restore (also for items trashed in Finder),
   and nothing is ever deleted without asking.
+- **Themes:** GNOME (GNOME Files 50) or macOS (macOS 26 Tahoe), light and
+  dark; Automatic picks the one that fits your platform. Switching is instant
+  and keeps your place.
 - Grid and list views, tabs, thumbnails, Space to preview, batch rename,
   extract and compress archives, Starred, Recent, bookmarks, a progress popover
   with Cancel, and fast 10,000-item folders.
@@ -116,6 +120,9 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 - Google Drive: no Shared Drives, "Shared with me" or Drive-wide search.
 - Keep Versions may miss changes made while the app is closed.
 - Linux: image thumbnails only (no Quick Look).
+- macOS theme: no native window translucency (the desktop showing through the
+  sidebar), no Mac-style file icons, and GNOME's sidebar layout and wording
+  rather than Finder's "Favorites" and "Locations".
 
 ## Credits and thanks
 
@@ -140,7 +147,8 @@ tries to bring their work to other desktops.
 "GNOME" and the GNOME logo are trademarks of the GNOME Foundation. Apple, Mac,
 macOS and Finder are trademarks of Apple Inc. These names are used only to
 describe what this project is inspired by and runs on; no endorsement is
-implied.
+implied. The macOS theme is an original imitation of the macOS look; it uses
+no Apple fonts, icons or other assets.
 
 ## License
 

@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-29
 
-**Status:** Approved design, not implemented.
+**Status:** Implemented; the macOS look is not verified on a Mac.
 
 **Amends:** [File Browser design](2026-10-23-file-browser-design.md) — the
 look is no longer GNOME Files only.
@@ -184,6 +184,25 @@ the macOS theme in a real Mac window: WebKit's `backdrop-filter` rendering,
 SF Pro metrics, the traffic lights inside the floating sidebar, dragging the
 window by the transparent header, Automatic picking macOS on a Mac. Native
 vibrancy gets its own follow-up issue.
+
+## Implementation notes
+
+Where the implementation differs from the design above:
+
+- **The file view does not scroll under the toolbar.** The macOS header bar
+  has the view's background and no bottom border, which matches Finder at
+  rest, but the view starts below it, so nothing blurs under the toolbar
+  while scrolling. Doing that means taking the header bar out of the flow
+  above the tab bar and banners; left for a follow-up.
+- **No `--list-row-height` token.** List rows are sized and positioned by
+  `computeLayout` from `LAYOUT_SIZES`, so a CSS token would only duplicate it.
+  The list header's CSS height is a token (`--list-header-height`), and
+  `LAYOUT_SIZES.listHeader` is that plus its 3 px margin.
+- **Other windows take only the theme** from the `storage` event, not the
+  whole `prefs` object, so a window keeps its own view, sorting and hidden
+  files state when another one changes them.
+- `--stripe`, `--icon-box` and `--glass-shadow` exist only in the macOS
+  theme, where its scoped rules use them.
 
 ## Docs to update
 
