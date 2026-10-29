@@ -2023,6 +2023,9 @@ kbd {
   overflow: hidden;
 }
 
+/* Check for Updates: the download's progress under its text. */
+.update-bar { margin-top: 8px; }
+
 .operation-bar-fill {
   height: 100%;
   border-radius: 3px;

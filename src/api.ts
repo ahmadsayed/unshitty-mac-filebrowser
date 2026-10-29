@@ -775,3 +775,58 @@ export async function clearHistory(root: string): Promise<void> {
 export async function stopKeepingVersions(root: string): Promise<void> {
   return invoke<void>("stop_keeping_versions", { root });
 }
+
+// ---------------------------------------------------------------------------
+// Check for Updates
+// ---------------------------------------------------------------------------
+
+/** How this copy was installed; only `app_image` and `mac_app` replace themselves. */
+export type InstallKind = "app_image" | "mac_app" | "linux_package" | "dev_build";
+
+export interface UpdateInfo {
+  current: string;
+  /** Null when this is the newest published release. */
+  latest: string | null;
+  kind: InstallKind;
+  release_url: string;
+}
+
+export interface UpdateProgress {
+  phase: "downloading" | "installing";
+  downloaded: number;
+  total: number | null;
+}
+
+/** What every update command rejects with. */
+export interface UpdateFailure {
+  kind: "offline" | "unverified" | "no_permission" | "failed";
+  detail: string;
+}
+
+/** Ask GitHub for the newest published release (only when the user asks). */
+export async function checkUpdate(): Promise<UpdateInfo> {
+  return invoke<UpdateInfo>("check_update");
+}
+
+/** Download, verify and install the update the last check found. */
+export async function installUpdate(onProgress: (progress: UpdateProgress) => void): Promise<void> {
+  const channel = new Channel<UpdateProgress>();
+  channel.onmessage = onProgress;
+  return invoke<void>("install_update", { onProgress: channel });
+}
+
+/** Stop a running download; `installUpdate` then rejects with "Cancelled.". */
+export async function cancelUpdate(): Promise<void> {
+  return invoke<void>("cancel_update");
+}
+
+/** Start the installed new version, closing every window. Rejects while an
+ * operation runs in any window. */
+export async function restartApp(): Promise<void> {
+  return invoke<void>("restart_app");
+}
+
+/** Whether a copy, move or other operation runs in any window. */
+export async function operationsRunning(): Promise<boolean> {
+  return invoke<boolean>("operations_running");
+}

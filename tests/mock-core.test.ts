@@ -628,3 +628,88 @@ test("trash_entries trashes in chunks of 100, counts items and stops between chu
   expect((await ls("/big")).length).toBe(10_000 - 100);
   mockOps().reset();
 });
+
+// ----- Check for Updates -----
+
+type UpdateFailure = { kind: string; detail: string };
+type MockUpdate = {
+  set(o: { latest?: string | null; kind?: string; failCheck?: UpdateFailure; failInstall?: UpdateFailure; total?: number | null; otherWindowBusy?: boolean }): void;
+  hold(): void; step(bytes: number): void; release(): void; holdCheck(): void; releaseCheck(): void;
+  installed(): number; restarts(): number; reset(): void;
+};
+const mockUpdate = () => (globalThis as unknown as { __mockUpdate: MockUpdate }).__mockUpdate;
+type Progress = { phase: string; downloaded: number; total: number | null };
+
+test("check_update reports the latest version, the install kind and failures", async () => {
+  mockUpdate().reset();
+  expect(await invoke("check_update")).toMatchObject({ current: "0.5.3", latest: null, kind: "app_image" });
+  mockUpdate().set({ latest: "0.5.4" });
+  const info = await invoke<{ latest: string; release_url: string }>("check_update");
+  expect(info.latest).toBe("0.5.4");
+  expect(info.release_url).toMatch(/\/releases\/tag\/v0\.5\.4$/);
+  mockUpdate().set({ failCheck: { kind: "offline", detail: "No internet connection." } });
+  await expect(invoke("check_update")).rejects.toEqual({ kind: "offline", detail: "No internet connection." });
+});
+
+test("install_update downloads with progress, installs, and allows one at a time", async () => {
+  mockUpdate().reset();
+  await expect(invoke("install_update", { onProgress: new Channel() })).rejects.toMatchObject({ kind: "failed" });
+  mockUpdate().set({ latest: "0.5.4" });
+  await invoke("check_update");
+  mockUpdate().hold();
+  const channel = new Channel<Progress>();
+  const seen: Progress[] = [];
+  channel.onmessage = (p) => seen.push(p);
+  const running = invoke("install_update", { onProgress: channel });
+  await vi.waitFor(() => expect(mockUpdate().installed()).toBe(0));
+  await new Promise((r) => setTimeout(r, 20));
+  await expect(invoke("install_update", { onProgress: new Channel() })).rejects.toEqual({
+    kind: "failed",
+    detail: "An update is already being installed.",
+  });
+  mockUpdate().step(23_400_000);
+  mockUpdate().release();
+  await running;
+  expect(seen[0]).toEqual({ phase: "downloading", downloaded: 23_400_000, total: 91_400_000 });
+  expect(seen.at(-1)?.phase).toBe("installing");
+  expect(mockUpdate().installed()).toBe(1);
+});
+
+test("install_update is refused on a package install", async () => {
+  mockUpdate().reset();
+  mockUpdate().set({ latest: "0.5.4", kind: "linux_package" });
+  await invoke("check_update");
+  await expect(invoke("install_update", { onProgress: new Channel() })).rejects.toMatchObject({ kind: "failed" });
+});
+
+test("cancel_update stops the download and a new install can start", async () => {
+  mockUpdate().reset();
+  mockUpdate().set({ latest: "0.5.4" });
+  await invoke("check_update");
+  mockUpdate().hold();
+  const running = invoke("install_update", { onProgress: new Channel() });
+  await new Promise((r) => setTimeout(r, 20));
+  await invoke("cancel_update");
+  await expect(running).rejects.toEqual({ kind: "failed", detail: "Cancelled." });
+  expect(mockUpdate().installed()).toBe(0);
+  mockUpdate().reset();
+  mockUpdate().set({ latest: "0.5.4" });
+  await invoke("check_update");
+  await invoke("install_update", { onProgress: new Channel() });
+  expect(mockUpdate().installed()).toBe(1);
+});
+
+test("operations_running and restart_app see operations in every window", async () => {
+  mockUpdate().reset();
+  expect(await invoke("operations_running")).toBe(false);
+  mockUpdate().set({ otherWindowBusy: true });
+  expect(await invoke("operations_running")).toBe(true);
+  await expect(invoke("restart_app")).rejects.toEqual({ kind: "failed", detail: "Operations are still running." });
+  expect(mockUpdate().restarts()).toBe(0);
+});
+
+test("restart_app counts restarts", async () => {
+  mockUpdate().reset();
+  await invoke("restart_app");
+  expect(mockUpdate().restarts()).toBe(1);
+});
