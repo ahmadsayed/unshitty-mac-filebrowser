@@ -1,0 +1,275 @@
+/* =============================================================================
+   macOS theme: an original imitation of macOS 26 (Tahoe), drawn from scratch
+   with no Apple assets. Only the look changes: behaviour, wording, button
+   order and default responses stay GNOME's (see the themes spec).
+   ============================================================================= */
+
+/* ----- Colours (light) ----- */
+:root[data-theme="macos"] {
+  --accent-bg: #007aff;
+  --accent-fg: #ffffff;
+  --accent: #007aff;
+  --destructive: #ff3b30;
+  --success: #34c759;
+
+  --window-bg: #ffffff;
+  --window-fg: rgba(0, 0, 0, 0.85);
+  --view-bg: #ffffff;
+  --view-fg: rgba(0, 0, 0, 0.85);
+  --headerbar-bg: #ffffff;
+  --headerbar-shade: transparent;
+  --sidebar-bg: rgba(238, 238, 240, 0.8);
+  --sidebar-fg: rgba(0, 0, 0, 0.85);
+  --sidebar-shade: rgba(0, 0, 0, 0.08);
+  --popover-bg: rgba(246, 246, 248, 0.84);
+  --popover-fg: rgba(0, 0, 0, 0.85);
+  --dialog-bg: #f6f6f8;
+  --card-bg: #ffffff;
+  --card-shade: rgba(0, 0, 0, 0.08);
+  --osd-bg: rgba(246, 246, 248, 0.84);
+  --osd-fg: rgba(0, 0, 0, 0.85);
+  --shade: rgba(0, 0, 0, 0.08);
+  --border: rgba(0, 0, 0, 0.12);
+
+  --hover: rgba(0, 0, 0, 0.05);
+  --active: rgba(0, 0, 0, 0.1);
+  --sidebar-selected: rgba(0, 0, 0, 0.09);
+  --item-hover: rgba(0, 0, 0, 0.035);
+  --item-selected: rgba(0, 122, 255, 0.18);
+  --item-selected-hover: rgba(0, 122, 255, 0.24);
+  --item-selected-solid: color-mix(in srgb, #007aff 18%, var(--view-bg));
+  --item-selected-hover-solid: color-mix(in srgb, #007aff 24%, var(--view-bg));
+  --fill: rgba(0, 0, 0, 0.05);
+  --stripe: rgba(0, 0, 0, 0.03);
+  --icon-box: rgba(0, 0, 0, 0.08);
+
+  --font: -apple-system, "Inter", "Adwaita Sans", system-ui, sans-serif;
+  --popover-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 8px 30px rgba(0, 0, 0, 0.16);
+  --dialog-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 20px 60px rgba(0, 0, 0, 0.24);
+  --glass-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.08);
+
+  --font-size: 13px;
+  --headerbar-height: 52px;
+  --sidebar-row-height: 28px;
+  --button-height: 32px;
+  --list-header-height: 25px;
+  --radius-button: 999px;
+  --radius-item: 6px;
+  --radius-popover: 12px;
+  --radius-dialog: 24px;
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-blur: 30px;
+}
+
+/* ----- Colours (dark) ----- */
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="macos"] {
+    --accent-bg: #0a84ff;
+    --accent: #0a84ff;
+    --destructive: #ff453a;
+    --success: #30d158;
+
+    --window-bg: #1e1e1e;
+    --window-fg: rgba(255, 255, 255, 0.88);
+    --view-bg: #1e1e1e;
+    --view-fg: rgba(255, 255, 255, 0.88);
+    --headerbar-bg: #1e1e1e;
+    --sidebar-bg: rgba(46, 46, 48, 0.8);
+    --sidebar-fg: rgba(255, 255, 255, 0.88);
+    --sidebar-shade: rgba(255, 255, 255, 0.08);
+    --popover-bg: rgba(40, 40, 42, 0.86);
+    --popover-fg: rgba(255, 255, 255, 0.88);
+    --dialog-bg: #2a2a2c;
+    --card-bg: rgba(255, 255, 255, 0.06);
+    --card-shade: rgba(0, 0, 0, 0.4);
+    --osd-bg: rgba(40, 40, 42, 0.86);
+    --osd-fg: rgba(255, 255, 255, 0.88);
+    --shade: rgba(255, 255, 255, 0.08);
+    --border: rgba(255, 255, 255, 0.12);
+
+    --hover: rgba(255, 255, 255, 0.06);
+    --active: rgba(255, 255, 255, 0.12);
+    --sidebar-selected: rgba(255, 255, 255, 0.12);
+    --item-hover: rgba(255, 255, 255, 0.04);
+    --item-selected: rgba(10, 132, 255, 0.3);
+    --item-selected-hover: rgba(10, 132, 255, 0.38);
+    --item-selected-solid: color-mix(in srgb, #0a84ff 30%, var(--view-bg));
+    --item-selected-hover-solid: color-mix(in srgb, #0a84ff 38%, var(--view-bg));
+    --fill: rgba(255, 255, 255, 0.08);
+    --stripe: rgba(255, 255, 255, 0.03);
+    --icon-box: rgba(255, 255, 255, 0.1);
+
+    --popover-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.5), 0 8px 30px rgba(0, 0, 0, 0.4);
+    --dialog-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.5), 0 20px 60px rgba(0, 0, 0, 0.5);
+    --glass-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 2px 8px rgba(0, 0, 0, 0.3);
+    --glass-bg: rgba(48, 48, 50, 0.72);
+  }
+}
+
+/* ----- Glass: a translucent tint that blurs what's behind it ----- */
+[data-theme="macos"] .sidebar,
+[data-theme="macos"] .hb-start,
+[data-theme="macos"] .hb-end > .flat-btn,
+[data-theme="macos"] .split-btn,
+[data-theme="macos"] .pathbar,
+[data-theme="macos"] .searchbar,
+[data-theme="macos"] .popover,
+[data-theme="macos"] .toast,
+[data-theme="macos"] .tab.active {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+}
+
+/* ----- Window and sidebar: a floating panel, inset from the window edges,
+   with the traffic lights in its top-left corner ----- */
+[data-theme="macos"] .sidebar {
+  margin: 8px 0 8px 8px;
+  border-radius: 18px;
+  background: var(--sidebar-bg);
+  box-shadow: 0 0 0 0.5px var(--sidebar-shade), 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+/* Centred on the content's toolbar: the panel starts 8 px down. */
+[data-theme="macos"] .sidebar-header {
+  height: calc(var(--headerbar-height) - 16px);
+  margin-top: 8px;
+}
+[data-theme="macos"] .sidebar-title { font-weight: 600; }
+
+[data-theme="macos"] .sidebar-separator {
+  margin: 6px 14px;
+  background: var(--sidebar-shade);
+}
+[data-theme="macos"] .sidebar-section { gap: 0; padding: 0 10px; }
+[data-theme="macos"] .sidebar-row { gap: 8px; padding: 0 8px; }
+[data-theme="macos"] .sidebar-row .sym { color: var(--accent); }
+
+/* ----- Toolbar: no bar of its own, controls in glass capsules ----- */
+[data-theme="macos"] .headerbar {
+  gap: 10px;
+  padding: 0 10px;
+  background: var(--view-bg);
+  box-shadow: none;
+}
+[data-theme="macos"] .hb-end { gap: 8px; }
+
+[data-theme="macos"] .hb-start,
+[data-theme="macos"] .hb-end > .flat-btn,
+[data-theme="macos"] .split-btn,
+[data-theme="macos"] .pathbar,
+[data-theme="macos"] .searchbar {
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow);
+  border-radius: var(--radius-button);
+}
+[data-theme="macos"] .hb-start { gap: 0; padding: 0 2px; height: var(--button-height); }
+[data-theme="macos"] .hb-start > .flat-btn { min-width: 36px; }
+[data-theme="macos"] .split-btn > .flat-btn:first-child { padding: 0 6px 0 12px; }
+[data-theme="macos"] .split-btn .split-btn-arrow { padding: 0 10px 0 2px; width: auto; }
+[data-theme="macos"] .crumb { border-radius: var(--radius-button); }
+[data-theme="macos"] .crumb.current { font-weight: 600; }
+[data-theme="macos"] .pathbar-entry { padding: 0 14px; }
+[data-theme="macos"] .searchbar { padding: 0 12px; }
+
+/* Tabs: a row of capsules under the toolbar. */
+[data-theme="macos"] .tabbar {
+  height: 36px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  background: var(--view-bg);
+  box-shadow: none;
+}
+[data-theme="macos"] .tab {
+  height: 26px;
+  border-radius: var(--radius-button);
+}
+[data-theme="macos"] .tab.active {
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow);
+}
+[data-theme="macos"] .tab-title { font-size: 11px; }
+
+/* Banners: inset cards, lighter than GNOME's full-width bar. */
+[data-theme="macos"] .banner {
+  min-height: 40px;
+  margin: 2px 10px 6px;
+  padding: 4px 4px 4px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-bg) 12%, var(--view-bg));
+  box-shadow: none;
+}
+
+/* ----- Files ----- */
+/* Grid: a grey box around the selected icon, a blue pill around its name. */
+[data-theme="macos"] .grid-item { border-radius: 8px; }
+[data-theme="macos"] .grid-item:hover,
+[data-theme="macos"] .grid-item.selected,
+[data-theme="macos"] .grid-item.selected:hover { background: transparent; }
+[data-theme="macos"] .grid-item.selected .icon {
+  border-radius: 8px;
+  background: var(--icon-box);
+  box-shadow: 0 0 0 5px var(--icon-box);
+}
+[data-theme="macos"] .grid-item.selected .name {
+  padding: 0 5px;
+  border-radius: 5px;
+  background: var(--accent-bg);
+  color: var(--accent-fg);
+}
+
+/* List: stripes, a solid blue selected row, a small light header. */
+[data-theme="macos"] .list-header {
+  font-size: 11px;
+  font-weight: 500;
+}
+[data-theme="macos"] .list-row.odd { background: var(--stripe); }
+[data-theme="macos"] .list-row:hover { background: var(--item-hover); }
+[data-theme="macos"] .list-row.selected,
+[data-theme="macos"] .list-row.selected:hover {
+  background: var(--accent-bg);
+  color: var(--accent-fg);
+}
+[data-theme="macos"] .list-row.selected .meta { opacity: 0.85; }
+[data-theme="macos"] .list-row .name-cell { gap: 8px; }
+
+[data-theme="macos"] .floating-bar {
+  border-top-left-radius: 10px;
+  font-size: 11px;
+}
+
+/* ----- Menus and popovers: glass, no arrow, blue highlight ----- */
+[data-theme="macos"] .popover { padding: 5px; }
+[data-theme="macos"] .popover-arrow { display: none; }
+[data-theme="macos"] .menu-item {
+  min-height: 24px;
+  padding: 0 10px;
+}
+[data-theme="macos"] .menu-item:hover:not(:disabled),
+[data-theme="macos"] .menu-item.focus:not(:disabled),
+[data-theme="macos"] .menu-item:active:not(:disabled) {
+  background: var(--accent-bg);
+  color: var(--accent-fg);
+}
+[data-theme="macos"] .menu-separator { margin: 5px 10px; }
+[data-theme="macos"] .menu-heading { padding: 5px 10px 2px; font-size: 11px; font-weight: 600; }
+
+/* ----- Dialogs, toasts ----- */
+[data-theme="macos"] .dialog-heading { font-size: 15px; font-weight: 700; }
+[data-theme="macos"] .dialog-body { padding: 24px 22px 18px; }
+[data-theme="macos"] .dialog-responses { gap: 8px; padding: 0 18px 18px; }
+[data-theme="macos"] .btn { font-weight: 500; }
+[data-theme="macos"] .btn.pill { height: 36px; border-radius: var(--radius-button); }
+
+[data-theme="macos"] .toast {
+  background: var(--glass-bg);
+  color: var(--window-fg);
+  box-shadow: var(--glass-shadow), 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+/* ----- Linux window buttons under this theme: small and round ----- */
+[data-theme="macos"] .window-control .sym {
+  width: 16px;
+  height: 16px;
+  padding: 3px;
+}
