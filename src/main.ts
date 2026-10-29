@@ -5279,6 +5279,8 @@ function showMaximized(maximized: boolean): void {
 
 async function init(): Promise<void> {
   loadPrefs();
+  // THROWAWAY theme mocks: use the neutral base without saving a preference.
+  if (import.meta.env.DEV && new URLSearchParams(window.location.search).has("variant")) prefs.theme = "gnome";
   applyTheme();
   window.addEventListener("storage", onPrefsChanged);
   installIconSprite();
