@@ -1458,6 +1458,32 @@ const mockWindow = { maximized: false, actions: [] as string[] };
 (globalThis as Record<string, unknown>).__mockWindow = mockWindow;
 
 const COMMANDS: Record<string, (args: Args) => unknown> = {
+  install_appimage: (a) => {
+    const path = str(a, "path");
+    const name = str(a, "name").trim();
+    if (!name || /[\\/\u0000-\u001f\u007f]/.test(name)) throw "Enter a valid application name.";
+    if (!lookup(path) || lookup(path)?.dir || lookup(path)?.link || !/\.appimage$/i.test(path)) throw "Choose a local AppImage file.";
+    const id = name.toLowerCase().replace(/[^a-z0-9]/g, "-");
+    const desktop = `/Users/me/.local/share/applications/${id}.desktop`;
+    if (lookup(desktop)) throw "An application with that name is already installed. Choose a different name.";
+    const installed = `/Users/me/.local/share/filebrowser/appimages/${id}/application.AppImage`;
+    for (const dir of [`/Users/me/.local/share/applications`, `/Users/me/.local/share/filebrowser/appimages/${id}`]) {
+      let part = "";
+      for (const name of dir.split("/").filter(Boolean)) {
+        part += `/${name}`;
+        if (!lookup(part)) makeDir(part);
+      }
+    }
+    transfer({ from: path, to: installed, overwrite: false }, false);
+    const parent = lookup(`/Users/me/.local/share/applications`);
+    if (parent?.dir) parent.children[`${id}.desktop`] = f(200, 0);
+    return { name, path: installed, desktop };
+  },
+  run_shell_script: (a) => {
+    const path = str(a, "path");
+    if (!lookup(path) || lookup(path)?.dir || lookup(path)?.link || !/\.(sh|bash)$/i.test(path)) throw "Choose a local Bash script.";
+    return undefined;
+  },
   list_dir: (a) => {
     const path = str(a, "path");
     if (path.startsWith("sftp://")) return listSftp(path);

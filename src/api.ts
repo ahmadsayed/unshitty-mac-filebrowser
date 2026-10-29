@@ -148,6 +148,22 @@ export async function newWindow(path?: string): Promise<void> {
   return invoke<void>("new_window", { path: path ?? null });
 }
 
+export interface InstalledAppImage {
+  name: string;
+  path: string;
+  desktop: string;
+}
+
+/** Copy an AppImage into user-local storage and register a GNOME launcher. */
+export function installAppImage(path: string, name: string): Promise<InstalledAppImage> {
+  return invoke("install_appimage", { path, name });
+}
+
+/** Request a terminal to run a local script with Bash; not a success verdict. */
+export function runShellScript(path: string): Promise<void> {
+  return invoke("run_shell_script", { path });
+}
+
 /** Create a zip/tar.gz/tar.xz archive of `paths`; never replaces an existing file. */
 export async function compressArchive(
   paths: string[],

@@ -923,6 +923,36 @@ fn in_trash(app: &tauri::AppHandle, path: &Path) -> bool {
         || path.starts_with(trash_ops::ensure_items_root(&home))
 }
 
+fn linux_program_path(app: &tauri::AppHandle, path: &str) -> Result<PathBuf, String> {
+    if !cfg!(target_os = "linux") { return Err("These program actions are available on Linux only.".into()); }
+    let original = Path::new(path);
+    if !original.is_absolute() { return Err("Choose a file on this computer.".into()); }
+    let canonical = original.canonicalize().map_err(|e| e.to_string())?;
+    let trashed = [canonical.as_path(), original].iter().any(|p| in_trash(app, p));
+    if trashed {
+        return Err("Restore this file from the Trash before installing or running it.".into());
+    }
+    // Preserve the original spelling so platform code can refuse a symlink.
+    Ok(original.to_path_buf())
+}
+
+#[tauri::command]
+async fn install_appimage(app: tauri::AppHandle, path: String, name: String) -> Result<platform::InstalledAppImage, String> {
+    blocking(move || {
+        let source = linux_program_path(&app, &path)?;
+        let home = app.path().home_dir().map_err(|e| e.to_string())?;
+        let data = platform::data_home(&home);
+        let installed = platform::install_appimage_at(&source, &name, &data)?;
+        platform::refresh_application_cache(&data);
+        Ok(installed)
+    }).await?
+}
+
+#[tauri::command]
+async fn run_shell_script(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    blocking(move || platform::run_shell_script(&linux_program_path(&app, &path)?)).await?
+}
+
 /// New Folder with "Keep versions" ticked. The folder is kept even if the
 /// history cannot be created (D13).
 #[tauri::command]
@@ -1632,6 +1662,8 @@ pub fn run() {
             window_buttons,
             window_control,
             list_apps,
+            install_appimage,
+            run_shell_script,
             open_file,
             open_with,
             preview_text,

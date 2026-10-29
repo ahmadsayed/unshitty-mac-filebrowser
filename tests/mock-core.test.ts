@@ -5,6 +5,23 @@ import { Channel, invoke } from "../dev/mock-tauri/core";
 import { installFakeCanvas } from "./app";
 
 const HOME = "/Users/me";
+
+test("Linux program command mocks install without replacing and reject wrong file types", async () => {
+  const source = `${HOME}/Mock.AppImage`;
+  await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: source, overwrite: false });
+  const installed = await invoke<{ path: string; desktop: string }>("install_appimage", { path: source, name: "Mock Application" });
+  expect(await invoke("path_exists", { path: source })).toBe(true);
+  expect(await invoke("path_exists", { path: installed.path })).toBe(true);
+  expect(await invoke("path_exists", { path: installed.desktop })).toBe(true);
+  await expect(invoke("install_appimage", { path: source, name: "Mock Application" })).rejects.toMatch(/already installed/);
+  await expect(invoke("install_appimage", { path: source, name: "Bad/Name" })).rejects.toMatch(/valid application name/);
+  await expect(invoke("install_appimage", { path: `${HOME}/main.rs`, name: "Bad" })).rejects.toMatch(/AppImage/);
+  const script = `${HOME}/Mock.sh`;
+  await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: script, overwrite: false });
+  await expect(invoke("run_shell_script", { path: script })).resolves.toBeUndefined();
+  await expect(invoke("run_shell_script", { path: `${HOME}/missing.sh` })).rejects.toMatch(/Bash script/);
+  await expect(invoke("run_shell_script", { path: `${HOME}/main.rs` })).rejects.toMatch(/Bash script/);
+});
 type Entry = { name: string; path: string; is_dir: boolean; size: number; is_hidden: boolean };
 const ls = (path: string, showHidden = false) => invoke<Entry[]>("list_dir", { path, showHidden });
 const namesIn = async (path: string, showHidden = false) => (await ls(path, showHidden)).map((e) => e.name).sort();

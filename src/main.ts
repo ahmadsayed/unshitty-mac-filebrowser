@@ -34,6 +34,7 @@ import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./f
 import { LAYOUT_SIZES, resolveTheme, themeChoice, type Theme, type ThemeChoice } from "./theme";
 import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
+import { linuxProgramItems } from "./linux-programs";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
@@ -2506,6 +2507,7 @@ function previewAndOpenWithItems(single: Entry | null): MenuItem[] {
   return [
     { label: "Preview", disabled: !file, action: () => file && void showPreview(file) },
     { label: "Open With…", disabled: !file, action: () => file && void showOpenWith(file) },
+    ...linuxProgramItems(single, /Linux/.test(navigator.userAgent) && !inTrash()),
   ];
 }
 
