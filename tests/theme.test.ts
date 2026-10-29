@@ -8,6 +8,7 @@ import { beforeAll, expect, test } from "vitest";
 import { $, $$, boot, chooseMenu, click, closeOverlays, goTo, item, key, menuLabels, prefs, selectedNames, settle, title } from "./app";
 
 const theme = () => document.documentElement.dataset.theme;
+const iconSize = () => document.documentElement.style.getPropertyValue("--icon-size");
 const openMainMenu = () => click($("#btn-main-menu"));
 const top = (el: HTMLElement) => parseFloat(el.style.top);
 const rows = () => $$("#view .item[data-index]").sort((a, b) => Number(a.dataset.index) - Number(b.dataset.index));
@@ -20,6 +21,8 @@ test("Automatic picks macOS on a Mac, and a fresh start shows the grid", () => {
   // The theme changes the look only: the grid stays the default view.
   expect($$("#view .grid-item").length).toBeGreaterThan(0);
   expect($$("#view .list-row")).toHaveLength(0);
+  // Finder-sized icons: 64 px in the macOS theme.
+  expect(iconSize()).toBe("64px");
 });
 
 test("the main menu shows the theme choice, with Automatic checked", async () => {
@@ -106,6 +109,24 @@ test("storage events that don't change the theme leave the window alone", async 
   expect($(".popover-layer")).not.toBeNull();
   expect(theme()).toBe("gnome");
   await closeOverlays();
+});
+
+test("switching keeps the zoom; ⌘0 goes back to the theme's icon size", async () => {
+  await goTo("/Users/me");
+  await key("2", { mod: true });
+  await openMainMenu();
+  await chooseMenu("GNOME");
+  // The zoom the user had stays: switching restyles, it doesn't resize.
+  expect(iconSize()).toBe("64px");
+  await key("0", { mod: true });
+  expect(iconSize()).toBe("96px");
+  expect(prefs().gridZoom).toBe(2);
+  await openMainMenu();
+  await chooseMenu("macOS");
+  expect(iconSize()).toBe("96px");
+  await key("0", { mod: true });
+  expect(iconSize()).toBe("64px");
+  expect(prefs().gridZoom).toBe(1);
 });
 
 test("Automatic follows the platform again", async () => {

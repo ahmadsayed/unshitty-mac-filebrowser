@@ -59,12 +59,16 @@ const prefs = {
 };
 
 function loadPrefs(): void {
+  let saved: Partial<typeof prefs> | null = null;
   try {
-    Object.assign(prefs, JSON.parse(localStorage.getItem("prefs") ?? "{}"));
+    saved = JSON.parse(localStorage.getItem("prefs") ?? "{}");
   } catch {
     /* defaults */
   }
+  Object.assign(prefs, saved);
   prefs.theme = themeChoice(prefs.theme);
+  // A fresh start uses the theme's icon size; a zoom the user chose is kept.
+  if (typeof saved?.gridZoom !== "number") prefs.gridZoom = LAYOUT_SIZES[resolveTheme(prefs.theme, isMac)].gridZoom;
 }
 
 function savePrefs(): void {
@@ -1748,7 +1752,7 @@ function zoom(delta: number): void {
 }
 
 function resetZoom(): void {
-  prefs.gridZoom = 2;
+  prefs.gridZoom = LAYOUT_SIZES[currentTheme].gridZoom;
   prefs.listZoom = 1;
   savePrefs();
   applyZoom();

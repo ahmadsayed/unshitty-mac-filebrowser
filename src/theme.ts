@@ -33,9 +33,12 @@ export interface LayoutSizes {
   /** Grid padding around the items, and the gap between them. */
   gridPad: number;
   gridGap: number;
+  /** Grid icon size on a fresh start and after ⌘0 (an index into GRID_SIZES:
+   *  1 is 64 px, 2 is 96 px). A zoom the user chose is kept. */
+  gridZoom: number;
 }
 
 export const LAYOUT_SIZES: Record<Theme, LayoutSizes> = {
-  gnome: { listPad: 12, listMinRow: 34, listHeader: 35, gridPad: 12, gridGap: 6 },
-  macos: { listPad: 8, listMinRow: 24, listHeader: 28, gridPad: 12, gridGap: 6 },
+  gnome: { listPad: 12, listMinRow: 34, listHeader: 35, gridPad: 12, gridGap: 6, gridZoom: 2 },
+  macos: { listPad: 8, listMinRow: 24, listHeader: 28, gridPad: 12, gridGap: 6, gridZoom: 1 },
 };

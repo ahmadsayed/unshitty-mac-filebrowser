@@ -6,14 +6,16 @@ import { resolveTheme, themeChoice } from "../src/theme";
 import { $, boot, chooseMenu, click } from "./app";
 
 beforeAll(async () => {
-  localStorage.setItem("prefs", JSON.stringify({ theme: "gnome" }));
+  // A saved theme and a zoom the user chose (48 px icons).
+  localStorage.setItem("prefs", JSON.stringify({ theme: "gnome", gridZoom: 0 }));
   await boot();
 });
 
 afterEach(() => vi.restoreAllMocks());
 
-test("a saved choice survives a restart", () => {
+test("a saved choice and a chosen zoom survive a restart", () => {
   expect(document.documentElement.dataset.theme).toBe("gnome");
+  expect(document.documentElement.style.getPropertyValue("--icon-size")).toBe("48px");
 });
 
 test("anything but gnome or macos counts as Automatic", () => {

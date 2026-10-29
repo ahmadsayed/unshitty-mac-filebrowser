@@ -315,6 +315,8 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   flex-shrink: 0;
 }
 
+.hb-group { display: contents; }
+
 .hb-center {
   flex: 1;
   min-width: 0;

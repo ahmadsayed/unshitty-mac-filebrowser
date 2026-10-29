@@ -1,6 +1,7 @@
 // Characterization tests for the keyboard: every shortcut in onGlobalKeyDown
 // and every key in onViewKeyDown, driven through the real app.
 import { beforeAll, describe, expect, test } from "vitest";
+import { LAYOUT_SIZES } from "../src/theme";
 import { invoke } from "../dev/mock-tauri/core";
 import { $, $$, boot, closeOverlays, cursorName, dialogHeading, item, key, names, open, prefs, selectedNames, settle, title } from "./app";
 
@@ -89,7 +90,8 @@ describe("global shortcuts", () => {
     await key("-", { mod: true });
     expect(prefs().gridZoom).toBe(start - 1);
     await key("0", { mod: true });
-    expect(prefs().gridZoom).toBe(2);
+    // ⌘0 goes back to the theme's size: 64 px in the macOS theme (Mac agent).
+    expect(prefs().gridZoom).toBe(LAYOUT_SIZES.macos.gridZoom);
   });
 
   test("Alt+arrows, Alt+Home and ⌘[ ⌘] ⌘↑ navigate", async () => {
