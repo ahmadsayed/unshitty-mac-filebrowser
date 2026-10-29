@@ -82,6 +82,10 @@ one out on its own platform.
 - Grid and list views, tabs, thumbnails, Space to preview, batch rename,
   extract and compress archives, Starred, Recent, bookmarks, a progress popover
   with Cancel, and fast 10,000-item folders.
+- **Linux program actions:** right-click an AppImage to **Install Application…**
+  for GNOME application search, or a `.sh`/`.bash` file to **Run in Terminal…**.
+  Both ask first; downloads and script permissions stay untouched
+  ([guide](docs/linux-program-actions.md)).
 
 Press ⌘? in the app for every shortcut.
 
@@ -124,6 +128,8 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 - Google Drive: no Shared Drives, "Shared with me" or Drive-wide search.
 - Keep Versions may miss changes made while the app is closed.
 - Linux: image thumbnails only (no Quick Look).
+- AppImage integration uses a generic icon; embedded icons, automatic upgrades
+  and FUSE setup are not supported. Run in Terminal uses Bash, not other script languages.
 - Updates: no automatic checks, and `.deb` / `.rpm` installs update through
   the package manager, not from the app.
 - macOS theme: no native window translucency (the desktop showing through the
