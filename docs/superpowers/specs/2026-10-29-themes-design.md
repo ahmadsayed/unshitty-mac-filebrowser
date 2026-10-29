@@ -203,6 +203,12 @@ Where the implementation differs from the design above:
   files state when another one changes them.
 - `--stripe`, `--icon-box` and `--glass-shadow` exist only in the macOS
   theme, where its scoped rules use them.
+- **Added after review, look only:** the macOS theme puts the folder menu
+  and New Folder in one capsule (`.hb-group`, which has no box of its own in
+  the GNOME theme), and its grid starts at 64 px icons, Finder's size, where
+  GNOME's starts at 96 px (`LAYOUT_SIZES.gridZoom`). That default applies to
+  a fresh start and to ⌘0; a zoom the user chose is kept, and switching
+  theme doesn't change it. Controls, wording and behaviour are unchanged.
 
 ## Docs to update
 

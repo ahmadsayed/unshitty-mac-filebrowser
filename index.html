@@ -51,8 +51,11 @@
 
           <div class="hb-end">
             <button class="flat-btn" id="btn-operations" title="Show Operations" aria-label="Show Operations" hidden></button>
-            <button class="flat-btn" id="btn-location-menu" title="Current Folder Menu" aria-label="Current Folder Menu"></button>
-            <button class="flat-btn" id="btn-new-folder" title="New Folder (Shift+Cmd+N)" aria-label="New Folder"></button>
+            <!-- One capsule in the macOS theme; no box of its own in GNOME's -->
+            <div class="hb-group">
+              <button class="flat-btn" id="btn-location-menu" title="Current Folder Menu" aria-label="Current Folder Menu"></button>
+              <button class="flat-btn" id="btn-new-folder" title="New Folder (Shift+Cmd+N)" aria-label="New Folder"></button>
+            </div>
             <div class="split-btn">
               <button class="flat-btn" id="btn-view-toggle" aria-label="Toggle View"></button>
               <button class="flat-btn split-btn-arrow" id="btn-view-menu" title="View Options" aria-label="View Options"></button>

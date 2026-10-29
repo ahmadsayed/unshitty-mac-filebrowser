@@ -110,21 +110,22 @@ test("⌘ + wheel zooms by notch or by accumulated small deltas; plain wheel scr
   await goTo("/Users/me");
   await key("2", { mod: true });
   await key("0", { mod: true });
+  const base = prefs().gridZoom as number;
   const view = $("#view");
   const wheel = (init: WheelEventInit) => view.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, ...init }));
   wheel({ deltaY: -120 });
-  expect(prefs().gridZoom).toBe(2);
+  expect(prefs().gridZoom).toBe(base);
   wheel({ deltaY: -120, metaKey: true });
-  expect(prefs().gridZoom).toBe(3);
+  expect(prefs().gridZoom).toBe(base + 1);
   wheel({ deltaY: 3, deltaMode: 1, metaKey: true }); // 3 lines = 48 px, one notch
-  expect(prefs().gridZoom).toBe(2);
+  expect(prefs().gridZoom).toBe(base);
   wheel({ deltaY: 0, ctrlKey: true });
   for (let i = 0; i < 4; i++) wheel({ deltaY: -5, ctrlKey: true }); // trackpad: small steps add up…
-  expect(prefs().gridZoom).toBe(2);
+  expect(prefs().gridZoom).toBe(base);
   wheel({ deltaY: -5, ctrlKey: true }); // …to one 24 px step
-  expect(prefs().gridZoom).toBe(3);
+  expect(prefs().gridZoom).toBe(base + 1);
   wheel({ deltaY: 1, deltaMode: 2, metaKey: true }); // a page
-  expect(prefs().gridZoom).toBe(2);
+  expect(prefs().gridZoom).toBe(base);
   await key("1", { mod: true });
 });
 

@@ -110,6 +110,7 @@
 [data-theme="macos"] .sidebar,
 [data-theme="macos"] .hb-start,
 [data-theme="macos"] .hb-end > .flat-btn,
+[data-theme="macos"] .hb-group,
 [data-theme="macos"] .split-btn,
 [data-theme="macos"] .pathbar,
 [data-theme="macos"] .searchbar,
@@ -155,6 +156,7 @@
 
 [data-theme="macos"] .hb-start,
 [data-theme="macos"] .hb-end > .flat-btn,
+[data-theme="macos"] .hb-group,
 [data-theme="macos"] .split-btn,
 [data-theme="macos"] .pathbar,
 [data-theme="macos"] .searchbar {
@@ -163,6 +165,14 @@
   border-radius: var(--radius-button);
 }
 [data-theme="macos"] .hb-start { gap: 0; padding: 0 2px; height: var(--button-height); }
+/* The folder menu and New Folder share one capsule. */
+[data-theme="macos"] .hb-group {
+  display: flex;
+  align-items: center;
+  height: var(--button-height);
+  padding: 0 2px;
+}
+[data-theme="macos"] .hb-group > .flat-btn { min-width: 36px; }
 [data-theme="macos"] .hb-start > .flat-btn { min-width: 36px; }
 [data-theme="macos"] .split-btn > .flat-btn:first-child { padding: 0 6px 0 12px; }
 [data-theme="macos"] .split-btn .split-btn-arrow { padding: 0 10px 0 2px; width: auto; }
