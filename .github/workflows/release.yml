@@ -11,7 +11,9 @@
 # Only the release job can write to the repository, and it runs only for a
 # pushed tag. Actions are pinned to commits; the comment names the version.
 #
-# Nothing secret is needed: Google Drive users bring their own OAuth client
+# Secrets: TAURI_SIGNING_PRIVATE_KEY and its _PASSWORD sign the packages
+# Check for Updates installs (HUMANS.md); without them the build still works,
+# just without latest.json. Google Drive users bring their own OAuth client
 # (docs/google-drive.md). macOS builds are ad-hoc signed, not notarized.
 name: Release
 
@@ -83,9 +85,9 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
-            # One app for Apple Silicon and Intel Macs.
-            args: --target universal-apple-darwin --bundles app,dmg
-            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            # Apple Silicon only: one compile instead of two (no Intel Macs).
+            args: --target aarch64-apple-darwin --bundles app,dmg
+            rust-targets: aarch64-apple-darwin
           - platform: ubuntu-22.04
             args: ""
             rust-targets: ""
@@ -117,18 +119,39 @@ jobs:
         run: npm install --package-lock=false
 
       - name: Build
-        run: npm run tauri build -- ${{ matrix.args }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          # Signed packages for Check for Updates, only when the key secret is
+          # set (a fork or a run without secrets builds as before).
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            npm run tauri build -- ${{ matrix.args }} --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          else
+            npm run tauri build -- ${{ matrix.args }}
+          fi
 
       - name: Keep the packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: file-browser-${{ matrix.platform }}
           path: |
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm
             src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
+
+      - name: Keep the signed updater packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: file-browser-updater-${{ matrix.platform }}
+          path: |
+            src-tauri/target/release/bundle/appimage/*.AppImage.sig
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+          # Absent when the signing key secret isn't set.
+          if-no-files-found: ignore
 
   release:
     # A pushed tag only: a manual run on a tag ref builds but never releases.
@@ -142,6 +165,19 @@ jobs:
         with:
           path: packages
           merge-multiple: true
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: source
+          sparse-checkout: |
+            scripts
+            package.json
+          sparse-checkout-cone-mode: false
+
+      # Check for Updates reads this from the newest published release.
+      - name: Write latest.json
+        working-directory: source
+        run: node scripts/updater-manifest.mjs ../packages ../packages/latest.json
 
       - name: Draft the release
         env:

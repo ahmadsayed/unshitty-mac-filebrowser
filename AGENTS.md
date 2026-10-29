@@ -31,12 +31,14 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/styles.css` | All styling: layout, views and widgets, reading every look-related value from theme tokens |
 | `src/themes/gnome.css`, `src/themes/macos.css` | The two themes' tokens (colours, font, sizes, radii, glass), light + dark; macOS also has a few scoped rules |
 | `src/theme.ts` | Theme choice (Automatic / GNOME / macOS) and the per-theme layout sizes the virtualized views use |
+| `src/updates.ts` | Check for Updates dialogs: offer, download progress, restart, failures |
 | `src-tauri/src/fs_ops.rs` | Listing, item counts, mkdir, rename, copy/move/trash, path info |
 | `src-tauri/src/sftp.rs` | Read-only SSH/SFTP connections for Network: agent/key/password auth, known-host checks, listing and downloads |
 | `src-tauri/src/properties.rs` | Properties dialog data: size, dates, permissions, symlink targets, recursive folder size |
 | `src-tauri/src/platform.rs` | Platform differences: volume roots per OS, `%XX` decoding, `file://` URIs, XDG data dir |
 | `src-tauri/src/thumbnails.rs` | Quick Look (`qlmanage`) thumbnails on macOS with an `image`-crate fallback everywhere, disk cache |
 | `src-tauri/src/trash_ops.rs` | Trash + locate (for Undo), restore, delete permanently, empty; macOS `~/.Trash` + Finder "Put Back" in `.DS_Store`, Linux `Trash/{files,info}` + `.trashinfo`, `trash_log.json` |
+| `src-tauri/src/updates.rs` | Check for Updates: how this copy was installed (only the AppImage and the Mac app replace themselves), failure kinds, one install at a time; `lib.rs` wraps `tauri-plugin-updater` |
 | `src-tauri/src/downloads.rs` | Copies of opened SFTP/Drive/share files in the app cache: marks them as downloaded, prunes them after a week (edited copies go to the Trash) |
 | `src-tauri/src/recent.rs` | Recent: Spotlight (`mdfind`) on macOS, `recently-used.xbel` on Linux, merged with `recent.json` |
 | `src-tauri/src/config_store.rs` | `pins.json` / `starred.json` / `flags.json` in the app config dir, Full Disk Access check |
@@ -335,8 +337,22 @@ Release only when the human asks, and only after something significant.
    thumbnails of a photo folder. Ask the human to do the same on the other
    platform, or note it on a `needs-verification` issue.
 5. Publish (`gh release edit vX.Y.Z --draft=false`) only when the human says
-   so. A draft can be fixed by deleting it and moving the tag to the fix; a
-   **published** tag never moves: ship a new patch version instead.
+   so. The release must contain `latest.json`; without it Check for Updates
+   reports "Could not check for updates" to everyone. A draft can be fixed
+   by deleting it and moving the tag to the fix; a **published** tag never
+   moves: ship a new patch version instead.
+6. **Right after publishing, check the update path** (the updater only sees
+   published releases): in the previously installed version, Check for
+   Updates must offer the new one, install it and restart into it. Ask the
+   human to do the same on the other platform. If it fails, the next patch
+   release has to fix it, so say so at once.
+
+**The updater signing key is the human's.** Its private half and password
+live only in the human's backup and in the `TAURI_SIGNING_PRIVATE_KEY` /
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets. Agents never generate, read,
+print, copy or replace it; the public key in `tauri.conf.json` changes only
+when the human says so (installed copies would reject every update signed
+with a new key).
 
 ## Licensing
 

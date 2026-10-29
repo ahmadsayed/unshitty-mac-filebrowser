@@ -74,6 +74,23 @@ gh pr checkout <n>              # try a PR's branch locally
 A draft can still be fixed: delete it and move the tag. Once published, a
 version is permanent; a later fix ships as the next patch version.
 
+### The updater signing key
+
+Check for Updates installs only packages signed with your key. You made it
+once:
+
+```sh
+npm run tauri signer generate -- -w ~/.tauri/filebrowser.key
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/filebrowser.key
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+```
+
+Keep `~/.tauri/filebrowser.key` and its password backed up (a password
+manager or an encrypted drive). If either is lost, installed copies can't
+update any more: everyone has to reinstall by hand once a new key is in
+`tauri.conf.json`. Agents never touch the private key. Without the secrets the
+Release workflow still builds, just without `latest.json`.
+
 ## Where things are
 
 - `.worktrees/` holds the agents' task folders (ignored by git).

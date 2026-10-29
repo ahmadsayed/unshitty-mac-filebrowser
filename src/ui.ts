@@ -229,6 +229,20 @@ function moveMenuFocus(menu: HTMLElement, e: KeyboardEvent): void {
 // Dialogs (AdwAlertDialog)
 // ---------------------------------------------------------------------------
 
+/** A row of flat link-style buttons for a dialog's extra area. */
+export function dialogLinks(links: { label: string; action: () => void }[]): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "dialog-links";
+  for (const link of links) {
+    const button = document.createElement("button");
+    button.className = "flat-btn";
+    button.textContent = link.label;
+    button.addEventListener("click", link.action);
+    row.appendChild(button);
+  }
+  return row;
+}
+
 export interface DialogResponse {
   id: string;
   label: string;
