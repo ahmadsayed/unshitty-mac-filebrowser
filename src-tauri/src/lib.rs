@@ -11,6 +11,7 @@ mod sftp;
 mod share;
 mod thumbnails;
 mod trash_ops;
+mod updates;
 mod versions;
 
 use std::path::{Path, PathBuf};
@@ -934,12 +935,37 @@ fn mac_dmg_path(app: &tauri::AppHandle, path: &str) -> Result<PathBuf, String> {
     Ok(original.to_path_buf())
 }
 
+fn linux_program_path(app: &tauri::AppHandle, path: &str) -> Result<PathBuf, String> {
+    if !cfg!(target_os = "linux") { return Err("These program actions are available on Linux only.".into()); }
+    let original = Path::new(path);
+    if !original.is_absolute() { return Err("Choose a file on this computer.".into()); }
+    let canonical = original.canonicalize().map_err(|e| e.to_string())?;
+    let trashed = [canonical.as_path(), original].iter().any(|p| in_trash(app, p));
+    if trashed {
+        return Err("Restore this file from the Trash before installing or running it.".into());
+    }
+    // Preserve the original spelling so platform code can refuse a symlink.
+    Ok(original.to_path_buf())
+}
+
 #[tauri::command]
 async fn inspect_dmg(app: tauri::AppHandle, path: String) -> Result<platform::DmgInspection, String> {
     blocking(move || {
         let source = mac_dmg_path(&app, &path)?;
         let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("dmg-installs");
         platform::inspect_dmg(&source, &cache)
+    }).await?
+}
+
+#[tauri::command]
+async fn install_appimage(app: tauri::AppHandle, path: String, name: String) -> Result<platform::InstalledAppImage, String> {
+    blocking(move || {
+        let source = linux_program_path(&app, &path)?;
+        let home = app.path().home_dir().map_err(|e| e.to_string())?;
+        let data = platform::data_home(&home);
+        let installed = platform::install_appimage_at(&source, &name, &data)?;
+        platform::refresh_application_cache(&data);
+        Ok(installed)
     }).await?
 }
 
@@ -956,6 +982,11 @@ async fn install_dmg(app: tauri::AppHandle, path: String, fingerprint: String, a
             versions.trash(old, || trash::delete(old).map_err(|e| e.to_string()))
         })
     }).await?
+}
+
+#[tauri::command]
+async fn run_shell_script(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    blocking(move || platform::run_shell_script(&linux_program_path(&app, &path)?)).await?
 }
 
 /// New Folder with "Keep versions" ticked. The folder is kept even if the
@@ -1590,6 +1621,178 @@ async fn share_open(
     result
 }
 
+// ---------------------------------------------------------------------------
+// Check for Updates: updates.rs decides, tauri-plugin-updater downloads and
+// verifies against the public key in tauri.conf.json
+// ---------------------------------------------------------------------------
+
+const RELEASES_URL: &str = "https://github.com/ahmadsayed/unshitty-mac-filebrowser/releases";
+
+/// The update found by the last check, and the download that may be running.
+#[derive(Default)]
+struct UpdateState {
+    guard: updates::InstallGuard,
+    pending: Mutex<Option<tauri_plugin_updater::Update>>,
+    /// Whether Cancel may still stop the install (see `DownloadControl`).
+    download: Mutex<updates::DownloadControl<tokio::task::AbortHandle>>,
+}
+
+#[derive(serde::Serialize)]
+struct UpdateInfo {
+    current: String,
+    latest: Option<String>,
+    kind: updates::InstallKind,
+    release_url: String,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct UpdateProgress {
+    phase: &'static str,
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+fn current_install_kind() -> updates::InstallKind {
+    let appimage = std::env::var("APPIMAGE").ok();
+    updates::install_kind(cfg!(debug_assertions), std::env::consts::OS, appimage.as_deref())
+}
+
+fn update_failed(detail: &str) -> updates::Failure {
+    updates::classify(updates::FailureSource::Other, detail.to_string())
+}
+
+/// Sort an updater error into what the dialogs tell apart.
+fn failure_from(e: tauri_plugin_updater::Error) -> updates::Failure {
+    use tauri_plugin_updater::Error as E;
+    use updates::FailureSource;
+    let source = match &e {
+        E::Reqwest(r) => FailureSource::Network { connect: r.is_connect() || r.is_timeout() },
+        E::Network(_) => FailureSource::Network { connect: false },
+        E::Minisign(_) | E::Base64(_) | E::SignatureUtf8(_) | E::MissingSignedVersion => FailureSource::Signature,
+        E::Io(io) => FailureSource::Io(io.kind()),
+        _ => FailureSource::Other,
+    };
+    updates::classify(source, e.to_string())
+}
+
+/// Ask GitHub for the newest published release. Only called from the
+/// Check for Updates dialog: the app never checks on its own.
+#[tauri::command]
+async fn check_update(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, UpdateState>,
+) -> Result<UpdateInfo, updates::Failure> {
+    use tauri_plugin_updater::UpdaterExt;
+    let found = app.updater().map_err(failure_from)?.check().await.map_err(failure_from)?;
+    let latest = found.as_ref().map(|update| update.version.clone());
+    *state.pending.lock().unwrap() = found;
+    Ok(UpdateInfo {
+        current: app.package_info().version.to_string(),
+        release_url: match &latest {
+            Some(version) => format!("{RELEASES_URL}/tag/v{version}"),
+            None => format!("{RELEASES_URL}/latest"),
+        },
+        latest,
+        kind: current_install_kind(),
+    })
+}
+
+/// Download, verify and install the update the last check found. The
+/// download can be cancelled; installing, once started, runs to the end.
+#[tauri::command]
+async fn install_update(
+    state: tauri::State<'_, UpdateState>,
+    on_progress: Channel<UpdateProgress>,
+) -> Result<(), updates::Failure> {
+    if !updates::can_self_update(current_install_kind()) {
+        return Err(update_failed("This copy can't update itself."));
+    }
+    let Some(update) = state.pending.lock().unwrap().clone() else {
+        return Err(update_failed("No update to install."));
+    };
+    if !state.guard.try_start() {
+        return Err(update_failed("An update is already being installed."));
+    }
+    state.download.lock().unwrap().reset();
+    let result = download_then_install(&state, update, on_progress).await;
+    state.guard.finish();
+    result
+}
+
+async fn download_then_install(
+    state: &UpdateState,
+    update: tauri_plugin_updater::Update,
+    on_progress: Channel<UpdateProgress>,
+) -> Result<(), updates::Failure> {
+    let sender = on_progress.clone();
+    let fetch = update.clone();
+    let task = tokio::spawn(async move {
+        let mut downloaded = 0u64;
+        fetch
+            .download(
+                |chunk, total| {
+                    downloaded += chunk as u64;
+                    let _ = sender.send(UpdateProgress { phase: "downloading", downloaded, total });
+                },
+                || {},
+            )
+            .await
+    });
+    if let Some(cancelled) = state.download.lock().unwrap().started(task.abort_handle()) {
+        cancelled.abort();
+    }
+    let joined = task.await;
+    // A Cancel that came after the bytes arrived must still stop the install.
+    if !state.download.lock().unwrap().finished() {
+        return Err(update_failed(progress::CANCELLED));
+    }
+    let bytes = downloaded_bytes(joined)?;
+    let total = Some(bytes.len() as u64);
+    let _ = on_progress.send(UpdateProgress { phase: "installing", downloaded: bytes.len() as u64, total });
+    blocking(move || update.install(bytes))
+        .await
+        .map_err(|e| update_failed(&e))?
+        .map_err(failure_from)
+}
+
+/// The download task's result: its bytes, its error, or "Cancelled." when
+/// `cancel_update` aborted it.
+fn downloaded_bytes(
+    joined: Result<Result<Vec<u8>, tauri_plugin_updater::Error>, tokio::task::JoinError>,
+) -> Result<Vec<u8>, updates::Failure> {
+    match joined {
+        Ok(result) => result.map_err(failure_from),
+        Err(e) if e.is_cancelled() => Err(update_failed(progress::CANCELLED)),
+        Err(e) => Err(update_failed(&e.to_string())),
+    }
+}
+
+/// Cancel the install unless installing already started; until then nothing
+/// has been changed on disk.
+#[tauri::command]
+fn cancel_update(state: tauri::State<UpdateState>) {
+    if let Some(download) = state.download.lock().unwrap().cancel() {
+        download.abort();
+    }
+}
+
+/// Whether a copy, move or other operation runs in any window: Restart Now
+/// waits for them, since restarting would cut them off.
+#[tauri::command]
+fn operations_running(registry: tauri::State<progress::Registry>) -> bool {
+    !registry.is_empty()
+}
+
+/// Start the installed new version, closing every window like Quit. Refused
+/// while an operation runs in any window.
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle, registry: tauri::State<progress::Registry>) -> Result<(), updates::Failure> {
+    if !registry.is_empty() {
+        return Err(update_failed("Operations are still running."));
+    }
+    app.restart()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     for (key, value) in platform::webview_env_to_set(|k| std::env::var_os(k).is_some()) {
@@ -1599,6 +1802,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_drag::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(UpdateState::default())
         .setup(|app| {
             let config_dir = share::identity::config_dir_override().unwrap_or_else(|| {
                 app.path()
@@ -1657,6 +1862,11 @@ pub fn run() {
             list_dir,
             search_dir,
             cancel_search,
+            check_update,
+            install_update,
+            cancel_update,
+            restart_app,
+            operations_running,
             sftp_connect,
             sftp_servers,
             sftp_disconnect,
@@ -1669,6 +1879,8 @@ pub fn run() {
             list_apps,
             inspect_dmg,
             install_dmg,
+            install_appimage,
+            run_shell_script,
             open_file,
             open_with,
             preview_text,
@@ -1750,4 +1962,64 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+    use tauri_plugin_updater::Error as E;
+    use updates::FailureKind;
+
+    #[test]
+    fn updater_errors_become_failure_kinds() {
+        let kind = |e| failure_from(e).kind;
+        let io = |k| E::Io(std::io::Error::from(k));
+        assert_eq!(kind(io(std::io::ErrorKind::PermissionDenied)), FailureKind::NoPermission);
+        assert_eq!(kind(io(std::io::ErrorKind::NotFound)), FailureKind::Failed);
+        assert_eq!(kind(E::MissingSignedVersion), FailureKind::Unverified);
+        assert_eq!(kind(E::SignatureUtf8("x".into())), FailureKind::Unverified);
+        assert_eq!(kind(E::Network("reset".into())), FailureKind::Failed);
+        assert_eq!(kind(E::ReleaseNotFound), FailureKind::Failed);
+        assert_eq!(
+            failure_from(E::ReleaseNotFound).detail,
+            "Could not fetch a valid release JSON from the remote"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finished_download_hands_over_its_bytes() {
+        let done = tokio::spawn(async { Ok::<_, E>(vec![1u8, 2, 3]) }).await;
+        assert_eq!(downloaded_bytes(done).unwrap(), vec![1, 2, 3]);
+        let failed = tokio::spawn(async { Err::<Vec<u8>, _>(E::Network("reset".into())) }).await;
+        assert_eq!(downloaded_bytes(failed).unwrap_err().detail, "`reset`");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_download_reports_cancelled() {
+        let task = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            Ok::<_, E>(Vec::new())
+        });
+        task.abort();
+        let failure = downloaded_bytes(task.await).unwrap_err();
+        assert_eq!((failure.kind, failure.detail.as_str()), (FailureKind::Failed, "Cancelled."));
+    }
+}
+
+#[cfg(test)]
+mod updater_config_tests {
+    /// The shipped updater settings: a signed update must also name the
+    /// version it signs (CI signatures do), and nothing may weaken transport.
+    #[test]
+    fn the_updater_requires_signed_versions_over_https() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let updater = &conf["plugins"]["updater"];
+        assert_eq!(updater["requireSignedVersion"], true);
+        assert!(updater["pubkey"].as_str().is_some_and(|key| !key.is_empty()));
+        for endpoint in updater["endpoints"].as_array().unwrap() {
+            assert!(endpoint.as_str().unwrap().starts_with("https://"));
+        }
+        assert!(updater.get("dangerousInsecureTransportProtocol").is_none());
+        assert!(conf["bundle"].get("createUpdaterArtifacts").is_none(), "only CI turns this on");
+    }
 }

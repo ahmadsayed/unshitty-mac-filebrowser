@@ -189,12 +189,27 @@ impl Registry {
         let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
         map.remove(op);
     }
+
+    /// No operation runs in any window (the registry is app-wide).
+    pub fn is_empty(&self) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Cursor, Read};
+
+    #[test]
+    fn the_registry_knows_whether_anything_runs_in_any_window() {
+        let registry = Registry::default();
+        assert!(registry.is_empty());
+        registry.register("op-a");
+        assert!(!registry.is_empty());
+        registry.remove("op-a");
+        assert!(registry.is_empty());
+    }
 
     #[test]
     fn counts_bytes_items_and_total() {

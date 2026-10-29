@@ -32,9 +32,11 @@ import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel,
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, resolveTheme, themeChoice, type Theme, type ThemeChoice } from "./theme";
-import { closePopover, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
+import { closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
+import { checkForUpdates } from "./updates";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
 import { macDmgItems } from "./mac-dmg";
+import { linuxProgramItems } from "./linux-programs";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
@@ -2508,6 +2510,7 @@ function previewAndOpenWithItems(single: Entry | null): MenuItem[] {
     ...macDmgItems(single, isMac && !inTrash()),
     { label: "Preview", disabled: !file, action: () => file && void showPreview(file) },
     { label: "Open With…", disabled: !file, action: () => file && void showOpenWith(file) },
+    ...linuxProgramItems(single, /Linux/.test(navigator.userAgent) && !inTrash()),
   ];
 }
 
@@ -2767,6 +2770,7 @@ function openMainMenu(anchor: HTMLElement): void {
     ...themeMenuItems(),
     { separator: true },
     { label: "Keyboard Shortcuts", action: showShortcuts },
+    { label: "Check for Updates…", action: checkForUpdates },
     { label: "About File Browser", action: showAbout },
   ]);
 }
@@ -4970,19 +4974,6 @@ async function connectDrive(): Promise<void> {
   else openClientSetup();
 }
 
-/** A row of flat link-style buttons for a dialog's extra area. */
-function dialogLinks(links: { label: string; action: () => void }[]): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "dialog-links";
-  for (const link of links) {
-    const button = document.createElement("button");
-    button.className = "flat-btn";
-    button.textContent = link.label;
-    button.addEventListener("click", link.action);
-    row.appendChild(button);
-  }
-  return row;
-}
 
 /**
  * File Browser ships no Google client: the user creates a Desktop-app OAuth

@@ -1452,6 +1452,101 @@ const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
   },
 };
 
+// ----- Check for Updates: tests drive the answers through __mockUpdate -----
+
+type UpdateKind = "app_image" | "mac_app" | "linux_package" | "dev_build";
+type UpdateFailure = { kind: string; detail: string };
+type UpdateProgress = { phase: "downloading" | "installing"; downloaded: number; total: number | null };
+type Install = { channel?: Channel<UpdateProgress>; downloaded: number; resolve: () => void; reject: (f: UpdateFailure) => void };
+
+function freshUpdateState() {
+  return {
+    latest: null as string | null,
+    kind: "app_image" as UpdateKind,
+    failCheck: undefined as UpdateFailure | undefined,
+    failInstall: undefined as UpdateFailure | undefined,
+    total: 91_400_000 as number | null,
+    /** Cancel arrives after installing started: the backend ignores it. */
+    lateCancel: false,
+    /** A copy or move runs in another window (the backend registry is app-wide). */
+    otherWindowBusy: false,
+    holding: false,
+    checkHolding: false,
+    checkWaiters: [] as (() => void)[],
+    pending: null as string | null,
+    install: null as Install | null,
+    installed: 0,
+    restarts: 0,
+  };
+}
+let upd = freshUpdateState();
+const updateFailed = (detail: string): UpdateFailure => ({ kind: "failed", detail });
+
+async function checkUpdate() {
+  if (upd.checkHolding) await new Promise<void>((resolve) => upd.checkWaiters.push(resolve));
+  if (upd.failCheck) throw upd.failCheck;
+  upd.pending = upd.latest;
+  const releases = "https://github.com/ahmadsayed/unshitty-mac-filebrowser/releases";
+  return {
+    current: "0.5.3",
+    latest: upd.latest,
+    kind: upd.kind,
+    release_url: upd.latest ? `${releases}/tag/v${upd.latest}` : `${releases}/latest`,
+  };
+}
+
+function installUpdate(channel?: Channel<UpdateProgress>): Promise<void> {
+  if (upd.kind !== "app_image" && upd.kind !== "mac_app") throw updateFailed("This copy can't update itself.");
+  if (!upd.pending) throw updateFailed("No update to install.");
+  if (upd.install) throw updateFailed("An update is already being installed.");
+  return new Promise((resolve, reject) => {
+    upd.install = { channel, downloaded: 0, resolve, reject };
+    if (!upd.holding) finishInstall();
+  });
+}
+
+function finishInstall(): void {
+  const install = upd.install;
+  if (!install) return;
+  upd.install = null;
+  if (upd.failInstall) return install.reject(upd.failInstall);
+  install.channel?.onmessage({ phase: "installing", downloaded: upd.total ?? install.downloaded, total: upd.total });
+  upd.installed++;
+  install.resolve();
+}
+
+(globalThis as Record<string, unknown>).__mockUpdate = {
+  set(o: Partial<Pick<typeof upd, "latest" | "kind" | "failCheck" | "failInstall" | "total" | "lateCancel" | "otherWindowBusy">>) {
+    Object.assign(upd, o);
+  },
+  hold() {
+    upd.holding = true;
+  },
+  step(bytes: number) {
+    const install = upd.install;
+    if (!install) return;
+    install.downloaded += bytes;
+    install.channel?.onmessage({ phase: "downloading", downloaded: install.downloaded, total: upd.total });
+  },
+  release() {
+    upd.holding = false;
+    finishInstall();
+  },
+  holdCheck() {
+    upd.checkHolding = true;
+  },
+  releaseCheck() {
+    upd.checkHolding = false;
+    upd.checkWaiters.splice(0).forEach((resolve) => resolve());
+  },
+  installed: () => upd.installed,
+  restarts: () => upd.restarts,
+  reset() {
+    upd.install?.reject(updateFailed("Cancelled."));
+    upd = freshUpdateState();
+  },
+};
+
 /** Every command the app calls, by name. */
 /** The window the header bar buttons act on; tests read `actions`. */
 const mockWindow = { maximized: false, actions: [] as string[] };
@@ -1488,6 +1583,32 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     if (!lookup(root)) makeDir(root);
     makeDir(path);
     return { kind: "installed", name: app.name, path, warning: null };
+  },
+  install_appimage: (a) => {
+    const path = str(a, "path");
+    const name = str(a, "name").trim();
+    if (!name || /[\\/\u0000-\u001f\u007f]/.test(name)) throw "Enter a valid application name.";
+    if (!lookup(path) || lookup(path)?.dir || lookup(path)?.link || !/\.appimage$/i.test(path)) throw "Choose a local AppImage file.";
+    const id = name.toLowerCase().replace(/[^a-z0-9]/g, "-");
+    const desktop = `/Users/me/.local/share/applications/${id}.desktop`;
+    if (lookup(desktop)) throw "An application with that name is already installed. Choose a different name.";
+    const installed = `/Users/me/.local/share/filebrowser/appimages/${id}/application.AppImage`;
+    for (const dir of [`/Users/me/.local/share/applications`, `/Users/me/.local/share/filebrowser/appimages/${id}`]) {
+      let part = "";
+      for (const name of dir.split("/").filter(Boolean)) {
+        part += `/${name}`;
+        if (!lookup(part)) makeDir(part);
+      }
+    }
+    transfer({ from: path, to: installed, overwrite: false }, false);
+    const parent = lookup(`/Users/me/.local/share/applications`);
+    if (parent?.dir) parent.children[`${id}.desktop`] = f(200, 0);
+    return { name, path: installed, desktop };
+  },
+  run_shell_script: (a) => {
+    const path = str(a, "path");
+    if (!lookup(path) || lookup(path)?.dir || lookup(path)?.link || !/\.(sh|bash)$/i.test(path)) throw "Choose a local Bash script.";
+    return undefined;
   },
   list_dir: (a) => {
     const path = str(a, "path");
@@ -1738,6 +1859,18 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     return measure(a.paths as string[]);
   },
   cancel_operation: (a) => cancelOperation(str(a, "op")),
+  check_update: () => checkUpdate(),
+  install_update: (a) => installUpdate(a.onProgress as Channel<UpdateProgress> | undefined),
+  cancel_update: () => {
+    if (upd.lateCancel) return;
+    upd.install?.reject(updateFailed("Cancelled."));
+    upd.install = null;
+  },
+  operations_running: () => upd.otherWindowBusy || held.length > 0,
+  restart_app: () => {
+    if (upd.otherWindowBusy || held.length > 0) throw updateFailed("Operations are still running.");
+    upd.restarts++;
+  },
 };
 
 // Long commands report progress and can be held by tests (see __mockOps).

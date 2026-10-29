@@ -1015,6 +1015,197 @@ fn install_mounted_dmg(request: &DmgInstallRequest, mount: &DmgMount, trash: &dy
     Ok(DmgInstallResult::Installed { name: app.name, path, warning: None })
 }
 
+// ---- Linux program installation -----------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct InstalledAppImage {
+    pub name: String,
+    pub path: PathBuf,
+    pub desktop: PathBuf,
+}
+
+const INSTALL_EXISTS: &str = "An application with that name is already installed. Choose a different name.";
+
+/// A real local file, never a remote path, symlink or history object. Return
+/// the open file so validation and copying read the same inode.
+fn program_file(path: &Path, extensions: &[&str]) -> Result<(fs::File, PathBuf), String> {
+    use std::os::unix::fs::MetadataExt;
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_lowercase();
+    if !path.is_absolute() || !extensions.contains(&extension.as_str()) {
+        return Err("Choose a local program file of the supported type.".into());
+    }
+    let original = fs::symlink_metadata(path).map_err(|_| "This file is no longer available.")?;
+    if !original.is_file() {
+        return Err("Choose a regular file, not a folder or symbolic link.".into());
+    }
+    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+    let unsafe_path = canonical.components().any(|c| c.as_os_str() == ".versions")
+        || canonical.to_string_lossy().chars().any(char::is_control);
+    if unsafe_path { return Err("This location cannot be used to install or run a program.".into()); }
+    let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let opened = file.metadata().map_err(|e| e.to_string())?;
+    if original.dev() != opened.dev() || original.ino() != opened.ino() {
+        return Err("The file changed. Try again.".into());
+    }
+    Ok((file, canonical))
+}
+
+fn application_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty() || matches!(name, "." | "..") { return Err("Enter an application name.".into()); }
+    if name.chars().any(|c| c.is_control() || c == '/' || c == '\\') {
+        return Err("Application names cannot contain separators or control characters.".into());
+    }
+    if name.chars().count() > 100 { return Err("Application name is too long.".into()); }
+    Ok(name)
+}
+
+/// Desktop-entry escaping happens after Exec argument quoting. Percent signs
+/// must be doubled so a path cannot introduce %f/%U or other field codes.
+fn desktop_exec(path: &Path) -> Result<String, String> {
+    let path = path.to_str().ok_or("The installation path must be valid UTF-8.")?;
+    if path.chars().any(char::is_control) { return Err("The installation path contains control characters.".into()); }
+    let mut argument = String::from("\"");
+    for c in path.chars() {
+        match c {
+            '\\' | '"' | '$' | '`' => { argument.push('\\'); argument.push(c); }
+            '%' => argument.push_str("%%"),
+            c => argument.push(c),
+        }
+    }
+    argument.push('"');
+    Ok(argument.replace('\\', "\\\\"))
+}
+
+fn new_program_file(path: &Path) -> Result<fs::File, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path).map_err(|e| e.to_string())
+}
+
+/// Install without executing or modifying the original. The caller supplies
+/// XDG_DATA_HOME; every destination is new and a clash never overwrites.
+pub fn install_appimage_at(source: &Path, name: &str, data: &Path) -> Result<InstalledAppImage, String> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::unix::fs::PermissionsExt;
+    let name = application_name(name)?.to_string();
+    let (mut input, _) = program_file(source, &["appimage"])?;
+    let before = input.metadata().map_err(|e| e.to_string())?;
+    let mut header = [0u8; 16];
+    input.read_exact(&mut header).map_err(|_| "This isn't a supported AppImage.")?;
+    if &header[..4] != b"\x7fELF" || &header[8..10] != b"AI" || ![1, 2].contains(&header[10]) {
+        return Err("This isn't a supported AppImage.".into());
+    }
+    input.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    if !data.is_absolute() || data.components().any(|c| c.as_os_str() == ".versions") {
+        return Err("The application data folder is not a safe absolute path.".into());
+    }
+    let id = format!("io.github.ahmadsayed.filebrowser.appimage.{}", &blake3::hash(name.as_bytes()).to_hex()[..16]);
+    let root = data.join("filebrowser/appimages");
+    let folder = root.join(&id);
+    let path = folder.join("application.AppImage");
+    let applications = data.join("applications");
+    let desktop = applications.join(format!("{id}.desktop"));
+    let exec = desktop_exec(&path)?;
+    let text = format!("[Desktop Entry]\nType=Application\nVersion=1.0\nName={name}\nExec={exec}\nIcon=application-x-executable\nTerminal=false\nStartupNotify=true\nCategories=Utility;\n");
+    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&applications).map_err(|e| e.to_string())?;
+    fs::create_dir(&folder).map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { INSTALL_EXISTS.into() } else { e.to_string() })?;
+    let staged = folder.join("launcher.desktop");
+    let result = (|| {
+        let mut output = new_program_file(&path)?;
+        let copied = std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
+        let after = input.metadata().map_err(|e| e.to_string())?;
+        if copied != before.len() || before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+            return Err("The AppImage changed while installing. Try again.".into());
+        }
+        output.sync_all().map_err(|e| e.to_string())?;
+        output.set_permissions(fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+        let mut launcher = new_program_file(&staged)?;
+        launcher.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        launcher.sync_all().map_err(|e| e.to_string())?;
+        launcher.set_permissions(fs::Permissions::from_mode(0o644)).map_err(|e| e.to_string())?;
+        // Atomic no-clobber publication; the staging file is on the same filesystem.
+        fs::hard_link(&staged, &desktop).map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { INSTALL_EXISTS.into() } else { e.to_string() })?;
+        Ok(InstalledAppImage { name, path: path.clone(), desktop })
+    })();
+    let _ = fs::remove_file(&staged);
+    if result.is_err() {
+        // Only this call's newly created staging directory, never an old install.
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&folder);
+    }
+    result
+}
+
+// ---- Linux shell script launching ---------------------------------------
+
+/// Build a terminal request with all user paths passed as argv, never as
+/// shell text. Bash reads the script directly, so chmod isn't necessary.
+pub fn script_terminal_command(path: &Path, terminal: &Path) -> Result<std::process::Command, String> {
+    use std::io::Read;
+    let (file, path) = program_file(path, &["sh", "bash"])?;
+    let mut start = Vec::new();
+    file.take(4096).read_to_end(&mut start).map_err(|e| e.to_string())?;
+    if start.contains(&0) { return Err("This file is not a text shell script.".into()); }
+    let parent = path.parent().ok_or("This script has no containing folder.")?;
+    let mut command = std::process::Command::new(terminal);
+    command.current_dir(parent).env_remove("BASH_ENV");
+    match terminal.file_name().and_then(|s| s.to_str()) {
+        Some("xdg-terminal-exec") => { command.arg(format!("--dir={}", parent.display())).arg("--"); }
+        Some("xterm") => { command.arg("-e"); }
+        _ => { command.arg("--working-directory").arg(parent).arg("--"); }
+    }
+    // Fixed trusted wrapper, then the script path in $1. Keep a real terminal
+    // open after exit; EOF in a headless test returns immediately.
+    command.args(["/bin/bash", "--noprofile", "--norc", "-c",
+        "/bin/bash -- \"$1\"; status=$?; printf '\\nScript exited with status %s.\\nPress Enter to close.\\n' \"$status\"; read -r _; exit \"$status\"",
+        "filebrowser-script",
+    ]).arg(path);
+    host_env(&mut command);
+    Ok(command)
+}
+
+/// Launch a terminal, returning only whether the request was accepted. Never
+/// describe this as a successful script execution; output belongs in the terminal.
+pub fn run_shell_script(path: &Path) -> Result<(), String> {
+    let terminals = ["xdg-terminal-exec", "gnome-terminal", "kgx", "xterm"];
+    for terminal in terminals {
+        let mut command = script_terminal_command(path, Path::new(terminal))?;
+        command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        if request_script_terminal(&mut command)? { return Ok(()); }
+    }
+    Err("No supported terminal was found. Install GNOME Terminal, GNOME Console or xterm.".into())
+}
+
+fn request_script_terminal(command: &mut std::process::Command) -> Result<bool, String> {
+    match spawn_helper(command) {
+        Ok(child) => { check_terminal_started(child)?; Ok(true) }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("Could not open a terminal: {e}")),
+    }
+}
+
+fn check_terminal_started(mut child: std::process::Child) -> Result<(), String> {
+    // Catch a launcher's immediate failure (e.g. no session bus).
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+        return if status.success() { Ok(()) } else {
+            Err("The terminal could not be opened. Check your desktop session.".into())
+        };
+    }
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
+/// Optional desktop MIME cache refresh; GNOME also observes new launcher files.
+pub fn refresh_application_cache(data: &Path) {
+    let mut command = std::process::Command::new("update-desktop-database");
+    command.arg(data.join("applications")).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    if let Ok(mut child) = spawn_helper(&mut command) {
+        wait_or_kill(&mut child, std::time::Duration::from_secs(5));
+    }
+}
+
 /// Environment defaults for the webview, set before it starts.
 ///
 /// WebKitGTK's DMA-BUF renderer makes popovers and dialogs flicker on some
@@ -1130,6 +1321,145 @@ mod tests {
         assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
         fs::create_dir_all(temp.path().join("Installer.PKG/Hidden.app/Contents")).unwrap();
         assert!(scan_dmg_applications(temp.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn installing_an_appimage_registers_a_launcher_without_changing_the_download() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempdir().unwrap();
+        let source = tmp.path().join("Demo.AppImage");
+        let mut bytes = vec![0u8; 128];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[8..11].copy_from_slice(b"AI\x02");
+        fs::write(&source, &bytes).unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o640)).unwrap();
+        let installed = install_appimage_at(&source, "Demo", &tmp.path().join("data")).unwrap();
+        assert_eq!(installed.name, "Demo");
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert_eq!(fs::metadata(&source).unwrap().permissions().mode() & 0o777, 0o640);
+        assert_eq!(fs::read(&installed.path).unwrap(), bytes);
+        assert_eq!(fs::metadata(&installed.path).unwrap().permissions().mode() & 0o777, 0o755);
+        let desktop = fs::read_to_string(&installed.desktop).unwrap();
+        assert!(desktop.contains("Name=Demo\n"));
+        assert!(desktop.contains("Icon=application-x-executable\n"));
+        assert!(desktop.contains("Terminal=false\n"));
+    }
+
+    #[test]
+    fn a_script_runs_in_its_folder_without_chmod_or_path_interpolation() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempdir().unwrap();
+        let folder = tmp.path().join("scripts with spaces");
+        fs::create_dir(&folder).unwrap();
+        let script = folder.join("a; touch INJECTED.sh");
+        fs::write(&script, "printf 'done' > result.txt\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o600)).unwrap();
+        let terminal = tmp.path().join("gnome-terminal");
+        fs::write(&terminal, "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n").unwrap();
+        fs::set_permissions(&terminal, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut child = spawn_helper(&mut script_terminal_command(&script, &terminal).unwrap()).unwrap();
+        assert!(wait_or_kill(&mut child, std::time::Duration::from_secs(5)));
+        assert_eq!(fs::read_to_string(folder.join("result.txt")).unwrap(), "done");
+        assert!(!folder.join("INJECTED.sh").exists());
+        assert_eq!(fs::metadata(&script).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    fn appimage_fixture(root: &Path) -> PathBuf {
+        let source = root.join("Demo.AppImage");
+        let mut bytes = vec![0u8; 128];
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        bytes[8..11].copy_from_slice(b"AI\x02");
+        fs::write(&source, bytes).unwrap();
+        source
+    }
+
+    #[test]
+    fn appimage_name_clashes_do_not_replace_an_install_or_its_launcher() {
+        let tmp = tempdir().unwrap();
+        let source = appimage_fixture(tmp.path());
+        let data = tmp.path().join("data");
+        let first = install_appimage_at(&source, "Demo", &data).unwrap();
+        fs::write(&first.path, b"edited installed application").unwrap();
+        let desktop = fs::read(&first.desktop).unwrap();
+        assert_eq!(install_appimage_at(&source, "Demo", &data).unwrap_err(), INSTALL_EXISTS);
+        assert_eq!(fs::read(&first.path).unwrap(), b"edited installed application");
+        assert_eq!(fs::read(&first.desktop).unwrap(), desktop);
+    }
+
+    #[test]
+    fn launcher_clashes_roll_back_only_the_new_application() {
+        let tmp = tempdir().unwrap();
+        let source = appimage_fixture(tmp.path());
+        let data = tmp.path().join("data");
+        let first = install_appimage_at(&source, "Demo", &data).unwrap();
+        let folder = first.path.parent().unwrap();
+        fs::remove_file(&first.path).unwrap();
+        fs::remove_dir(folder).unwrap();
+        fs::write(&first.desktop, b"user's launcher").unwrap();
+        assert_eq!(install_appimage_at(&source, "Demo", &data).unwrap_err(), INSTALL_EXISTS);
+        assert_eq!(fs::read(&first.desktop).unwrap(), b"user's launcher");
+        assert!(!folder.exists());
+        assert_eq!(fs::metadata(&source).unwrap().len(), 128);
+    }
+
+    #[test]
+    fn appimage_installation_refuses_invalid_programs_names_and_locations() {
+        let tmp = tempdir().unwrap();
+        let source = appimage_fixture(tmp.path());
+        let data = tmp.path().join("data");
+        for name in ["", "..", "Bad/Name", "Bad\\Name", "Bad\nExec=/bin/sh"] {
+            assert!(install_appimage_at(&source, name, &data).is_err());
+        }
+        assert!(install_appimage_at(&source, &"x".repeat(101), &data).is_err());
+        let bogus = tmp.path().join("bogus.AppImage");
+        fs::write(&bogus, b"not an AppImage").unwrap();
+        assert!(install_appimage_at(&bogus, "Bogus", &data).is_err());
+        let folder = tmp.path().join("folder.AppImage");
+        fs::create_dir(&folder).unwrap();
+        assert!(install_appimage_at(&folder, "Folder", &data).is_err());
+        let alias = tmp.path().join("alias.AppImage");
+        std::os::unix::fs::symlink(&source, &alias).unwrap();
+        assert!(install_appimage_at(&alias, "Alias", &data).is_err());
+        assert!(install_appimage_at(Path::new("share://r1/app.AppImage"), "Remote", &data).is_err());
+        assert!(install_appimage_at(&source, "Demo", Path::new("relative" )).is_err());
+        assert!(install_appimage_at(&source, "Demo", &tmp.path().join(".versions/data")).is_err());
+        let versions = tmp.path().join(".versions");
+        fs::create_dir(&versions).unwrap();
+        let internal = versions.join("internal.AppImage");
+        fs::copy(&source, &internal).unwrap();
+        assert!(install_appimage_at(&internal, "History", &data).is_err());
+        assert!(!data.exists(), "invalid input must not create installation directories");
+    }
+
+    #[test]
+    fn appimage_launcher_quotes_special_characters_and_preserves_unicode_names() {
+        let tmp = tempdir().unwrap();
+        let source = appimage_fixture(tmp.path());
+        let data = tmp.path().join("data with %f $HOME `echo x` \\\"quotes\"");
+        let installed = install_appimage_at(&source, "Café Editor", &data).unwrap();
+        let desktop = fs::read_to_string(installed.desktop).unwrap();
+        assert!(desktop.contains("Name=Café Editor\n"));
+        assert!(desktop.contains("%%f"), "literal percent must not become a desktop field code");
+        assert!(desktop.contains("\\\\$HOME"));
+        assert!(desktop.contains("\\\\`echo x\\\\`"));
+        assert!(desktop.lines().find(|s| s.starts_with("Exec=")).unwrap().starts_with("Exec=\"/"));
+    }
+
+    #[test]
+    fn script_requests_refuse_binary_remote_missing_and_history_files() {
+        let tmp = tempdir().unwrap();
+        let terminal = Path::new("gnome-terminal");
+        let binary = tmp.path().join("binary.sh");
+        fs::write(&binary, b"hello\0there").unwrap();
+        assert!(script_terminal_command(&binary, terminal).is_err());
+        for path in ["sftp://user@host/a.sh", "share://r1/a.sh", "relative.sh"] {
+            assert!(script_terminal_command(Path::new(path), terminal).is_err());
+        }
+        assert!(script_terminal_command(&tmp.path().join("missing.sh"), terminal).is_err());
+        let internal = tmp.path().join(".versions/script.sh");
+        fs::create_dir(internal.parent().unwrap()).unwrap();
+        fs::write(&internal, b"echo hello").unwrap();
+        assert!(script_terminal_command(&internal, terminal).is_err());
     }
 
     #[test]

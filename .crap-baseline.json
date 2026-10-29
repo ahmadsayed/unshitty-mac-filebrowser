@@ -3,6 +3,14 @@
   "rust": {
     "src-tauri/src/lib.rs::list_dir": 56,
     "src-tauri/src/lib.rs::rename_entry": 42,
+    "src-tauri/src/platform.rs::DmgMount::open": 132,
+    "src-tauri/src/platform.rs::dmg_helper": 182,
+    "src-tauri/src/platform.rs::dmg_keep_both": 72,
+    "src-tauri/src/platform.rs::dmg_publish": 56,
+    "src-tauri/src/platform.rs::dmg_safe_destination": 56,
+    "src-tauri/src/platform.rs::dmg_snapshot": 182,
+    "src-tauri/src/platform.rs::dmg_source": 56,
+    "src-tauri/src/platform.rs::install_mounted_dmg": 72,
     "src-tauri/src/sftp.rs::SftpState::check_host_key": 90,
     "src-tauri/src/sftp.rs::SftpState::connect": 90
   },
