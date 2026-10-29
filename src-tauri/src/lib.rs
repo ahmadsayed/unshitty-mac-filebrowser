@@ -1711,9 +1711,20 @@ fn cancel_update(state: tauri::State<UpdateState>) {
     }
 }
 
-/// Start the installed new version, closing every window like Quit.
+/// Whether a copy, move or other operation runs in any window: Restart Now
+/// waits for them, since restarting would cut them off.
 #[tauri::command]
-fn restart_app(app: tauri::AppHandle) {
+fn operations_running(registry: tauri::State<progress::Registry>) -> bool {
+    !registry.is_empty()
+}
+
+/// Start the installed new version, closing every window like Quit. Refused
+/// while an operation runs in any window.
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle, registry: tauri::State<progress::Registry>) -> Result<(), updates::Failure> {
+    if !registry.is_empty() {
+        return Err(update_failed("Operations are still running."));
+    }
     app.restart()
 }
 
@@ -1790,6 +1801,7 @@ pub fn run() {
             install_update,
             cancel_update,
             restart_app,
+            operations_running,
             sftp_connect,
             sftp_servers,
             sftp_disconnect,

@@ -7,6 +7,7 @@ import {
   checkUpdate,
   installUpdate,
   openExternal,
+  operationsRunning,
   restartApp,
   type UpdateFailure,
   type UpdateInfo,
@@ -186,12 +187,23 @@ function showInstallFailed(info: UpdateInfo, failure: UpdateFailure): void {
   showMessage("Update Failed", "The download failed.", [CLOSE, TRY_AGAIN], { retry: () => void runInstall(info) }, textBlock(failure.detail));
 }
 
+/** How often the installed dialog asks about operations in other windows. */
+const OTHER_WINDOWS_POLL_MS = 500;
+
 /** Installed: restart now, or keep working and get it next time. Restarting
- * waits for running copies and moves, which would otherwise be cut off. */
+ * waits for running copies and moves in every window, which would otherwise
+ * be cut off; the backend refuses a restart while any runs. */
 function showInstalled(info: UpdateInfo): void {
   const hint = textBlock("Waiting for operations to finish…");
   hint.className = "dim";
+  let closed = false;
   let unsubscribe = () => {};
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stop = () => {
+    closed = true;
+    unsubscribe();
+    clearInterval(timer);
+  };
   const dialog = openDialog({
     heading: `File Browser ${info.latest} is installed.`,
     body: "Restart to use it.",
@@ -202,17 +214,29 @@ function showInstalled(info: UpdateInfo): void {
     ],
     defaultResponse: "later",
     closeResponse: "later",
-    onResponse: (id) => {
-      unsubscribe();
-      if (id === "restart") void restartApp();
+    onResponse: async (id) => {
+      if (id !== "restart") return stop();
+      try {
+        await restartApp();
+      } catch {
+        // Something started in another window since the last look.
+        show(true);
+        return false;
+      }
+      stop();
     },
   });
-  const update = () => {
-    const busy = hasRunningOperations();
+  const show = (busy: boolean) => {
     dialog.setResponseEnabled("restart", !busy);
     hint.hidden = !busy;
     hint.firstElementChild!.textContent = busy ? "Waiting for operations to finish…" : "";
   };
-  unsubscribe = onOperationsChange(update);
-  update();
+  const refresh = async () => {
+    const elsewhere = await operationsRunning().catch(() => false);
+    if (!closed) show(hasRunningOperations() || elsewhere);
+  };
+  show(hasRunningOperations());
+  unsubscribe = onOperationsChange(() => void refresh());
+  timer = setInterval(() => void refresh(), OTHER_WINDOWS_POLL_MS);
+  void refresh();
 }

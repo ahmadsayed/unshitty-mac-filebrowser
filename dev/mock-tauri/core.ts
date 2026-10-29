@@ -1468,6 +1468,8 @@ function freshUpdateState() {
     total: 91_400_000 as number | null,
     /** Cancel arrives after installing started: the backend ignores it. */
     lateCancel: false,
+    /** A copy or move runs in another window (the backend registry is app-wide). */
+    otherWindowBusy: false,
     holding: false,
     checkHolding: false,
     checkWaiters: [] as (() => void)[],
@@ -1514,7 +1516,7 @@ function finishInstall(): void {
 }
 
 (globalThis as Record<string, unknown>).__mockUpdate = {
-  set(o: Partial<Pick<typeof upd, "latest" | "kind" | "failCheck" | "failInstall" | "total" | "lateCancel">>) {
+  set(o: Partial<Pick<typeof upd, "latest" | "kind" | "failCheck" | "failInstall" | "total" | "lateCancel" | "otherWindowBusy">>) {
     Object.assign(upd, o);
   },
   hold() {
@@ -1807,7 +1809,9 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     upd.install?.reject(updateFailed("Cancelled."));
     upd.install = null;
   },
+  operations_running: () => upd.otherWindowBusy || held.length > 0,
   restart_app: () => {
+    if (upd.otherWindowBusy || held.length > 0) throw updateFailed("Operations are still running.");
     upd.restarts++;
   },
 };

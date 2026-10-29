@@ -804,7 +804,13 @@ export async function cancelUpdate(): Promise<void> {
   return invoke<void>("cancel_update");
 }
 
-/** Start the installed new version, closing every window. */
+/** Start the installed new version, closing every window. Rejects while an
+ * operation runs in any window. */
 export async function restartApp(): Promise<void> {
   return invoke<void>("restart_app");
+}
+
+/** Whether a copy, move or other operation runs in any window. */
+export async function operationsRunning(): Promise<boolean> {
+  return invoke<boolean>("operations_running");
 }

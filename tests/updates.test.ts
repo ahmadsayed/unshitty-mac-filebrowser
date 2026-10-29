@@ -6,7 +6,7 @@ import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, key, menu
 
 type UpdateFailure = { kind: string; detail: string };
 type MockUpdate = {
-  set(o: { latest?: string | null; kind?: string; failCheck?: UpdateFailure; failInstall?: UpdateFailure; total?: number | null; lateCancel?: boolean }): void;
+  set(o: { latest?: string | null; kind?: string; failCheck?: UpdateFailure; failInstall?: UpdateFailure; total?: number | null; lateCancel?: boolean; otherWindowBusy?: boolean }): void;
   hold(): void; step(bytes: number): void; release(): void; holdCheck(): void; releaseCheck(): void;
   installed(): number; restarts(): number; reset(): void;
 };
@@ -175,6 +175,32 @@ test("Restart Now waits for operations, even ones started later", async () => {
   endOperation(second);
   await settle(5);
   expect(button("Restart Now").disabled).toBe(false);
+});
+
+test("Restart Now waits for operations in other windows too", async () => {
+  mock().set({ latest: "0.5.4", otherWindowBusy: true });
+  await check();
+  await respond("Download and Install");
+  await settle(20);
+  expect(button("Restart Now").disabled).toBe(true);
+  expect(dialogText()).toContain("Waiting for operations to finish…");
+  mock().set({ otherWindowBusy: false });
+  await vi.waitFor(() => expect(button("Restart Now").disabled).toBe(false), { timeout: 3000 });
+  await respond("Restart Now");
+  expect(mock().restarts()).toBe(1);
+});
+
+test("a refused restart keeps the dialog open and waits again", async () => {
+  mock().set({ latest: "0.5.4" });
+  await check();
+  await respond("Download and Install");
+  await settle(20);
+  // A copy starts in another window between the last check and the click.
+  mock().set({ otherWindowBusy: true });
+  await respond("Restart Now");
+  expect(mock().restarts()).toBe(0);
+  expect(dialogHeading()).toBe("File Browser 0.5.4 is installed.");
+  expect(button("Restart Now").disabled).toBe(true);
 });
 
 test("Later keeps the session", async () => {

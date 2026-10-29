@@ -616,7 +616,7 @@ test("trash_entries trashes in chunks of 100, counts items and stops between chu
 
 type UpdateFailure = { kind: string; detail: string };
 type MockUpdate = {
-  set(o: { latest?: string | null; kind?: string; failCheck?: UpdateFailure; failInstall?: UpdateFailure; total?: number | null }): void;
+  set(o: { latest?: string | null; kind?: string; failCheck?: UpdateFailure; failInstall?: UpdateFailure; total?: number | null; otherWindowBusy?: boolean }): void;
   hold(): void; step(bytes: number): void; release(): void; holdCheck(): void; releaseCheck(): void;
   installed(): number; restarts(): number; reset(): void;
 };
@@ -680,6 +680,15 @@ test("cancel_update stops the download and a new install can start", async () =>
   await invoke("check_update");
   await invoke("install_update", { onProgress: new Channel() });
   expect(mockUpdate().installed()).toBe(1);
+});
+
+test("operations_running and restart_app see operations in every window", async () => {
+  mockUpdate().reset();
+  expect(await invoke("operations_running")).toBe(false);
+  mockUpdate().set({ otherWindowBusy: true });
+  expect(await invoke("operations_running")).toBe(true);
+  await expect(invoke("restart_app")).rejects.toEqual({ kind: "failed", detail: "Operations are still running." });
+  expect(mockUpdate().restarts()).toBe(0);
 });
 
 test("restart_app counts restarts", async () => {
