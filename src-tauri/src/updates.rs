@@ -92,6 +92,61 @@ impl InstallGuard {
     }
 }
 
+/// Where an install stands, so a Cancel is never lost: one that arrives
+/// before the download task is stored aborts it as soon as it is, and one
+/// that arrives after the task already returned its bytes still stops the
+/// install. Once installing has started, Cancel has no effect.
+/// `H` is the download task's abort handle.
+#[derive(Default)]
+pub enum DownloadControl<H> {
+    #[default]
+    Idle,
+    Running(H),
+    CancelRequested,
+    Installing,
+}
+
+impl<H> DownloadControl<H> {
+    /// A new install starts: forget a Cancel left over from an earlier one.
+    pub fn reset(&mut self) {
+        *self = DownloadControl::Idle;
+    }
+
+    /// The download task exists. Returns its handle back when a Cancel
+    /// already came in: the caller aborts it.
+    pub fn started(&mut self, handle: H) -> Option<H> {
+        match self {
+            DownloadControl::CancelRequested => Some(handle),
+            _ => {
+                *self = DownloadControl::Running(handle);
+                None
+            }
+        }
+    }
+
+    /// The user cancelled. Returns the running task's handle to abort.
+    pub fn cancel(&mut self) -> Option<H> {
+        match std::mem::replace(self, DownloadControl::CancelRequested) {
+            DownloadControl::Running(handle) => Some(handle),
+            DownloadControl::Installing => {
+                *self = DownloadControl::Installing;
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// The download task ended. True when the install may go ahead (it is
+    /// then past the point of cancelling); false when the user cancelled.
+    pub fn finished(&mut self) -> bool {
+        if matches!(self, DownloadControl::CancelRequested) {
+            return false;
+        }
+        *self = DownloadControl::Installing;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +191,44 @@ mod tests {
         assert!(!guard.try_start());
         guard.finish();
         assert!(guard.try_start());
+    }
+
+    #[test]
+    fn a_cancel_after_the_download_finished_still_cancels() {
+        // The reviewer's race: the task already returned its bytes when
+        // Cancel arrives; the abort is a no-op, so the state must decide.
+        let mut control = DownloadControl::default();
+        control.reset();
+        assert_eq!(control.started("task"), None);
+        assert_eq!(control.cancel(), Some("task"));
+        assert!(!control.finished(), "cancelled downloads must not install");
+    }
+
+    #[test]
+    fn a_cancel_before_the_task_is_stored_aborts_it_at_once() {
+        let mut control = DownloadControl::default();
+        control.reset();
+        assert_eq!(control.cancel(), None);
+        assert_eq!(control.started("task"), Some("task"));
+        assert!(!control.finished());
+    }
+
+    #[test]
+    fn an_uncancelled_download_installs_and_cancel_then_comes_too_late() {
+        let mut control = DownloadControl::default();
+        control.reset();
+        control.started("task");
+        assert!(control.finished());
+        assert_eq!(control.cancel(), None, "installing can't be stopped");
+    }
+
+    #[test]
+    fn a_stale_cancel_is_forgotten_by_the_next_install() {
+        let mut control: DownloadControl<&str> = DownloadControl::default();
+        control.cancel();
+        control.reset();
+        assert_eq!(control.started("task"), None);
+        assert!(control.finished());
     }
 
     #[test]

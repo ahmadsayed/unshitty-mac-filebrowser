@@ -6,7 +6,7 @@ import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, key, menu
 
 type UpdateFailure = { kind: string; detail: string };
 type MockUpdate = {
-  set(o: { latest?: string | null; kind?: string; failCheck?: UpdateFailure; failInstall?: UpdateFailure; total?: number | null }): void;
+  set(o: { latest?: string | null; kind?: string; failCheck?: UpdateFailure; failInstall?: UpdateFailure; total?: number | null; lateCancel?: boolean }): void;
   hold(): void; step(bytes: number): void; release(): void; holdCheck(): void; releaseCheck(): void;
   installed(): number; restarts(): number; reset(): void;
 };
@@ -143,6 +143,18 @@ for (const how of ["Cancel", "Escape"] as const) {
     expect(mock().installed()).toBe(1);
   });
 }
+
+test("a Cancel that comes too late still shows the installed update", async () => {
+  // The backend was already installing: Cancel can't stop it, and hiding the
+  // result would leave the user unaware that the app was replaced.
+  mock().set({ lateCancel: true });
+  await offerAndDownload();
+  await respond("Cancel");
+  mock().release();
+  await settle(20);
+  expect(mock().installed()).toBe(1);
+  expect(dialogHeading()).toBe("File Browser 0.5.4 is installed.");
+});
 
 test("Restart Now waits for operations, even ones started later", async () => {
   const noop = () => {};

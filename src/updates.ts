@@ -13,7 +13,7 @@ import {
   type UpdateProgress,
 } from "./api";
 import { formatSize } from "./format";
-import { hasRunningOperations, onOperationsChange } from "./operations";
+import { CANCELLED, hasRunningOperations, onOperationsChange } from "./operations";
 import { dialogLinks, openDialog, type DialogResponse } from "./ui";
 
 const HEADING = "Check for Updates";
@@ -159,11 +159,13 @@ async function runInstall(info: UpdateInfo): Promise<void> {
   try {
     await installUpdate(onProgress);
   } catch (error) {
-    if (cancelled) return;
+    const failure = asFailure(error);
+    if (cancelled && failure.detail === CANCELLED) return;
     dialog.close();
-    return showInstallFailed(info, asFailure(error));
+    return showInstallFailed(info, failure);
   }
-  if (cancelled) return;
+  // Even after Cancel: a Cancel that came once installing had started didn't
+  // stop it, and the user must know the app was replaced.
   dialog.close();
   showInstalled(info);
 }

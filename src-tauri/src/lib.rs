@@ -1568,8 +1568,8 @@ const RELEASES_URL: &str = "https://github.com/ahmadsayed/unshitty-mac-filebrows
 struct UpdateState {
     guard: updates::InstallGuard,
     pending: Mutex<Option<tauri_plugin_updater::Update>>,
-    /// Set only while downloading: once installing starts it can't be stopped.
-    download: Mutex<Option<tokio::task::AbortHandle>>,
+    /// Whether Cancel may still stop the install (see `DownloadControl`).
+    download: Mutex<updates::DownloadControl<tokio::task::AbortHandle>>,
 }
 
 #[derive(serde::Serialize)]
@@ -1648,6 +1648,7 @@ async fn install_update(
     if !state.guard.try_start() {
         return Err(update_failed("An update is already being installed."));
     }
+    state.download.lock().unwrap().reset();
     let result = download_then_install(&state, update, on_progress).await;
     state.guard.finish();
     result
@@ -1672,9 +1673,14 @@ async fn download_then_install(
             )
             .await
     });
-    *state.download.lock().unwrap() = Some(task.abort_handle());
+    if let Some(cancelled) = state.download.lock().unwrap().started(task.abort_handle()) {
+        cancelled.abort();
+    }
     let joined = task.await;
-    state.download.lock().unwrap().take();
+    // A Cancel that came after the bytes arrived must still stop the install.
+    if !state.download.lock().unwrap().finished() {
+        return Err(update_failed(progress::CANCELLED));
+    }
     let bytes = downloaded_bytes(joined)?;
     let total = Some(bytes.len() as u64);
     let _ = on_progress.send(UpdateProgress { phase: "installing", downloaded: bytes.len() as u64, total });
@@ -1696,10 +1702,11 @@ fn downloaded_bytes(
     }
 }
 
-/// Stop a running download; nothing has been changed on disk yet.
+/// Cancel the install unless installing already started; until then nothing
+/// has been changed on disk.
 #[tauri::command]
 fn cancel_update(state: tauri::State<UpdateState>) {
-    if let Some(download) = state.download.lock().unwrap().take() {
+    if let Some(download) = state.download.lock().unwrap().cancel() {
         download.abort();
     }
 }

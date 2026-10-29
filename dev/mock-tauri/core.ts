@@ -1466,6 +1466,8 @@ function freshUpdateState() {
     failCheck: undefined as UpdateFailure | undefined,
     failInstall: undefined as UpdateFailure | undefined,
     total: 91_400_000 as number | null,
+    /** Cancel arrives after installing started: the backend ignores it. */
+    lateCancel: false,
     holding: false,
     checkHolding: false,
     checkWaiters: [] as (() => void)[],
@@ -1512,7 +1514,7 @@ function finishInstall(): void {
 }
 
 (globalThis as Record<string, unknown>).__mockUpdate = {
-  set(o: Partial<Pick<typeof upd, "latest" | "kind" | "failCheck" | "failInstall" | "total">>) {
+  set(o: Partial<Pick<typeof upd, "latest" | "kind" | "failCheck" | "failInstall" | "total" | "lateCancel">>) {
     Object.assign(upd, o);
   },
   hold() {
@@ -1801,6 +1803,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   check_update: () => checkUpdate(),
   install_update: (a) => installUpdate(a.onProgress as Channel<UpdateProgress> | undefined),
   cancel_update: () => {
+    if (upd.lateCancel) return;
     upd.install?.reject(updateFailed("Cancelled."));
     upd.install = null;
   },
