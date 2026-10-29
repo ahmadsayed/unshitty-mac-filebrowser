@@ -83,9 +83,9 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
-            # One app for Apple Silicon and Intel Macs.
-            args: --target universal-apple-darwin --bundles app,dmg
-            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            # Apple Silicon only: one compile instead of two (no Intel Macs).
+            args: --target aarch64-apple-darwin --bundles app,dmg
+            rust-targets: aarch64-apple-darwin
           - platform: ubuntu-22.04
             args: ""
             rust-targets: ""
@@ -134,7 +134,7 @@ jobs:
         with:
           name: file-browser-${{ matrix.platform }}
           path: |
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm
             src-tauri/target/release/bundle/appimage/*.AppImage
@@ -146,8 +146,8 @@ jobs:
           name: file-browser-updater-${{ matrix.platform }}
           path: |
             src-tauri/target/release/bundle/appimage/*.AppImage.sig
-            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
-            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           # Absent when the signing key secret isn't set.
           if-no-files-found: ignore
 

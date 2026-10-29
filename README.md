@@ -90,7 +90,8 @@ Press ⌘? in the app for every shortcut.
 Get a build from the
 [Releases page](https://github.com/ahmadsayed/unshitty-mac-filebrowser/releases).
 
-- **macOS:** the `.dmg` (Apple Silicon and Intel). It isn't notarized, so run
+- **macOS:** the `.dmg`, for Apple Silicon Macs (Intel Macs aren't
+  supported). It isn't notarized, so run
   `xattr -dr com.apple.quarantine "/Applications/File Browser.app"` once, or
   right-click the app and choose Open. Grant **Full Disk Access** in System
   Settings if you want to see every folder.

@@ -6,7 +6,7 @@ import { buildManifest } from "../scripts/updater-manifest.mjs";
 const opts = { version: "0.5.4", tag: "v0.5.4", repo: "o/r", notes: "See the release page.", pubDate: "2026-11-01T10:00:00Z" };
 const sigOf = (path: string) => `sig of ${path.split("/").pop()}`;
 
-test("writes all three platforms with GitHub's asset names", () => {
+test("writes Linux and Apple Silicon entries with GitHub's asset names", () => {
   const files = [
     "a/File Browser_0.5.4_amd64.AppImage",
     "a/File Browser_0.5.4_amd64.AppImage.sig",
@@ -20,7 +20,8 @@ test("writes all three platforms with GitHub's asset names", () => {
   expect(manifest.version).toBe("0.5.4");
   expect(manifest.notes).toBe("See the release page.");
   expect(manifest.pub_date).toBe("2026-11-01T10:00:00Z");
-  expect(Object.keys(manifest.platforms).sort()).toEqual(["darwin-aarch64", "darwin-x86_64", "linux-x86_64"]);
+  // Intel Macs get no entry: the Mac build is Apple Silicon only.
+  expect(Object.keys(manifest.platforms).sort()).toEqual(["darwin-aarch64", "linux-x86_64"]);
   expect(manifest.platforms["linux-x86_64"]).toEqual({
     url: "https://github.com/o/r/releases/download/v0.5.4/File.Browser_0.5.4_amd64.AppImage",
     signature: "sig of File Browser_0.5.4_amd64.AppImage.sig",
@@ -29,7 +30,6 @@ test("writes all three platforms with GitHub's asset names", () => {
     url: "https://github.com/o/r/releases/download/v0.5.4/File.Browser.app.tar.gz",
     signature: "sig of File Browser.app.tar.gz.sig",
   });
-  expect(manifest.platforms["darwin-x86_64"]).toEqual(manifest.platforms["darwin-aarch64"]);
 });
 
 test("no signatures, no manifest", () => {

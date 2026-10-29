@@ -40,13 +40,13 @@ export function buildManifest(files, readSig, { version, tag, repo, notes, pubDa
     signature: readSig(`${pkg}.sig`),
   });
   const appImage = entry(signedPackage(files, ".AppImage", "AppImage"));
-  // One universal archive serves both kinds of Mac.
+  // The Mac build is Apple Silicon only: Intel Macs get no entry.
   const mac = entry(signedPackage(files, ".app.tar.gz", "macOS app archive"));
   return {
     version,
     notes,
     pub_date: pubDate,
-    platforms: { "linux-x86_64": appImage, "darwin-aarch64": mac, "darwin-x86_64": mac },
+    platforms: { "linux-x86_64": appImage, "darwin-aarch64": mac },
   };
 }
 

@@ -150,7 +150,7 @@ copies can't take updates until users reinstall by hand.
 - Release job: `scripts/updater-manifest.mjs` writes `latest.json` from the
   `.sig` files and uploads it with the other assets:
   `version`, `pub_date`, `notes`, and `platforms` entries `linux-x86_64`
-  (AppImage), `darwin-aarch64` and `darwin-x86_64` (both the universal
+  (AppImage) and `darwin-aarch64` (the Apple Silicon
   `.app.tar.gz`), each with `signature` (the `.sig` file's contents) and
   `url` (`https://github.com/<repo>/releases/download/<tag>/<asset name>`).
   Asset names use GitHub's renaming: spaces become dots
