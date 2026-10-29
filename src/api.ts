@@ -148,6 +148,20 @@ export async function newWindow(path?: string): Promise<void> {
   return invoke<void>("new_window", { path: path ?? null });
 }
 
+export interface DmgApplication { id: string; name: string; fileName: string }
+export interface DmgInspection { fingerprint: string; apps: DmgApplication[]; warning: string | null }
+export type DmgInstallMode = "install" | "replace" | "keep-both";
+export type DmgInstallResult =
+  | { kind: "installed"; name: string; path: string; warning: string | null }
+  | { kind: "conflict"; name: string; path: string; warning: string | null };
+
+export function inspectDmg(path: string): Promise<DmgInspection> {
+  return invoke("inspect_dmg", { path });
+}
+export function installDmg(path: string, fingerprint: string, application: string, destination: "user" | "system", mode: DmgInstallMode): Promise<DmgInstallResult> {
+  return invoke("install_dmg", { path, fingerprint, application, destination, mode });
+}
+
 export interface InstalledAppImage {
   name: string;
   path: string;

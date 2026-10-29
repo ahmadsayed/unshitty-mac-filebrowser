@@ -622,6 +622,399 @@ pub fn data_home(home: &Path) -> PathBuf {
         .unwrap_or_else(|| home.join(".local/share"))
 }
 
+// ---- macOS disk-image application installation ---------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmgApplication { pub id: String, pub name: String, pub file_name: String }
+
+#[derive(Debug, Serialize)]
+pub struct DmgInspection { pub fingerprint: String, pub apps: Vec<DmgApplication>, pub warning: Option<String> }
+
+#[derive(Debug, Clone, Copy, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DmgInstallMode { Install, Replace, KeepBoth }
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum DmgInstallResult {
+    Installed { name: String, path: PathBuf, warning: Option<String> },
+    Conflict { name: String, path: PathBuf, warning: Option<String> },
+}
+
+pub struct DmgInstallRequest {
+    pub image: PathBuf,
+    pub fingerprint: String,
+    pub application: String,
+    pub directory: PathBuf,
+    pub mode: DmgInstallMode,
+}
+
+/// Discover bundles, not installers; never traverse symlinks or app contents.
+pub fn scan_dmg_applications(root: &Path) -> Result<Vec<DmgApplication>, String> {
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let mut stack = vec![(root.clone(), 0)];
+    let mut apps = Vec::new();
+    let mut scanned = 0;
+    while let Some((dir, depth)) = stack.pop() {
+        for item in fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
+            scanned += 1;
+            if scanned > 1024 { return Err("This disk image has too many entries to inspect safely.".into()); }
+            let path = item.path();
+            let name = item.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || !item.file_type().is_ok_and(|t| t.is_dir()) { continue; }
+            if path.extension().is_some_and(|s| s.eq_ignore_ascii_case("app")) {
+                if let Some(app) = dmg_bundle_info(&root, &path) { apps.push(app); }
+            } else if depth < 2 && ![".pkg", ".mpkg"].iter().any(|s| name.to_lowercase().ends_with(s)) {
+                stack.push((path, depth + 1));
+            }
+        }
+    }
+    apps.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(apps)
+}
+
+fn safe_bundle_executable(value: &str) -> bool {
+    !value.chars().any(char::is_control) && Path::new(value).file_name().and_then(|s| s.to_str()) == Some(value)
+}
+
+fn dmg_bundle_info(root: &Path, bundle: &Path) -> Option<DmgApplication> {
+    let metadata = fs::symlink_metadata(bundle).ok()?;
+    if !metadata.is_dir() { return None; }
+    let bundle = bundle.canonicalize().ok()?;
+    if !bundle.starts_with(root) { return None; }
+    let info_path = bundle.join("Contents/Info.plist").canonicalize().ok()?;
+    let info_metadata = fs::metadata(&info_path).ok()?;
+    if !info_path.starts_with(&bundle) || !info_metadata.is_file() || info_metadata.len() > 256 * 1024 { return None; }
+    let value = plist::Value::from_file(info_path).ok()?;
+    let info = value.as_dictionary()?;
+    if info.get("CFBundlePackageType")?.as_string()? != "APPL" { return None; }
+    let executable = info.get("CFBundleExecutable")?.as_string()?;
+    if !safe_bundle_executable(executable) { return None; }
+    let executable = bundle.join("Contents/MacOS").join(executable).canonicalize().ok()?;
+    if !executable.starts_with(&bundle) || !executable.is_file() { return None; }
+    let file_name = bundle.file_name()?.to_str()?.to_string();
+    if file_name.chars().any(char::is_control) { return None; }
+    let fallback = bundle.file_stem()?.to_str()?;
+    let name = info.get("CFBundleDisplayName").or_else(|| info.get("CFBundleName"))
+        .and_then(|v| v.as_string()).filter(|s| !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
+        .unwrap_or(fallback).to_string();
+    Some(DmgApplication { id: bundle.strip_prefix(root).ok()?.to_str()?.to_string(), name, file_name })
+}
+
+fn dmg_helper(command: &mut std::process::Command, seconds: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = spawn_helper(command).map_err(|e| e.to_string())?;
+    let stdout = child.stdout.take().ok_or("The installer helper has no output stream.")?;
+    let stderr = child.stderr.take().ok_or("The installer helper has no error stream.")?;
+    let read = |stream: Box<dyn Read + Send>| {
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = stream.take(1024 * 1024 + 1).read_to_end(&mut bytes).map(|_| bytes);
+            let _ = send.send(result);
+        });
+        receive
+    };
+    let out = read(Box::new(stdout));
+    let err = read(Box::new(stderr));
+    let finished = wait_or_kill(&mut child, std::time::Duration::from_secs(seconds));
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if !finished { return Err("The installer helper took too long and was stopped.".into()); }
+    let output = out.recv_timeout(std::time::Duration::from_secs(5)).map_err(|_| "Could not collect installer output.")?.map_err(|e| e.to_string())?;
+    let errors = err.recv_timeout(std::time::Duration::from_secs(5)).map_err(|_| "Could not collect installer errors.")?.map_err(|e| e.to_string())?;
+    if !status.success() {
+        let text = String::from_utf8_lossy(&errors);
+        let reason = text.lines().take(4).collect::<Vec<_>>().join(" ");
+        return Err(if reason.is_empty() { format!("The installer helper failed ({status}).") } else { reason });
+    }
+    if output.len() > 1024 * 1024 { return Err("The installer helper returned too much data.".into()); }
+    Ok(output)
+}
+
+fn dmg_private_directory(parent: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|e| e.to_string())?;
+    let path = parent.join(format!(".filebrowser-install-{}", data_encoding::HEXLOWER.encode(&random)));
+    fs::DirBuilder::new().mode(0o700).create(&path).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+fn dmg_source(path: &Path) -> Result<fs::File, String> {
+    if !path.is_absolute() || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dmg")) {
+        return Err("Choose a local disk image file.".into());
+    }
+    if !fs::symlink_metadata(path).map_err(|e| e.to_string())?.is_file() {
+        return Err("Choose a regular disk image, not a symbolic link or folder.".into());
+    }
+    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+    if canonical.components().any(|p| p.as_os_str() == ".versions") {
+        return Err("Disk images inside version history cannot be installed.".into());
+    }
+    fs::File::open(path).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn dmg_file_quarantine(file: &fs::File) -> Result<Option<Vec<u8>>, String> {
+    use xattr::FileExt;
+    file.get_xattr("com.apple.quarantine").map_err(|e| e.to_string())
+}
+#[cfg(not(target_os = "macos"))]
+fn dmg_file_quarantine(_: &fs::File) -> Result<Option<Vec<u8>>, String> { Ok(None) }
+
+#[cfg(target_os = "macos")]
+fn dmg_quarantine_bundle(source: &Path, destination: &Path, image: &Option<Vec<u8>>) -> Result<(), String> {
+    let bundle = xattr::get(source, "com.apple.quarantine").map_err(|e| e.to_string())?;
+    let expected = dmg_combined_quarantine(image, &bundle)?;
+    if let Some(value) = expected {
+        xattr::set(destination, "com.apple.quarantine", &value).map_err(|e| format!("Could not preserve quarantine: {e}"))?;
+        if xattr::get(destination, "com.apple.quarantine").map_err(|e| e.to_string())? != Some(value) {
+            return Err("Quarantine was not preserved. Installation was stopped.".into());
+        }
+    }
+    Ok(())
+}
+#[cfg(not(target_os = "macos"))]
+fn dmg_quarantine_bundle(_: &Path, _: &Path, _: &Option<Vec<u8>>) -> Result<(), String> { Err("DMG installation requires macOS.".into()) }
+
+/// A bundled attribute must not downgrade the downloaded image's flags.
+fn dmg_combined_quarantine(image: &Option<Vec<u8>>, bundle: &Option<Vec<u8>>) -> Result<Option<Vec<u8>>, String> {
+    let (Some(image), Some(bundle)) = (image, bundle) else { return Ok(image.clone().or_else(|| bundle.clone())); };
+    let (image_flags, origin) = dmg_quarantine_parts(image)?;
+    let (bundle_flags, _) = dmg_quarantine_parts(bundle)?;
+    Ok(Some(format!("{:04x};{origin}", image_flags | bundle_flags).into_bytes()))
+}
+
+fn dmg_quarantine_parts(value: &[u8]) -> Result<(u32, &str), String> {
+    let text = std::str::from_utf8(value).map_err(|_| "The quarantine attribute cannot be safely preserved.")?;
+    let (flags, rest) = text.split_once(';').ok_or("The quarantine attribute cannot be safely preserved.")?;
+    let flags = u32::from_str_radix(flags, 16).map_err(|_| "The quarantine attribute cannot be safely preserved.")?;
+    Ok((flags, rest))
+}
+
+fn dmg_snapshot(file: &mut fs::File, to: &Path) -> Result<String, String> {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let before = file.metadata().map_err(|e| e.to_string())?;
+    let mut output = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(to).map_err(|e| e.to_string())?;
+    let mut hash = blake3::Hasher::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    let mut copied = 0u64;
+    loop {
+        let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        if n == 0 { break; }
+        output.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
+        hash.update(&buffer[..n]);
+        copied += n as u64;
+    }
+    let after = file.metadata().map_err(|e| e.to_string())?;
+    if copied != before.len() || before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        return Err("The disk image changed while reading it. Try again.".into());
+    }
+    output.sync_all().map_err(|e| e.to_string())?;
+    output.set_permissions(fs::Permissions::from_mode(0o400)).map_err(|e| e.to_string())?;
+    Ok(hash.finalize().to_hex().to_string())
+}
+
+struct DmgMount {
+    work: PathBuf,
+    volume: PathBuf,
+    fingerprint: String,
+    quarantine: Option<Vec<u8>>,
+    attached: bool,
+}
+
+impl DmgMount {
+    fn open(source: &Path, cache: &Path, expected: Option<&str>) -> Result<Self, String> {
+        if !IS_MACOS { return Err("DMG installation is available on macOS only.".into()); }
+        let mut file = dmg_source(source)?;
+        let quarantine = dmg_file_quarantine(&file)?;
+        let work = dmg_private_directory(cache)?;
+        let volume = work.join("volume");
+        let mut mount = Self { work, volume, fingerprint: String::new(), quarantine, attached: false };
+        let snapshot = mount.work.join("image.dmg");
+        mount.fingerprint = dmg_snapshot(&mut file, &snapshot)?;
+        if expected.is_some_and(|hash| hash != mount.fingerprint) {
+            return Err("The disk image changed. Read it again before installing.".into());
+        }
+        fs::create_dir(&mount.volume).map_err(|e| e.to_string())?;
+        let mut command = std::process::Command::new("/usr/bin/hdiutil");
+        command.args(["attach", "-readonly", "-nobrowse", "-noautoopen", "-plist", "-mountpoint"]).arg(&mount.volume).arg(&snapshot);
+        // Arm cleanup before attach: a failed helper may still have mounted it.
+        mount.attached = true;
+        let output = match dmg_helper(&mut command, 180) {
+            Ok(output) => output,
+            Err(error) => return Err(dmg_error_with_ejection(error, mount.eject())),
+        };
+        if !dmg_owns_mount(&output, &mount.volume) {
+            return Err("The disk image did not mount at the private installation location.".into());
+        }
+        Ok(mount)
+    }
+
+    fn eject(&mut self) -> Option<String> {
+        if !self.attached { return None; }
+        self.attached = false;
+        // An ordinary directory resolves to its parent disk: never ask hdiutil
+        // to detach it when an attach failed before creating our mount.
+        if !is_mount_point(&self.volume) { return None; }
+        let mut command = std::process::Command::new("/usr/bin/hdiutil");
+        command.arg("detach").arg(&self.volume);
+        let result = dmg_helper(&mut command, 30);
+        if result.is_err() && is_mount_point(&self.volume) {
+            return Some(format!("The private disk image could not be ejected. Eject {} before removing its cache directory.", self.volume.display()));
+        }
+        None
+    }
+}
+
+impl Drop for DmgMount {
+    fn drop(&mut self) {
+        if let Some(warning) = self.eject() { eprintln!("dmg installer: {warning}"); }
+        if !is_mount_point(&self.volume) {
+            // This exact private directory was created by this instance.
+            let _ = fs::remove_dir_all(&self.work);
+        }
+    }
+}
+
+fn dmg_owns_mount(output: &[u8], volume: &Path) -> bool {
+    let Ok(value) = plist::Value::from_reader(std::io::Cursor::new(output)) else { return false };
+    let Some(entities) = value.as_dictionary().and_then(|d| d.get("system-entities")).and_then(|v| v.as_array()) else { return false };
+    let mounts: Vec<&str> = entities.iter().filter_map(|e| e.as_dictionary()?.get("mount-point")?.as_string()).collect();
+    mounts.len() == 1 && mounts.first().and_then(|path| Path::new(path).canonicalize().ok())
+        .zip(volume.canonicalize().ok()).is_some_and(|(actual, owned)| actual == owned)
+}
+
+pub fn inspect_dmg(source: &Path, cache: &Path) -> Result<DmgInspection, String> {
+    let mut mount = DmgMount::open(source, cache, None)?;
+    let result = scan_dmg_applications(&mount.volume).and_then(|apps| {
+        if apps.is_empty() { Err("No application bundles were found. Package installers are not supported by this action.".into()) } else { Ok(apps) }
+    });
+    let warning = mount.eject();
+    let apps = result.map_err(|error| dmg_error_with_ejection(error, warning.clone()))?;
+    Ok(DmgInspection { fingerprint: mount.fingerprint.clone(), apps, warning })
+}
+
+fn dmg_error_with_ejection(error: String, warning: Option<String>) -> String {
+    match warning { Some(warning) => format!("{error} {warning}"), None => error }
+}
+
+pub fn dmg_application_directory(home: &Path, destination: &str) -> Result<PathBuf, String> {
+    match destination {
+        "user" => Ok(home.join("Applications")),
+        "system" => Ok(PathBuf::from("/Applications")),
+        _ => Err("Choose a supported application folder.".into()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dmg_exclusive_rename(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    unsafe extern "C" { fn renamex_np(from: *const std::ffi::c_char, to: *const std::ffi::c_char, flags: u32) -> i32; }
+    let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+    let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+    // macOS RENAME_EXCL, verified against the platform ABI: atomic no-clobber.
+    let result = unsafe { renamex_np(from.as_ptr(), to.as_ptr(), 0x00000004) };
+    if result == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+#[cfg(not(target_os = "macos"))]
+fn dmg_exclusive_rename(_: &Path, _: &Path) -> std::io::Result<()> { Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "DMG installation requires macOS.")) }
+
+fn dmg_safe_destination(directory: &Path) -> Result<PathBuf, String> {
+    if !directory.is_absolute() { return Err("Choose an absolute application folder.".into()); }
+    let ancestor = directory.ancestors().find(|p| p.exists()).ok_or("The application folder is unavailable.")?;
+    let real = ancestor.canonicalize().map_err(|e| e.to_string())?;
+    if real.components().any(|p| p.as_os_str() == ".versions") || directory.components().any(|p| p.as_os_str() == ".versions") {
+        return Err("Applications cannot be installed inside version history.".into());
+    }
+    fs::create_dir_all(directory).map_err(|e| format!("Could not create the application folder: {e}. Try My Applications."))?;
+    directory.canonicalize().map_err(|e| e.to_string())
+}
+
+fn dmg_keep_both(staged: &Path, target: &Path) -> Result<PathBuf, String> {
+    let parent = target.parent().ok_or("The application has no destination folder.")?;
+    let stem = target.file_stem().and_then(|s| s.to_str()).ok_or("Invalid application name.")?;
+    for n in 1..=1000 {
+        let count = if n == 1 { String::new() } else { format!(" {n}") };
+        let candidate = parent.join(format!("{stem} (copy{count}).app"));
+        match dmg_exclusive_rename(staged, &candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("Could not find a free application name.".into())
+}
+
+fn dmg_replace_allowed(target: &Path) -> Result<(), String> {
+    let parent = target.parent().ok_or("Invalid application destination.")?;
+    if dmg_bundle_info(parent, target).is_none() { return Err("The existing item is not a regular application bundle. Choose Keep Both.".into()); }
+    if std::env::current_exe().ok().is_some_and(|exe| exe.starts_with(target)) {
+        return Err("The running File Browser cannot replace itself. Use another installer after quitting it.".into());
+    }
+    Ok(())
+}
+
+fn dmg_copy_bundle(source: &Path, destination: &Path, quarantine: &Option<Vec<u8>>) -> Result<(), String> {
+    let mut command = std::process::Command::new("/usr/bin/ditto");
+    command.args(["--rsrc", "--extattr", "--acl", "--qtn"]).arg(source).arg(destination);
+    dmg_helper(&mut command, 300)?;
+    dmg_quarantine_bundle(source, destination, quarantine)?;
+    let parent = destination.parent().ok_or("The staging folder is missing.")?;
+    if dmg_bundle_info(parent, destination).is_none() { return Err("The copied application bundle is incomplete.".into()); }
+    Ok(())
+}
+
+fn dmg_publish(staged: &Path, target: &Path, mode: DmgInstallMode, trash: &dyn Fn(&Path) -> Result<(), String>) -> Result<PathBuf, String> {
+    if mode == DmgInstallMode::KeepBoth { return dmg_keep_both(staged, target); }
+    let mut replaced = false;
+    if mode == DmgInstallMode::Replace && fs::symlink_metadata(target).is_ok() {
+        dmg_replace_allowed(target)?;
+        trash(target)?;
+        replaced = true;
+    }
+    dmg_exclusive_rename(staged, target).map_err(|e| {
+        if replaced { format!("The old application is recoverable in the Trash, but the new one could not be placed: {e}") }
+        else { format!("Could not place the application without overwriting another item: {e}") }
+    })?;
+    Ok(target.to_path_buf())
+}
+
+pub fn install_dmg_application(request: &DmgInstallRequest, cache: &Path, trash: &dyn Fn(&Path) -> Result<(), String>) -> Result<DmgInstallResult, String> {
+    let mut mount = DmgMount::open(&request.image, cache, Some(&request.fingerprint))?;
+    let result = install_mounted_dmg(request, &mount, trash);
+    let warning = mount.eject();
+    match result.map_err(|error| dmg_error_with_ejection(error, warning.clone()))? {
+        DmgInstallResult::Installed { name, path, .. } => Ok(DmgInstallResult::Installed { name, path, warning }),
+        DmgInstallResult::Conflict { name, path, .. } => Ok(DmgInstallResult::Conflict { name, path, warning }),
+    }
+}
+
+fn install_mounted_dmg(request: &DmgInstallRequest, mount: &DmgMount, trash: &dyn Fn(&Path) -> Result<(), String>) -> Result<DmgInstallResult, String> {
+    let apps = scan_dmg_applications(&mount.volume)?;
+    let app = apps.into_iter().find(|a| a.id == request.application).ok_or("Choose an application from this disk image.")?;
+    let directory = dmg_safe_destination(&request.directory)?;
+    let target = directory.join(&app.file_name);
+    if request.mode == DmgInstallMode::Install && fs::symlink_metadata(&target).is_ok() {
+        return Ok(DmgInstallResult::Conflict { name: app.name, path: target, warning: None });
+    }
+    let work = dmg_private_directory(&directory).map_err(|e| format!("Could not stage the application here: {e}. Try My Applications."))?;
+    let staged = work.join(&app.file_name);
+    let result = (|| {
+        dmg_copy_bundle(&mount.volume.join(&app.id), &staged, &mount.quarantine)?;
+        dmg_publish(&staged, &target, request.mode, trash)
+    })();
+    // Only this call's unpublished copy; the original image always remains.
+    let _ = fs::remove_dir_all(&work);
+    let path = result?;
+    Ok(DmgInstallResult::Installed { name: app.name, path, warning: None })
+}
+
 // ---- Linux program installation -----------------------------------------
 
 #[derive(Debug, Serialize)]
@@ -838,6 +1231,97 @@ pub fn webview_env_to_set(is_set: impl Fn(&str) -> bool) -> Vec<(&'static str, &
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn dmg_scanning_lists_real_bundles_without_following_outside_links() {
+        let temp = tempdir().unwrap();
+        let app = temp.path().join("Editor.app");
+        fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        fs::write(app.join("Contents/MacOS/editor"), "not executed").unwrap();
+        fs::write(app.join("Contents/Info.plist"), r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleExecutable</key><string>editor</string><key>CFBundleDisplayName</key><string>Example Editor</string></dict></plist>"#).unwrap();
+        fs::create_dir(temp.path().join("Installer.pkg")).unwrap();
+        std::os::unix::fs::symlink(&app, temp.path().join("Alias.app")).unwrap();
+        let apps = scan_dmg_applications(temp.path()).unwrap();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].name, "Example Editor");
+        assert_eq!(apps[0].id, "Editor.app");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_dmg_install_preserves_quarantine_source_and_existing_applications() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("source");
+        let app = source.join("Sample.app");
+        fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        fs::write(app.join("Contents/MacOS/sample"), "#!/bin/sh\nprintf launched > launched.txt\n").unwrap();
+        fs::set_permissions(app.join("Contents/MacOS/sample"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(app.join("Contents/Info.plist"), r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleExecutable</key><string>sample</string><key>CFBundleName</key><string>Sample</string><key>CFBundleIdentifier</key><string>io.github.filebrowser.dmg-test</string></dict></plist>"#).unwrap();
+        xattr::set(&app, "com.apple.quarantine", b"0100;6a000000;BundledFlag;bundle").unwrap();
+        let image = temp.path().join("Sample.dmg");
+        let mut create = std::process::Command::new("/usr/bin/hdiutil");
+        create.args(["create", "-srcfolder"]).arg(&source).args(["-format", "UDZO", "-volname", "FileBrowserTest"]).arg(&image);
+        dmg_helper(&mut create, 60).unwrap();
+        let quarantine = b"0083;6a000000;FileBrowserTest;00000000-0000-0000-0000-000000000001";
+        xattr::set(&image, "com.apple.quarantine", quarantine).unwrap();
+        let original = fs::read(&image).unwrap();
+        let cache = temp.path().join("cache");
+        let info = inspect_dmg(&image, &cache).unwrap();
+        assert_eq!(info.apps.len(), 1);
+        assert!(info.warning.is_none());
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 0, "inspection must eject and clean up before the dialog");
+        let directory = temp.path().join("Applications");
+        let mut request = DmgInstallRequest { image: image.clone(), fingerprint: info.fingerprint, application: info.apps[0].id.clone(), directory: directory.clone(), mode: DmgInstallMode::Install };
+        let no_trash = |_: &Path| Err("Trash must not be called".into());
+        let installed = install_dmg_application(&request, &cache, &no_trash).unwrap();
+        let path = match installed { DmgInstallResult::Installed { path, warning, .. } => { assert!(warning.is_none()); path }, _ => panic!("expected an installed app") };
+        let installed_quarantine = xattr::get(&path, "com.apple.quarantine").unwrap().unwrap();
+        assert!(String::from_utf8(installed_quarantine).unwrap().starts_with("0183;"), "image and bundle quarantine flags must both survive");
+        assert_eq!(fs::read(&image).unwrap(), original);
+        assert!(!source.join("launched.txt").exists());
+        fs::write(path.join("user-data.txt"), "keep me").unwrap();
+        assert!(matches!(install_dmg_application(&request, &cache, &no_trash).unwrap(), DmgInstallResult::Conflict { .. }));
+        request.mode = DmgInstallMode::KeepBoth;
+        let reserved_copy = directory.join("Sample (copy).app");
+        fs::create_dir(&reserved_copy).unwrap();
+        let copy = install_dmg_application(&request, &cache, &no_trash).unwrap();
+        assert!(matches!(copy, DmgInstallResult::Installed { path: ref p, .. } if p.file_name().unwrap() == "Sample (copy 2).app"));
+        assert_eq!(fs::read_dir(reserved_copy).unwrap().count(), 0, "even an existing empty directory must not be overwritten");
+        assert_eq!(fs::read_to_string(path.join("user-data.txt")).unwrap(), "keep me");
+        request.mode = DmgInstallMode::Replace;
+        let saved_old = temp.path().join("trashed-old.app");
+        let trash = |old: &Path| fs::rename(old, &saved_old).map_err(|e| e.to_string());
+        assert!(matches!(install_dmg_application(&request, &cache, &trash).unwrap(), DmgInstallResult::Installed { .. }));
+        assert_eq!(fs::read_to_string(saved_old.join("user-data.txt")).unwrap(), "keep me");
+        assert_eq!(fs::read(&image).unwrap(), original);
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 0, "every mount must be ejected and removed");
+        let raced_old = temp.path().join("raced-old.app");
+        let race = |old: &Path| {
+            fs::rename(old, &raced_old).map_err(|e| e.to_string())?;
+            fs::create_dir(old).map_err(|e| e.to_string())
+        };
+        let failure = install_dmg_application(&request, &cache, &race).unwrap_err();
+        assert!(failure.contains("recoverable in the Trash"));
+        assert!(raced_old.join("Contents/Info.plist").exists());
+        assert_eq!(fs::read_dir(&path).unwrap().count(), 0, "raced-in empty target must remain intact");
+        let mut changed = original;
+        changed[10] ^= 1;
+        fs::write(&image, changed).unwrap();
+        assert!(install_dmg_application(&request, &cache, &no_trash).unwrap_err().contains("disk image changed"));
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn dmg_scanning_rejects_fifos_and_packages_without_reading_them() {
+        let temp = tempdir().unwrap();
+        let bundle = temp.path().join("Blocked.app/Contents");
+        fs::create_dir_all(&bundle).unwrap();
+        let fifo = bundle.join("Info.plist");
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        fs::create_dir_all(temp.path().join("Installer.PKG/Hidden.app/Contents")).unwrap();
+        assert!(scan_dmg_applications(temp.path()).unwrap().is_empty());
+    }
 
     #[test]
     fn installing_an_appimage_registers_a_launcher_without_changing_the_download() {

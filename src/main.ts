@@ -35,6 +35,7 @@ import { LAYOUT_SIZES, resolveTheme, themeChoice, type Theme, type ThemeChoice }
 import { closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { checkForUpdates } from "./updates";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
+import { macDmgItems } from "./mac-dmg";
 import { linuxProgramItems } from "./linux-programs";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
@@ -2506,6 +2507,7 @@ function showCompressDialog(sel: Entry[]): void {
 function previewAndOpenWithItems(single: Entry | null): MenuItem[] {
   const file = single && !single.is_dir && !isCloud(single.path) && !isSharePath(single.path) && !isSftpPath(single.path) ? single : null;
   return [
+    ...macDmgItems(single, isMac && !inTrash()),
     { label: "Preview", disabled: !file, action: () => file && void showPreview(file) },
     { label: "Open With…", disabled: !file, action: () => file && void showOpenWith(file) },
     ...linuxProgramItems(single, /Linux/.test(navigator.userAgent) && !inTrash()),

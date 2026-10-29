@@ -6,6 +6,21 @@ import { installFakeCanvas } from "./app";
 
 const HOME = "/Users/me";
 
+test("DMG commands inspect choices, refuse stale requests and preserve conflicts", async () => {
+  const image = `${HOME}/MockInstaller.dmg`;
+  await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: image, overwrite: false });
+  const info = await invoke<{ fingerprint: string; apps: Array<{ id: string }> }>("inspect_dmg", { path: image });
+  expect(info.apps[0].id).toBe("MockInstaller.app");
+  const request = { path: image, fingerprint: info.fingerprint, application: info.apps[0].id, destination: "user", mode: "install" };
+  await expect(invoke("install_dmg", { ...request, fingerprint: "wrong" })).rejects.toMatch(/disk image changed/);
+  await expect(invoke("install_dmg", { ...request, application: "../Other.app" })).rejects.toMatch(/Choose an application/);
+  await expect(invoke("install_dmg", request)).resolves.toMatchObject({ kind: "installed", name: "MockInstaller" });
+  await expect(invoke("install_dmg", request)).resolves.toMatchObject({ kind: "conflict" });
+  await expect(invoke("install_dmg", { ...request, mode: "keep-both" })).resolves.toMatchObject({ kind: "installed", path: `${HOME}/Applications/MockInstaller (copy).app` });
+  expect(await invoke("path_exists", { path: image })).toBe(true);
+  await expect(invoke("inspect_dmg", { path: `${HOME}/main.rs` })).rejects.toMatch(/disk image/);
+});
+
 test("Linux program command mocks install without replacing and reject wrong file types", async () => {
   const source = `${HOME}/Mock.AppImage`;
   await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: source, overwrite: false });
