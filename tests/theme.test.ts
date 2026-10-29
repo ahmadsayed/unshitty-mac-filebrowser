@@ -14,9 +14,12 @@ const rows = () => $$("#view .item[data-index]").sort((a, b) => Number(a.dataset
 
 beforeAll(boot);
 
-test("Automatic picks macOS on a Mac", () => {
+test("Automatic picks macOS on a Mac, and a fresh start shows the grid", () => {
   expect(theme()).toBe("macos");
   expect(prefs().theme ?? "auto").toBe("auto");
+  // The theme changes the look only: the grid stays the default view.
+  expect($$("#view .grid-item").length).toBeGreaterThan(0);
+  expect($$("#view .list-row")).toHaveLength(0);
 });
 
 test("the main menu shows the theme choice, with Automatic checked", async () => {

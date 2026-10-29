@@ -7,6 +7,8 @@ beforeAll(async () => {
   await boot();
 });
 
-test("Automatic picks GNOME on Linux", () => {
+test("Automatic picks GNOME on Linux, and a fresh start shows the grid", () => {
   expect(document.documentElement.dataset.theme).toBe("gnome");
+  expect(document.querySelectorAll("#view .grid-item").length).toBeGreaterThan(0);
+  expect(document.querySelectorAll("#view .list-row")).toHaveLength(0);
 });
