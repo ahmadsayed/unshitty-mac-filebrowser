@@ -1936,3 +1936,21 @@ mod update_tests {
         assert_eq!((failure.kind, failure.detail.as_str()), (FailureKind::Failed, "Cancelled."));
     }
 }
+
+#[cfg(test)]
+mod updater_config_tests {
+    /// The shipped updater settings: a signed update must also name the
+    /// version it signs (CI signatures do), and nothing may weaken transport.
+    #[test]
+    fn the_updater_requires_signed_versions_over_https() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let updater = &conf["plugins"]["updater"];
+        assert_eq!(updater["requireSignedVersion"], true);
+        assert!(updater["pubkey"].as_str().is_some_and(|key| !key.is_empty()));
+        for endpoint in updater["endpoints"].as_array().unwrap() {
+            assert!(endpoint.as_str().unwrap().starts_with("https://"));
+        }
+        assert!(updater.get("dangerousInsecureTransportProtocol").is_none());
+        assert!(conf["bundle"].get("createUpdaterArtifacts").is_none(), "only CI turns this on");
+    }
+}

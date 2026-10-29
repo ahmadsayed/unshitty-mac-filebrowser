@@ -11,7 +11,9 @@
 # Only the release job can write to the repository, and it runs only for a
 # pushed tag. Actions are pinned to commits; the comment names the version.
 #
-# Nothing secret is needed: Google Drive users bring their own OAuth client
+# Secrets: TAURI_SIGNING_PRIVATE_KEY and its _PASSWORD sign the packages
+# Check for Updates installs (HUMANS.md); without them the build still works,
+# just without latest.json. Google Drive users bring their own OAuth client
 # (docs/google-drive.md). macOS builds are ad-hoc signed, not notarized.
 name: Release
 
