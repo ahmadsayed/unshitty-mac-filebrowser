@@ -28,7 +28,9 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/thumbnails.ts` | Thumbnail request queue (4 concurrent) and bounded blob-URL cache |
 | `src/format.ts` | GNOME-style size and date strings |
 | `src/api.ts` | Typed wrappers for every Tauri command |
-| `src/styles.css` | All styling; libadwaita colour tokens at the top, light + dark |
+| `src/styles.css` | All styling: layout, views and widgets, reading every look-related value from theme tokens |
+| `src/themes/gnome.css`, `src/themes/macos.css` | The two themes' tokens (colours, font, sizes, radii, glass), light + dark; macOS also has a few scoped rules |
+| `src/theme.ts` | Theme choice (Automatic / GNOME / macOS) and the per-theme layout sizes the virtualized views use |
 | `src-tauri/src/fs_ops.rs` | Listing, item counts, mkdir, rename, copy/move/trash, path info |
 | `src-tauri/src/sftp.rs` | Read-only SSH/SFTP connections for Network: agent/key/password auth, known-host checks, listing and downloads |
 | `src-tauri/src/properties.rs` | Properties dialog data: size, dates, permissions, symlink targets, recursive folder size |
@@ -181,9 +183,17 @@ the DOM. Code that adds a mock command needs a case in
 - The thumbnail cache in `src/thumbnails.ts` is capped by bytes (64 MB), not
   just by count: photo thumbnails are ~120 KB at 256 px and ~450 KB at 512 px.
 
-**Look and behave like GNOME Files 50.**
-- Use the libadwaita tokens in `styles.css` (`--accent-bg`, `--view-bg`,
-  `--hover`, …), not hard-coded colours; every colour needs a dark-mode value.
+**Look like the theme, behave like GNOME Files 50.**
+- Two themes, chosen in the main menu: the GNOME theme follows GNOME Files 50
+  (the default on Linux), the macOS theme follows macOS 26 Tahoe (the default
+  on a Mac). Only the look differs: wording, behaviour, shortcuts, dialog
+  button order and default responses are GNOME's in both.
+- Use the tokens (`--accent-bg`, `--view-bg`, `--hover`, `--radius-button`,
+  …), not hard-coded colours. A new look-related value is a token with a value
+  in each theme (`src/themes/`), and every colour needs a dark-mode value.
+  Sizes the views compute in JavaScript go in `LAYOUT_SIZES` (`src/theme.ts`).
+- The macOS theme is an original imitation: no Apple fonts, icons or other
+  assets (the system font is used through `-apple-system`).
 - Use GNOME's wording for labels, menus and messages ("Folder is Empty",
   "Move to Trash", "A folder with that name already exists.").
 - Widgets: reuse `openMenu`, `openPopover`, `openDialog`, `showToast` from
@@ -236,7 +246,9 @@ conversation; GitHub can't enforce that part, since agents use the human's
    ask the human to, saying exactly what to try and what they should see.
 4. **Take screenshots** of anything visible: before (from `main`) and after,
    with `npm run dev:mock` running: `node scripts/mock-screenshot.mjs <path>
-   <file.png>` (`--dark` for dark mode). Look at them before using them.
+   <file.png>` (`--dark` for dark mode, `--theme gnome|macos`, `--scene
+   grid|list|menu|dialog`; the clock is fixed, so `cmp` can prove two
+   captures identical). Look at them before using them.
 5. **Open the PR** ([Pull requests](#pull-requests)): push the branch,
    upload the screenshots, fill in the template.
 6. **Review your own PR** and post the review as a comment, then hand over
