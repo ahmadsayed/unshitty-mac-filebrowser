@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-29
 
-**Status:** Approved design, not implemented.
+**Status:** Implemented; updating from one signed release to the next not yet verified.
 
 ## Goal
 

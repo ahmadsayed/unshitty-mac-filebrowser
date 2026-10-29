@@ -73,6 +73,9 @@ one out on its own platform.
   with your own OAuth client ([setup](docs/google-drive.md)).
 - **Trash done right:** Undo (⌘Z), Restore (also for items trashed in Finder),
   and nothing is ever deleted without asking.
+- **Check for Updates** (main menu): the AppImage and the Mac app download,
+  verify and install a signed update when you say so; `.deb` and `.rpm` installs
+  are pointed to the release page. Nothing is checked unless you ask.
 - **Themes:** GNOME (GNOME Files 50) or macOS (macOS 26 Tahoe), light and
   dark; Automatic picks the one that fits your platform. Switching is instant
   and keeps your place.
@@ -120,6 +123,8 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 - Google Drive: no Shared Drives, "Shared with me" or Drive-wide search.
 - Keep Versions may miss changes made while the app is closed.
 - Linux: image thumbnails only (no Quick Look).
+- Updates: no automatic checks, and `.deb` / `.rpm` installs update through
+  the package manager, not from the app.
 - macOS theme: no native window translucency (the desktop showing through the
   sidebar), no Mac-style file icons, and GNOME's sidebar layout and wording
   rather than Finder's "Favorites" and "Locations".
