@@ -153,6 +153,23 @@ let hideTimer: ReturnType<typeof setTimeout> | undefined;
 let lingerUntil = 0;
 /** The button stays this long after the last operation ends. */
 const LINGER_MS = 3000;
+const changeListeners = new Set<() => void>();
+
+/** Whether a copy, move or other operation is still running. */
+export function hasRunningOperations(): boolean {
+  return ops.length > 0;
+}
+
+/** Call `cb` whenever an operation starts or ends; returns the unsubscribe. */
+export function onOperationsChange(cb: () => void): () => void {
+  changeListeners.add(cb);
+  return () => changeListeners.delete(cb);
+}
+
+function notifyChange(): void {
+  for (const cb of changeListeners) cb();
+}
+
 /** An operation still running after this long opens the popover, once. */
 const AUTO_OPEN_MS = 1000;
 
@@ -179,6 +196,7 @@ export function startOperation(
     },
   };
   ops.push(op);
+  notifyChange();
   clearTimeout(hideTimer);
   lingerUntil = 0;
   setTimeout(() => {
@@ -194,6 +212,7 @@ export function startOperation(
 /** Remove a finished, failed or cancelled operation. */
 export function endOperation(op: Operation): void {
   ops = ops.filter((o) => o !== op);
+  notifyChange();
   if (ops.length === 0) {
     // Linger with a checkmark, then hide (unless the popover is open).
     lingerUntil = Date.now() + LINGER_MS;
