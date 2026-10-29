@@ -1457,7 +1457,38 @@ const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
 const mockWindow = { maximized: false, actions: [] as string[] };
 (globalThis as Record<string, unknown>).__mockWindow = mockWindow;
 
+function mockDmgInspection(path: string) {
+  const node = lookup(path);
+  if (!node || node.dir || node.link || !/\.dmg$/i.test(path)) throw "Choose a local disk image file.";
+  const name = path.slice(path.lastIndexOf("/") + 1).replace(/\.dmg$/i, "");
+  if (name === "Packages") throw "No application bundles were found. Package installers are not supported by this action.";
+  const names = name === "Multiple" ? ["First", "Second"] : [name];
+  return { fingerprint: `mock-dmg:${path}:${node.size}:${node.modified}`, warning: null,
+    apps: names.map((name) => ({ id: `${name}.app`, name, fileName: `${name}.app` })),
+  };
+}
+
 const COMMANDS: Record<string, (args: Args) => unknown> = {
+  inspect_dmg: (a) => mockDmgInspection(str(a, "path")),
+  install_dmg: (a) => {
+    const info = mockDmgInspection(str(a, "path"));
+    if (a.fingerprint !== info.fingerprint) throw "The disk image changed. Read it again before installing.";
+    const app = info.apps.find((app) => app.id === a.application);
+    if (!app) throw "Choose an application from this disk image.";
+    if (!["user", "system"].includes(str(a, "destination"))) throw "Choose a supported application folder.";
+    if (!["install", "replace", "keep-both"].includes(str(a, "mode"))) throw "Choose a supported installation action.";
+    const root = a.destination === "system" ? "/Applications" : "/Users/me/Applications";
+    let path = `${root}/${app.fileName}`;
+    if (lookup(path) && a.mode === "install") return { kind: "conflict", name: app.name, path, warning: null };
+    if (lookup(path) && a.mode === "replace") trashEntry(path);
+    if (a.mode === "keep-both") {
+      let n = 1;
+      while (lookup(path)) path = `${root}/${app.fileName.slice(0, -4)} (copy${n++ > 1 ? ` ${n - 1}` : ""}).app`;
+    }
+    if (!lookup(root)) makeDir(root);
+    makeDir(path);
+    return { kind: "installed", name: app.name, path, warning: null };
+  },
   list_dir: (a) => {
     const path = str(a, "path");
     if (path.startsWith("sftp://")) return listSftp(path);

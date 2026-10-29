@@ -923,6 +923,41 @@ fn in_trash(app: &tauri::AppHandle, path: &Path) -> bool {
         || path.starts_with(trash_ops::ensure_items_root(&home))
 }
 
+fn mac_dmg_path(app: &tauri::AppHandle, path: &str) -> Result<PathBuf, String> {
+    if !platform::IS_MACOS { return Err("DMG installation is available on macOS only.".into()); }
+    let original = Path::new(path);
+    if !original.is_absolute() { return Err("Choose a disk image on this computer.".into()); }
+    let canonical = original.canonicalize().map_err(|e| e.to_string())?;
+    if [canonical.as_path(), original].iter().any(|p| in_trash(app, p)) {
+        return Err("Restore the disk image from the Trash before installing it.".into());
+    }
+    Ok(original.to_path_buf())
+}
+
+#[tauri::command]
+async fn inspect_dmg(app: tauri::AppHandle, path: String) -> Result<platform::DmgInspection, String> {
+    blocking(move || {
+        let source = mac_dmg_path(&app, &path)?;
+        let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("dmg-installs");
+        platform::inspect_dmg(&source, &cache)
+    }).await?
+}
+
+#[tauri::command]
+async fn install_dmg(app: tauri::AppHandle, path: String, fingerprint: String, application: String, destination: String, mode: platform::DmgInstallMode) -> Result<platform::DmgInstallResult, String> {
+    blocking(move || {
+        let image = mac_dmg_path(&app, &path)?;
+        let home = app.path().home_dir().map_err(|e| e.to_string())?;
+        let directory = platform::dmg_application_directory(&home, &destination)?;
+        let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("dmg-installs");
+        let request = platform::DmgInstallRequest { image, fingerprint, application, directory, mode };
+        let versions = app.state::<VersionsState>();
+        platform::install_dmg_application(&request, &cache, &|old| {
+            versions.trash(old, || trash::delete(old).map_err(|e| e.to_string()))
+        })
+    }).await?
+}
+
 /// New Folder with "Keep versions" ticked. The folder is kept even if the
 /// history cannot be created (D13).
 #[tauri::command]
@@ -1632,6 +1667,8 @@ pub fn run() {
             window_buttons,
             window_control,
             list_apps,
+            inspect_dmg,
+            install_dmg,
             open_file,
             open_with,
             preview_text,
