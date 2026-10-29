@@ -1413,7 +1413,9 @@ function itemClasses(e: Entry, i: number): string {
   const cut = clipboard?.mode === "cut" && clipboard.paths.includes(e.path);
   const offline = e.shareStatus === "offline" || e.shareStatus === "no-access" || e.shareStatus === "missing";
   return (e.is_hidden ? " hidden-entry" : "") + (cut ? " cut" : "") + (offline ? " offline" : "") +
-    (selected.has(e.path) ? " selected" : "") + (i === cursorIndex ? " cursor" : "");
+    (selected.has(e.path) ? " selected" : "") + (i === cursorIndex ? " cursor" : "") +
+    // Striped lists (macOS theme): rows are virtualized, so :nth-child can't tell.
+    (i % 2 ? " odd" : "");
 }
 
 function listHeaderHtml(): string {

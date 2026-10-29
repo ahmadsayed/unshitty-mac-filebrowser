@@ -5,6 +5,7 @@
    ============================================================================= */
 
 @import "./themes/gnome.css";
+@import "./themes/macos.css";
 
 @font-face {
   font-family: "Adwaita Sans";
