@@ -687,9 +687,9 @@ export type FileShareView =
   | { state: "ready"; link: string; qr: string; downloads: number; sending: number | null }
   | { state: "failed"; error: string };
 
-/** Start sharing one local file with a QR code; the id names the share. */
-export async function fileSharePrepare(path: string): Promise<string> {
-  return invoke<string>("file_share_prepare", { path });
+/** Start sharing local files with one QR code; the id names the share. */
+export async function fileSharePrepare(paths: string[]): Promise<string> {
+  return invoke<string>("file_share_prepare", { paths });
 }
 
 /** Progress, link and downloads of a QR share; null once it was stopped. */
