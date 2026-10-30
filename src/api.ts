@@ -1,6 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { ProgressUpdate } from "./operations";
-import { openUrl } from "@tauri-apps/plugin-opener";
 
 export interface Entry {
   name: string;
@@ -509,7 +508,7 @@ export async function starredFiles(showHidden: boolean): Promise<Entry[]> {
 export async function openFile(path: string, tracked?: Tracked): Promise<void> {
   if (path.startsWith("gdrive://")) {
     const target = await invoke<DriveOpenTarget>("drive_open", { path, ...trackedArgs(tracked) });
-    return target.kind === "url" ? openUrl(target.url) : invoke<void>("open_file", { path: target.path });
+    return target.kind === "url" ? openExternal(target.url) : invoke<void>("open_file", { path: target.path });
   }
   if (path.startsWith("share://")) {
     const localPath = await invoke<string>("share_open", { path, ...trackedArgs(tracked) });
@@ -528,12 +527,14 @@ export type DriveOpenTarget =
 
 /** Open a URL in the default browser (used by the sign-in flow). */
 export async function openExternal(url: string): Promise<void> {
-  return openUrl(url);
+  // Through the backend, which starts the browser with the host's environment
+  // and opens only https links.
+  return invoke<void>("open_url", { url });
 }
 
 /** Open System Settings at Privacy & Security → Full Disk Access. */
 export async function openFullDiskAccessSettings(): Promise<void> {
-  return openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
+  return invoke<void>("open_url", { url: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" });
 }
 
 /** Folders pinned to the sidebar. */

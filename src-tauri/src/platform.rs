@@ -59,10 +59,25 @@ pub fn wait_or_kill_unless(
 /// ("undefined symbol"), and would hand the same libraries to the app it
 /// opens. The original values aren't kept, so the mount's entries are taken
 /// out of each list, and variables left empty are unset.
+///
+/// `own` names the variables this app set for its own webview (see
+/// `note_own_env`); they are unset too, so they don't reach other programs.
 fn host_env_changes(
     vars: impl IntoIterator<Item = (String, String)>,
+    own: &[&str],
 ) -> Vec<(String, Option<String>)> {
     let vars: Vec<(String, String)> = vars.into_iter().collect();
+    let mut changes: Vec<(String, Option<String>)> = own
+        .iter()
+        .filter(|name| vars.iter().any(|(key, _)| key == *name))
+        .map(|name| (name.to_string(), None))
+        .collect();
+    changes.extend(appimage_env_changes(&vars));
+    changes
+}
+
+/// The AppImage half of `host_env_changes`.
+fn appimage_env_changes(vars: &[(String, String)]) -> Vec<(String, Option<String>)> {
     let appdir = vars
         .iter()
         .find(|(key, _)| key == "APPDIR")
@@ -73,7 +88,7 @@ fn host_env_changes(
     };
     let inside = |entry: &str| entry == appdir || entry.starts_with(&format!("{appdir}/"));
     let mut changes = Vec::new();
-    for (key, value) in &vars {
+    for (key, value) in vars {
         if matches!(key.as_str(), "APPDIR" | "APPIMAGE" | "ARGV0") {
             changes.push((key.clone(), None));
             continue;
@@ -96,12 +111,23 @@ fn apply_env_changes(command: &mut std::process::Command, changes: Vec<(String, 
     }
 }
 
-/// Give `command` the host's environment rather than the AppImage's (see
-/// `host_env_changes`); a no-op outside an AppImage.
+/// The `WEBVIEW_ENV` variables this app set at startup, as opposed to ones
+/// the user exported (see `note_own_env`).
+static OWN_ENV: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+
+/// Remember which webview variables the app set for itself, so `host_env`
+/// keeps them away from the programs it starts. Called once, at startup.
+pub fn note_own_env(names: Vec<&'static str>) {
+    let _ = OWN_ENV.set(names);
+}
+
+/// Give `command` the host's environment rather than the AppImage's, and
+/// without the app's own webview settings (see `host_env_changes`).
 pub fn host_env(command: &mut std::process::Command) {
     let vars = std::env::vars_os()
         .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)));
-    apply_env_changes(command, host_env_changes(vars));
+    let own = OWN_ENV.get().map(Vec::as_slice).unwrap_or(&[]);
+    apply_env_changes(command, host_env_changes(vars, own));
 }
 
 /// Start an external helper (qlmanage, mdfind, gio, xdg-open) with the
@@ -320,16 +346,46 @@ fn spawn_detached(command: &mut std::process::Command) -> Result<(), String> {
 /// Launch `path` with the default application for its type.
 pub fn open_default(path: &str) -> Result<(), String> {
     fs::metadata(path).map_err(|e| e.to_string())?;
-    let opened = match launch(&mut default_open_command(path)?) {
+    open_target(path).map_err(|e| format!("Could not open with the default application: {e}"))
+}
+
+/// Open a web link in the default browser (or, on a Mac, a System Settings
+/// pane). It starts like every other helper, with the host's environment,
+/// which the webview's own opener didn't do from the AppImage. Only these
+/// links: one can never open a local file or hand text to an arbitrary app.
+pub fn open_url(url: &str) -> Result<(), String> {
+    link_allowed(url)?;
+    open_target(url).map_err(|e| format!("Could not open the link: {e}"))
+}
+
+fn link_allowed(url: &str) -> Result<(), String> {
+    let scheme = url.split_once(':').map(|(scheme, _)| scheme.to_ascii_lowercase());
+    let allowed = match scheme.as_deref() {
+        Some("https") => true,
+        Some("x-apple.systempreferences") => IS_MACOS,
+        _ => false,
+    };
+    if !allowed || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("This link can't be opened.".into());
+    }
+    Ok(())
+}
+
+/// Hand a file path or link to the platform's opener.
+fn open_target(target: &str) -> Result<(), String> {
+    let launched = launch(&mut default_open_command(target)?);
+    after_launch(launched, || spawn_detached(std::process::Command::new("xdg-open").arg(target)))
+}
+
+/// What a launch means for the caller. `fallback` starts `xdg-open`, for a
+/// Linux desktop without GLib's `gio` tool.
+fn after_launch(launched: Launch, fallback: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    match launched {
         Launch::Opened => Ok(()),
         Launch::Failed(message) => Err(message),
-        // Not every Linux desktop installs GLib's `gio` tool.
-        Launch::Missing if !IS_MACOS => {
-            spawn_detached(std::process::Command::new("xdg-open").arg(path))
-        }
+        Launch::Missing if !IS_MACOS => fallback(),
         Launch::Missing => Err("The open command is missing.".into()),
-    };
-    opened.map_err(|e| format!("Could not open with the default application: {e}"))
+    }
 }
 
 fn default_open_command(path: &str) -> Result<std::process::Command, String> {
@@ -1357,7 +1413,11 @@ mod tests {
         let terminal = tmp.path().join("gnome-terminal");
         fs::write(&terminal, "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done\nshift\nexec \"$@\"\n").unwrap();
         fs::set_permissions(&terminal, fs::Permissions::from_mode(0o700)).unwrap();
-        let mut child = spawn_helper(&mut script_terminal_command(&script, &terminal).unwrap()).unwrap();
+        let mut command = script_terminal_command(&script, &terminal).unwrap();
+        // As run_shell_script does: the wrapper's "Press Enter" read then
+        // sees EOF at once, whatever stdin the test runner has.
+        command.stdin(std::process::Stdio::null());
+        let mut child = spawn_helper(&mut command).unwrap();
         assert!(wait_or_kill(&mut child, std::time::Duration::from_secs(5)));
         assert_eq!(fs::read_to_string(folder.join("result.txt")).unwrap(), "done");
         assert!(!folder.join("INJECTED.sh").exists());
@@ -1794,7 +1854,7 @@ mod tests {
             // Another folder whose name merely starts like the mount stays.
             ("MY_TOOLS", &format!("{m}-other/bin:/opt/tools")),
         ]);
-        let mut changes = host_env_changes(env);
+        let mut changes = host_env_changes(env, &[]);
         changes.sort();
         let set = |k: &str, v: &str| (k.to_string(), Some(v.to_string()));
         let unset = |k: &str| (k.to_string(), None);
@@ -1817,8 +1877,83 @@ mod tests {
     #[test]
     fn outside_an_appimage_the_environment_is_left_alone() {
         let env = vars(&[("PATH", "/usr/bin"), ("LD_LIBRARY_PATH", "/opt/lib")]);
-        assert!(host_env_changes(env).is_empty());
-        assert!(host_env_changes(vars(&[("APPDIR", ""), ("PATH", "/usr/bin")])).is_empty());
+        assert!(host_env_changes(env, &[]).is_empty());
+        assert!(host_env_changes(vars(&[("APPDIR", ""), ("PATH", "/usr/bin")]), &[]).is_empty());
+    }
+
+    #[test]
+    fn the_apps_own_webview_settings_dont_reach_opened_programs() {
+        let env = || vars(&[("WEBKIT_DISABLE_DMABUF_RENDERER", "1"), ("PATH", "/usr/bin")]);
+        // Set by the app for its own webview: other programs don't get it.
+        assert_eq!(
+            host_env_changes(env(), &["WEBKIT_DISABLE_DMABUF_RENDERER"]),
+            [("WEBKIT_DISABLE_DMABUF_RENDERER".to_string(), None)]
+        );
+        // Exported by the user before launching: theirs, so it stays.
+        assert!(host_env_changes(env(), &[]).is_empty());
+        // Noted but not present (nothing to remove).
+        assert!(host_env_changes(vars(&[("PATH", "/usr/bin")]), &["WEBKIT_DISABLE_DMABUF_RENDERER"]).is_empty());
+    }
+
+    #[test]
+    fn links_open_only_over_https_or_into_mac_settings() {
+        for url in ["https://github.com/a/b/releases/tag/v1", "HTTPS://accounts.google.com/o/oauth2?x=1&y=%20"] {
+            assert_eq!(link_allowed(url), Ok(()), "{url}");
+        }
+        for url in [
+            "http://example.com",
+            "file:///etc/passwd",
+            "/etc/passwd",
+            "javascript:alert(1)",
+            "smb://server/share",
+            "-h",
+            "",
+            "https://example.com/a b",
+            "https://example.com/\nx",
+        ] {
+            assert!(link_allowed(url).is_err(), "{url}");
+        }
+        let settings = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+        assert_eq!(link_allowed(settings).is_ok(), IS_MACOS);
+    }
+
+    #[test]
+    fn a_launch_result_becomes_opened_an_error_or_the_fallback() {
+        let fallback_ran = std::cell::Cell::new(false);
+        let fallback = || {
+            fallback_ran.set(true);
+            Ok(())
+        };
+        assert_eq!(after_launch(Launch::Opened, fallback), Ok(()));
+        assert_eq!(after_launch(Launch::Failed("no app".into()), fallback), Err("no app".into()));
+        assert!(!fallback_ran.get());
+        let missing = after_launch(Launch::Missing, fallback);
+        if IS_MACOS {
+            assert_eq!(missing, Err("The open command is missing.".into()));
+        } else {
+            // No gio: xdg-open is tried instead.
+            assert_eq!(missing, Ok(()));
+            assert!(fallback_ran.get());
+        }
+    }
+
+    #[test]
+    fn a_refused_link_starts_nothing() {
+        let error = open_url("file:///etc/passwd").unwrap_err();
+        assert_eq!(error, "This link can't be opened.");
+    }
+
+    #[test]
+    fn links_open_with_the_platform_handler() {
+        let url = "https://github.com/ahmadsayed/unshitty-mac-filebrowser/releases";
+        let command = default_open_command(url).unwrap();
+        let args: Vec<_> = command.get_args().collect();
+        if IS_MACOS {
+            assert_eq!((command.get_program(), args), (std::ffi::OsStr::new("open"), vec![std::ffi::OsStr::new(url)]));
+        } else if cfg!(target_os = "linux") {
+            assert_eq!(command.get_program(), "gio");
+            assert_eq!(args, [std::ffi::OsStr::new("open"), std::ffi::OsStr::new(url)]);
+        }
     }
 
     #[test]

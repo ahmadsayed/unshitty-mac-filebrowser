@@ -455,6 +455,13 @@ async fn open_file(path: String) -> Result<(), String> {
     blocking(move || platform::open_default(&path)).await?
 }
 
+/// Open a web link (or, on a Mac, the Full Disk Access settings) through the
+/// same launcher as files, so it gets the host's environment.
+#[tauri::command]
+async fn open_url(url: String) -> Result<(), String> {
+    blocking(move || platform::open_url(&url)).await?
+}
+
 #[tauri::command]
 async fn open_with(path: String, app: String) -> Result<(), String> {
     blocking(move || platform::open_with(&path, &app)).await?
@@ -1795,10 +1802,13 @@ fn restart_app(app: tauri::AppHandle, registry: tauri::State<progress::Registry>
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    for (key, value) in platform::webview_env_to_set(|k| std::env::var_os(k).is_some()) {
+    let own_env = platform::webview_env_to_set(|k| std::env::var_os(k).is_some());
+    for (key, value) in &own_env {
         // SAFETY: still single-threaded; Tauri and the webview start below.
         unsafe { std::env::set_var(key, value) };
     }
+    // Ours, for our webview only: programs we start don't inherit them.
+    platform::note_own_env(own_env.iter().map(|(key, _)| *key).collect());
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_drag::init())
@@ -1882,6 +1892,7 @@ pub fn run() {
             install_appimage,
             run_shell_script,
             open_file,
+            open_url,
             open_with,
             preview_text,
             rename_many,

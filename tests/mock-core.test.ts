@@ -129,6 +129,17 @@ test("open_file accepts local and downloaded files and reports missing handlers"
   await expect(invoke("open_file", { path: `${HOME}/nope.png` })).rejects.toMatch(/No such file/);
 });
 
+test("open_url opens https links and the Mac settings link, nothing else", async () => {
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  expect(await invoke("open_url", { url: "https://github.com/a/b/releases" })).toBeUndefined();
+  expect(await invoke("open_url", { url: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" })).toBeUndefined();
+  for (const url of ["http://example.com", "file:///etc/passwd", "javascript:alert(1)", "https://a b"]) {
+    await expect(invoke("open_url", { url })).rejects.toMatch(/can't be opened/);
+  }
+  expect(log).toHaveBeenCalledTimes(2);
+  log.mockRestore();
+});
+
 test("window buttons follow the button layout; window_control toggles maximize", async () => {
   const globals = globalThis as { __mockButtonLayout?: string };
   expect(await invoke("window_buttons")).toEqual({ start: [], end: [] }); // a Mac
