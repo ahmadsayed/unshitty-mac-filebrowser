@@ -72,7 +72,14 @@ strip = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ssh2 = "0.9"
+# Already linked through Tauri; used for the icon theme and file icons.
+gio = "0.18"
+gtk = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 xattr = "1"
+# Already linked through Tauri; used to draw Finder's file icons.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphicsContext", "NSGraphics", "objc2-core-foundation"] }
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
