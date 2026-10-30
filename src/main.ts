@@ -28,10 +28,10 @@ import {
   type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
-import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, setIconTheme, sym, type FileKind, type FolderKind } from "./icons";
+import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
-import { LAYOUT_SIZES, resolveTheme, themeChoice, type Theme, type ThemeChoice } from "./theme";
+import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { checkForUpdates } from "./updates";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
@@ -58,7 +58,6 @@ const prefs = {
   gridZoom: 2,
   listZoom: 1,
   showThumbnails: true,
-  theme: "auto" as ThemeChoice,
 };
 
 function loadPrefs(): void {
@@ -69,9 +68,10 @@ function loadPrefs(): void {
     /* defaults */
   }
   Object.assign(prefs, saved);
-  prefs.theme = themeChoice(prefs.theme);
+  // Older versions saved a theme choice; the theme now follows the platform.
+  delete (prefs as Record<string, unknown>).theme;
   // A fresh start uses the theme's icon size; a zoom the user chose is kept.
-  if (typeof saved?.gridZoom !== "number") prefs.gridZoom = LAYOUT_SIZES[resolveTheme(prefs.theme, isMac)].gridZoom;
+  if (typeof saved?.gridZoom !== "number") prefs.gridZoom = LAYOUT_SIZES[currentTheme].gridZoom;
 }
 
 function savePrefs(): void {
@@ -183,6 +183,7 @@ let mountedVolumes: { name: string; path: string }[] = [];
 const folderKinds = new Map<string, FolderKind>();
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
+const currentTheme: Theme = platformTheme(isMac);
 const MOD = isMac ? "⌘" : "Ctrl+";
 
 // ---------------------------------------------------------------------------
@@ -1700,67 +1701,12 @@ function scrollToIndex(i: number): void {
 }
 
 // ---------------------------------------------------------------------------
-// Themes (src/theme.ts): the look only, chosen in the main menu
+// Themes (src/theme.ts): the look only, picked by the platform
 // ---------------------------------------------------------------------------
 
-let currentTheme: Theme = "gnome";
-
-/** Show the theme `prefs.theme` resolves to. CSS restyles everything at
- *  once; the view is laid out again, since row sizes differ, with the same
- *  first fully visible item at the top. */
+/** Show the platform's theme: CSS restyles everything from `data-theme`. */
 function applyTheme(): void {
-  const theme = resolveTheme(prefs.theme, isMac);
-  const root = document.documentElement;
-  if (theme === currentTheme && root.dataset.theme === theme) return;
-  const first = itemsLayer ? firstFullyVisible() : 0;
-  currentTheme = theme;
-  root.dataset.theme = theme;
-  setIconTheme(theme);
-  if (!itemsLayer) return;
-  relayout();
-  if (scrollEl.scrollTop > 0) scrollEl.scrollTop = layout.bodyTop + itemPos(first).y - layout.padY;
-  renderWindow(true);
-}
-
-/** Index of the first item whose row is entirely in view. */
-function firstFullyVisible(): number {
-  const pitch = layout.itemH + layout.gap;
-  if (pitch <= 0) return 0;
-  const top = scrollEl.scrollTop - layout.bodyTop - layout.padY;
-  return Math.min(Math.max(0, Math.ceil(top / pitch)) * layout.cols, Math.max(0, shown.length - 1));
-}
-
-function chooseTheme(choice: ThemeChoice): void {
-  prefs.theme = choice;
-  savePrefs();
-  applyTheme();
-}
-
-const THEME_LABELS: [ThemeChoice, string][] = [["auto", "Automatic"], ["gnome", "GNOME"], ["macos", "macOS"]];
-
-function themeMenuItems(): MenuItem[] {
-  return [
-    { heading: "Theme" },
-    ...THEME_LABELS.map(([choice, label]) => ({ label, radio: prefs.theme === choice, action: () => chooseTheme(choice) })),
-  ];
-}
-
-/** Another window saved its preferences: follow its theme. Only the theme:
- *  this window keeps its own view, sorting and hidden-files state. */
-function onPrefsChanged(event: StorageEvent): void {
-  if (event.key !== "prefs" || event.newValue === null) return;
-  let saved: { theme?: unknown };
-  try {
-    saved = JSON.parse(event.newValue) ?? {};
-  } catch {
-    return;
-  }
-  const choice = themeChoice(saved.theme);
-  if (choice === prefs.theme) return;
-  prefs.theme = choice;
-  if (resolveTheme(choice, isMac) === currentTheme) return;
-  closePopover();
-  applyTheme();
+  document.documentElement.dataset.theme = currentTheme;
 }
 
 function applyZoom(): void {
@@ -2799,8 +2745,6 @@ function openMainMenu(anchor: HTMLElement): void {
     { separator: true },
     { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
     { label: "Show Thumbnails", check: prefs.showThumbnails, action: toggleThumbnails },
-    { separator: true },
-    ...themeMenuItems(),
     { separator: true },
     { label: "Keyboard Shortcuts", action: showShortcuts },
     { label: "Check for Updates…", action: checkForUpdates },
@@ -5311,7 +5255,6 @@ function showMaximized(maximized: boolean): void {
 async function init(): Promise<void> {
   loadPrefs();
   applyTheme();
-  window.addEventListener("storage", onPrefsChanged);
   installIconSprite(currentTheme);
   if (isMac) document.documentElement.classList.add("platform-mac");
   void setupWindowButtons();
