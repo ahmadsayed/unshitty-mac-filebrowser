@@ -12,8 +12,10 @@
 # pushed tag. Actions are pinned to commits; the comment names the version.
 #
 # Secrets: TAURI_SIGNING_PRIVATE_KEY and its _PASSWORD sign the packages
-# Check for Updates installs (HUMANS.md); without them the build still works,
-# just without latest.json. Google Drive users bring their own OAuth client
+# Check for Updates installs (HUMANS.md). Without them a tag push fails at
+# "Write latest.json" rather than draft a release no installed copy could
+# update from; other runs still build, just without latest.json. Google
+# Drive users bring their own OAuth client
 # (docs/google-drive.md). macOS builds are ad-hoc signed, not notarized.
 name: Release
 
@@ -174,10 +176,11 @@ jobs:
             package.json
           sparse-checkout-cone-mode: false
 
-      # Check for Updates reads this from the newest published release.
+      # Check for Updates reads this from the newest published release. A tag
+      # push publishes a release users update from, so there it must be signed.
       - name: Write latest.json
         working-directory: source
-        run: node scripts/updater-manifest.mjs ../packages ../packages/latest.json
+        run: node scripts/updater-manifest.mjs ${{ github.ref_type == 'tag' && '--require-signed' || '' }} ../packages ../packages/latest.json
 
       - name: Draft the release
         env:

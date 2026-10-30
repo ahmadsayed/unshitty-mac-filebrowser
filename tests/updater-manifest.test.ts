@@ -1,7 +1,7 @@
 // latest.json for Check for Updates, written by the release workflow from the
 // signed packages (scripts/updater-manifest.mjs).
 import { expect, test } from "vitest";
-import { buildManifest } from "../scripts/updater-manifest.mjs";
+import { buildManifest, unsignedOutcome } from "../scripts/updater-manifest.mjs";
 
 const opts = { version: "0.5.4", tag: "v0.5.4", repo: "o/r", notes: "See the release page.", pubDate: "2026-11-01T10:00:00Z" };
 const sigOf = (path: string) => `sig of ${path.split("/").pop()}`;
@@ -46,4 +46,17 @@ test("an incomplete set fails instead of shipping a partial manifest", () => {
   expect(() =>
     buildManifest([...appImage, "b/File Browser.app.tar.gz.sig"], sigOf, opts)
   ).toThrow(/File Browser\.app\.tar\.gz\b/);
+});
+
+test("a tag release without signatures fails; other runs only say so", () => {
+  // Pushing a tag publishes a release users update from: no latest.json would
+  // make every installed copy say "Could not check for updates".
+  const tag = unsignedOutcome(true);
+  expect(tag.exitCode).toBe(1);
+  expect(tag.message).toMatch(/TAURI_SIGNING_PRIVATE_KEY/);
+  // A manual run or a pull request may build without the key.
+  expect(unsignedOutcome(false)).toEqual({
+    exitCode: 0,
+    message: "No signed packages: no latest.json (the signing key secret isn't set).",
+  });
 });

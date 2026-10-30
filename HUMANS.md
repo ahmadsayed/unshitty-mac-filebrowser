@@ -88,8 +88,10 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 Keep `~/.tauri/filebrowser.key` and its password backed up (a password
 manager or an encrypted drive). If either is lost, installed copies can't
 update any more: everyone has to reinstall by hand once a new key is in
-`tauri.conf.json`. Agents never touch the private key. Without the secrets the
-Release workflow still builds, just without `latest.json`.
+`tauri.conf.json`. Agents never touch the private key. Without the secrets a
+tag push fails at "Write latest.json" instead of drafting a release that
+installed copies couldn't update from; a manual or pull-request run still
+builds, just without `latest.json`.
 
 ## Where things are
 
