@@ -38,6 +38,7 @@ import { checkForUpdates } from "./updates";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
 import { macDmgItems } from "./mac-dmg";
 import { linuxProgramItems } from "./linux-programs";
+import { qrShareItems } from "./qr-share";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
@@ -2653,6 +2654,7 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
     ...(app ? [{ label: "Show Package Contents", action: () => navigate(app.path) }] : []),
     ...(intoFolder ? [bookmarkMenuItem(intoFolder.path)] : []),
     ...(shareable ? [{ label: "Share…", action: () => void showShareDialog(intoFolder) }] : []),
+    ...qrShareItems(single, !inTrash()),
     { separator: true },
     ...cutCopyItems(),
     ...(intoFolder ? [{ label: "Paste Into Folder", disabled: !clipboard, action: () => paste(intoFolder.path) }] : []),

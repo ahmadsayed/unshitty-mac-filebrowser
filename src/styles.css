@@ -2039,6 +2039,48 @@ kbd {
   overflow: hidden;
 }
 
+/* Share with QR Code: the code, a hint, the link and what phones did. */
+.qr-share {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.qr-share-code {
+  width: 240px;
+  height: 240px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-button);
+  overflow: hidden;
+  background: var(--fill);
+}
+
+.qr-share-code[hidden] { display: none; }
+.qr-share-placeholder { width: 160px; }
+.qr-share-image { display: block; width: 100%; height: 100%; }
+.qr-share-hint { margin: 0; text-align: center; opacity: var(--dim); }
+.qr-share-hint[hidden] { display: none; }
+
+.qr-share-link {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+
+.qr-share-link[hidden] { display: none; }
+.qr-share-link .entry { flex: 1; }
+
+.qr-share-status {
+  margin: 0;
+  min-height: 1.4em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.qr-share-status.error { color: var(--destructive); }
+
 /* Check for Updates: the download's progress under its text. */
 .update-bar { margin-top: 8px; }
 

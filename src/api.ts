@@ -681,6 +681,27 @@ export async function cancelThumbnails(tickets: number[]): Promise<void> {
   return invoke<void>("cancel_thumbnails", { tickets });
 }
 
+/** A QR share as its dialog shows it (`file_share_status`). */
+export type FileShareView =
+  | { state: "preparing"; progress: number }
+  | { state: "ready"; link: string; qr: string; downloads: number; sending: number | null }
+  | { state: "failed"; error: string };
+
+/** Start sharing one local file with a QR code; the id names the share. */
+export async function fileSharePrepare(path: string): Promise<string> {
+  return invoke<string>("file_share_prepare", { path });
+}
+
+/** Progress, link and downloads of a QR share; null once it was stopped. */
+export async function fileShareStatus(id: string): Promise<FileShareView | null> {
+  return invoke<FileShareView | null>("file_share_status", { id });
+}
+
+/** Stop a QR share. */
+export async function fileShareStop(id: string): Promise<void> {
+  return invoke<void>("file_share_stop", { id });
+}
+
 /** The icon id the OS has for each path, or null where the app draws its own. */
 export async function iconIds(paths: string[]): Promise<(string | null)[]> {
   return invoke<(string | null)[]>("icon_ids", { paths });

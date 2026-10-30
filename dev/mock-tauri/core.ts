@@ -982,6 +982,52 @@ function measure(paths: string[]): { bytes: number; items: number } {
   return total;
 }
 
+// QR shares: preparing at the first status call, ready from the next one.
+// Tests play the phone through `fileShareMock` (downloads, a running one).
+interface MockFileShare {
+  path: string;
+  polls: number;
+  downloads: number;
+  sending: number | null;
+  error?: string;
+}
+export const fileShareMock = {
+  shares: new Map<string, MockFileShare>(),
+  next: 1,
+};
+
+/** A small stand-in for a QR code: a finder pattern in each corner. */
+const MOCK_QR =
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29"><rect width="29" height="29" fill="#fff"/>` +
+  [[2, 2], [20, 2], [2, 20]].map(([x, y]) =>
+    `<rect x="${x}" y="${y}" width="7" height="7" fill="#000"/><rect x="${x + 1}" y="${y + 1}" width="5" height="5" fill="#fff"/><rect x="${x + 2}" y="${y + 2}" width="3" height="3" fill="#000"/>`).join("") +
+  `<path d="M11 3h2v2h-2zM14 5h3v2h-3zM11 11h7v2h-7zM12 15h2v4h-2zM16 14h3v3h-3zM20 12h4v2h-4zM22 16h3v6h-3zM12 22h6v2h-6zM19 24h4v2h-4z" fill="#000"/></svg>`;
+
+function prepareFileShare(path: string): string {
+  if (/^(gdrive|share|sftp):\/\//.test(path)) throw "Only files on this computer can be shared with a QR code.";
+  const node = lookup(path);
+  if (!node) throw "No such file or directory (os error 2)";
+  if (node.dir) throw "Only files can be shared with a QR code.";
+  const id = `qr-${fileShareMock.next++}`;
+  fileShareMock.shares.set(id, { path, polls: 0, downloads: 0, sending: null });
+  return id;
+}
+
+function fileShareStatus(id: string): unknown {
+  const share = fileShareMock.shares.get(id);
+  if (!share) return null;
+  share.polls++;
+  if (share.error) return { state: "failed", error: share.error };
+  if (share.polls === 1) return { state: "preparing", progress: 0.5 };
+  return {
+    state: "ready",
+    link: `https://example.invalid/get/#${id}`,
+    qr: MOCK_QR,
+    downloads: share.downloads,
+    sending: share.sending,
+  };
+}
+
 // Icons from the OS: the preview has none (the app draws its own, as for
 // remote places), unless a test turns them on. Then folders and files share
 // one icon per type and apps get their own, like Finder's; every request is
@@ -1857,6 +1903,9 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     nativeIconMock.log.ids.push(paths);
     return paths.map(mockIconId);
   },
+  file_share_prepare: (a) => prepareFileShare(str(a, "path")),
+  file_share_status: (a) => fileShareStatus(str(a, "id")),
+  file_share_stop: (a) => void fileShareMock.shares.delete(str(a, "id")),
   // Apps are their .app bundles, as on a Mac.
   app_icon_ids: (a) => {
     const apps = a.apps as string[];

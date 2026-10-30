@@ -61,6 +61,12 @@ gh pr checkout <n>              # try a PR's branch locally
   programs, the agent asks you to try the installed app, saying exactly what
   to do and what you should see.
 
+- **Phones.** Share with QR Code… downloads on a phone through a page on
+  GitHub Pages. Turn Pages on once (Settings → Pages → Source: GitHub
+  Actions); the File page workflow publishes it from `main`, or by hand.
+  Before that, `web/file-get/serve.sh` serves the page from your computer
+  to a phone on the same Wi-Fi, and prints how to start the app.
+
 ## Releases
 
 1. Ask: "release 0.5.2". The agent opens a `chore: release 0.5.2` PR; you
@@ -97,5 +103,6 @@ builds, just without `latest.json`.
 
 - `.worktrees/` holds the agents' task folders (ignored by git).
 - The `captures` branch holds PR screenshots; it never merges into `main`.
+- `web/file-get/` is the phone page for QR shares (GitHub Pages).
 - `docs/linux-appimage.md` and `scripts/install-linux-appimage.sh` install
   the AppImage for GNOME.

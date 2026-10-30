@@ -1,5 +1,8 @@
-//! Read-only folder sharing over iroh.
+//! Read-only folder sharing over iroh, and one file at a time to a phone
+//! through a QR code (`file_share`).
 
+pub mod file_link;
+pub mod file_share;
 pub mod guest;
 pub mod host;
 pub mod identity;

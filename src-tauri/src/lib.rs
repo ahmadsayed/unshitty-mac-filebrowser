@@ -1312,6 +1312,35 @@ async fn thumbnail(
     tauri::ipc::Response::new(png)
 }
 
+/// Start sharing one local file with a QR code; the id names the share for
+/// `file_share_status` and `file_share_stop`. See `share::file_share`.
+#[tauri::command]
+async fn file_share_prepare(
+    window: tauri::WebviewWindow,
+    shares: tauri::State<'_, share::file_share::FileShares>,
+    path: String,
+) -> Result<String, String> {
+    if cloud::is_cloud(&path) || share::location::is_share(&path) || sftp::is_sftp(&path) {
+        return Err("Only files on this computer can be shared with a QR code.".into());
+    }
+    shares.prepare(Path::new(&path), window.label())
+}
+
+/// Progress, link and downloads of a QR share; None once it was stopped.
+#[tauri::command]
+fn file_share_status(
+    shares: tauri::State<'_, share::file_share::FileShares>,
+    id: String,
+) -> Option<share::file_share::View> {
+    shares.status(&id)
+}
+
+/// Stop a QR share: phones that ask afterwards are told it ended.
+#[tauri::command]
+fn file_share_stop(shares: tauri::State<'_, share::file_share::FileShares>, id: String) {
+    shares.stop(&id);
+}
+
 /// The icon id the OS has for each path (None: the app draws its own icon);
 /// see `file_icons`. Remote locations have none.
 #[tauri::command]
@@ -1909,6 +1938,15 @@ pub fn run() {
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(UpdateState::default())
+        // A closed window's QR shares stop with it, even if its page had no
+        // time to say so.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                if let Some(shares) = window.try_state::<share::file_share::FileShares>() {
+                    shares.stop_window(window.label());
+                }
+            }
+        })
         .setup(|app| {
             let config_dir = share::identity::config_dir_override().unwrap_or_else(|| {
                 app.path()
@@ -1925,6 +1963,10 @@ pub fn run() {
             app.manage(thumbnails::Requests::default());
             app.manage(file_icons::Icons::new(Some(home.clone()), desktop_icon_theme()));
             app.manage(Searches::default());
+            app.manage(share::file_share::FileShares::new(
+                std::env::var("FILEBROWSER_FILE_PAGE").ok(),
+                std::env::var("FILEBROWSER_RELAY").ok(),
+            ));
             app.manage(CloudState::new(&config_dir));
             app.manage(sftp::SftpState::new(
                 config_dir.join("sftp_known_hosts"),
@@ -2030,6 +2072,9 @@ pub fn run() {
             cancel_thumbnails,
             icon_ids,
             app_icon_ids,
+            file_share_prepare,
+            file_share_status,
+            file_share_stop,
             icon_image,
             volumes,
             drive_accounts,

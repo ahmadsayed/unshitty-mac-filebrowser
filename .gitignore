@@ -16,3 +16,4 @@ coverage/
 .env
 .env.*
 !.env.example
+web/file-get/target/

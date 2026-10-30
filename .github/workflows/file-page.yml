@@ -1,0 +1,60 @@
+# The page a phone opens from a "Share with QR Code…" link (web/file-get):
+# built on every change, published to GitHub Pages from main or by hand.
+# Pages must be turned on once: Settings → Pages → Source: GitHub Actions.
+name: File page
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/file-get/**"
+      - "src-tauri/src/share/file_link.rs"
+      - ".github/workflows/file-page.yml"
+  pull_request:
+    paths:
+      - "web/file-get/**"
+      - "src-tauri/src/share/file_link.rs"
+      - ".github/workflows/file-page.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: file-page-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: web/file-get
+      - name: Install wasm-bindgen
+        run: |
+          version=$(grep -A1 '^name = "wasm-bindgen"$' web/file-get/Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')
+          cargo install --locked wasm-bindgen-cli --version "$version"
+      - name: Build the page
+        run: web/file-get/build.sh
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: web/file-get/dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
