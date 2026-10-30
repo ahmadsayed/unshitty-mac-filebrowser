@@ -113,7 +113,8 @@ if (!ticket) {
     if (typeof WebAssembly !== "object") throw new Error("This browser can't download shared files. Try another browser.");
     await init();
     const size = ticket_size(ticket);
-    $("size").textContent = formatSize(size);
+    // The file is kept in memory until it is saved.
+    $("size").textContent = size > 1e9 ? `${formatSize(size)} · the phone needs that much free memory` : formatSize(size);
     show({ status: "", buttons: ["start"] });
   } catch (err) {
     show({ status: messageOf(err), error: true });
