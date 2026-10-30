@@ -690,7 +690,7 @@ test("install_update downloads with progress, installs, and allows one at a time
   await vi.waitFor(() => expect(mockUpdate().installed()).toBe(0));
   await new Promise((r) => setTimeout(r, 20));
   await expect(invoke("install_update", { onProgress: new Channel() })).rejects.toEqual({
-    kind: "failed",
+    kind: "busy",
     detail: "An update is already being installed.",
   });
   mockUpdate().step(23_400_000);
@@ -699,6 +699,10 @@ test("install_update downloads with progress, installs, and allows one at a time
   expect(seen[0]).toEqual({ phase: "downloading", downloaded: 23_400_000, total: 91_400_000 });
   expect(seen.at(-1)?.phase).toBe("installing");
   expect(mockUpdate().installed()).toBe(1);
+  // Installed and waiting for a restart: the next check says so.
+  expect(await invoke("check_update")).toMatchObject({ latest: "0.5.4", restart_pending: true });
+  mockUpdate().set({ latest: "0.5.5" });
+  expect(await invoke("check_update")).toMatchObject({ latest: "0.5.5", restart_pending: false });
 });
 
 test("install_update is refused on a package install", async () => {

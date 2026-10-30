@@ -1641,7 +1641,23 @@ struct UpdateState {
     guard: updates::InstallGuard,
     pending: Mutex<Option<tauri_plugin_updater::Update>>,
     /// Whether Cancel may still stop the install (see `DownloadControl`).
-    download: Mutex<updates::DownloadControl<tokio::task::AbortHandle>>,
+    download: Mutex<updates::DownloadControl<DownloadStop>>,
+    /// The window whose Download and Install is running: only its Cancel
+    /// stops it.
+    owner: Mutex<Option<String>>,
+    /// The version installed in this run, waiting for a restart.
+    installed: Mutex<Option<String>>,
+}
+
+/// Stops a download running on a blocking thread (`cancel_update`). A stop
+/// that comes before the download waits for it still counts.
+#[derive(Clone, Default)]
+struct DownloadStop(std::sync::Arc<tokio::sync::Notify>);
+
+impl DownloadStop {
+    fn abort(&self) {
+        self.0.notify_one();
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -1650,6 +1666,8 @@ struct UpdateInfo {
     latest: Option<String>,
     kind: updates::InstallKind,
     release_url: String,
+    /// `latest` is already installed and waits for a restart.
+    restart_pending: bool,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -1675,7 +1693,11 @@ fn failure_from(e: tauri_plugin_updater::Error) -> updates::Failure {
     let source = match &e {
         E::Reqwest(r) => FailureSource::Network { connect: r.is_connect() || r.is_timeout() },
         E::Network(_) => FailureSource::Network { connect: false },
-        E::Minisign(_) | E::Base64(_) | E::SignatureUtf8(_) | E::MissingSignedVersion => FailureSource::Signature,
+        E::Minisign(_)
+        | E::Base64(_)
+        | E::SignatureUtf8(_)
+        | E::MissingSignedVersion
+        | E::SignedVersionMismatch { .. } => FailureSource::Signature,
         E::Io(io) => FailureSource::Io(io.kind()),
         _ => FailureSource::Other,
     };
@@ -1693,7 +1715,9 @@ async fn check_update(
     let found = app.updater().map_err(failure_from)?.check().await.map_err(failure_from)?;
     let latest = found.as_ref().map(|update| update.version.clone());
     *state.pending.lock().unwrap() = found;
+    let restart_pending = updates::restart_pending(state.installed.lock().unwrap().as_deref(), latest.as_deref());
     Ok(UpdateInfo {
+        restart_pending,
         current: app.package_info().version.to_string(),
         release_url: match &latest {
             Some(version) => format!("{RELEASES_URL}/tag/v{version}"),
@@ -1708,6 +1732,7 @@ async fn check_update(
 /// download can be cancelled; installing, once started, runs to the end.
 #[tauri::command]
 async fn install_update(
+    window: tauri::Window,
     state: tauri::State<'_, UpdateState>,
     on_progress: Channel<UpdateProgress>,
 ) -> Result<(), updates::Failure> {
@@ -1717,12 +1742,19 @@ async fn install_update(
     let Some(update) = state.pending.lock().unwrap().clone() else {
         return Err(update_failed("No update to install."));
     };
-    if !state.guard.try_start() {
-        return Err(update_failed("An update is already being installed."));
-    }
+    let Some(_installing) = state.guard.try_start() else {
+        return Err(updates::Failure {
+            kind: updates::FailureKind::Busy,
+            detail: "An update is already being installed.".into(),
+        });
+    };
+    *state.owner.lock().unwrap() = Some(window.label().to_string());
     state.download.lock().unwrap().reset();
+    let version = update.version.clone();
     let result = download_then_install(&state, update, on_progress).await;
-    state.guard.finish();
+    if result.is_ok() {
+        *state.installed.lock().unwrap() = Some(version);
+    }
     result
 }
 
@@ -1733,22 +1765,26 @@ async fn download_then_install(
 ) -> Result<(), updates::Failure> {
     let sender = on_progress.clone();
     let fetch = update.clone();
-    let task = tokio::spawn(async move {
-        let mut downloaded = 0u64;
-        fetch
-            .download(
+    let stop = DownloadStop::default();
+    if let Some(cancelled) = state.download.lock().unwrap().started(stop.clone()) {
+        cancelled.abort();
+    }
+    // On the blocking pool: `download` verifies the whole package's
+    // signature when the bytes are in, which is long CPU work.
+    let joined = blocking(move || {
+        tauri::async_runtime::block_on(async move {
+            let mut downloaded = 0u64;
+            let download = fetch.download(
                 |chunk, total| {
                     downloaded += chunk as u64;
                     let _ = sender.send(UpdateProgress { phase: "downloading", downloaded, total });
                 },
                 || {},
-            )
-            .await
-    });
-    if let Some(cancelled) = state.download.lock().unwrap().started(task.abort_handle()) {
-        cancelled.abort();
-    }
-    let joined = task.await;
+            );
+            updates::until_stopped(download, &stop.0).await
+        })
+    })
+    .await;
     // A Cancel that came after the bytes arrived must still stop the install.
     if !state.download.lock().unwrap().finished() {
         return Err(update_failed(progress::CANCELLED));
@@ -1759,25 +1795,28 @@ async fn download_then_install(
     blocking(move || update.install(bytes))
         .await
         .map_err(|e| update_failed(&e))?
-        .map_err(failure_from)
+        .map_err(|e| updates::while_installing(failure_from(e)))
 }
 
-/// The download task's result: its bytes, its error, or "Cancelled." when
-/// `cancel_update` aborted it.
+/// The download's result: its bytes, its error, or "Cancelled." when
+/// `cancel_update` stopped it (`None`).
 fn downloaded_bytes(
-    joined: Result<Result<Vec<u8>, tauri_plugin_updater::Error>, tokio::task::JoinError>,
+    joined: Result<Option<Result<Vec<u8>, tauri_plugin_updater::Error>>, String>,
 ) -> Result<Vec<u8>, updates::Failure> {
     match joined {
-        Ok(result) => result.map_err(failure_from),
-        Err(e) if e.is_cancelled() => Err(update_failed(progress::CANCELLED)),
-        Err(e) => Err(update_failed(&e.to_string())),
+        Ok(Some(result)) => result.map_err(failure_from),
+        Ok(None) => Err(update_failed(progress::CANCELLED)),
+        Err(e) => Err(update_failed(&e)),
     }
 }
 
 /// Cancel the install unless installing already started; until then nothing
-/// has been changed on disk.
+/// has been changed on disk. Only the window that started it can.
 #[tauri::command]
-fn cancel_update(state: tauri::State<UpdateState>) {
+fn cancel_update(window: tauri::Window, state: tauri::State<UpdateState>) {
+    if state.owner.lock().unwrap().as_deref() != Some(window.label()) {
+        return;
+    }
     if let Some(download) = state.download.lock().unwrap().cancel() {
         download.abort();
     }
@@ -1988,6 +2027,8 @@ mod update_tests {
         assert_eq!(kind(io(std::io::ErrorKind::PermissionDenied)), FailureKind::NoPermission);
         assert_eq!(kind(io(std::io::ErrorKind::NotFound)), FailureKind::Failed);
         assert_eq!(kind(E::MissingSignedVersion), FailureKind::Unverified);
+        let mismatch = E::SignedVersionMismatch { signed: "0.5.3".into(), announced: "0.6.0".into() };
+        assert_eq!(kind(mismatch), FailureKind::Unverified);
         assert_eq!(kind(E::SignatureUtf8("x".into())), FailureKind::Unverified);
         assert_eq!(kind(E::Network("reset".into())), FailureKind::Failed);
         assert_eq!(kind(E::ReleaseNotFound), FailureKind::Failed);
@@ -1997,22 +2038,38 @@ mod update_tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_finished_download_hands_over_its_bytes() {
-        let done = tokio::spawn(async { Ok::<_, E>(vec![1u8, 2, 3]) }).await;
-        assert_eq!(downloaded_bytes(done).unwrap(), vec![1, 2, 3]);
-        let failed = tokio::spawn(async { Err::<Vec<u8>, _>(E::Network("reset".into())) }).await;
-        assert_eq!(downloaded_bytes(failed).unwrap_err().detail, "`reset`");
+    #[test]
+    fn a_finished_download_hands_over_its_bytes() {
+        assert_eq!(downloaded_bytes(Ok(Some(Ok(vec![1u8, 2, 3])))).unwrap(), vec![1, 2, 3]);
+        let failed = downloaded_bytes(Ok(Some(Err(E::Network("reset".into()))))).unwrap_err();
+        assert_eq!(failed.detail, "`reset`");
+        let lost = downloaded_bytes(Err("Background task failed: panicked".into())).unwrap_err();
+        assert_eq!((lost.kind, lost.detail.as_str()), (FailureKind::Failed, "Background task failed: panicked"));
+    }
+
+    #[test]
+    fn a_download_can_run_on_the_blocking_pool() {
+        // install_update's pattern: block_on inside blocking(…), which must
+        // not panic as it would on an async worker.
+        let stop = DownloadStop::default();
+        let signal = stop.clone();
+        let result = tauri::async_runtime::block_on(blocking(move || {
+            tauri::async_runtime::block_on(updates::until_stopped(async { vec![1u8] }, &signal.0))
+        }));
+        assert_eq!(result, Ok(Some(vec![1u8])));
+        stop.abort();
+        let stopped = tauri::async_runtime::block_on(blocking(move || {
+            tauri::async_runtime::block_on(updates::until_stopped(std::future::pending::<u8>(), &stop.0))
+        }));
+        assert_eq!(stopped, Ok(None));
     }
 
     #[tokio::test]
-    async fn a_cancelled_download_reports_cancelled() {
-        let task = tokio::spawn(async {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            Ok::<_, E>(Vec::new())
-        });
-        task.abort();
-        let failure = downloaded_bytes(task.await).unwrap_err();
+    async fn a_stopped_download_reports_cancelled() {
+        let stop = DownloadStop::default();
+        stop.abort();
+        let stopped = updates::until_stopped(std::future::pending::<Result<Vec<u8>, E>>(), &stop.0).await;
+        let failure = downloaded_bytes(Ok(stopped)).unwrap_err();
         assert_eq!((failure.kind, failure.detail.as_str()), (FailureKind::Failed, "Cancelled."));
     }
 }
