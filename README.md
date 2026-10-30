@@ -71,7 +71,8 @@ one out on its own platform.
 - **Share with QR Code (Experimental):** right-click a file and scan the code
   with a phone. The file downloads straight from your computer over
   [iroh](https://www.iroh.computer/), encrypted, on any network, with no app
-  on the phone. It's shared while the dialog is open.
+  on the phone, and a photo shows on the page once it arrives. It's shared
+  while the dialog is open.
 - **Network (Experimental):** browse SSH/SFTP servers read-only.
 - **Google Drive (Experimental):** browse, copy, move and trash in My Drive
   with your own OAuth client ([setup](docs/google-drive.md)).

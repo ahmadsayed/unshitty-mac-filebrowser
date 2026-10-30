@@ -3,6 +3,7 @@
 // memory, then let the phone save or share the file: saving from a tap
 // works everywhere, including iPhones.
 import init, { download, ticket_size } from "./file_get.js";
+import { isImage, showImage, typeOf } from "./preview.js";
 
 const $ = (id) => document.getElementById(id);
 const ticket = location.hash.slice(1);
@@ -21,15 +22,6 @@ function formatSize(bytes) {
   }
   return `${value.toFixed(1)} ${units[unit]}`;
 }
-
-/** Enough types for a phone to offer the right app after saving. */
-const TYPES = {
-  pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json",
-  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", heic: "image/heic",
-  mp4: "video/mp4", mov: "video/quicktime", mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav",
-  zip: "application/zip",
-};
-const typeOf = (name) => TYPES[name.split(".").pop().toLowerCase()] ?? "application/octet-stream";
 
 function show({ status, error = false, progress = null, buttons = [] }) {
   $("status").textContent = status;
@@ -61,6 +53,10 @@ function arrived(chunk) {
 function finished(name) {
   file = new File(progress.chunks, name, { type: typeOf(name) });
   progress.chunks = [];
+  if (isImage(file.type)) {
+    url = URL.createObjectURL(file);
+    showImage($("icon"), url, name);
+  }
   const buttons = navigator.canShare?.({ files: [file] }) ? ["save", "share"] : ["save"];
   show({ status: "Downloaded and checked.", progress: 1, buttons });
 }
