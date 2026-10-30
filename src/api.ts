@@ -686,6 +686,11 @@ export async function iconIds(paths: string[]): Promise<(string | null)[]> {
   return invoke<(string | null)[]>("icon_ids", { paths });
 }
 
+/** The icon id the OS has for each app from `listApps`, or null. */
+export async function appIconIds(apps: string[]): Promise<(string | null)[]> {
+  return invoke<(string | null)[]>("app_icon_ids", { apps });
+}
+
 /** PNG or SVG bytes of an OS icon about `size` px square; empty when there is none. */
 export async function iconImage(id: string, size: number): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("icon_image", { id, size });

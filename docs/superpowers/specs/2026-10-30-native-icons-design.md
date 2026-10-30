@@ -63,7 +63,9 @@ the blocking pool; none of these AppKit calls is main-thread-only.
 - GIO's `standard::icon` names the icon: by content type, plus special
   folders and custom icons, as GNOME Files does.
 - A freedesktop icon theme lookup finds the closest-sized file: the theme,
-  the themes it inherits from, hicolor, then loose pixmaps.
+  the themes it inherits from, then (as GTK does) Adwaita and gnome, then
+  hicolor, then loose pixmaps. GTK's Adwaita fallback matters: Ubuntu's GTK
+  settings name Yaru even where only Adwaita is installed.
 - The theme name comes from GTK's settings, read on the main thread at
   start-up, since GTK objects can't be used from command threads.
 - Ids are the icon names (`names:application-pdf,x-office-document`).
@@ -77,6 +79,21 @@ the blocking pool; none of these AppKit calls is main-thread-only.
 - Types already loaded are drawn as soon as a new folder's ids arrive.
 - The path → id map is cleared past 20,000 entries. Images are few (one per
   type and size), so they are never evicted.
+
+**Dialogs (#70).** Open With, the Properties header and the Space preview's
+icon (folders, files without a preview) ask `nativeIcon(key, size)` for their
+one icon and swap it in when it arrives, keeping any badge.
+
+- An Open With choice is an app, not a file. Its key is `appIconKey(app)`
+  and its id comes from `app_icon_ids`.
+- On Linux the app is a `.desktop` file. GIO's icon for that file is the
+  generic "desktop file" one, so the backend reads the app's `Icon=` line
+  through `DesktopAppInfo` instead.
+- On macOS the app is its `.app` bundle, which already gets its own icon per
+  path.
+- The preview's icon sits in a fixed 192 px box. The app's drawing used to
+  take whatever size the SVG defaulted to, about 220 px, which an OS icon
+  wouldn't have matched.
 
 ## Verification
 
@@ -107,7 +124,10 @@ the blocking pool; none of these AppKit calls is main-thread-only.
   - apps get their own icon;
   - a zoom keeps showing the old size;
   - thumbnails win;
-  - Network doesn't ask.
+  - Network doesn't ask;
+  - Open With shows each app's own icon;
+  - Properties keeps the link badge;
+  - the preview of a folder shows its icon.
 - **Not verified:** the macOS drawing on a Mac (sharpness, app and custom
   folder icons, speed in a big folder), and a real Linux desktop session
   (GNOME or KDE, switching the theme while the app runs needs a restart).

@@ -60,7 +60,16 @@ impl Icons {
     /// The icon id for `path`, or None when the OS has none for it and the
     /// app draws its own.
     pub fn id(&self, path: &Path) -> Option<String> {
-        let source = source_for(path, self.home.as_deref())?;
+        self.register(source_for(path, self.home.as_deref())?)
+    }
+
+    /// The icon id for an app Open With offers: its `.app` bundle on macOS,
+    /// its `.desktop` file on Linux (whose icon is the app's, not the file's).
+    pub fn app_id(&self, app: &Path) -> Option<String> {
+        self.register(app_source(app, self.home.as_deref())?)
+    }
+
+    fn register(&self, source: Source) -> Option<String> {
         let id = source.id();
         self.sources
             .lock()
@@ -219,7 +228,20 @@ fn source_for(path: &Path, _home: Option<&Path>) -> Option<Source> {
     let info = gio::File::for_path(path)
         .query_info("standard::icon", gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
         .ok()?;
-    let icon = info.icon()?;
+    gio_icon_source(&info.icon()?)
+}
+
+/// An app's icon, from the `Icon=` line of its desktop file.
+#[cfg(target_os = "linux")]
+fn app_source(desktop_file: &Path, _home: Option<&Path>) -> Option<Source> {
+    use gio::prelude::*;
+    gio_icon_source(&gio::DesktopAppInfo::from_filename(desktop_file)?.icon()?)
+}
+
+/// Icon names to look up, or an image file set as the icon.
+#[cfg(target_os = "linux")]
+fn gio_icon_source(icon: &gio::Icon) -> Option<Source> {
+    use gio::prelude::*;
     if let Some(themed) = icon.downcast_ref::<gio::ThemedIcon>() {
         return theme_source(themed.names().iter().map(|n| n.to_string()));
     }
@@ -242,6 +264,12 @@ fn render(_source: &Source, _size: u32) -> Option<Vec<u8>> {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn source_for(_path: &Path, _home: Option<&Path>) -> Option<Source> {
     None
+}
+
+/// macOS: an app is its bundle, whose icon Finder already draws per path.
+#[cfg(not(target_os = "linux"))]
+fn app_source(app: &Path, home: Option<&Path>) -> Option<Source> {
+    source_for(app, home)
 }
 
 /// The freedesktop icon theme lookup: a theme's `index.theme` lists folders
@@ -415,8 +443,10 @@ pub mod theme {
     }
 
     /// The best file for the first of `names` found: in `theme`, then the
-    /// themes it inherits from, then hicolor, then loose in a search path
-    /// (`/usr/share/pixmaps` style).
+    /// themes it inherits from, then (as GTK does) Adwaita and gnome, then
+    /// hicolor, then loose in a search path (`/usr/share/pixmaps` style).
+    /// GTK's fallback matters when the configured theme is missing or thin:
+    /// Ubuntu names Yaru even where only Adwaita is installed.
     pub fn find(
         load: &dyn Fn(&str) -> Option<Arc<Theme>>,
         theme: &str,
@@ -427,7 +457,9 @@ pub mod theme {
         let mut chain = Vec::new();
         let mut seen = HashSet::new();
         let mut queue = vec![theme.to_string()];
-        while let Some(name) = queue.pop() {
+        // Taken from the end once the theme's own chain is done.
+        let mut fallbacks = vec!["hicolor", "gnome", "Adwaita"];
+        while let Some(name) = queue.pop().or_else(|| fallbacks.pop().map(String::from)) {
             if !seen.insert(name.clone()) {
                 continue;
             }
@@ -435,9 +467,6 @@ pub mod theme {
                 // Inherited themes are searched in the order listed.
                 queue.extend(loaded.inherits.iter().rev().cloned());
                 chain.push(loaded);
-            }
-            if queue.is_empty() && !seen.contains("hicolor") {
-                queue.push("hicolor".into());
             }
         }
         for theme in &chain {
@@ -515,6 +544,26 @@ pub mod theme {
             assert!(find(&load, "Gone", &names, 48, &bases).is_some());
             assert!(Theme::load("../Test", &bases).is_none());
             assert!(Theme::load("", &bases).is_none());
+        }
+
+        #[test]
+        fn like_gtk_adwaita_comes_after_the_theme_and_before_hicolor() {
+            let (dir, bases) = fixture();
+            let icons = &bases[0];
+            write(&icons.join("Adwaita/index.theme"), "[Icon Theme]\nDirectories=scalable/places\n[scalable/places]\nSize=128\nType=Scalable\nMinSize=8\nMaxSize=512\n");
+            write(&icons.join("Adwaita/scalable/places/folder-documents.svg"), "adwaita documents");
+            write(&icons.join("Adwaita/scalable/places/my-app.svg"), "adwaita app");
+            let load = |name: &str| Theme::load(name, &bases).map(Arc::new);
+            let found = |theme: &str, name: &str| {
+                find(&load, theme, &[name.to_string()], 128, &bases).map(|f| std::fs::read_to_string(f).unwrap())
+            };
+            // A theme that isn't installed (Ubuntu's default Yaru, say).
+            assert_eq!(found("Yaru", "folder-documents").as_deref(), Some("adwaita documents"));
+            // An installed theme without the icon.
+            assert_eq!(found("Test", "folder-documents").as_deref(), Some("adwaita documents"));
+            // Adwaita is searched before hicolor.
+            assert_eq!(found("Test", "my-app").as_deref(), Some("adwaita app"));
+            drop(dir);
         }
 
         #[test]
@@ -619,6 +668,30 @@ mod tests {
             assert!(icons.sources.lock().unwrap().contains_key(&id));
         }
         assert_eq!(icons.id(&dir.path().join("missing.txt")), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_apps_take_the_icon_their_desktop_file_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = |icon: &str| format!("[Desktop Entry]\nType=Application\nName=Editor\nExec=true %f\nIcon={icon}\n");
+        let themed = dir.path().join("editor.desktop");
+        std::fs::write(&themed, entry("org.example.Editor")).unwrap();
+        assert_eq!(app_source(&themed, None), Some(Source::ThemeNames(vec!["org.example.Editor".into()])));
+        let png = dir.path().join("logo.png");
+        std::fs::write(&png, "png").unwrap();
+        let file_icon = dir.path().join("logo.desktop");
+        std::fs::write(&file_icon, entry(png.to_str().unwrap())).unwrap();
+        assert_eq!(app_source(&file_icon, None), Some(Source::IconFile(png)));
+        // Not the generic icon GIO gives the .desktop file itself.
+        assert_ne!(app_source(&themed, None), source_for(&themed, None));
+        let broken = dir.path().join("broken.desktop");
+        std::fs::write(&broken, "not a desktop entry").unwrap();
+        assert_eq!(app_source(&broken, None), None);
+        assert_eq!(app_source(&dir.path().join("missing.desktop"), None), None);
+        let icons = Icons::new(None, None);
+        let id = icons.app_id(&themed).expect("an id for the app");
+        assert_eq!(id, "names:org.example.Editor");
     }
 
     #[cfg(target_os = "linux")]

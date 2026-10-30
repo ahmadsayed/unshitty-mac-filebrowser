@@ -1330,6 +1330,17 @@ async fn icon_ids(app: tauri::AppHandle, paths: Vec<String>) -> Vec<Option<Strin
     .unwrap_or_default()
 }
 
+/// The icon id for each app Open With offers (`list_apps` ids), or None.
+#[tauri::command]
+async fn app_icon_ids(app: tauri::AppHandle, apps: Vec<String>) -> Vec<Option<String>> {
+    blocking(move || {
+        let icons = app.state::<file_icons::Icons>();
+        apps.iter().map(|id| icons.app_id(Path::new(id))).collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// The image for an id from `icon_ids`, about `size` pixels square: PNG or
 /// SVG bytes, empty when there is none.
 #[tauri::command]
@@ -2018,6 +2029,7 @@ pub fn run() {
             thumbnail,
             cancel_thumbnails,
             icon_ids,
+            app_icon_ids,
             icon_image,
             volumes,
             drive_accounts,
