@@ -2,12 +2,13 @@
 // latest.json for Check for Updates: which signed package each platform
 // installs. Run by the release workflow after the builds:
 //
-//   node scripts/updater-manifest.mjs <packages-dir> <out.json>
+//   node scripts/updater-manifest.mjs [--require-signed] <packages-dir> <out.json>
 //
 // Version from package.json, tag from GITHUB_REF_NAME, repo from
-// GITHUB_REPOSITORY. Without .sig files (no signing key) it writes nothing;
-// an incomplete set fails, so a release never ships a manifest that leaves
-// one platform with "Could not check for updates".
+// GITHUB_REPOSITORY. Without .sig files (no signing key) it writes nothing,
+// and with --require-signed (the workflow passes it for a tag push) it
+// fails; an incomplete set always fails, so a release never ships a manifest
+// that leaves one platform with "Could not check for updates".
 import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -50,6 +51,20 @@ export function buildManifest(files, readSig, { version, tag, repo, notes, pubDa
   };
 }
 
+/** What to do when nothing is signed: fail when the release must be
+ * signed (a tag push), else just say so. */
+export function unsignedOutcome(required) {
+  if (required) {
+    return {
+      exitCode: 1,
+      message:
+        "No signed packages, so no latest.json: installed copies couldn't check for updates. " +
+        "Set the TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD secrets and push the tag again.",
+    };
+  }
+  return { exitCode: 0, message: "No signed packages: no latest.json (the signing key secret isn't set)." };
+}
+
 function listFiles(dir) {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
@@ -58,9 +73,11 @@ function listFiles(dir) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [dir, out] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const required = args.includes("--require-signed");
+  const [dir, out] = args.filter((arg) => arg !== "--require-signed");
   if (!dir || !out) {
-    console.error("usage: node scripts/updater-manifest.mjs <packages-dir> <out.json>");
+    console.error("usage: node scripts/updater-manifest.mjs [--require-signed] <packages-dir> <out.json>");
     process.exit(2);
   }
   const { version } = JSON.parse(readFileSync("package.json", "utf8"));
@@ -73,7 +90,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       pubDate: new Date().toISOString(),
     });
     if (!manifest) {
-      console.log("No signed packages: no latest.json (the signing key secret isn't set).");
+      const { exitCode, message } = unsignedOutcome(required);
+      (exitCode ? console.error : console.log)(message);
+      process.exitCode = exitCode;
     } else {
       writeFileSync(out, `${JSON.stringify(manifest, null, 2)}\n`);
       console.log(`Wrote ${out} for ${version}.`);

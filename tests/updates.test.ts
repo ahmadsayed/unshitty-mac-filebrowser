@@ -6,7 +6,7 @@ import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, key, menu
 
 type UpdateFailure = { kind: string; detail: string };
 type MockUpdate = {
-  set(o: { latest?: string | null; kind?: string; failCheck?: UpdateFailure; failInstall?: UpdateFailure; total?: number | null; lateCancel?: boolean; otherWindowBusy?: boolean }): void;
+  set(o: { latest?: string | null; kind?: string; failCheck?: UpdateFailure; failInstall?: UpdateFailure; total?: number | null; lateCancel?: boolean; otherWindowBusy?: boolean; otherWindowInstalling?: boolean }): void;
   hold(): void; step(bytes: number): void; release(): void; holdCheck(): void; releaseCheck(): void;
   installed(): number; restarts(): number; reset(): void;
 };
@@ -245,4 +245,43 @@ test("an app it can't replace points to the release page", async () => {
     "File Browser can't replace itself in this folder. Download the new version from the release page."
   );
   expect(buttons()).toEqual(["Close", "Open Release Page"]);
+});
+
+test("an update that downloaded but couldn't be installed says so", async () => {
+  mock().set({ latest: "0.5.4", failInstall: { kind: "not_installed", detail: "The updater binary was not found in the archive" } });
+  await check();
+  await respond("Download and Install");
+  await settle(20);
+  expect(dialogText()).toContain("The update was downloaded but could not be installed.");
+  expect(dialogText()).not.toContain("The download failed.");
+  expect(dialogText()).toContain("The updater binary was not found in the archive");
+  expect(buttons()).toEqual(["Close", "Open Release Page"]);
+});
+
+test("an install running in another window gets its own message", async () => {
+  mock().set({ latest: "0.5.4", otherWindowInstalling: true });
+  await check();
+  await respond("Download and Install");
+  await settle(20);
+  expect(dialogHeading()).toBe("Update in Progress");
+  expect(dialogText()).toContain("Another window is already installing this update.");
+  expect(dialogText()).not.toContain("The download failed.");
+  expect(buttons()).toEqual(["Close"]);
+});
+
+test("after Later, checking again offers the restart, not the same download", async () => {
+  mock().set({ latest: "0.5.4" });
+  await check();
+  await respond("Download and Install");
+  await settle(20);
+  await respond("Later");
+  await check();
+  expect(dialogHeading()).toBe("File Browser 0.5.4 is installed.");
+  expect(buttons()).toEqual(["Later", "Restart Now"]);
+  expect(mock().installed()).toBe(1);
+  // A newer release than the installed one is offered as usual.
+  await respond("Later");
+  mock().set({ latest: "0.5.5" });
+  await check();
+  expect(dialogHeading()).toBe("Update Available");
 });

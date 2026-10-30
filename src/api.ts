@@ -803,6 +803,8 @@ export interface UpdateInfo {
   latest: string | null;
   kind: InstallKind;
   release_url: string;
+  /** `latest` was installed in this session and waits for a restart. */
+  restart_pending: boolean;
 }
 
 export interface UpdateProgress {
@@ -813,7 +815,9 @@ export interface UpdateProgress {
 
 /** What every update command rejects with. */
 export interface UpdateFailure {
-  kind: "offline" | "unverified" | "no_permission" | "failed";
+  /** `not_installed`: downloaded and verified, but installing failed;
+   *  `busy`: another window is installing the update. */
+  kind: "offline" | "unverified" | "no_permission" | "not_installed" | "busy" | "failed";
   detail: string;
 }
 

@@ -96,6 +96,9 @@ function showResult(info: UpdateInfo): void {
   if (!info.latest) {
     return showMessage(HEADING, `File Browser ${info.current} is the latest version.`, [CLOSE]);
   }
+  // Installed earlier in this session (then Later): offer the restart, not
+  // the same download again.
+  if (info.restart_pending) return showInstalled(info);
   const available = `File Browser ${info.latest} is available. You have ${info.current}.`;
   const openRelease = () => void openExternal(info.release_url);
   if (info.kind === "linux_package") {
@@ -175,6 +178,18 @@ function showInstallFailed(info: UpdateInfo, failure: UpdateFailure): void {
   const openRelease = () => void openExternal(info.release_url);
   if (failure.kind === "unverified") {
     return showMessage("Update Failed", "The update could not be verified and was not installed.", [CLOSE]);
+  }
+  if (failure.kind === "busy") {
+    return showMessage("Update in Progress", "Another window is already installing this update.", [CLOSE]);
+  }
+  if (failure.kind === "not_installed") {
+    return showMessage(
+      "Update Failed",
+      "The update was downloaded but could not be installed.",
+      [CLOSE, RELEASE_PAGE],
+      { release: openRelease },
+      textBlock(failure.detail)
+    );
   }
   if (failure.kind === "no_permission") {
     return showMessage(

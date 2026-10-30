@@ -2,7 +2,10 @@
 //! sees, and a guard against two installs at once. Plain functions, testable
 //! without Tauri; `lib.rs` wraps `tauri-plugin-updater` around them.
 
+use std::future::Future;
+use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::Poll;
 
 use serde::Serialize;
 
@@ -45,6 +48,10 @@ pub enum FailureKind {
     Offline,
     Unverified,
     NoPermission,
+    /// The download worked but installing it didn't.
+    NotInstalled,
+    /// Another window is installing the update.
+    Busy,
     Failed,
 }
 
@@ -77,19 +84,63 @@ pub fn classify(source: FailureSource, detail: String) -> Failure {
     Failure { kind, detail }
 }
 
+/// A failure while installing a package that downloaded and verified: say
+/// so, rather than "The download failed.". Verification and permission
+/// failures keep their own wording.
+pub fn while_installing(failure: Failure) -> Failure {
+    match failure.kind {
+        FailureKind::Failed | FailureKind::Offline => Failure { kind: FailureKind::NotInstalled, ..failure },
+        _ => failure,
+    }
+}
+
 /// One install at a time: a second Download and Install while one runs is
-/// refused, and every way out of an install calls `finish`.
+/// refused. `try_start` hands out a ticket that frees the guard when it's
+/// dropped, so no way out of an install, `?` included, can leave it taken.
 #[derive(Default)]
 pub struct InstallGuard(AtomicBool);
 
-impl InstallGuard {
-    pub fn try_start(&self) -> bool {
-        self.0.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok()
-    }
+/// Proof that this install holds the guard; dropping it lets the next one in.
+pub struct Installing<'a>(&'a AtomicBool);
 
-    pub fn finish(&self) {
+impl InstallGuard {
+    pub fn try_start(&self) -> Option<Installing<'_>> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Installing(&self.0))
+    }
+}
+
+impl Drop for Installing<'_> {
+    fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
+}
+
+/// Whether the version a check found is the one already installed and
+/// waiting for a restart: offer the restart, not the same download again.
+pub fn restart_pending(installed: Option<&str>, latest: Option<&str>) -> bool {
+    installed.is_some() && installed == latest
+}
+
+/// Run `work` until it finishes, or until `stop` is notified (`None`). A
+/// notification that came before this was awaited still counts. When both
+/// are ready, the finished work wins: `DownloadControl` decides about a late
+/// Cancel.
+pub async fn until_stopped<F: Future>(work: F, stop: &tokio::sync::Notify) -> Option<F::Output> {
+    let mut work = pin!(work);
+    let mut stopped = pin!(stop.notified());
+    std::future::poll_fn(|cx| {
+        if let Poll::Ready(output) = work.as_mut().poll(cx) {
+            return Poll::Ready(Some(output));
+        }
+        if stopped.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(None);
+        }
+        Poll::Pending
+    })
+    .await
 }
 
 /// Where an install stands, so a Cancel is never lost: one that arrives
@@ -187,10 +238,61 @@ mod tests {
     #[test]
     fn the_guard_allows_one_install_at_a_time() {
         let guard = InstallGuard::default();
-        assert!(guard.try_start());
-        assert!(!guard.try_start());
-        guard.finish();
-        assert!(guard.try_start());
+        let first = guard.try_start();
+        assert!(first.is_some());
+        assert!(guard.try_start().is_none());
+        drop(first);
+        assert!(guard.try_start().is_some());
+    }
+
+    #[test]
+    fn an_early_return_frees_the_guard() {
+        let guard = InstallGuard::default();
+        let install = || -> Result<(), &str> {
+            let _ticket = guard.try_start().ok_or("busy")?;
+            Err("failed halfway")?;
+            Ok(())
+        };
+        assert_eq!(install(), Err("failed halfway"));
+        assert!(guard.try_start().is_some(), "a failed install must not block the next one");
+    }
+
+    #[test]
+    fn failures_while_installing_say_so() {
+        let failure = |kind| Failure { kind, detail: "why".into() };
+        assert_eq!(while_installing(failure(FailureKind::Failed)).kind, FailureKind::NotInstalled);
+        assert_eq!(while_installing(failure(FailureKind::Offline)).kind, FailureKind::NotInstalled);
+        assert_eq!(while_installing(failure(FailureKind::Unverified)).kind, FailureKind::Unverified);
+        assert_eq!(while_installing(failure(FailureKind::NoPermission)).kind, FailureKind::NoPermission);
+        assert_eq!(while_installing(failure(FailureKind::Failed)).detail, "why");
+    }
+
+    #[test]
+    fn an_installed_update_waits_for_a_restart() {
+        assert!(restart_pending(Some("0.6.1"), Some("0.6.1")));
+        assert!(!restart_pending(Some("0.6.1"), Some("0.6.2")), "a newer one is offered");
+        assert!(!restart_pending(None, Some("0.6.1")));
+        assert!(!restart_pending(None, None));
+    }
+
+    #[tokio::test]
+    async fn work_finishes_unless_stopped() {
+        let stop = tokio::sync::Notify::new();
+        assert_eq!(until_stopped(async { 7 }, &stop).await, Some(7));
+        // A stop that came first, before anything waited.
+        stop.notify_one();
+        assert_eq!(until_stopped(std::future::pending::<u8>(), &stop).await, None);
+        // A stop while the work runs.
+        let stop = std::sync::Arc::new(tokio::sync::Notify::new());
+        let notifier = stop.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            notifier.notify_one();
+        });
+        assert_eq!(until_stopped(std::future::pending::<u8>(), &stop).await, None);
+        // Finished work wins over a stop that is also ready.
+        stop.notify_one();
+        assert_eq!(until_stopped(async { 1 }, &stop).await, Some(1));
     }
 
     #[test]
@@ -237,5 +339,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&failure).unwrap(), serde_json::json!({ "kind": "offline", "detail": "x" }));
         assert_eq!(serde_json::to_value(InstallKind::AppImage).unwrap(), serde_json::json!("app_image"));
         assert_eq!(serde_json::to_value(FailureKind::NoPermission).unwrap(), serde_json::json!("no_permission"));
+        assert_eq!(serde_json::to_value(FailureKind::NotInstalled).unwrap(), serde_json::json!("not_installed"));
+        assert_eq!(serde_json::to_value(FailureKind::Busy).unwrap(), serde_json::json!("busy"));
     }
 }

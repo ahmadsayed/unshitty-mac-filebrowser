@@ -1470,6 +1470,10 @@ function freshUpdateState() {
     lateCancel: false,
     /** A copy or move runs in another window (the backend registry is app-wide). */
     otherWindowBusy: false,
+    /** Another window's Download and Install is running. */
+    otherWindowInstalling: false,
+    /** The version installed in this session, waiting for a restart. */
+    installedVersion: null as string | null,
     holding: false,
     checkHolding: false,
     checkWaiters: [] as (() => void)[],
@@ -1492,13 +1496,14 @@ async function checkUpdate() {
     latest: upd.latest,
     kind: upd.kind,
     release_url: upd.latest ? `${releases}/tag/v${upd.latest}` : `${releases}/latest`,
+    restart_pending: upd.installedVersion !== null && upd.installedVersion === upd.latest,
   };
 }
 
 function installUpdate(channel?: Channel<UpdateProgress>): Promise<void> {
   if (upd.kind !== "app_image" && upd.kind !== "mac_app") throw updateFailed("This copy can't update itself.");
   if (!upd.pending) throw updateFailed("No update to install.");
-  if (upd.install) throw updateFailed("An update is already being installed.");
+  if (upd.install || upd.otherWindowInstalling) throw { kind: "busy", detail: "An update is already being installed." };
   return new Promise((resolve, reject) => {
     upd.install = { channel, downloaded: 0, resolve, reject };
     if (!upd.holding) finishInstall();
@@ -1512,11 +1517,12 @@ function finishInstall(): void {
   if (upd.failInstall) return install.reject(upd.failInstall);
   install.channel?.onmessage({ phase: "installing", downloaded: upd.total ?? install.downloaded, total: upd.total });
   upd.installed++;
+  upd.installedVersion = upd.pending;
   install.resolve();
 }
 
 (globalThis as Record<string, unknown>).__mockUpdate = {
-  set(o: Partial<Pick<typeof upd, "latest" | "kind" | "failCheck" | "failInstall" | "total" | "lateCancel" | "otherWindowBusy">>) {
+  set(o: Partial<Pick<typeof upd, "latest" | "kind" | "failCheck" | "failInstall" | "total" | "lateCancel" | "otherWindowBusy" | "otherWindowInstalling">>) {
     Object.assign(upd, o);
   },
   hold() {

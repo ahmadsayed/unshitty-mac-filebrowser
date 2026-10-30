@@ -56,7 +56,9 @@ the plugin verifies the signature, then installs. On success:
 > [Later] [Restart Now]
 
 - **Later** keeps the session; the new version starts the next time the app
-  is opened.
+  is opened. Checking again before then offers this same dialog (the
+  restart), not the same download a second time; a newer release is offered
+  as usual.
 - **Restart Now** is disabled while copies, moves or other operations run,
   with the hint "Waiting for operations to finish…", and enables itself when
   they end. Restarting closes every window, like Quit.
@@ -66,8 +68,10 @@ half-replaced:
 
 | Failure | Message | Buttons |
 |---|---|---|
-| Signature doesn't verify | "The update could not be verified and was not installed." | [Close] |
+| Signature doesn't verify, or was made for another version | "The update could not be verified and was not installed." | [Close] |
 | Download failed | "The download failed." + reason | [Close] [Try Again] |
+| Downloaded and verified, but installing failed | "The update was downloaded but could not be installed." + reason | [Close] [Open Release Page] |
+| Another window is installing it | "Update in Progress": "Another window is already installing this update." | [Close] |
 | Can't replace the app (no write access to its folder) | "File Browser can't replace itself in this folder. Download the new version from the release page." | [Close] [Open Release Page] |
 
 ## Backend
@@ -93,23 +97,34 @@ the scratch crate like the other modules):
   non-empty → `AppImage`; other Linux → `LinuxPackage`.
 - `can_self_update(kind) -> bool`: true for `AppImage` and `MacApp` only.
 - Mapping updater errors to the messages above (offline, verification
-  failed, permission denied, other download failure), keeping the original
-  error text for the details line.
+  failed, permission denied, not installed, busy, other download failure),
+  keeping the original error text for the details line. Any failure of the
+  install step that isn't about verification or permissions is "not
+  installed" (`while_installing`).
+- `InstallGuard::try_start` returns a ticket that frees the guard when
+  dropped, so no early return can leave installs refused until restart.
 
 Progress carries bytes only (`downloaded`, `total: Option<u64>`); the
 frontend formats them with `formatSize` from `format.ts`: "23.4 MB of
 91.4 MB", or "23.4 MB" when the total is unknown.
 
-**Commands** in `lib.rs`, all `async fn`:
+**Commands** in `lib.rs`. `check_update` and `install_update` are `async
+fn`: they wait on the network and on long work (the download, and its
+signature check, run on the blocking pool). `cancel_update`,
+`operations_running` and `restart_app` are plain commands: each only reads
+or sets a flag, or hands over to `restart()`, so there is nothing to wait
+for.
 
-- `check_update() -> UpdateInfo { current: String, latest: Option<String>, kind: InstallKind, release_url: String }`.
+- `check_update() -> UpdateInfo { current: String, latest: Option<String>, kind: InstallKind, release_url: String, restart_pending: bool }`.
   `latest` is `None` when up to date. The release URL is
-  `…/releases/tag/v<latest>`.
+  `…/releases/tag/v<latest>`. `restart_pending` is true when `latest` was
+  installed earlier in this session and waits for a restart.
 - `install_update(progress: Channel<Progress>)`: refused unless
   `can_self_update(kind)`; refused while another install runs. Downloads,
   verifies, installs; progress messages carry downloaded and total bytes.
-- `cancel_update()`: aborts a running download; a download cancelled before
-  install changes nothing on disk.
+- `cancel_update()`: stops a running download; a download cancelled before
+  install changes nothing on disk. Only the window that started the install
+  can cancel it; another window's Cancel does nothing.
 - `restart_app()`: `AppHandle::restart()`.
 
 No updater permissions are granted to the webview: the frontend only calls
