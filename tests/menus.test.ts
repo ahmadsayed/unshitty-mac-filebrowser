@@ -22,7 +22,7 @@ const place = (label: string) => $$(".sidebar-row").find((r) => r.textContent?.t
 test("a file's menu in a folder", async () => {
   await goTo(HOME);
   await rightClick(item("main.rs"));
-  expect(menuLabels()).toEqual(["Open", "Preview", "Open With…", "Cut", "Copy", "Duplicate", "Create Link", "Compress…", "Rename…", "Star", "Move to Trash", "Properties"]);
+  expect(menuLabels()).toEqual(["Open", "Preview", "Open With…", "Share with QR Code…", "Cut", "Copy", "Duplicate", "Create Link", "Compress…", "Rename…", "Star", "Move to Trash", "Properties"]);
   await closeOverlays();
 });
 

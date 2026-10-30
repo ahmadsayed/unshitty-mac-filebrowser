@@ -1,7 +1,7 @@
 // Characterization tests for the in-memory backend in dev/mock-tauri/core.ts:
 // every command it serves, including its errors.
 import { expect, test, vi } from "vitest";
-import { Channel, invoke, nativeIconMock } from "../dev/mock-tauri/core";
+import { Channel, fileShareMock, invoke, nativeIconMock } from "../dev/mock-tauri/core";
 import { installFakeCanvas } from "./app";
 
 const HOME = "/Users/me";
@@ -177,6 +177,20 @@ test("OS icons: none by default; when on, shared by type, apps their own, remote
   } finally {
     nativeIconMock.enabled = false;
   }
+});
+
+test("QR shares prepare, then show a link and downloads; folders and remote files are refused", async () => {
+  const id = await invoke<string>("file_share_prepare", { path: `${HOME}/main.rs` });
+  expect(await invoke("file_share_status", { id })).toEqual({ state: "preparing", progress: 0.5 });
+  fileShareMock.shares.get(id)!.downloads = 2;
+  expect(await invoke("file_share_status", { id })).toMatchObject({ state: "ready", link: `https://example.invalid/get/#${id}`, downloads: 2, sending: null });
+  fileShareMock.shares.get(id)!.error = "Could not reach the relay server.";
+  expect(await invoke("file_share_status", { id })).toEqual({ state: "failed", error: "Could not reach the relay server." });
+  await invoke("file_share_stop", { id });
+  expect(await invoke("file_share_status", { id })).toBeNull();
+  await expect(invoke("file_share_prepare", { path: `${HOME}/Documents` })).rejects.toMatch(/Only files/);
+  await expect(invoke("file_share_prepare", { path: "sftp://user@host/x.txt" })).rejects.toMatch(/on this computer/);
+  await expect(invoke("file_share_prepare", { path: `${HOME}/gone.txt` })).rejects.toMatch(/No such file/);
 });
 
 test("held thumbnails wait until released, and cancelled ones come back empty", async () => {
