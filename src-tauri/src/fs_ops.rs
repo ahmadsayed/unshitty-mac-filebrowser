@@ -353,6 +353,7 @@ pub fn search_dir(
             if cancelled() {
                 return Ok(walk.summary(None));
             }
+            walk.tick();
             if let Some(stop) = walk.stop(limit) {
                 return Ok(walk.summary(Some(stop)));
             }
@@ -398,7 +399,13 @@ impl SearchWalk<'_> {
 
     fn add(&mut self, entry: Entry) {
         self.batch.push(entry);
-        if self.last_sent.elapsed() >= SEARCH_BATCH_EVERY {
+        self.tick();
+    }
+
+    /// Send the waiting batch once it's due. Called for every item scanned,
+    /// so a lone match doesn't wait for a later one, or for the walk to end.
+    fn tick(&mut self) {
+        if !self.batch.is_empty() && self.last_sent.elapsed() >= SEARCH_BATCH_EVERY {
             self.flush();
         }
     }
@@ -947,6 +954,44 @@ mod tests {
         assert_eq!(walk.stop(10), Some(SearchStop::Scanned));
         assert_eq!(walk.summary(None).scanned, MAX_SEARCH_SCANNED);
         assert_eq!(got, [1, 1]);
+    }
+
+    #[test]
+    fn a_lone_early_match_is_sent_while_the_walk_goes_on() {
+        use std::cell::Cell;
+        // The match is at the top; the subfolder, walked after it, has no
+        // matches, so no later match would push the waiting batch out.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("needle.txt"), "x").unwrap();
+        fs::create_dir(dir.path().join("hay")).unwrap();
+        for i in 0..50 {
+            fs::write(dir.path().join(format!("hay/straw-{i}")), "x").unwrap();
+        }
+        let items = Cell::new(0);
+        let sent_at = Cell::new(None);
+        let summary = search_dir(
+            &dir.path().to_string_lossy(),
+            "needle",
+            false,
+            10,
+            &mut |_| {
+                if sent_at.get().is_none() {
+                    sent_at.set(Some(items.get()));
+                }
+            },
+            &|| {
+                items.set(items.get() + 1);
+                // Partway through the haystack, more than a batch interval passes.
+                if items.get() == 10 {
+                    std::thread::sleep(SEARCH_BATCH_EVERY + Duration::from_millis(20));
+                }
+                false
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.scanned, 52);
+        let sent_at = sent_at.get().expect("the match was sent");
+        assert!(sent_at < 52, "sent only when the walk ended (after item {sent_at})");
     }
 
     #[test]

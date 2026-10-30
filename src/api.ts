@@ -46,7 +46,6 @@ export async function listDir(
   return invoke<Entry[]>("list_dir", { path, showHidden });
 }
 
-/** Recursively find entries whose name contains `query`. */
 /** Why a search ended before looking everywhere: it found `limit` matches,
  *  or it looked at as many items as one search may. */
 export type SearchStop = "results" | "scanned";
