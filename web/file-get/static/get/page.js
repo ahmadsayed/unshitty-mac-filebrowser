@@ -39,35 +39,44 @@ function show({ status, error = false, progress = null, buttons = [] }) {
   for (const id of ["start", "save", "share", "retry"]) $(id).hidden = !buttons.includes(id);
 }
 
+/** The download in progress: pieces so far, bytes received, the size. */
+const progress = { chunks: [], received: 0, total: 0 };
+
+const messageOf = (err) => err?.message ?? String(err);
+
+function started(name, size) {
+  progress.total = size;
+  $("name").textContent = name;
+  document.title = name;
+  show({ status: `Downloading… 0 bytes of ${formatSize(size)}`, progress: 0 });
+}
+
+function arrived(chunk) {
+  progress.chunks.push(chunk);
+  progress.received += chunk.length;
+  const { received, total } = progress;
+  show({ status: `Downloading… ${formatSize(received)} of ${formatSize(total)}`, progress: total ? received / total : 1 });
+}
+
+function finished(name) {
+  file = new File(progress.chunks, name, { type: typeOf(name) });
+  progress.chunks = [];
+  const buttons = navigator.canShare?.({ files: [file] }) ? ["save", "share"] : ["save"];
+  show({ status: "Downloaded and checked.", progress: 1, buttons });
+}
+
+function stillWaiting() {
+  if (!progress.total) show({ status: "Still trying to reach the computer… It has to be on, with its QR code showing.", progress: 0 });
+}
+
 async function start() {
-  const chunks = [];
-  let received = 0;
-  let total = 0;
+  Object.assign(progress, { chunks: [], received: 0, total: 0 });
   show({ status: "Connecting to the computer…", progress: 0 });
-  const slow = setTimeout(() => {
-    if (!total) show({ status: "Still trying to reach the computer… It has to be on, with its QR code showing.", progress: 0 });
-  }, 15000);
+  const slow = setTimeout(stillWaiting, 15000);
   try {
-    const name = await download(
-      ticket,
-      (name, size) => {
-        total = size;
-        $("name").textContent = name;
-        document.title = name;
-        show({ status: `Downloading… 0 bytes of ${formatSize(size)}`, progress: 0 });
-      },
-      (chunk) => {
-        chunks.push(chunk);
-        received += chunk.length;
-        show({ status: `Downloading… ${formatSize(received)} of ${formatSize(total)}`, progress: total ? received / total : 1 });
-      },
-    );
-    file = new File(chunks, name, { type: typeOf(name) });
-    chunks.length = 0;
-    const canShare = !!navigator.canShare?.({ files: [file] });
-    show({ status: "Downloaded and checked.", progress: 1, buttons: canShare ? ["save", "share"] : ["save"] });
+    finished(await download(ticket, started, arrived));
   } catch (err) {
-    show({ status: err?.message ?? String(err), error: true, buttons: ["retry"] });
+    show({ status: messageOf(err), error: true, buttons: ["retry"] });
   } finally {
     clearTimeout(slow);
   }
@@ -107,6 +116,6 @@ if (!ticket) {
     $("size").textContent = formatSize(size);
     show({ status: "", buttons: ["start"] });
   } catch (err) {
-    show({ status: err?.message ?? String(err), error: true });
+    show({ status: messageOf(err), error: true });
   }
 }
