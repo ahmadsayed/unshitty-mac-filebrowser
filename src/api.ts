@@ -681,6 +681,16 @@ export async function cancelThumbnails(tickets: number[]): Promise<void> {
   return invoke<void>("cancel_thumbnails", { tickets });
 }
 
+/** The icon id the OS has for each path, or null where the app draws its own. */
+export async function iconIds(paths: string[]): Promise<(string | null)[]> {
+  return invoke<(string | null)[]>("icon_ids", { paths });
+}
+
+/** PNG or SVG bytes of an OS icon about `size` px square; empty when there is none. */
+export async function iconImage(id: string, size: number): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("icon_image", { id, size });
+}
+
 // ---------------------------------------------------------------------------
 // Keep Versions
 // ---------------------------------------------------------------------------

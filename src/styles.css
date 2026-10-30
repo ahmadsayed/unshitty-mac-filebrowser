@@ -1825,6 +1825,14 @@ kbd {
 
 .list-row .thumb { border-radius: 2px; }
 
+/* An icon from the OS: drawn to fill the slot, without a thumbnail's frame. */
+.native-icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
 /* ----- Folder sharing (Network, Share dialog) ----- */
 
 .share-subtitle {

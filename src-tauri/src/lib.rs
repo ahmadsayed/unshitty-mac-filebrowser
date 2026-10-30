@@ -2,6 +2,7 @@ mod archive;
 mod cloud;
 mod config_store;
 mod downloads;
+mod file_icons;
 mod fs_ops;
 mod platform;
 mod progress;
@@ -1311,6 +1312,50 @@ async fn thumbnail(
     tauri::ipc::Response::new(png)
 }
 
+/// The icon id the OS has for each path (None: the app draws its own icon);
+/// see `file_icons`. Remote locations have none.
+#[tauri::command]
+async fn icon_ids(app: tauri::AppHandle, paths: Vec<String>) -> Vec<Option<String>> {
+    blocking(move || {
+        let icons = app.state::<file_icons::Icons>();
+        paths
+            .iter()
+            .map(|path| {
+                let remote = cloud::is_cloud(path) || share::location::is_share(path) || sftp::is_sftp(path);
+                if remote { None } else { icons.id(Path::new(path)) }
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// The image for an id from `icon_ids`, about `size` pixels square: PNG or
+/// SVG bytes, empty when there is none.
+#[tauri::command]
+async fn icon_image(app: tauri::AppHandle, id: String, size: u32) -> tauri::ipc::Response {
+    let size = size.clamp(16, 1024);
+    let bytes = blocking(move || app.state::<file_icons::Icons>().image(&id, size))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    tauri::ipc::Response::new(bytes)
+}
+
+/// The icon theme the desktop uses, read from GTK on the main thread at
+/// start-up (GTK objects can't be used from the command threads).
+#[cfg(target_os = "linux")]
+fn desktop_icon_theme() -> Option<String> {
+    use gtk::prelude::*;
+    gtk::Settings::default()?.property::<Option<String>>("gtk-icon-theme-name")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn desktop_icon_theme() -> Option<String> {
+    None
+}
+
 /// Cancel this window's thumbnail requests with these tickets: the items
 /// scrolled away or the folder was left.
 #[tauri::command]
@@ -1867,6 +1912,7 @@ pub fn run() {
             app.manage(VersionsState::new(config_dir.join("versioned.json")));
             app.manage(progress::Registry::default());
             app.manage(thumbnails::Requests::default());
+            app.manage(file_icons::Icons::new(Some(home.clone()), desktop_icon_theme()));
             app.manage(Searches::default());
             app.manage(CloudState::new(&config_dir));
             app.manage(sftp::SftpState::new(
@@ -1971,6 +2017,8 @@ pub fn run() {
             forget_recent,
             thumbnail,
             cancel_thumbnails,
+            icon_ids,
+            icon_image,
             volumes,
             drive_accounts,
             drive_disconnect,

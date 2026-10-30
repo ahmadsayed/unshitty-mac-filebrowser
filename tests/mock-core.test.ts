@@ -1,7 +1,7 @@
 // Characterization tests for the in-memory backend in dev/mock-tauri/core.ts:
 // every command it serves, including its errors.
 import { expect, test, vi } from "vitest";
-import { Channel, invoke } from "../dev/mock-tauri/core";
+import { Channel, invoke, nativeIconMock } from "../dev/mock-tauri/core";
 import { installFakeCanvas } from "./app";
 
 const HOME = "/Users/me";
@@ -155,6 +155,23 @@ test("window buttons follow the button layout; window_control toggles maximize",
 test("thumbnails are empty for files without a preview", async () => {
   const buf = await invoke<ArrayBuffer>("thumbnail", { path: `${HOME}/main.rs`, size: 64 });
   expect(buf.byteLength).toBe(0);
+});
+
+test("OS icons: none by default; when on, shared by type, apps their own, remote places none", async () => {
+  const paths = [`${HOME}/main.rs`, `${HOME}/Documents`, "/Applications/Calculator.app", `${HOME}/gone.txt`, "sftp://user@host/x.txt"];
+  expect(await invoke("icon_ids", { paths })).toEqual([null, null, null, null, null]);
+  expect((await invoke<ArrayBuffer>("icon_image", { id: "type:rs", size: 64 })).byteLength).toBe(0);
+  nativeIconMock.enabled = true;
+  try {
+    expect(await invoke("icon_ids", { paths })).toEqual(["type:rs", "type:public.folder", "path:/Applications/Calculator.app", null, null]);
+    const svg = new TextDecoder().decode(await invoke<ArrayBuffer>("icon_image", { id: "type:rs", size: 64 }));
+    expect(svg).toContain('data-id="type:rs"');
+    expect(svg).toContain('width="64"');
+    expect(nativeIconMock.log.ids.at(-1)).toEqual(paths);
+    expect(nativeIconMock.log.images.at(-1)).toBe("type:rs@64");
+  } finally {
+    nativeIconMock.enabled = false;
+  }
 });
 
 test("held thumbnails wait until released, and cancelled ones come back empty", async () => {

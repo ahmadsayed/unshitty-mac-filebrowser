@@ -982,6 +982,33 @@ function measure(paths: string[]): { bytes: number; items: number } {
   return total;
 }
 
+// Icons from the OS: the preview has none (the app draws its own, as for
+// remote places), unless a test turns them on. Then folders and files share
+// one icon per type and apps get their own, like Finder's; every request is
+// logged.
+export const nativeIconMock = {
+  enabled: false,
+  log: { ids: [] as string[][], images: [] as string[] },
+};
+
+function mockIconId(path: string): string | null {
+  if (!nativeIconMock.enabled || /^(gdrive|share|sftp):\/\//.test(path)) return null;
+  const node = lookup(path);
+  if (!node) return null;
+  if (node.dir) return /\.app$/i.test(path) ? `path:${path}` : "type:public.folder";
+  const ext = /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase();
+  return `type:${ext ?? "public.data"}`;
+}
+
+/** A tiny SVG that names its id, standing in for the OS's drawing. */
+function mockIconImage(id: string, size: number): ArrayBuffer {
+  nativeIconMock.log.images.push(`${id}@${size}`);
+  if (!nativeIconMock.enabled) return new ArrayBuffer(0);
+  const label = id.replace(/[<>&"]/g, "");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" data-id="${label}"><rect width="100%" height="100%" rx="8" fill="#888"/></svg>`;
+  return new TextEncoder().encode(svg).buffer as ArrayBuffer;
+}
+
 // Thumbnails can be held open by tests, standing in for a slow Quick Look,
 // and every request and cancellation is logged.
 let thumbsHeld = false;
@@ -1825,6 +1852,12 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     }
     return mockThumbnail(path, a.size as number);
   },
+  icon_ids: (a) => {
+    const paths = a.paths as string[];
+    nativeIconMock.log.ids.push(paths);
+    return paths.map(mockIconId);
+  },
+  icon_image: (a) => mockIconImage(str(a, "id"), a.size as number),
   cancel_thumbnails: (a) => {
     for (const ticket of a.tickets as number[]) {
       thumbLog.cancelled.push(ticket);
