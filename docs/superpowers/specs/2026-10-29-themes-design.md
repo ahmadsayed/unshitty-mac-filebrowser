@@ -7,6 +7,15 @@
 **Amends:** [File Browser design](2026-10-23-file-browser-design.md) — the
 look is no longer GNOME Files only.
 
+**Amended 2026-10-30: no theme choice.** The Theme block in the main menu
+is gone: the theme always follows the platform, macOS on a Mac and GNOME
+elsewhere (what Automatic did). Nothing about the theme is saved, an old
+saved choice is ignored and dropped on the next save, and there is no
+switching, so the sections below on the menu, instant switching and the
+`storage` event describe what was removed. The themes themselves, their
+tokens and layout sizes are unchanged. Mock screenshots of the GNOME theme
+use a Linux user agent (`scripts/mock-screenshot.mjs --theme gnome`).
+
 ## Goal
 
 The app gets a choice of look. Today it imitates GNOME Files 50 everywhere.

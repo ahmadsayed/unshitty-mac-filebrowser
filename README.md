@@ -76,9 +76,8 @@ one out on its own platform.
 - **Check for Updates** (main menu): the AppImage and the Mac app download,
   verify and install a signed update when you say so; `.deb` and `.rpm` installs
   are pointed to the release page. Nothing is checked unless you ask.
-- **Themes:** GNOME (GNOME Files 50) or macOS (macOS 26 Tahoe), light and
-  dark, each with its own icons; Automatic picks the one that fits your
-  platform. Switching is instant and keeps your place.
+- **Looks at home:** the GNOME Files 50 look on Linux, the macOS 26 Tahoe
+  look on a Mac, light and dark, each with its own icons.
 - Grid and list views, tabs, thumbnails, Space to preview, batch rename,
   extract and compress archives, Starred, Recent, bookmarks, a progress popover
   with Cancel, and fast 10,000-item folders.
