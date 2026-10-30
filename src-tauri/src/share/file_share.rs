@@ -1,6 +1,6 @@
-//! Sharing one file with a QR code: the sharer's side (the wire format is
+//! Sharing files with a QR code: the sharer's side (the wire format is
 //! `file_link`). A share lives while its dialog is open: `prepare` hashes
-//! the file and makes the link, `status` reports progress and downloads,
+//! the files and makes the link, `status` reports progress and downloads,
 //! `stop` ends it, and a phone that asks afterwards is told so.
 //!
 //! The shares run on an iroh endpoint of their own, started on the first
@@ -8,7 +8,7 @@
 //! endpoint is connected to its home relay: a phone's browser can reach the
 //! computer through that relay only.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,7 +21,7 @@ use iroh::{Endpoint, RelayUrl};
 use serde::Serialize;
 use tokio::sync::OnceCell;
 
-use super::file_link::{self, Status, TOKEN_LEN, Ticket};
+use super::file_link::{self, Listed, Status, TOKEN_LEN, Ticket};
 
 /// Where the page a phone opens lives (`web/file-get`, published to GitHub
 /// Pages by `.github/workflows/file-page.yml`). `FILEBROWSER_FILE_PAGE`
@@ -35,6 +35,8 @@ const HASH_CHUNK: usize = 1 << 20;
 const SEND_CHUNK: usize = 64 * 1024;
 
 const NOT_A_FILE: &str = "Only files can be shared with a QR code.";
+const NOTHING: &str = "Choose files to share.";
+const TOO_MANY: &str = "Up to 1,000 files can be shared at once.";
 const CHANGED_WHILE_PREPARING: &str = "The file changed while it was being prepared. Try again.";
 const OFFLINE: &str = "Could not reach the relay server. Check the internet connection and try again.";
 
@@ -42,13 +44,13 @@ const OFFLINE: &str = "Could not reach the relay server. Check the internet conn
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum View {
-    /// Hashing the file (`progress` 0–1), then going online.
+    /// Hashing the files (`progress` 0–1), then going online.
     Preparing { progress: f64 },
     Ready {
         link: String,
         /// The link as an SVG QR code.
         qr: String,
-        /// Downloads that reached the end of the file.
+        /// Phones that downloaded every file.
         downloads: u32,
         /// How far the furthest running download is (0–1), if any.
         sending: Option<f64>,
@@ -56,23 +58,46 @@ pub enum View {
     Failed { error: String },
 }
 
+/// A shared file as it was hashed.
+#[derive(Debug, Clone)]
+struct SharedFile {
+    path: PathBuf,
+    size: u64,
+    modified: Option<SystemTime>,
+}
+
 enum Phase {
     Preparing { hashed: u64, size: u64 },
-    Ready { link: String, qr: String, size: u64, modified: Option<SystemTime> },
+    /// `list` is the encoded list the link's hash covers.
+    Ready { link: String, qr: String, list: Vec<u8>, files: Vec<SharedFile> },
     Failed(String),
+}
+
+/// One phone's download: the files it finished, their bytes, and how far
+/// the running one is.
+#[derive(Debug, Default)]
+struct Progress {
+    done: HashSet<u32>,
+    finished: u64,
+    current: u64,
+    total: u64,
+}
+
+impl Progress {
+    fn fraction(&self) -> f64 {
+        if self.total == 0 { 1.0 } else { ((self.finished + self.current) as f64 / self.total as f64).min(1.0) }
+    }
 }
 
 struct Entry {
     /// The window whose dialog shows the share: closing it stops the share.
     window: String,
-    path: PathBuf,
-    name: String,
     token: [u8; TOKEN_LEN],
     cancel: Arc<AtomicBool>,
     phase: Phase,
     downloads: u32,
-    /// Running downloads: bytes sent so far and the file's size.
-    sending: HashMap<u64, (u64, u64)>,
+    /// Running downloads, by connection.
+    sending: HashMap<u64, Progress>,
 }
 
 impl Entry {
@@ -85,11 +110,7 @@ impl Entry {
                 link: link.clone(),
                 qr: qr.clone(),
                 downloads: self.downloads,
-                sending: self
-                    .sending
-                    .values()
-                    .map(|(sent, size)| if *size == 0 { 1.0 } else { *sent as f64 / *size as f64 })
-                    .reduce(f64::max),
+                sending: self.sending.values().map(Progress::fraction).reduce(f64::max),
             },
             Phase::Failed(error) => View::Failed { error: error.clone() },
         }
@@ -99,7 +120,7 @@ impl Entry {
 #[derive(Default)]
 struct Shares {
     entries: HashMap<String, Entry>,
-    next_transfer: u64,
+    next_connection: u64,
 }
 
 type Inner = Arc<Mutex<Shares>>;
@@ -135,37 +156,41 @@ impl FileShares {
         }
     }
 
-    /// Start sharing `path` from `window`; the returned id names it for
-    /// `status` and `stop`.
-    pub fn prepare(&self, path: &Path, window: &str) -> Result<String, String> {
-        let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
-        if !meta.is_file() {
-            return Err(NOT_A_FILE.into());
+    /// Start sharing `paths` from `window`; the returned id names the share
+    /// for `status` and `stop`.
+    pub fn prepare(&self, paths: &[PathBuf], window: &str) -> Result<String, String> {
+        if paths.is_empty() {
+            return Err(NOTHING.into());
+        }
+        if paths.len() > file_link::MAX_FILES {
+            return Err(TOO_MANY.into());
+        }
+        let mut size = 0u64;
+        for path in paths {
+            let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+            if !meta.is_file() {
+                return Err(NOT_A_FILE.into());
+            }
+            size += meta.len();
         }
         let id = data_encoding::HEXLOWER.encode(&random::<8>());
         let token = random::<TOKEN_LEN>();
         let cancel = Arc::new(AtomicBool::new(false));
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "download".into());
         lock(&self.inner).entries.insert(
             id.clone(),
             Entry {
                 window: window.to_string(),
-                path: path.to_path_buf(),
-                name,
                 token,
                 cancel: cancel.clone(),
-                phase: Phase::Preparing { hashed: 0, size: meta.len() },
+                phase: Phase::Preparing { hashed: 0, size },
                 downloads: 0,
                 sending: HashMap::new(),
             },
         );
-        let (inner, node, config, path, job) =
-            (self.inner.clone(), self.node.clone(), self.config.clone(), path.to_path_buf(), id.clone());
+        let (inner, node, config, paths, job) =
+            (self.inner.clone(), self.node.clone(), self.config.clone(), paths.to_vec(), id.clone());
         tokio::spawn(async move {
-            let phase = match make_ready(&inner, &node, &config, &job, &path, token, cancel).await {
+            let phase = match make_ready(&inner, &node, &config, &job, &paths, token, cancel).await {
                 Ok(phase) => phase,
                 Err(error) => Phase::Failed(error),
             };
@@ -206,13 +231,35 @@ fn random<const N: usize>() -> [u8; N] {
     bytes
 }
 
-/// Hash the file, bring the endpoint online and make the link.
+fn file_name(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "download".into())
+}
+
+/// Hash every file and list them, the list's hash going in the link.
+fn hash_files(
+    paths: &[PathBuf],
+    cancel: &AtomicBool,
+    progress: &dyn Fn(u64),
+) -> Result<(Vec<u8>, Vec<SharedFile>, u64), String> {
+    let mut listed = Vec::with_capacity(paths.len());
+    let mut files = Vec::with_capacity(paths.len());
+    let mut before = 0u64;
+    for path in paths {
+        let (hash, size, modified) = hash_file(path, cancel, &|hashed| progress(before + hashed))?;
+        before += size;
+        listed.push(Listed { name: file_name(path), size, hash });
+        files.push(SharedFile { path: path.clone(), size, modified });
+    }
+    Ok((file_link::encode_list(&listed), files, before))
+}
+
+/// Hash the files, bring the endpoint online and make the link.
 async fn make_ready(
     inner: &Inner,
     node: &OnceCell<Router>,
     config: &Config,
     id: &str,
-    path: &Path,
+    paths: &[PathBuf],
     token: [u8; TOKEN_LEN],
     cancel: Arc<AtomicBool>,
 ) -> Result<Phase, String> {
@@ -226,19 +273,26 @@ async fn make_ready(
             }
         }
     };
-    let path_owned = path.to_path_buf();
-    let (hash, size, modified) =
-        tokio::task::spawn_blocking(move || hash_file(&path_owned, &cancel, &progress))
+    let paths_owned = paths.to_vec();
+    let (list, files, size) =
+        tokio::task::spawn_blocking(move || hash_files(&paths_owned, &cancel, &progress))
             .await
             .map_err(|e| e.to_string())??;
     let router = node
         .get_or_try_init(|| start_node(inner.clone(), config.relay.clone()))
         .await?;
     let relay = home_relay(router.endpoint()).await?;
-    let ticket = Ticket { endpoint: router.endpoint().id(), relay, token, hash, size };
+    let ticket = Ticket {
+        endpoint: router.endpoint().id(),
+        relay,
+        token,
+        hash: *blake3::hash(&list).as_bytes(),
+        size,
+        files: Some(files.len() as u32),
+    };
     let link = format!("{}#{}", config.page, ticket.encode());
     let qr = qr_svg(&link)?;
-    Ok(Phase::Ready { link, qr, size, modified })
+    Ok(Phase::Ready { link, qr, list, files })
 }
 
 /// BLAKE3 of the whole file, its size and modification time. The file must
@@ -332,20 +386,26 @@ impl std::fmt::Debug for FileProtocol {
 
 impl ProtocolHandler for FileProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        // One phone's download is one connection: its streams share a progress.
+        let connection = {
+            let mut shares = lock(&self.0);
+            shares.next_connection += 1;
+            shares.next_connection
+        };
         while let Ok((send, recv)) = conn.accept_bi().await {
-            tokio::spawn(serve(self.0.clone(), send, recv));
+            tokio::spawn(serve(self.0.clone(), connection, send, recv));
+        }
+        for entry in lock(&self.0).entries.values_mut() {
+            entry.sending.remove(&connection);
         }
         Ok(())
     }
 }
 
-/// The file a token stands for, if it is still shared and ready.
-struct Found {
-    id: String,
-    path: PathBuf,
-    name: String,
-    size: u64,
-    modified: Option<SystemTime>,
+/// What a request asks for, if its share is still running and ready.
+enum Found {
+    List(Vec<u8>),
+    File { id: String, index: u32, count: usize, total: u64, file: SharedFile },
 }
 
 /// Compare tokens without stopping at the first difference, so timing
@@ -354,98 +414,129 @@ fn same_token(a: &[u8; TOKEN_LEN], b: &[u8; TOKEN_LEN]) -> bool {
     a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
-fn find(inner: &Inner, token: &[u8; TOKEN_LEN]) -> Option<Found> {
+fn find(inner: &Inner, token: &[u8; TOKEN_LEN], index: u32) -> Result<Found, Status> {
     let shares = lock(inner);
-    shares.entries.iter().find_map(|(id, entry)| match &entry.phase {
-        Phase::Ready { size, modified, .. } if same_token(&entry.token, token) => Some(Found {
-            id: id.clone(),
-            path: entry.path.clone(),
-            name: entry.name.clone(),
-            size: *size,
-            modified: *modified,
-        }),
-        _ => None,
-    })
+    let (id, list, files) = shares
+        .entries
+        .iter()
+        .find_map(|(id, entry)| match &entry.phase {
+            Phase::Ready { list, files, .. } if same_token(&entry.token, token) => Some((id, list, files)),
+            _ => None,
+        })
+        .ok_or(Status::NotShared)?;
+    if index == file_link::LIST {
+        return Ok(Found::List(list.clone()));
+    }
+    let file = files.get(index as usize).ok_or(Status::NoSuchFile)?.clone();
+    let total = files.iter().map(|f| f.size).sum();
+    Ok(Found::File { id: id.clone(), index, count: files.len(), total, file })
 }
 
-async fn serve(inner: Inner, mut send: SendStream, mut recv: RecvStream) {
+async fn refuse(mut send: SendStream, status: Status) {
+    if send.write_all(&[status as u8]).await.is_ok() {
+        send.finish().ok();
+    }
+}
+
+async fn serve(inner: Inner, connection: u64, mut send: SendStream, mut recv: RecvStream) {
     let mut request = [0u8; file_link::REQUEST_LEN];
     match tokio::time::timeout(REQUEST_WITHIN, recv.read_exact(&mut request)).await {
         Ok(Ok(())) => {}
         _ => return,
     }
-    let (token, offset) = file_link::decode_request(&request);
-    let status = match find(&inner, &token) {
-        None => Err(Status::NotShared),
-        Some(found) => match open_unchanged(&found) {
-            Err(status) => Err(status),
-            Ok(_) if offset > found.size => Err(Status::BadOffset),
-            Ok(file) => Ok((found, file)),
-        },
-    };
-    let (found, file) = match status {
-        Err(status) => {
-            if send.write_all(&[status as u8]).await.is_ok() {
+    let (token, index, offset) = file_link::decode_request(&request);
+    match find(&inner, &token, index) {
+        Err(status) => refuse(send, status).await,
+        Ok(Found::List(list)) => {
+            let mut answer = vec![Status::Ok as u8];
+            answer.extend_from_slice(&(list.len() as u32).to_le_bytes());
+            answer.extend(list);
+            if send.write_all(&answer).await.is_ok() {
                 send.finish().ok();
             }
-            return;
         }
-        Ok(ready) => ready,
-    };
-    let mut header = vec![Status::Ok as u8];
-    header.extend(file_link::encode_name(&found.name));
-    if send.write_all(&header).await.is_err() {
-        return;
+        Ok(Found::File { id, index, count, total, file }) => {
+            let opened = match open_unchanged(&file) {
+                Ok(_) if offset > file.size => Err(Status::BadOffset),
+                opened => opened,
+            };
+            match opened {
+                Err(status) => refuse(send, status).await,
+                Ok(handle) => {
+                    let sending = Sending { inner: &inner, id: &id, connection, index, count, total };
+                    send_file(sending, &file, handle, offset, send).await;
+                }
+            }
+        }
     }
-    let transfer = {
-        let mut shares = lock(&inner);
-        shares.next_transfer += 1;
-        let transfer = shares.next_transfer;
-        if let Some(entry) = shares.entries.get_mut(&found.id) {
-            entry.sending.insert(transfer, (offset, found.size));
+}
+
+/// Who a file is being sent to, for the share's progress and downloads.
+struct Sending<'a> {
+    inner: &'a Inner,
+    id: &'a str,
+    connection: u64,
+    index: u32,
+    count: usize,
+    total: u64,
+}
+
+impl Sending<'_> {
+    /// Record how far this file is; false once the share was stopped.
+    fn at(&self, sent: u64) -> bool {
+        let mut shares = lock(self.inner);
+        let Some(entry) = shares.entries.get_mut(self.id) else { return false };
+        let progress = entry.sending.entry(self.connection).or_insert_with(|| Progress { total: self.total, ..Progress::default() });
+        progress.current = sent;
+        true
+    }
+
+    /// The file arrived whole: once every file has, it counts as a download.
+    fn finished(&self, size: u64) {
+        let mut shares = lock(self.inner);
+        let Some(entry) = shares.entries.get_mut(self.id) else { return };
+        let progress = entry.sending.entry(self.connection).or_insert_with(|| Progress { total: self.total, ..Progress::default() });
+        if progress.done.insert(self.index) {
+            progress.finished += size;
         }
-        transfer
-    };
-    let complete = send_from(&inner, &found, transfer, file, offset, &mut send).await;
-    let mut shares = lock(&inner);
-    if let Some(entry) = shares.entries.get_mut(&found.id) {
-        entry.sending.remove(&transfer);
-        if complete {
+        progress.current = 0;
+        if progress.done.len() == self.count {
+            entry.sending.remove(&self.connection);
             entry.downloads += 1;
         }
     }
-    drop(shares);
+}
+
+async fn send_file(sending: Sending<'_>, file: &SharedFile, handle: std::fs::File, offset: u64, mut send: SendStream) {
+    if send.write_all(&[Status::Ok as u8]).await.is_err() {
+        return;
+    }
+    let complete = send_from(&sending, file.size, handle, offset, &mut send).await;
     if complete {
+        sending.finished(file.size);
         send.finish().ok();
     } else {
+        sending.at(0);
         send.reset(0u32.into()).ok();
     }
 }
 
 /// The shared file, if it is still the one that was hashed.
-fn open_unchanged(found: &Found) -> Result<std::fs::File, Status> {
-    let file = std::fs::File::open(&found.path).map_err(|_| Status::Changed)?;
-    let meta = file.metadata().map_err(|_| Status::Changed)?;
-    if meta.len() != found.size || meta.modified().ok() != found.modified {
+fn open_unchanged(file: &SharedFile) -> Result<std::fs::File, Status> {
+    let handle = std::fs::File::open(&file.path).map_err(|_| Status::Changed)?;
+    let meta = handle.metadata().map_err(|_| Status::Changed)?;
+    if meta.len() != file.size || meta.modified().ok() != file.modified {
         return Err(Status::Changed);
     }
-    Ok(file)
+    Ok(handle)
 }
 
 /// Stream the file from `offset`; false when the share was stopped or the
 /// phone went away first. Reading happens on a blocking thread, a few
 /// chunks ahead.
-async fn send_from(
-    inner: &Inner,
-    found: &Found,
-    transfer: u64,
-    mut file: std::fs::File,
-    offset: u64,
-    send: &mut SendStream,
-) -> bool {
+async fn send_from(sending: &Sending<'_>, size: u64, mut file: std::fs::File, offset: u64, send: &mut SendStream) -> bool {
     use std::io::{Seek, SeekFrom};
     let (tx, mut rx) = tokio::sync::mpsc::channel::<std::io::Result<Vec<u8>>>(4);
-    let size = found.size;
     tokio::task::spawn_blocking(move || {
         if let Err(e) = file.seek(SeekFrom::Start(offset)) {
             let _ = tx.blocking_send(Err(e));
@@ -470,18 +561,17 @@ async fn send_from(
         }
     });
     let mut sent = offset;
+    if !sending.at(sent) {
+        return false;
+    }
     while sent < size {
         let Some(Ok(chunk)) = rx.recv().await else { return false };
         if chunk.is_empty() || send.write_all(&chunk).await.is_err() {
             return false;
         }
         sent += chunk.len() as u64;
-        let mut shares = lock(inner);
-        let Some(entry) = shares.entries.get_mut(&found.id) else {
+        if !sending.at(sent) {
             return false;
-        };
-        if let Some(progress) = entry.sending.get_mut(&transfer) {
-            progress.0 = sent;
         }
     }
     true
@@ -494,16 +584,26 @@ mod tests {
 
     struct Fixture {
         _dir: tempfile::TempDir,
-        file: PathBuf,
-        data: Vec<u8>,
+        files: Vec<PathBuf>,
+        data: Vec<Vec<u8>>,
     }
 
-    fn fixture(len: usize) -> Fixture {
+    fn bytes(len: usize, seed: u32) -> Vec<u8> {
+        (0..len as u32).map(|i| (i.wrapping_add(seed).wrapping_mul(2654435761) >> 11) as u8).collect()
+    }
+
+    fn fixture(files: &[(&str, usize)]) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("report.pdf");
-        let data: Vec<u8> = (0..len as u32).map(|i| (i.wrapping_mul(2654435761) >> 11) as u8).collect();
-        std::fs::write(&file, &data).unwrap();
-        Fixture { _dir: dir, file, data }
+        let mut paths = Vec::new();
+        let mut data = Vec::new();
+        for (i, (name, len)) in files.iter().enumerate() {
+            let path = dir.path().join(name);
+            let content = bytes(*len, i as u32);
+            std::fs::write(&path, &content).unwrap();
+            paths.push(path);
+            data.push(content);
+        }
+        Fixture { _dir: dir, files: paths, data }
     }
 
     async fn ready(shares: &FileShares, id: &str) -> View {
@@ -524,102 +624,171 @@ mod tests {
         Ticket::decode(ticket).unwrap()
     }
 
-    /// A phone: dial the sharer's own addresses, ask, read everything.
-    async fn download(shares: &FileShares, token: &[u8; TOKEN_LEN], offset: u64) -> (Status, String, Vec<u8>) {
+    /// A phone: its endpoint (kept alive) and a connection to the sharer.
+    struct Phone {
+        _endpoint: Endpoint,
+        conn: Connection,
+    }
+
+    impl Phone {
+        fn close(&self) {
+            self.conn.close(0u32.into(), b"done");
+        }
+    }
+
+    /// Dial the sharer's own addresses.
+    async fn phone(shares: &FileShares) -> Phone {
         let router = shares.node.get().expect("node started");
         let addr = router.endpoint().addr();
-        let phone = crate::share::test_endpoint().await;
+        let endpoint = crate::share::test_endpoint().await;
         let lookup = MemoryLookup::new();
         lookup.add_endpoint_info(addr.clone());
-        phone.address_lookup().unwrap().add(lookup);
-        let conn = phone.connect(addr.id, file_link::ALPN).await.unwrap();
-        let (mut send, mut recv) = conn.open_bi().await.unwrap();
-        send.write_all(&file_link::encode_request(token, offset)).await.unwrap();
+        endpoint.address_lookup().unwrap().add(lookup);
+        let conn = endpoint.connect(addr.id, file_link::ALPN).await.unwrap();
+        Phone { _endpoint: endpoint, conn }
+    }
+
+    /// Ask for the list or a file; the list comes without its length.
+    async fn ask(phone: &Phone, token: &[u8; TOKEN_LEN], index: u32, offset: u64) -> (Status, Vec<u8>) {
+        let (mut send, mut recv) = phone.conn.open_bi().await.unwrap();
+        send.write_all(&file_link::encode_request(token, index, offset)).await.unwrap();
         send.finish().unwrap();
         let mut status = [0u8; 1];
         recv.read_exact(&mut status).await.unwrap();
         let status = Status::from_byte(status[0]).unwrap();
         if status != Status::Ok {
-            return (status, String::new(), Vec::new());
+            return (status, Vec::new());
         }
-        let mut len = [0u8; 2];
-        recv.read_exact(&mut len).await.unwrap();
-        let mut name = vec![0u8; u16::from_le_bytes(len) as usize];
-        recv.read_exact(&mut name).await.unwrap();
-        let body = recv.read_to_end(usize::MAX).await.unwrap();
-        conn.close(0u32.into(), b"done");
-        (status, String::from_utf8(name).unwrap(), body)
+        if index == file_link::LIST {
+            let mut len = [0u8; 4];
+            recv.read_exact(&mut len).await.unwrap();
+            let mut list = vec![0u8; u32::from_le_bytes(len) as usize];
+            recv.read_exact(&mut list).await.unwrap();
+            return (status, list);
+        }
+        (status, recv.read_to_end(usize::MAX).await.unwrap())
+    }
+
+    async fn settle() {
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     #[tokio::test]
-    async fn a_phone_downloads_the_file_and_it_matches_the_ticket() {
+    async fn a_phone_downloads_every_file_and_each_matches_the_list() {
         tokio::time::timeout(Duration::from_secs(30), async {
-            let fx = fixture(700_000);
+            let fx = fixture(&[("report.pdf", 700_000), ("photo.jpg", 3_000)]);
             let shares = FileShares::new(None, None);
-            let id = shares.prepare(&fx.file, "main").unwrap();
+            let id = shares.prepare(&fx.files, "main").unwrap();
             let view = ready(&shares, &id).await;
             let View::Ready { qr, downloads: 0, sending: None, .. } = &view else { panic!("{view:?}") };
             assert!(qr.starts_with("<?xml") && qr.contains("<svg"), "{}", &qr[..60]);
             let ticket = ticket_of(&view);
-            assert_eq!(ticket.size, fx.data.len() as u64);
-            assert_eq!(ticket.hash, *blake3::hash(&fx.data).as_bytes());
+            assert_eq!(ticket.files, Some(2));
+            assert_eq!(ticket.size, 703_000);
 
-            let (status, name, body) = download(&shares, &ticket.token, 0).await;
-            assert_eq!((status, name.as_str()), (Status::Ok, "report.pdf"));
-            assert_eq!(body, fx.data);
-            let (_, _, rest) = download(&shares, &ticket.token, 1000).await;
-            assert_eq!(rest, fx.data[1000..]);
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            assert!(matches!(shares.status(&id), Some(View::Ready { downloads: 2, sending: None, .. })));
+            let conn = phone(&shares).await;
+            let (status, list) = ask(&conn, &ticket.token, file_link::LIST, 0).await;
+            assert_eq!(status, Status::Ok);
+            assert_eq!(*blake3::hash(&list).as_bytes(), ticket.hash, "the list matches the link");
+            let listed = file_link::decode_list(&list).unwrap();
+            let names: Vec<_> = listed.iter().map(|f| f.name.as_str()).collect();
+            assert_eq!(names, ["report.pdf", "photo.jpg"]);
+            for (i, file) in listed.iter().enumerate() {
+                assert_eq!(file.size, fx.data[i].len() as u64);
+                assert_eq!(file.hash, *blake3::hash(&fx.data[i]).as_bytes());
+            }
+
+            assert_eq!(ask(&conn, &ticket.token, 0, 0).await, (Status::Ok, fx.data[0].clone()));
+            settle().await;
+            assert!(matches!(shares.status(&id), Some(View::Ready { downloads: 0, .. })), "one of two files");
+            assert_eq!(ask(&conn, &ticket.token, 1, 0).await, (Status::Ok, fx.data[1].clone()));
+            settle().await;
+            assert!(matches!(shares.status(&id), Some(View::Ready { downloads: 1, .. })), "every file: one download");
+
+            // Resuming from an offset, on another connection.
+            let again = phone(&shares).await;
+            assert_eq!(ask(&again, &ticket.token, 0, 1000).await.1, fx.data[0][1000..]);
+            conn.close();
+            again.close();
+            settle().await;
+            assert!(matches!(shares.status(&id), Some(View::Ready { downloads: 1, sending: None, .. })));
         })
         .await
         .expect("timed out");
     }
 
     #[tokio::test]
-    async fn stopped_changed_unknown_and_overlong_requests_are_refused() {
+    async fn one_file_is_a_list_of_one() {
         tokio::time::timeout(Duration::from_secs(30), async {
-            let fx = fixture(5_000);
+            let fx = fixture(&[("notes.txt", 10)]);
+            let shares = FileShares::new(None, None);
+            let id = shares.prepare(&fx.files, "main").unwrap();
+            let ticket = ticket_of(&ready(&shares, &id).await);
+            assert_eq!((ticket.files, ticket.size), (Some(1), 10));
+            let conn = phone(&shares).await;
+            let list = file_link::decode_list(&ask(&conn, &ticket.token, file_link::LIST, 0).await.1).unwrap();
+            assert_eq!(list[0].name, "notes.txt");
+            assert_eq!(ask(&conn, &ticket.token, 0, 0).await.1, fx.data[0]);
+            settle().await;
+            assert!(matches!(shares.status(&id), Some(View::Ready { downloads: 1, .. })));
+        })
+        .await
+        .expect("timed out");
+    }
+
+    #[tokio::test]
+    async fn stopped_changed_unknown_missing_and_overlong_requests_are_refused() {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let fx = fixture(&[("a.bin", 5_000), ("b.bin", 7)]);
             let shares = FileShares::new(Some("http://localhost:9/get/".into()), None);
-            let id = shares.prepare(&fx.file, "main").unwrap();
-            let view = ready(&shares, &id).await;
-            let View::Ready { link, .. } = &view else { panic!() };
+            let id = shares.prepare(&fx.files, "main").unwrap();
+            let View::Ready { link, .. } = ready(&shares, &id).await else { panic!() };
             assert!(link.starts_with("http://localhost:9/get/#"));
             let ticket = Ticket::decode(link.split_once('#').unwrap().1).unwrap();
+            let conn = phone(&shares).await;
 
-            assert_eq!(download(&shares, &[0u8; TOKEN_LEN], 0).await.0, Status::NotShared);
-            assert_eq!(download(&shares, &ticket.token, 5_001).await.0, Status::BadOffset);
-            assert_eq!(download(&shares, &ticket.token, 5_000).await.2, Vec::<u8>::new());
+            assert_eq!(ask(&conn, &[0u8; TOKEN_LEN], file_link::LIST, 0).await.0, Status::NotShared);
+            assert_eq!(ask(&conn, &[0u8; TOKEN_LEN], 0, 0).await.0, Status::NotShared);
+            assert_eq!(ask(&conn, &ticket.token, 2, 0).await.0, Status::NoSuchFile);
+            assert_eq!(ask(&conn, &ticket.token, 0, 5_001).await.0, Status::BadOffset);
+            assert_eq!(ask(&conn, &ticket.token, 0, 5_000).await.1, Vec::<u8>::new());
 
             // Same size, new content and time: refused, never served stale.
             std::thread::sleep(Duration::from_millis(20));
-            std::fs::write(&fx.file, vec![1u8; 5_000]).unwrap();
-            assert_eq!(download(&shares, &ticket.token, 0).await.0, Status::Changed);
+            std::fs::write(&fx.files[0], vec![1u8; 5_000]).unwrap();
+            assert_eq!(ask(&conn, &ticket.token, 0, 0).await.0, Status::Changed);
+            assert_eq!(ask(&conn, &ticket.token, 1, 0).await.1, fx.data[1], "the others still download");
 
             shares.stop(&id);
             assert_eq!(shares.status(&id), None);
-            assert_eq!(download(&shares, &ticket.token, 0).await.0, Status::NotShared);
+            assert_eq!(ask(&conn, &ticket.token, file_link::LIST, 0).await.0, Status::NotShared);
+            assert_eq!(ask(&conn, &ticket.token, 1, 0).await.0, Status::NotShared);
         })
         .await
         .expect("timed out");
     }
 
     #[tokio::test]
-    async fn folders_and_missing_files_cannot_be_shared() {
+    async fn folders_missing_files_and_too_many_files_cannot_be_shared() {
+        let fx = fixture(&[("a.txt", 1)]);
         let dir = tempfile::tempdir().unwrap();
         let shares = FileShares::new(None, None);
-        assert_eq!(shares.prepare(dir.path(), "main").unwrap_err(), NOT_A_FILE);
-        assert!(shares.prepare(&dir.path().join("gone"), "main").is_err());
+        assert_eq!(shares.prepare(&[dir.path().to_path_buf()], "main").unwrap_err(), NOT_A_FILE);
+        assert_eq!(shares.prepare(&[fx.files[0].clone(), dir.path().to_path_buf()], "main").unwrap_err(), NOT_A_FILE);
+        assert!(shares.prepare(&[dir.path().join("gone")], "main").is_err());
+        assert_eq!(shares.prepare(&[], "main").unwrap_err(), NOTHING);
+        let many = vec![fx.files[0].clone(); file_link::MAX_FILES + 1];
+        assert_eq!(shares.prepare(&many, "main").unwrap_err(), TOO_MANY);
         assert_eq!(shares.status("nope"), None);
         shares.stop("nope");
     }
 
     #[tokio::test]
     async fn closing_a_window_stops_only_its_shares() {
-        let fx = fixture(100);
+        let fx = fixture(&[("a.txt", 100)]);
         let shares = FileShares::new(None, None);
-        let mine = shares.prepare(&fx.file, "main").unwrap();
-        let other = shares.prepare(&fx.file, "window-2").unwrap();
+        let mine = shares.prepare(&fx.files, "main").unwrap();
+        let other = shares.prepare(&fx.files, "window-2").unwrap();
         shares.stop_window("main");
         assert_eq!(shares.status(&mine), None);
         assert!(shares.status(&other).is_some());
@@ -637,30 +806,32 @@ mod tests {
 
     #[test]
     fn hashing_reports_progress_and_stops_when_cancelled() {
-        let fx = fixture(3 * HASH_CHUNK + 10);
+        let fx = fixture(&[("big.bin", 3 * HASH_CHUNK + 10)]);
         let seen = Mutex::new(Vec::new());
-        let (hash, size, _) = hash_file(&fx.file, &AtomicBool::new(false), &|n| seen.lock().unwrap().push(n)).unwrap();
-        assert_eq!(hash, *blake3::hash(&fx.data).as_bytes());
-        assert_eq!(size, fx.data.len() as u64);
+        let file = &fx.files[0];
+        let (hash, size, _) = hash_file(file, &AtomicBool::new(false), &|n| seen.lock().unwrap().push(n)).unwrap();
+        assert_eq!(hash, *blake3::hash(&fx.data[0]).as_bytes());
+        assert_eq!(size, fx.data[0].len() as u64);
         assert_eq!(seen.into_inner().unwrap().last(), Some(&size));
-        assert_eq!(hash_file(&fx.file, &AtomicBool::new(true), &|_| {}).unwrap_err(), "Stopped.");
+        assert_eq!(hash_file(file, &AtomicBool::new(true), &|_| {}).unwrap_err(), "Stopped.");
     }
 
     #[test]
-    fn views_report_progress() {
+    fn views_report_progress_across_files() {
         let entry = |phase| Entry {
             window: String::new(),
-            path: PathBuf::new(),
-            name: String::new(),
             token: [0; TOKEN_LEN],
             cancel: Arc::default(),
             phase,
             downloads: 1,
-            sending: HashMap::from([(1, (25, 100)), (2, (50, 100))]),
+            sending: HashMap::from([
+                (1, Progress { done: HashSet::new(), finished: 0, current: 25, total: 100 }),
+                (2, Progress { done: HashSet::from([0]), finished: 40, current: 10, total: 100 }),
+            ]),
         };
         assert_eq!(entry(Phase::Preparing { hashed: 5, size: 10 }).view(), View::Preparing { progress: 0.5 });
         assert_eq!(entry(Phase::Preparing { hashed: 0, size: 0 }).view(), View::Preparing { progress: 1.0 });
-        let ready = entry(Phase::Ready { link: "l".into(), qr: "q".into(), size: 100, modified: None }).view();
+        let ready = entry(Phase::Ready { link: "l".into(), qr: "q".into(), list: Vec::new(), files: Vec::new() }).view();
         assert_eq!(ready, View::Ready { link: "l".into(), qr: "q".into(), downloads: 1, sending: Some(0.5) });
         assert_eq!(entry(Phase::Failed("no".into())).view(), View::Failed { error: "no".into() });
         assert!(qr_svg("https://example.com/get/#abc").unwrap().contains("<svg"));
