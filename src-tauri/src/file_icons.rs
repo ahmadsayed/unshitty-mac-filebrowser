@@ -443,8 +443,10 @@ pub mod theme {
     }
 
     /// The best file for the first of `names` found: in `theme`, then the
-    /// themes it inherits from, then hicolor, then loose in a search path
-    /// (`/usr/share/pixmaps` style).
+    /// themes it inherits from, then (as GTK does) Adwaita and gnome, then
+    /// hicolor, then loose in a search path (`/usr/share/pixmaps` style).
+    /// GTK's fallback matters when the configured theme is missing or thin:
+    /// Ubuntu names Yaru even where only Adwaita is installed.
     pub fn find(
         load: &dyn Fn(&str) -> Option<Arc<Theme>>,
         theme: &str,
@@ -455,7 +457,9 @@ pub mod theme {
         let mut chain = Vec::new();
         let mut seen = HashSet::new();
         let mut queue = vec![theme.to_string()];
-        while let Some(name) = queue.pop() {
+        // Taken from the end once the theme's own chain is done.
+        let mut fallbacks = vec!["hicolor", "gnome", "Adwaita"];
+        while let Some(name) = queue.pop().or_else(|| fallbacks.pop().map(String::from)) {
             if !seen.insert(name.clone()) {
                 continue;
             }
@@ -463,9 +467,6 @@ pub mod theme {
                 // Inherited themes are searched in the order listed.
                 queue.extend(loaded.inherits.iter().rev().cloned());
                 chain.push(loaded);
-            }
-            if queue.is_empty() && !seen.contains("hicolor") {
-                queue.push("hicolor".into());
             }
         }
         for theme in &chain {
@@ -543,6 +544,26 @@ pub mod theme {
             assert!(find(&load, "Gone", &names, 48, &bases).is_some());
             assert!(Theme::load("../Test", &bases).is_none());
             assert!(Theme::load("", &bases).is_none());
+        }
+
+        #[test]
+        fn like_gtk_adwaita_comes_after_the_theme_and_before_hicolor() {
+            let (dir, bases) = fixture();
+            let icons = &bases[0];
+            write(&icons.join("Adwaita/index.theme"), "[Icon Theme]\nDirectories=scalable/places\n[scalable/places]\nSize=128\nType=Scalable\nMinSize=8\nMaxSize=512\n");
+            write(&icons.join("Adwaita/scalable/places/folder-documents.svg"), "adwaita documents");
+            write(&icons.join("Adwaita/scalable/places/my-app.svg"), "adwaita app");
+            let load = |name: &str| Theme::load(name, &bases).map(Arc::new);
+            let found = |theme: &str, name: &str| {
+                find(&load, theme, &[name.to_string()], 128, &bases).map(|f| std::fs::read_to_string(f).unwrap())
+            };
+            // A theme that isn't installed (Ubuntu's default Yaru, say).
+            assert_eq!(found("Yaru", "folder-documents").as_deref(), Some("adwaita documents"));
+            // An installed theme without the icon.
+            assert_eq!(found("Test", "folder-documents").as_deref(), Some("adwaita documents"));
+            // Adwaita is searched before hicolor.
+            assert_eq!(found("Test", "my-app").as_deref(), Some("adwaita app"));
+            drop(dir);
         }
 
         #[test]
