@@ -28,7 +28,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), drawn for the theme; file-kind detection |
 | `src/icons-macos.ts` | The macOS theme's drawings under the same symbol ids: folders, file pages, line icons |
 | `src/thumbnails.ts` | Thumbnail request queue (4 concurrent) and bounded blob-URL cache |
-| `src/native-icons.ts` | Icons from the OS for rendered items: ids in one batch per render, one image per type and size |
+| `src/native-icons.ts` | Icons from the OS: ids in one batch per render, one image per type and size; single icons for Open With, Properties and the preview |
 | `src/format.ts` | GNOME-style size and date strings |
 | `src/api.ts` | Typed wrappers for every Tauri command |
 | `src/styles.css` | All styling: layout, views and widgets, reading every look-related value from theme tokens |
