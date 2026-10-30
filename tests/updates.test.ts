@@ -92,7 +92,7 @@ test("an offer on a package install points to the package manager", async () => 
   expect(dialogText()).toContain("Update it with your system's package manager.");
   expect(buttons()).toEqual(["Close", "Open Release Page"]);
   await respond("Open Release Page");
-  expect(log).toHaveBeenCalledWith("mock openUrl", expect.stringMatching(/\/releases\/tag\/v0\.5\.4$/));
+  expect(log).toHaveBeenCalledWith("mock open_url", expect.stringMatching(/\/releases\/tag\/v0\.5\.4$/));
   log.mockRestore();
 });
 

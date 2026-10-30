@@ -1766,6 +1766,13 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     console.log("mock open_file", path);
     return undefined;
   },
+  open_url: (a) => {
+    // The backend's rule: https links, and the Mac's System Settings link.
+    const url = str(a, "url");
+    if (!/^(https:|x-apple\.systempreferences:)\S+$/i.test(url)) throw "This link can't be opened.";
+    console.log("mock open_url", url);
+    return undefined;
+  },
   open_with: (a) => {
     if (!lookup(str(a, "path"))) throw "No such file or directory";
     return undefined;
