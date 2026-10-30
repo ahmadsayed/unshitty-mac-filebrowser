@@ -119,6 +119,20 @@ transfer runs: a new batch joins a FIFO queue, shows as "Waiting…" in the
 popover and starts when the previous one ends. Cancelling a waiting batch
 removes it. Remote opens don't queue.
 
+**D8a. A finished transfer selects what it made, unless the user has moved on
+(#50).** `runTransfer` notes `selectionIntent` when the user pastes or drops.
+That counter goes up with every selection or view change the user makes
+(click, Shift/⌘-click, rubber band, keyboard, Select All, Escape, typing a
+search, navigating, opening or switching a tab), and not with the app's own
+reloads. When the batch ends, it selects the items it finished only if the
+destination is still open and the counter hasn't moved. Otherwise it
+reloads keeping the user's newer selection, with the cursor and anchor kept
+on the same items by path. Each queued batch keeps the counter from its
+own paste, so batches left alone each select their items in turn, and a
+batch never selects anything the user chose after pasting it. A cancelled
+or partly failed batch selects only what it finished, and only items the
+reload finds.
+
 **D9. The frontend owns the operation list.** Each operation records its id,
 title, measured total, the bytes and items of finished items, the running
 item's latest update, its start time and its state (waiting, preparing,
