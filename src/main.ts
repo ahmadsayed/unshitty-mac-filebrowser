@@ -108,6 +108,13 @@ let shown: Entry[] = [];
 let listingError: string | null = null;
 
 const selected = new Set<string>();
+/** Bumped by every selection or view change the user makes, not by the
+ *  app's own reloads. A copy or move selects what it made only when this
+ *  hasn't moved since it was pasted: a newer choice by the user wins (#50). */
+let selectionIntent = 0;
+function noteSelectionIntent(): void {
+  selectionIntent++;
+}
 let anchorIndex = -1;
 let cursorIndex = -1;
 let searchQuery: string | null = null;
@@ -572,6 +579,7 @@ async function newTab(): Promise<void> {
   backStack = [];
   forwardStack = [];
   selected.clear();
+  noteSelectionIntent();
   anchorIndex = cursorIndex = -1;
   renderView();
   updateNavButtons();
@@ -664,6 +672,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   countsInFlight.clear();
   versionedFolders.clear();
   selected.clear();
+  noteSelectionIntent();
   anchorIndex = cursorIndex = -1;
   if (opts.select) selected.add(opts.select);
 
@@ -704,13 +713,30 @@ async function reload(select?: string[]): Promise<void> {
   selected.clear();
   const paths = new Set(entries.map((e) => e.path));
   for (const p of keep) if (paths.has(p)) selected.add(p);
+  const cursorPath = shown[cursorIndex]?.path;
+  const anchorPath = shown[anchorIndex]?.path;
   const top = scrollEl.scrollTop;
   renderView();
   scrollEl.scrollTop = top;
   if (select?.[0]) revealPath(select[0]);
+  else followCursor(cursorPath, anchorPath);
   versionedRootPath = await lookupVersionedRoot(location);
   updateShareSubtitle();
   if (searchQuery !== null) onSearchInput();
+}
+
+/** After a reload, keep the cursor and anchor on the same items: new ones
+ *  may have landed above them. */
+function followCursor(cursorPath: string | undefined, anchorPath: string | undefined): void {
+  cursorIndex = indexOfPath(cursorPath, cursorIndex);
+  anchorIndex = indexOfPath(anchorPath, anchorIndex);
+  updateSelection();
+}
+
+/** Where `path` is now, or the old index (kept in range) when it's gone. */
+function indexOfPath(path: string | undefined, fallback: number): number {
+  const i = path === undefined ? -1 : shown.findIndex((e) => e.path === path);
+  return i >= 0 ? i : Math.min(fallback, shown.length - 1);
 }
 
 /** A received share that isn't online shows its status page instead of a listing. */
@@ -1948,6 +1974,7 @@ function updateSelection(): void {
 }
 
 function selectOnly(index: number): void {
+  noteSelectionIntent();
   selected.clear();
   if (shown[index]) selected.add(shown[index].path);
   anchorIndex = cursorIndex = index;
@@ -1955,6 +1982,7 @@ function selectOnly(index: number): void {
 }
 
 function selectRange(from: number, to: number, additive: boolean): void {
+  noteSelectionIntent();
   if (!additive) selected.clear();
   const [a, b] = from < to ? [from, to] : [to, from];
   for (let i = a; i <= b; i++) if (shown[i]) selected.add(shown[i].path);
@@ -1963,11 +1991,13 @@ function selectRange(from: number, to: number, additive: boolean): void {
 }
 
 function selectAll(): void {
+  noteSelectionIntent();
   for (const e of shown) selected.add(e.path);
   updateSelection();
 }
 
 function clearSelection(): void {
+  noteSelectionIntent();
   selected.clear();
   updateSelection();
 }
@@ -2116,6 +2146,7 @@ function onViewMouseDown(e: MouseEvent): void {
   if (e.shiftKey && anchorIndex >= 0) {
     selectRange(anchorIndex, index, toggleMod);
   } else if (toggleMod) {
+    noteSelectionIntent();
     const p = shown[index].path;
     if (selected.has(p)) selected.delete(p);
     else selected.add(p);
@@ -2140,6 +2171,7 @@ function onViewMouseDown(e: MouseEvent): void {
 }
 
 function startRubberband(start: MouseEvent, additive: boolean): void {
+  noteSelectionIntent();
   const band = $("#rubberband");
   const overlay = scrollEl.parentElement!;
   const base = new Set(additive ? selected : []);
@@ -3156,6 +3188,8 @@ function transferOperation(paths: string[], moving: boolean, destDir: string, ca
  */
 async function runTransfer(paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string): Promise<boolean> {
   if (isPseudo(destDir)) return false;
+  // The user's selection as of this paste; see transferBatch's end.
+  const intent = selectionIntent;
   const batch = { cancelled: false, started: false, measuring: false };
   const op = transferOperation(paths, paths.some(move), destDir, () => {
     batch.cancelled = true;
@@ -3169,7 +3203,7 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
     batch.started = true;
     transfersRunning++;
     try {
-      return await transferBatch(paths, dirs, move, destDir, op, batch);
+      return await transferBatch(paths, dirs, move, destDir, op, batch, intent);
     } finally {
       transfersRunning--;
       endOperation(op);
@@ -3251,7 +3285,7 @@ function showLanded(destDir: string): void {
 
 async function transferBatch(
   paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string,
-  op: Operation, batch: { cancelled: boolean; measuring: boolean },
+  op: Operation, batch: { cancelled: boolean; measuring: boolean }, intent: number,
 ): Promise<boolean> {
   await measureBatch(op, paths, batch);
   const done: string[] = [];
@@ -3306,8 +3340,10 @@ async function transferBatch(
   if (errors.length) {
     showToast(errors.length === 1 ? `Could not ${verb} ${errors[0]}` : `Could not ${verb} ${errors.length} items. ${errors[0]}`);
   }
-  if (destDir === location) await reload(done.length ? done : undefined);
-  else await reload();
+  // Select what landed only when the user hasn't chosen something else, or
+  // gone anywhere, since pasting; otherwise keep their newer selection.
+  const untouched = destDir === location && intent === selectionIntent;
+  await reload(untouched && done.length ? done : undefined);
   return !batch.cancelled && errors.length === 0;
 }
 
@@ -4480,6 +4516,7 @@ function gridStep(k: ViewKey, delta: number): boolean {
 
 function toggleCursorItem(k: ViewKey): void {
   if (k.cur < 0 || !k.mod) return;
+  noteSelectionIntent();
   const p = shown[k.cur].path;
   if (selected.has(p)) selected.delete(p);
   else selected.add(p);
@@ -5343,7 +5380,12 @@ async function init(): Promise<void> {
   pathEntry.addEventListener("blur", () => setTimeout(closePathEntry, 0));
 
   // Search
-  searchEntry.addEventListener("input", onSearchInput);
+  // Typing a search picks its first match: the user's choice, unlike the
+  // reloads that rerun the search.
+  searchEntry.addEventListener("input", () => {
+    noteSelectionIntent();
+    onSearchInput();
+  });
   searchEntry.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       e.preventDefault();
