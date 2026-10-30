@@ -39,7 +39,10 @@ phone and the file downloads straight to the phone:
   not reach the relay server. Check the internet connection and try again."
 - **The phone's page** shows the file name and size, **Download**, a progress
   bar, then **Downloaded and checked.** with **Save File** (and **Share…**
-  where the phone can share files). Every refusal says what to do: "This file
+  where the phone can share files). A picture the phone's browser can show
+  (JPEG, PNG, GIF, WebP, and HEIC/AVIF where supported) replaces the file
+  icon once it has arrived; the link carries no name or type, so nothing
+  shows before Download. Every refusal says what to do: "This file
   is no longer shared. Ask for a new QR code." The page follows the phone's
   light or dark mode.
 

@@ -30,6 +30,7 @@
     padding: 28px 24px 24px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center;
   }
   .icon { width: 72px; height: 72px; color: var(--accent); }
+  .preview { display: block; max-width: 100%; max-height: 50vh; border-radius: 10px; object-fit: contain; }
   h1 { margin: 4px 0 0; font-size: 19px; font-weight: 700; overflow-wrap: anywhere; }
   .dim { color: var(--dim); margin: 0; }
   #status { margin: 6px 0 2px; min-height: 1.4em; }
@@ -49,7 +50,7 @@
 </head>
 <body>
 <main>
-  <svg class="icon" viewBox="0 0 64 64" aria-hidden="true">
+  <svg id="icon" class="icon" viewBox="0 0 64 64" aria-hidden="true">
     <path fill="currentColor" opacity=".18" d="M16 6h22l14 14v36a4 4 0 0 1-4 4H16a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4z"/>
     <path fill="currentColor" d="M38 6v10a4 4 0 0 0 4 4h10z"/>
     <path fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" d="M32 30v16m-7-7 7 7 7-7"/>
