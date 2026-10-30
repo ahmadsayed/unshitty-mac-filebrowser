@@ -68,11 +68,11 @@ one out on its own platform.
 - **Folder Sharing (Experimental):** share a folder read-only with a
   `share://` link, for anyone or one person, with optional passphrase-encrypted
   invitations. Received shares show up in Network ([sharing guide](docs/folder-sharing.md)).
-- **Share with QR Code (Experimental):** right-click a file and scan the code
-  with a phone. The file downloads straight from your computer over
-  [iroh](https://www.iroh.computer/), encrypted, on any network, with no app
-  on the phone, and a photo shows on the page once it arrives. It's shared
-  while the dialog is open.
+- **Share with QR Code (Experimental):** right-click one or more files and
+  scan the code with a phone. The files download straight from your computer
+  over [iroh](https://www.iroh.computer/), encrypted, on any network, with no
+  app on the phone, and photos show on the page once they arrive. They're
+  shared while the dialog is open.
 - **Network (Experimental):** browse SSH/SFTP servers read-only.
 - **Google Drive (Experimental):** browse, copy, move and trash in My Drive
   with your own OAuth client ([setup](docs/google-drive.md)).
@@ -133,9 +133,9 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 - SFTP and shares are read-only; no SMB or WebDAV.
 - Share passphrases unlock invitations once; they do not encrypt local settings
   or downloaded copies. Sharing requires the sharer's app to stay open.
-- Share with QR Code: one file at a time. The phone keeps the file in memory
-  until it is saved, and downloads go through iroh's public relays, which
-  are rate-limited.
+- Share with QR Code: files only, no folders (up to 1,000 files). The phone
+  keeps the files in memory until they are saved, and downloads go through
+  iroh's public relays, which are rate-limited.
 - Preview has no video or audio playback.
 - Google Drive: no Shared Drives, "Shared with me" or Drive-wide search.
 - Keep Versions may miss changes made while the app is closed.

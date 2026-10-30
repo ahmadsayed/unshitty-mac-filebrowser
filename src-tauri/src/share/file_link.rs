@@ -71,7 +71,7 @@ impl Status {
     pub fn message(self) -> &'static str {
         match self {
             Status::Ok => "",
-            Status::NotShared => "This file is no longer shared. Ask for a new QR code.",
+            Status::NotShared => "Sharing has stopped. Ask for a new QR code.",
             Status::Changed => "The file changed since it was shared. Ask for a new QR code.",
             Status::BadOffset => "The download could not be resumed.",
             Status::NoSuchFile => "This file is not in the share. Ask for a new QR code.",
