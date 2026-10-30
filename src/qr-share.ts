@@ -1,6 +1,6 @@
-// Share one file with a QR code: a phone scans it and downloads the file
-// over iroh, on any network (src-tauri/src/share/file_share.rs). The share
-// lasts while the dialog is open; closing it, or the window, stops it.
+// Share files with a QR code: a phone scans it and downloads them over
+// iroh, on any network (src-tauri/src/share/file_share.rs). The share lasts
+// while the dialog is open; closing it, or the window, stops it.
 import { fileSharePrepare, fileShareStatus, fileShareStop, type Entry, type FileShareView } from "./api";
 import { openDialog, showToast, type MenuItem } from "./ui";
 
@@ -13,10 +13,16 @@ window.addEventListener("pagehide", () => {
   for (const id of running) void fileShareStop(id).catch(() => {});
 });
 
-/** "Share with QR Code…" for one local file (not in the Trash). */
-export function qrShareItems(entry: Entry | null, enabled: boolean): MenuItem[] {
-  if (!enabled || !entry || entry.is_dir || !entry.path.startsWith("/")) return [];
-  return [{ label: "Share with QR Code…", action: () => void showQrShare(entry) }];
+/** "Share with QR Code…" when every selected item is a local file (not in
+ * the Trash). */
+export function qrShareItems(entries: Entry[], enabled: boolean): MenuItem[] {
+  if (!enabled || entries.length === 0 || entries.some((e) => e.is_dir || !e.path.startsWith("/"))) return [];
+  return [{ label: "Share with QR Code…", action: () => void showQrShare(entries) }];
+}
+
+/** “Notes.md” for one file, “2 files” for more. */
+function what(entries: Entry[]): string {
+  return entries.length === 1 ? `“${entries[0].name}”` : `${entries.length} files`;
 }
 
 export function downloadsText(count: number): string {
@@ -36,21 +42,22 @@ export function statusText(view: FileShareView): string {
   }
 }
 
-export async function showQrShare(entry: Entry): Promise<void> {
+export async function showQrShare(entries: Entry[]): Promise<void> {
   let id: string;
   try {
-    id = await fileSharePrepare(entry.path);
+    id = await fileSharePrepare(entries.map((e) => e.path));
   } catch (err) {
-    showToast(`Could not share “${entry.name}”: ${String(err)}`);
+    showToast(`Could not share ${what(entries)}: ${String(err)}`);
     return;
   }
+  const several = entries.length > 1;
   running.add(id);
 
   const extra = document.createElement("div");
   extra.className = "qr-share";
   extra.innerHTML =
     `<div class="qr-share-code"><div class="qr-share-placeholder"><div class="operation-bar"><div class="operation-bar-fill"></div></div></div></div>` +
-    `<p class="qr-share-hint">Scan with a phone’s camera to download the file. Works on any network while this window is open.</p>` +
+    `<p class="qr-share-hint">Scan with a phone’s camera to download the ${several ? "files" : "file"}. Works on any network while this window is open.</p>` +
     `<div class="qr-share-link" hidden><input class="entry" type="text" readonly spellcheck="false" aria-label="Link" /><button class="btn" type="button">Copy</button></div>` +
     `<p class="qr-share-status" role="status"></p>`;
   const code = extra.querySelector<HTMLElement>(".qr-share-code")!;
@@ -70,7 +77,7 @@ export async function showQrShare(entry: Entry): Promise<void> {
     if (running.delete(id)) void fileShareStop(id).catch(() => {});
   };
   const dialog = openDialog({
-    heading: `Share “${entry.name}”`,
+    heading: several ? `Share ${entries.length} Files` : `Share “${entries[0].name}”`,
     extra,
     className: "qr-share-dialog",
     responses: [{ id: "stop", label: "Stop Sharing" }],

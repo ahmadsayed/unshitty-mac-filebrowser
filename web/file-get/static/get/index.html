@@ -31,6 +31,15 @@
   }
   .icon { width: 72px; height: 72px; color: var(--accent); }
   .preview { display: block; max-width: 100%; max-height: 50vh; border-radius: 10px; object-fit: contain; }
+  .files { list-style: none; margin: 4px 0 0; padding: 0; width: 100%; text-align: left; }
+  .files[hidden] { display: none; }
+  .file-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--border); }
+  .row-icon, .row-thumb { width: 44px; height: 44px; flex: none; color: var(--accent); }
+  .row-thumb { border-radius: 6px; object-fit: cover; }
+  .row-text { flex: 1; min-width: 0; }
+  .row-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-size { font-size: 13px; }
+  .row-save { width: auto; padding: 8px 14px; }
   h1 { margin: 4px 0 0; font-size: 19px; font-weight: 700; overflow-wrap: anywhere; }
   .dim { color: var(--dim); margin: 0; }
   #status { margin: 6px 0 2px; min-height: 1.4em; }
@@ -59,6 +68,7 @@
   <p id="size" class="dim"></p>
   <div id="bar" class="bar" hidden><div id="fill"></div></div>
   <p id="status">Loading…</p>
+  <ul id="files" class="files" hidden></ul>
   <div class="buttons">
     <button id="start" class="suggested" hidden>Download</button>
     <button id="save" class="suggested" hidden>Save File</button>
@@ -67,7 +77,7 @@
   </div>
 </main>
 <footer>
-  The file comes straight from the computer sharing it, encrypted end to end over
+  Files come straight from the computer sharing them, encrypted end to end over
   <a href="https://www.iroh.computer/" rel="noreferrer">iroh</a>. Nothing is uploaded anywhere.
 </footer>
 <script type="module" src="page.js"></script>

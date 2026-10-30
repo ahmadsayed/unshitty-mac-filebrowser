@@ -2654,7 +2654,7 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
     ...(app ? [{ label: "Show Package Contents", action: () => navigate(app.path) }] : []),
     ...(intoFolder ? [bookmarkMenuItem(intoFolder.path)] : []),
     ...(shareable ? [{ label: "Share…", action: () => void showShareDialog(intoFolder) }] : []),
-    ...qrShareItems(single, !inTrash()),
+    ...qrShareItems(sel, !inTrash()),
     { separator: true },
     ...cutCopyItems(),
     ...(intoFolder ? [{ label: "Paste Into Folder", disabled: !clipboard, action: () => paste(intoFolder.path) }] : []),

@@ -1,27 +1,15 @@
-// The download page: the ticket after `#` names the file (see
+// The download page: the ticket after `#` names the shared files (see
 // src-tauri/src/share/file_link.rs). Download on a tap, keep the pieces in
-// memory, then let the phone save or share the file: saving from a tap
+// memory, then let the phone save or share the files: saving from a tap
 // works everywhere, including iPhones.
-import init, { download, ticket_size } from "./file_get.js";
-import { isImage, showImage, typeOf } from "./preview.js";
+import init, { download, ticket_files, ticket_size } from "./file_get.js";
+import { fileRow, formatSize, isImage, showImage, typeOf } from "./preview.js";
 
 const $ = (id) => document.getElementById(id);
 const ticket = location.hash.slice(1);
-let file = null;
-let url = null;
-
-/** GNOME-style sizes: "4 bytes", "12.3 kB", "4.5 MB". */
-function formatSize(bytes) {
-  if (bytes < 1000) return `${bytes} ${bytes === 1 ? "byte" : "bytes"}`;
-  const units = ["kB", "MB", "GB", "TB"];
-  let value = bytes / 1000;
-  let unit = 0;
-  while (value >= 1000 && unit < units.length - 1) {
-    value /= 1000;
-    unit++;
-  }
-  return `${value.toFixed(1)} ${units[unit]}`;
-}
+/** The downloaded files, and an object URL per file once one is needed. */
+let files = [];
+const urls = new Map();
 
 function show({ status, error = false, progress = null, buttons = [] }) {
   $("status").textContent = status;
@@ -31,33 +19,47 @@ function show({ status, error = false, progress = null, buttons = [] }) {
   for (const id of ["start", "save", "share", "retry"]) $(id).hidden = !buttons.includes(id);
 }
 
-/** The download in progress: pieces so far, bytes received, the size. */
-const progress = { chunks: [], received: 0, total: 0 };
+/** The download in progress: the names, pieces per file, bytes received, the total. */
+const progress = { names: [], chunks: [], received: 0, total: 0 };
 
 const messageOf = (err) => err?.message ?? String(err);
 
-function started(name, size) {
-  progress.total = size;
-  $("name").textContent = name;
-  document.title = name;
-  show({ status: `Downloading… 0 bytes of ${formatSize(size)}`, progress: 0 });
+function title(text) {
+  $("name").textContent = text;
+  document.title = text;
 }
 
-function arrived(chunk) {
-  progress.chunks.push(chunk);
+function listed(names, sizes) {
+  progress.names = names;
+  progress.chunks = names.map(() => []);
+  progress.total = sizes.reduce((sum, size) => sum + size, 0);
+  if (names.length === 1) title(names[0]);
+  show({ status: `Downloading… 0 bytes of ${formatSize(progress.total)}`, progress: 0 });
+}
+
+function arrived(index, chunk) {
+  progress.chunks[index].push(chunk);
   progress.received += chunk.length;
   const { received, total } = progress;
   show({ status: `Downloading… ${formatSize(received)} of ${formatSize(total)}`, progress: total ? received / total : 1 });
 }
 
-function finished(name) {
-  file = new File(progress.chunks, name, { type: typeOf(name) });
+const urlOf = (file) => {
+  if (!urls.has(file)) urls.set(file, URL.createObjectURL(file));
+  return urls.get(file);
+};
+
+function finished() {
+  files = progress.names.map((name, i) => new File(progress.chunks[i], name, { type: typeOf(name) }));
   progress.chunks = [];
-  if (isImage(file.type)) {
-    url = URL.createObjectURL(file);
-    showImage($("icon"), url, name);
+  if (files.length === 1) {
+    if (isImage(files[0].type)) showImage($("icon"), urlOf(files[0]), files[0].name);
+  } else {
+    $("files").replaceChildren(...files.map((file) => fileRow(file, urlOf(file), saveFile).row));
+    $("files").hidden = false;
+    $("save").textContent = "Save All";
   }
-  const buttons = navigator.canShare?.({ files: [file] }) ? ["save", "share"] : ["save"];
+  const buttons = navigator.canShare?.({ files }) ? ["save", "share"] : ["save"];
   show({ status: "Downloaded and checked.", progress: 1, buttons });
 }
 
@@ -66,11 +68,12 @@ function stillWaiting() {
 }
 
 async function start() {
-  Object.assign(progress, { chunks: [], received: 0, total: 0 });
+  Object.assign(progress, { names: [], chunks: [], received: 0, total: 0 });
   show({ status: "Connecting to the computer…", progress: 0 });
   const slow = setTimeout(stillWaiting, 15000);
   try {
-    finished(await download(ticket, started, arrived));
+    await download(ticket, listed, arrived);
+    finished();
   } catch (err) {
     show({ status: messageOf(err), error: true, buttons: ["retry"] });
   } finally {
@@ -78,20 +81,22 @@ async function start() {
   }
 }
 
-function save() {
-  if (!file) return;
-  url ??= URL.createObjectURL(file);
+function saveFile(file) {
   const link = document.createElement("a");
-  link.href = url;
+  link.href = urlOf(file);
   link.download = file.name;
   document.body.appendChild(link);
   link.click();
   link.remove();
 }
 
+function saveAll() {
+  files.forEach(saveFile);
+}
+
 async function share() {
   try {
-    await navigator.share({ files: [file], title: file.name });
+    await navigator.share({ files, title: files.length === 1 ? files[0].name : $("name").textContent });
   } catch {
     /* cancelled */
   }
@@ -99,7 +104,7 @@ async function share() {
 
 $("start").addEventListener("click", start);
 $("retry").addEventListener("click", start);
-$("save").addEventListener("click", save);
+$("save").addEventListener("click", saveAll);
 $("share").addEventListener("click", share);
 
 if (!ticket) {
@@ -109,7 +114,9 @@ if (!ticket) {
     if (typeof WebAssembly !== "object") throw new Error("This browser can't download shared files. Try another browser.");
     await init();
     const size = ticket_size(ticket);
-    // The file is kept in memory until it is saved.
+    const count = ticket_files(ticket);
+    if (count > 1) title(`${count} Files`);
+    // The files are kept in memory until they are saved.
     $("size").textContent = size > 1e9 ? `${formatSize(size)} · the phone needs that much free memory` : formatSize(size);
     show({ status: "", buttons: ["start"] });
   } catch (err) {

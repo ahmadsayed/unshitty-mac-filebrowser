@@ -18,7 +18,7 @@ const poll = async () => {
 
 beforeAll(boot);
 
-test("files offer Share with QR Code…; folders and several items don't", async () => {
+test("files offer Share with QR Code…, alone or together; folders don't", async () => {
   await goTo("/Users/me/Documents");
   await rightClick(hit("Notes.md"));
   expect(menuLabels()).toContain("Share with QR Code…");
@@ -27,10 +27,30 @@ test("files offer Share with QR Code…; folders and several items don't", async
   expect(menuLabels()).not.toContain("Share with QR Code…");
   await closeOverlays();
   await click(hit("Notes.md"));
-  await click(hit("Budget 2026.xlsx"), { shiftKey: true });
+  await click(hit("Budget 2026.xlsx"), { metaKey: true });
   await rightClick(hit("Budget 2026.xlsx"));
+  expect(menuLabels()).toContain("Share with QR Code…");
+  await closeOverlays();
+  await click(hit("Notes.md"));
+  await click(hit("Projects"), { metaKey: true });
+  await rightClick(hit("Notes.md"));
   expect(menuLabels()).not.toContain("Share with QR Code…");
   await closeOverlays();
+});
+
+test("several files share as one code", async () => {
+  await goTo("/Users/me/Documents");
+  await click(hit("Notes.md"));
+  await click(hit("Budget 2026.xlsx"), { metaKey: true });
+  await rightClick(hit("Budget 2026.xlsx"));
+  await chooseMenu("Share with QR Code…");
+  await settle();
+  expect(dialogHeading()).toBe("Share 2 Files");
+  expect($(".qr-share-hint").textContent).toMatch(/download the files\./);
+  const [share] = [...fileShareMock.shares.values()];
+  expect(share.paths.sort()).toEqual(["/Users/me/Documents/Budget 2026.xlsx", "/Users/me/Documents/Notes.md"]);
+  await respond("Stop Sharing");
+  expect(fileShareMock.shares.size).toBe(0);
 });
 
 test("the dialog prepares, shows the code and link, then counts downloads", async () => {
@@ -39,6 +59,7 @@ test("the dialog prepares, shows the code and link, then counts downloads", asyn
   await chooseMenu("Share with QR Code…");
   await settle();
   expect(dialogHeading()).toBe("Share “Notes.md”");
+  expect($(".qr-share-hint").textContent).toMatch(/download the file\./);
   expect($(".qr-share-status").textContent).toBe("Preparing… 50%");
   expect($(".qr-share-link").hidden).toBe(true);
 

@@ -1,7 +1,7 @@
 // The phone's download page (web/file-get): file types, and the image
 // preview that replaces the file icon once a picture has downloaded.
 import { beforeEach, expect, test } from "vitest";
-import { isImage, showImage, typeOf } from "../web/file-get/static/get/preview.js";
+import { fileRow, formatSize, isImage, showImage, typeOf } from "../web/file-get/static/get/preview.js";
 
 let icon: Element;
 
@@ -47,4 +47,35 @@ test("a picture the browser can't decode leaves the icon", () => {
   image.dispatchEvent(new Event("error"));
   expect(document.getElementById("icon")).toBe(icon);
   expect(document.querySelector("img")).toBeNull();
+});
+
+test("sizes read like GNOME's", () => {
+  expect(formatSize(1)).toBe("1 byte");
+  expect(formatSize(999)).toBe("999 bytes");
+  expect(formatSize(828_600)).toBe("828.6 kB");
+  expect(formatSize(12_400_000)).toBe("12.4 MB");
+});
+
+test("a file row names the file, shows its size and saves it", () => {
+  const saved: File[] = [];
+  const file = new File(["%PDF"], "<b>Report</b>.pdf", { type: "application/pdf" });
+  const { row, thumb } = fileRow(file, "blob:report", (f: File) => saved.push(f));
+  expect(thumb).toBeNull();
+  document.body.append(row);
+  expect(row.querySelector(".row-name")!.textContent).toBe("<b>Report</b>.pdf");
+  expect(row.querySelector("b")).toBeNull();
+  expect(row.querySelector(".row-size")!.textContent).toBe("4 bytes");
+  expect(row.querySelector("img")).toBeNull();
+  row.querySelector<HTMLButtonElement>("button")!.click();
+  expect(saved).toEqual([file]);
+});
+
+test("a picture's row shows it small once it has loaded", () => {
+  const file = new File(["png"], "photo.png", { type: "image/png" });
+  const { row, thumb } = fileRow(file, "blob:photo", () => {});
+  document.body.append(row);
+  expect(row.querySelector(".row-icon")).not.toBeNull();
+  thumb!.dispatchEvent(new Event("load"));
+  expect(row.querySelector(".row-icon")).toBeNull();
+  expect(row.querySelector("img.row-thumb")!.getAttribute("src")).toBe("blob:photo");
 });

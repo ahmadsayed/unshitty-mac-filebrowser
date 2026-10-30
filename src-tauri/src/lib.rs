@@ -1312,18 +1312,19 @@ async fn thumbnail(
     tauri::ipc::Response::new(png)
 }
 
-/// Start sharing one local file with a QR code; the id names the share for
+/// Start sharing local files with a QR code; the id names the share for
 /// `file_share_status` and `file_share_stop`. See `share::file_share`.
 #[tauri::command]
 async fn file_share_prepare(
     window: tauri::WebviewWindow,
     shares: tauri::State<'_, share::file_share::FileShares>,
-    path: String,
+    paths: Vec<String>,
 ) -> Result<String, String> {
-    if cloud::is_cloud(&path) || share::location::is_share(&path) || sftp::is_sftp(&path) {
+    if paths.iter().any(|path| cloud::is_cloud(path) || share::location::is_share(path) || sftp::is_sftp(path)) {
         return Err("Only files on this computer can be shared with a QR code.".into());
     }
-    shares.prepare(Path::new(&path), window.label())
+    let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    shares.prepare(&paths, window.label())
 }
 
 /// Progress, link and downloads of a QR share; None once it was stopped.

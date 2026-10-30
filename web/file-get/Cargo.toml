@@ -3,7 +3,7 @@ name = "file-get"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-description = "The page a phone opens from a QR code: downloads one shared file over iroh"
+description = "The page a phone opens from a QR code: downloads the shared files over iroh"
 publish = false
 
 [lib]
