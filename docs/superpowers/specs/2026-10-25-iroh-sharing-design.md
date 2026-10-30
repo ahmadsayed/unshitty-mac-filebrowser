@@ -49,6 +49,7 @@ the wire.
 - Offline access: when the sharer is unreachable the recipient sees "offline"
   and nothing else — no cached listing, no "Keep Available Offline".
 - Sharing single files (only folders), sharing Drive or `share://` locations.
+  (One file to a phone came later: [QR file share](2026-10-30-qr-file-share-design.md).)
 - A background service: sharing works only while the app is running.
 - Clicking a link to open the app (a registered URL handler on both OSes).
   v1 links are pasted into Network.
