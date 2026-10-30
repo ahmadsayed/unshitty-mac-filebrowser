@@ -30,6 +30,7 @@ import {
 } from "./api";
 import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
+import { loadNativeIcons, nativeIconSize, nativeIconUrl } from "./native-icons";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
@@ -1551,13 +1552,43 @@ function iconHtml(e: Entry): string {
       return `<img class="thumb" src="${url}" alt="" draggable="false">${link}`;
     }
   }
-  const icon = entryIcon(e, folderKind(e), versionedFolders.has(e.path));
   if (location === NETWORK && isSftpPath(e.path)) return `<span class="server-glyph">${sym("network-server")}</span>`;
+  const icon = nativeIconHtml(e) ?? entryIcon(e, folderKind(e), versionedFolders.has(e.path));
   if (location === NETWORK) return `${icon}<span class="emblem">${sym("network-workgroup")}</span>`;
   if (sharedFolders.some((share) => share.path === e.path)) {
     return `${icon}<span class="emblem">${sym("network-workgroup")}</span>`;
   }
   return icon;
+}
+
+// ---------------------------------------------------------------------------
+// Icons from the operating system (src/native-icons.ts), drawn in place of
+// the app's own once loaded
+// ---------------------------------------------------------------------------
+
+function wantsNativeIcon(e: Entry): boolean {
+  return location !== NETWORK && !isRemotePath(e.path);
+}
+
+function nativeIconPx(): number {
+  return nativeIconSize(prefs.view === "grid" ? GRID_SIZES[prefs.gridZoom] : LIST_SIZES[prefs.listZoom]);
+}
+
+/** The OS icon with the app's badges, or null until it's loaded (or if there is none). */
+function nativeIconHtml(e: Entry): string | null {
+  if (!wantsNativeIcon(e)) return null;
+  const url = nativeIconUrl(e.path, nativeIconPx());
+  if (!url) return null;
+  const link = e.is_symlink ? `<span class="emblem">${sym("emblem-symbolic-link")}</span>` : "";
+  const versions = versionedFolders.has(e.path) ? versionsBadge() : "";
+  return `<img class="native-icon" src="${url}" alt="" draggable="false">${link}${versions}`;
+}
+
+/** Ask for the OS icons of the rendered items. */
+function loadItemIcons(start: number, end: number): void {
+  const paths: string[] = [];
+  for (let i = start; i <= end; i++) if (wantsNativeIcon(shown[i])) paths.push(shown[i].path);
+  if (paths.length) loadNativeIcons(paths, nativeIconPx(), (ready) => ready.forEach(patchIcon));
 }
 
 /** Request thumbnails for the rendered items; queued ones scrolled away are dropped. */
@@ -1676,6 +1707,7 @@ function renderWindow(force = false): void {
   const html: string[] = [];
   for (let i = start; i <= end; i++) html.push(itemHtml(i));
   itemsLayer.innerHTML = html.join("");
+  loadItemIcons(start, end);
   loadThumbs(start, end, {
     start: firstVisible * layout.cols,
     end: Math.min(end, (lastVisible + 1) * layout.cols - 1),
