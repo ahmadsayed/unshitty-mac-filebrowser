@@ -12,8 +12,9 @@ project, GPL-3.0-or-later; it contains no GNOME code and must not copy any (see
 
 Platform differences are confined to `src-tauri/src/platform.rs` (volumes,
 percent-decoding, XDG paths) and `src-tauri/src/trash_ops.rs` (the two Trash
-layouts); `recent.rs` branches for its source. Everything else must stay
-platform-neutral.
+layouts); `recent.rs` branches for its source and `file_icons.rs` for whose
+icons it asks (NSWorkspace on macOS, GIO and the icon theme on Linux).
+Everything else must stay platform-neutral.
 
 Design intent and decisions live in `docs/superpowers/specs/` and the task plan
 in `docs/superpowers/plans/`. Read the spec before changing behaviour.
@@ -27,6 +28,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), drawn for the theme; file-kind detection |
 | `src/icons-macos.ts` | The macOS theme's drawings under the same symbol ids: folders, file pages, line icons |
 | `src/thumbnails.ts` | Thumbnail request queue (4 concurrent) and bounded blob-URL cache |
+| `src/native-icons.ts` | Icons from the OS for rendered items: ids in one batch per render, one image per type and size |
 | `src/format.ts` | GNOME-style size and date strings |
 | `src/api.ts` | Typed wrappers for every Tauri command |
 | `src/styles.css` | All styling: layout, views and widgets, reading every look-related value from theme tokens |
@@ -38,6 +40,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src-tauri/src/properties.rs` | Properties dialog data: size, dates, permissions, symlink targets, recursive folder size |
 | `src-tauri/src/platform.rs` | Platform differences: volume roots per OS, `%XX` decoding, `file://` URIs, XDG data dir |
 | `src-tauri/src/thumbnails.rs` | Quick Look (`qlmanage`) thumbnails on macOS with an `image`-crate fallback everywhere, disk cache |
+| `src-tauri/src/file_icons.rs` | File and folder icons from the OS: Finder's (NSWorkspace) on macOS, the desktop's icon theme (GIO + freedesktop lookup) on Linux |
 | `src-tauri/src/trash_ops.rs` | Trash + locate (for Undo), restore, delete permanently, empty; macOS `~/.Trash` + Finder "Put Back" in `.DS_Store`, Linux `Trash/{files,info}` + `.trashinfo`, `trash_log.json` |
 | `src-tauri/src/updates.rs` | Check for Updates: how this copy was installed (only the AppImage and the Mac app replace themselves), failure kinds, one install at a time; `lib.rs` wraps `tauri-plugin-updater` |
 | `src-tauri/src/downloads.rs` | Copies of opened SFTP/Drive/share files in the app cache: marks them as downloaded, prunes them after a week (edited copies go to the Trash) |
@@ -109,10 +112,12 @@ the DOM. Code that adds a mock command needs a case in
   `npm run build` must run first, because `generate_context!` reads `../dist`.
 - **Backend modules must still be testable without Tauri.** Copy `fs_ops.rs`,
   `config_store.rs`, `platform.rs`, `properties.rs`, `thumbnails.rs`, `recent.rs`,
-  `trash_ops.rs`, `downloads.rs` and `versions/` into a scratch crate depending on `serde`,
+  `trash_ops.rs`, `downloads.rs`, `file_icons.rs` and `versions/` into a scratch crate depending on `serde`,
   `serde_json`, `trash`, `image` (same features as `src-tauri/Cargo.toml`),
   `rusqlite` (`default-features = false`, features `bundled` + `backup`), `zstd`,
-  `blake3`, `notify` and `similar`, plus dev-dependency `tempfile`, strip the
+  `blake3`, `notify` and `similar` (and `gio` on Linux, `objc2`, `objc2-foundation`,
+  `objc2-app-kit` and `xattr` on macOS, with the features `src-tauri/Cargo.toml`
+  lists), plus dev-dependency `tempfile`, strip the
   `#[tauri::command]` lines, and run `cargo test`. Keep new backend logic in
   plain functions; only `lib.rs` may use `AppHandle` and other Tauri types.
 - **macOS-only behaviour can't be verified from Linux**: window chrome, traffic
@@ -196,7 +201,9 @@ the DOM. Code that adds a mock command needs a case in
   in each theme (`src/themes/`), and every colour needs a dark-mode value.
   Sizes the views compute in JavaScript go in `LAYOUT_SIZES` (`src/theme.ts`).
 - The macOS theme is an original imitation: no Apple fonts, icons or other
-  assets (the system font is used through `-apple-system`).
+  assets (the system font is used through `-apple-system`). File and folder
+  icons the OS draws at run time (`file_icons.rs`) are not assets: nothing is
+  copied into the repository or the bundle.
 - Use GNOME's wording for labels, menus and messages ("Folder is Empty",
   "Move to Trash", "A folder with that name already exists.").
 - Widgets: reuse `openMenu`, `openPopover`, `openDialog`, `showToast` from
@@ -360,7 +367,9 @@ with a new key).
 The project is GPL-3.0-or-later (`LICENSE`). GNOME Files is the design
 reference only:
 - Don't copy code, icons or other assets from Nautilus, libadwaita or the
-  Adwaita icon theme. Draw icons from scratch in the Adwaita style.
+  Adwaita icon theme. Draw icons from scratch in the Adwaita style. Showing
+  the icons the user's own OS provides at run time (Finder's, the installed
+  icon theme) is fine: they are read from the system, never bundled.
 - Bundled third-party assets need their license next to them (see
   `src/assets/fonts/AdwaitaSans-LICENSE.txt`) and a line in the README credits.
 - Keep the README's independence notice and trademark section intact. The

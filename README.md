@@ -77,7 +77,9 @@ one out on its own platform.
   verify and install a signed update when you say so; `.deb` and `.rpm` installs
   are pointed to the release page. Nothing is checked unless you ask.
 - **Looks at home:** the GNOME Files 50 look on Linux, the macOS 26 Tahoe
-  look on a Mac, light and dark, each with its own icons.
+  look on a Mac, light and dark. Files and folders show your system's own
+  icons: Finder's on a Mac (real app icons, custom folder icons), your icon
+  theme on Linux.
 - Grid and list views, tabs, thumbnails, Space to preview, batch rename,
   extract and compress archives, Starred, Recent, bookmarks, a progress popover
   with Cancel, and fast 10,000-item folders.
@@ -153,7 +155,8 @@ tries to bring their work to other desktops.
   [Human Interface Guidelines](https://developer.gnome.org/hig/).
 - **The Adwaita icon theme designers.** The icons here are original drawings in
   the Adwaita style (and, for the macOS theme, in a Mac-like style); no icon
-  files were copied.
+  files were copied. File and folder icons from your system are read at run
+  time and never bundled.
 - **Adwaita Sans** by the Inter Project Authors, Renzhi Li, Jamie Gravendeel and
   Florian Müllner, bundled unmodified under the SIL Open Font License 1.1
   (`src/assets/fonts/AdwaitaSans-LICENSE.txt`).
@@ -165,8 +168,9 @@ tries to bring their work to other desktops.
 "GNOME" and the GNOME logo are trademarks of the GNOME Foundation. Apple, Mac,
 macOS and Finder are trademarks of Apple Inc. These names are used only to
 describe what this project is inspired by and runs on; no endorsement is
-implied. The macOS theme is an original imitation of the macOS look; it uses
-no Apple fonts, icons or other assets.
+implied. The macOS theme is an original imitation of the macOS look; it bundles
+no Apple fonts, icons or other assets (file icons on a Mac are the ones macOS
+itself draws for the running app).
 
 ## License
 
