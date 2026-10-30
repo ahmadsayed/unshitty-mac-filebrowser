@@ -1857,6 +1857,12 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     nativeIconMock.log.ids.push(paths);
     return paths.map(mockIconId);
   },
+  // Apps are their .app bundles, as on a Mac.
+  app_icon_ids: (a) => {
+    const apps = a.apps as string[];
+    nativeIconMock.log.ids.push(apps.map((app) => `app:${app}`));
+    return apps.map((app) => (nativeIconMock.enabled && /\.app$/.test(app) ? `path:${app}` : null));
+  },
   icon_image: (a) => mockIconImage(str(a, "id"), a.size as number),
   cancel_thumbnails: (a) => {
     for (const ticket of a.tickets as number[]) {

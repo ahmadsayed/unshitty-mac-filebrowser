@@ -5,7 +5,7 @@
 // keep the app's icons.
 import { beforeAll, expect, test, vi } from "vitest";
 import { nativeIconMock } from "../dev/mock-tauri/core";
-import { $$, boot, click, goTo, installFakeCanvas, item, key, settle } from "./app";
+import { $, $$, boot, chooseMenu, click, closeOverlays, goTo, hit, installFakeCanvas, item, key, mouse, settle } from "./app";
 
 let blobs = 0;
 const place = (label: string) => $$(".sidebar-row").find((row) => row.textContent?.trim() === label)!;
@@ -95,4 +95,51 @@ test("Network keeps the app's icons and doesn't ask", async () => {
   await settle(20);
   expect(nativeIconMock.log.ids.slice(asked).flat()).toEqual([]);
   expect($$("#view .item img.native-icon")).toHaveLength(0);
+});
+
+// Dialogs ask for their one icon and swap it in when it arrives.
+
+async function rightClick(el: Element): Promise<void> {
+  await mouse(el, "mousedown", { button: 2 });
+  await mouse(el, "contextmenu", { button: 2 });
+}
+
+test("Open With shows each app's own icon", async () => {
+  await goTo("/Users/me/Documents");
+  await settle();
+  await rightClick(hit("Notes.md"));
+  await chooseMenu("Open With…");
+  await settle(20);
+  const choices = $$(".app-choice");
+  expect(choices.length).toBeGreaterThan(1);
+  for (const choice of choices) expect(choice.querySelector(".app-choice-icon img.native-icon"), choice.textContent!).not.toBeNull();
+  expect(nativeIconMock.log.ids.at(-1)!.every((key) => key.startsWith("app:/Applications/"))).toBe(true);
+  // Apps aren't files: each is drawn per app.
+  const srcs = choices.map((choice) => choice.querySelector("img")!.src);
+  expect(new Set(srcs).size).toBe(srcs.length);
+  await closeOverlays();
+});
+
+test("Properties shows the OS icon and keeps the link badge", async () => {
+  await goTo("/Users/me");
+  await settle();
+  await click(hit("link-to-docs"));
+  await key("i", { mod: true });
+  await settle(20);
+  const icon = $(".properties-icon");
+  expect(icon.querySelector("img.native-icon")).not.toBeNull();
+  expect(icon.querySelector("svg.fc")).toBeNull();
+  expect(icon.querySelector(".emblem")).not.toBeNull();
+  await closeOverlays();
+});
+
+test("the preview of a folder shows its OS icon", async () => {
+  await goTo("/Users/me/Documents");
+  await settle();
+  await click(hit("Projects"));
+  await key(" ");
+  await settle(20);
+  expect($("#preview-body .preview-empty img.native-icon")).not.toBeNull();
+  await key("Escape");
+  await settle();
 });

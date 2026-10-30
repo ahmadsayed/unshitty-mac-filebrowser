@@ -30,7 +30,7 @@ import {
 } from "./api";
 import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
-import { loadNativeIcons, nativeIconSize, nativeIconUrl } from "./native-icons";
+import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl } from "./native-icons";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
@@ -1584,6 +1584,23 @@ function nativeIconHtml(e: Entry): string | null {
   return `<img class="native-icon" src="${url}" alt="" draggable="false">${link}${versions}`;
 }
 
+/** Swap the OS icon for `key` (a path, or an `appIconKey`) into a dialog's
+ *  icon once it loads; the app's drawing stays meanwhile, and wherever the OS
+ *  has none. Badges next to the drawing are kept. */
+function useNativeIcon(icon: HTMLElement, key: string, shownAt: number): void {
+  if (isRemotePath(key)) return;
+  void nativeIcon(key, nativeIconSize(shownAt)).then((url) => {
+    const drawing = icon.querySelector("svg.fc, .versioned-icon");
+    if (!url || !drawing) return;
+    const img = document.createElement("img");
+    img.className = "native-icon";
+    img.src = url;
+    img.alt = "";
+    img.draggable = false;
+    drawing.replaceWith(img);
+  });
+}
+
 /** Ask for the OS icons of the rendered items. */
 function loadItemIcons(start: number, end: number): void {
   const paths: string[] = [];
@@ -2919,6 +2936,7 @@ async function showProperties(entry: Entry): Promise<void> {
   const icon = document.createElement("div");
   icon.className = "properties-icon";
   icon.innerHTML = entryIcon(entry, folderKind(entry));
+  useNativeIcon(icon, entry.path, 64);
   const name = document.createElement("div");
   name.className = "properties-name";
   name.textContent = info.name;
@@ -4252,7 +4270,9 @@ function previewEmpty(entry: Entry, text: string): void {
   const box = document.createElement("div");
   box.className = "preview-empty";
   const icon = document.createElement("div");
+  icon.className = "preview-empty-icon";
   icon.innerHTML = entryIcon(entry, folderKind(entry));
+  useNativeIcon(icon, entry.path, 192);
   const label = document.createElement("p");
   label.textContent = text;
   box.append(icon, label);
@@ -4378,6 +4398,7 @@ function showOpenWith(entry: Entry): void {
           },
           "plain"
         );
+        useNativeIcon(icon, appIconKey(app.id), 28);
         const label = document.createElement("span");
         label.className = "app-choice-name";
         label.textContent = app.name;

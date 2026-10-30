@@ -897,6 +897,13 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 
 .preview-empty .sym { width: 96px; height: 96px; }
 
+/* The same box for the app's drawing and the OS icon that replaces it. */
+.preview-empty-icon {
+  position: relative;
+  width: 192px;
+  height: 192px;
+}
+
 /* =============================================================================
    TOASTS (AdwToastOverlay)
    ============================================================================= */
@@ -1408,7 +1415,8 @@ kbd {
   flex-shrink: 0;
 }
 
-.app-choice-icon .fc { width: 28px; height: 28px; }
+.app-choice-icon .fc,
+.app-choice-icon .native-icon { width: 28px; height: 28px; }
 .app-choice-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ----- Network: an SSH server's icon, symbolic like GNOME's Network view ----- */

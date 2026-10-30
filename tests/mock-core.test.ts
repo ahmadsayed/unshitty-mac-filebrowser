@@ -160,6 +160,7 @@ test("thumbnails are empty for files without a preview", async () => {
 test("OS icons: none by default; when on, shared by type, apps their own, remote places none", async () => {
   const paths = [`${HOME}/main.rs`, `${HOME}/Documents`, "/Applications/Calculator.app", `${HOME}/gone.txt`, "sftp://user@host/x.txt"];
   expect(await invoke("icon_ids", { paths })).toEqual([null, null, null, null, null]);
+  expect(await invoke("app_icon_ids", { apps: ["/Applications/TextEdit.app"] })).toEqual([null]);
   expect((await invoke<ArrayBuffer>("icon_image", { id: "type:rs", size: 64 })).byteLength).toBe(0);
   nativeIconMock.enabled = true;
   try {
@@ -169,6 +170,10 @@ test("OS icons: none by default; when on, shared by type, apps their own, remote
     expect(svg).toContain('width="64"');
     expect(nativeIconMock.log.ids.at(-1)).toEqual(paths);
     expect(nativeIconMock.log.images.at(-1)).toBe("type:rs@64");
+    expect(await invoke("app_icon_ids", { apps: ["/Applications/TextEdit.app", "/usr/share/applications/x.desktop"] })).toEqual([
+      "path:/Applications/TextEdit.app",
+      null,
+    ]);
   } finally {
     nativeIconMock.enabled = false;
   }
