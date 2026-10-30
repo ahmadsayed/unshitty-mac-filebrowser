@@ -8,13 +8,13 @@
 //   node scripts/mock-screenshot.mjs /Users/me menu.png --theme gnome --scene menu
 //
 // Options: --dark, --url <base> (default http://localhost:1420),
-// --size <width>x<height> (default 1100x720), --theme auto|gnome|macos
-// (saved as the theme preference before the app loads), --scene
+// --size <width>x<height> (default 1100x720), --theme gnome|macos (default
+// macos; the theme follows the platform, so gnome loads the page with a
+// Linux user agent and the app takes its Linux code paths), --scene
 // grid|list|menu|dialog (default grid: the folder as it opens; list: list
 // view with the second item selected; menu: the main menu open; dialog: the
-// Keyboard Shortcuts dialog). Uses ?demo (no test-only folders) and a Mac
-// user agent, so the app takes its macOS code paths. The page's clock is
-// fixed, so the same scene always gives the same image.
+// Keyboard Shortcuts dialog). Uses ?demo (no test-only folders). The page's
+// clock is fixed, so the same scene always gives the same image.
 import { createRequire } from "node:module";
 
 const args = process.argv.slice(2);
@@ -26,7 +26,7 @@ const option = (name, fallback) => {
 const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene"];
 const [path, out] = args.filter((a, i) => !a.startsWith("--") && !VALUE_OPTIONS.includes(args[i - 1]));
 if (!path || !out) {
-  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme auto|gnome|macos] [--scene grid|list|menu|dialog]");
+  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|dialog]");
   process.exit(2);
 }
 
@@ -47,12 +47,21 @@ if (!chromium) {
 
 const [width, height] = option("--size", "1100x720").split("x").map(Number);
 const base = option("--url", "http://localhost:1420");
-const theme = option("--theme", null);
+const theme = option("--theme", "macos");
+const USER_AGENTS = {
+  macos: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15",
+  gnome: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15",
+};
+if (!USER_AGENTS[theme]) {
+  console.error(`unknown theme ${theme}: use gnome or macos`);
+  process.exit(2);
+}
+const MOD = theme === "macos" ? "Meta" : "Control";
 const scene = option("--scene", "grid");
 const SCENES = {
   grid: async () => {},
   list: async (page) => {
-    await page.keyboard.press("Meta+1");
+    await page.keyboard.press(`${MOD}+1`);
     await page.waitForTimeout(300);
     await page.locator("#view .item").nth(1).click();
   },
@@ -74,19 +83,13 @@ try {
     viewport: { width, height },
     deviceScaleFactor: 2,
     colorScheme: flag("--dark") ? "dark" : "light",
-    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15",
+    userAgent: USER_AGENTS[theme],
   });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   // The mock dates its files relative to now; a fixed clock makes captures
   // taken minutes apart comparable pixel for pixel.
   await page.clock.setFixedTime(new Date("2026-10-28T12:00:00"));
-  if (theme) {
-    await page.addInitScript((theme) => {
-      const prefs = JSON.parse(localStorage.getItem("prefs") ?? "{}");
-      localStorage.setItem("prefs", JSON.stringify({ ...prefs, theme }));
-    }, theme);
-  }
   await page.goto(`${base}/?demo&path=${encodeURIComponent(path)}`);
   await page.waitForSelector("#view .item, #view .status-page", { timeout: 10_000 });
   // Let thumbnails and counts arrive (the mock answers in ~150 ms).

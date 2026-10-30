@@ -36,9 +36,8 @@ The GNOME theme keeps its icons exactly as they are, pixel for pixel.
   the redrawn line icons laid over it (`{...SYMBOLIC, ...MACOS_SYMBOLIC}`),
   plus the macOS folders, versioned-folder back layer and file pages.
 - `installIconSprite(theme)` creates the one `#icon-sprite` at start-up with
-  the resolved theme. `setIconTheme(theme)`, called from `applyTheme()`,
-  replaces the sprite's contents when the theme changes, so every icon on
-  screen redraws at once without re-rendering the views. Same theme: no-op.
+  the platform's theme. (Until the theme choice was removed the same day,
+  `setIconTheme` swapped the sprite's contents on a switch.)
 - `src/icons-macos.ts` holds the drawings: `MACOS_SYMBOLIC`, the gradients
   (`MACOS_DEFS`), `macFolderSymbol`, `macFolderBackLayer`, `macFileSymbol`.
 - `src/themes/macos.css` rounds the emblem badge (the symlink and versions
@@ -71,9 +70,8 @@ redrawing them is a later choice, not a gap.
 ## Verification
 
 - `tests/icons.test.ts`: both sets have the same ids; the listed icons are
-  redrawn and the kept ones are identical; the app starts with its theme's
-  set (Mac user agent → macOS); switching themes swaps the drawings in the
-  one sprite and leaves the `<use>` hrefs alone.
+  redrawn and the kept ones are identical; the app installs one sprite with
+  its platform's set (Mac user agent → macOS, Linux → GNOME).
 - GNOME theme: every mock screenshot scene (grid, list, menu, dialog, light
   and dark) is byte-identical to `main`.
 - **Not verified on a Mac:** how the icons look next to real macOS chrome, at

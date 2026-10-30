@@ -4,8 +4,8 @@ import type { FileKind, FolderKind } from "./icons";
 // The macOS theme's icons: original drawings in the spirit of macOS 26
 // (Tahoe), made for this project. No Apple artwork, icon files or SF Symbols
 // are copied, traced or extracted. They use the same symbol ids as the GNOME
-// set (icons.ts), so switching theme swaps the drawings without touching the
-// views; symbolic icons not redrawn here keep their GNOME shape.
+// set (icons.ts), so the views' markup is the same in both themes; symbolic
+// icons not redrawn here keep their GNOME shape.
 // ---------------------------------------------------------------------------
 
 /** Thin, rounded line icons for the sidebar, toolbar and folder glyphs. */

@@ -1,8 +1,8 @@
 // The two icon sets (#41): the macOS theme redraws every icon under the same
-// symbol ids, and a theme switch swaps the sprite's drawings in place.
+// symbol ids, so the views' markup is the same in both themes.
 import { beforeAll, expect, test } from "vitest";
 import { spriteMarkup } from "../src/icons";
-import { $, boot, chooseMenu, click, item, settle } from "./app";
+import { boot, item } from "./app";
 
 const ids = (markup: string): string[] => {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -10,7 +10,6 @@ const ids = (markup: string): string[] => {
   return [...svg.querySelectorAll("symbol")].map((s) => s.id).sort();
 };
 const sprite = () => document.getElementById("icon-sprite")!;
-const symbol = (id: string) => sprite().querySelector(`#${id}`)!.innerHTML;
 
 beforeAll(boot);
 
@@ -37,24 +36,12 @@ test("folders, files and the sidebar's line icons are redrawn; the rest keep GNO
   }
 });
 
-test("the app starts with its theme's icons and a switch swaps them in place", async () => {
-  // The test setup's Mac user agent: Automatic is macOS.
-  expect(sprite().dataset.theme).toBe("macos");
-  const macFolder = symbol("fc-folder-plain");
-  const use = item("Documents").querySelector("use")!;
-  const href = use.getAttribute("href");
-
-  await click($("#btn-main-menu"));
-  await chooseMenu("GNOME");
-  await settle();
-  expect(sprite().dataset.theme).toBe("gnome");
-  expect(symbol("fc-folder-plain")).not.toBe(macFolder);
-  // Only one sprite, and the items still point at the same symbols.
+test("the app installs one sprite, with its platform's icons", () => {
+  // The test setup's Mac user agent: the macOS theme.
   expect(document.querySelectorAll("#icon-sprite")).toHaveLength(1);
-  expect(item("Documents").querySelector("use")!.getAttribute("href")).toBe(href);
-
-  await click($("#btn-main-menu"));
-  await chooseMenu("macOS");
-  await settle();
-  expect(symbol("fc-folder-plain")).toBe(macFolder);
+  expect(sprite().dataset.theme).toBe("macos");
+  const macFolder = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  macFolder.innerHTML = spriteMarkup("macos");
+  expect(sprite().querySelector("#fc-folder-plain")!.innerHTML).toBe(macFolder.querySelector("#fc-folder-plain")!.innerHTML);
+  expect(item("Documents").querySelector("use")!.getAttribute("href")).toBe("#fc-folder-documents");
 });

@@ -24,14 +24,14 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | --- | --- |
 | `src/main.ts` | App state, navigation, path bar, search, virtualized grid/list views, selection, menus, clipboard + paste, drag and drop, bookmarks, keyboard shortcuts, sidebar, init |
 | `src/ui.ts` | libadwaita-style widgets: popovers, popover menus, dialogs, toasts |
-| `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), swapped per theme; file-kind detection |
+| `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), drawn for the theme; file-kind detection |
 | `src/icons-macos.ts` | The macOS theme's drawings under the same symbol ids: folders, file pages, line icons |
 | `src/thumbnails.ts` | Thumbnail request queue (4 concurrent) and bounded blob-URL cache |
 | `src/format.ts` | GNOME-style size and date strings |
 | `src/api.ts` | Typed wrappers for every Tauri command |
 | `src/styles.css` | All styling: layout, views and widgets, reading every look-related value from theme tokens |
 | `src/themes/gnome.css`, `src/themes/macos.css` | The two themes' tokens (colours, font, sizes, radii, glass), light + dark; macOS also has a few scoped rules |
-| `src/theme.ts` | Theme choice (Automatic / GNOME / macOS) and the per-theme layout sizes the virtualized views use |
+| `src/theme.ts` | The platform's theme (macOS on a Mac, GNOME elsewhere) and the per-theme layout sizes the virtualized views use |
 | `src/updates.ts` | Check for Updates dialogs: offer, download progress, restart, failures |
 | `src-tauri/src/fs_ops.rs` | Listing, item counts, mkdir, rename, copy/move/trash, path info |
 | `src-tauri/src/sftp.rs` | Read-only SSH/SFTP connections for Network: agent/key/password auth, known-host checks, listing and downloads |
@@ -187,9 +187,9 @@ the DOM. Code that adds a mock command needs a case in
   just by count: photo thumbnails are ~120 KB at 256 px and ~450 KB at 512 px.
 
 **Look like the theme, behave like GNOME Files 50.**
-- Two themes, chosen in the main menu: the GNOME theme follows GNOME Files 50
-  (the default on Linux), the macOS theme follows macOS 26 Tahoe (the default
-  on a Mac). Only the look differs: wording, behaviour, shortcuts, dialog
+- Two themes, picked by the platform, with no choice in the app: the GNOME
+  theme follows GNOME Files 50 on Linux, the macOS theme follows macOS 26
+  Tahoe on a Mac. Only the look differs: wording, behaviour, shortcuts, dialog
   button order and default responses are GNOME's in both.
 - Use the tokens (`--accent-bg`, `--view-bg`, `--hover`, `--radius-button`,
   …), not hard-coded colours. A new look-related value is a token with a value

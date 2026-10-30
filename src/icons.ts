@@ -9,9 +9,8 @@ import type { Theme } from "./theme";
 // them with <use>, so a 10k-entry folder doesn't carry 10k copies of the SVG.
 //   - Symbolic icons (16×16, monochrome, take `currentColor`): sym-*
 //   - Full-colour icons (64×64) for folders and file types: fc-*
-// The macOS theme redraws them under the same ids (icons-macos.ts), and
-// `setIconTheme` swaps the sprite's contents, so every icon on screen
-// follows a theme switch at once.
+// The macOS theme redraws them under the same ids (icons-macos.ts), so the
+// markup that uses them is the same in both themes.
 // ---------------------------------------------------------------------------
 
 /** Symbolic glyphs, 16×16, drawn in currentColor. */
@@ -308,12 +307,10 @@ export function spriteMarkup(theme: Theme): string {
     ${files.map(fileSymbol).join("")}`;
 }
 
-const SPRITE_ID = "icon-sprite";
-
-/** Inject the icon sprite into the document once, at startup. */
-export function installIconSprite(theme: Theme = "gnome"): void {
+/** Inject the icon sprite for `theme` into the document once, at startup. */
+export function installIconSprite(theme: Theme): void {
   const sprite = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  sprite.id = SPRITE_ID;
+  sprite.id = "icon-sprite";
   sprite.setAttribute("aria-hidden", "true");
   sprite.style.position = "absolute";
   sprite.style.width = "0";
@@ -323,10 +320,3 @@ export function installIconSprite(theme: Theme = "gnome"): void {
   document.body.prepend(sprite);
 }
 
-/** Redraw every icon for `theme`: the views' `<use>` references stay. */
-export function setIconTheme(theme: Theme): void {
-  const sprite = document.getElementById(SPRITE_ID);
-  if (!sprite || sprite.dataset.theme === theme) return;
-  sprite.dataset.theme = theme;
-  sprite.innerHTML = spriteMarkup(theme);
-}
