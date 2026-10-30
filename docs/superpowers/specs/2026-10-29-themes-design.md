@@ -33,7 +33,8 @@ pixel-identical to the app before this change.
 - Mac conventions where they differ from GNOME: button order, menu wording,
   Finder's sidebar headings ("Favorites", "Locations"), a bottom path bar.
 - Mac-style file and folder icons. The theme keeps the app's own icons;
-  new drawings are a separate task.
+  new drawings are a separate task (done since: see
+  [macOS icons](2026-10-30-macos-icons-design.md)).
 - More than two themes, user-made themes, accent colour choice.
 - Any Apple asset. The theme uses the system font through `-apple-system`
   (SF Pro on a Mac) and draws nothing from Apple; it is an original imitation.

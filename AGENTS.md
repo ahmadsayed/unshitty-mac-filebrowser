@@ -24,7 +24,8 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | --- | --- |
 | `src/main.ts` | App state, navigation, path bar, search, virtualized grid/list views, selection, menus, clipboard + paste, drag and drop, bookmarks, keyboard shortcuts, sidebar, init |
 | `src/ui.ts` | libadwaita-style widgets: popovers, popover menus, dialogs, toasts |
-| `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), file-kind detection |
+| `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), swapped per theme; file-kind detection |
+| `src/icons-macos.ts` | The macOS theme's drawings under the same symbol ids: folders, file pages, line icons |
 | `src/thumbnails.ts` | Thumbnail request queue (4 concurrent) and bounded blob-URL cache |
 | `src/format.ts` | GNOME-style size and date strings |
 | `src/api.ts` | Typed wrappers for every Tauri command |

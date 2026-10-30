@@ -28,7 +28,7 @@ import {
   type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
-import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
+import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, setIconTheme, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, resolveTheme, themeChoice, type Theme, type ThemeChoice } from "./theme";
@@ -1715,6 +1715,7 @@ function applyTheme(): void {
   const first = itemsLayer ? firstFullyVisible() : 0;
   currentTheme = theme;
   root.dataset.theme = theme;
+  setIconTheme(theme);
   if (!itemsLayer) return;
   relayout();
   if (scrollEl.scrollTop > 0) scrollEl.scrollTop = layout.bodyTop + itemPos(first).y - layout.padY;
@@ -5311,7 +5312,7 @@ async function init(): Promise<void> {
   loadPrefs();
   applyTheme();
   window.addEventListener("storage", onPrefsChanged);
-  installIconSprite();
+  installIconSprite(currentTheme);
   if (isMac) document.documentElement.classList.add("platform-mac");
   void setupWindowButtons();
 

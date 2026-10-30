@@ -1,4 +1,6 @@
 import type { Entry } from "./api";
+import { MACOS_DEFS, MACOS_SYMBOLIC, macFileSymbol, macFolderBackLayer, macFolderSymbol } from "./icons-macos";
+import type { Theme } from "./theme";
 
 // ---------------------------------------------------------------------------
 // Icons, modelled on the Adwaita icon theme used by GNOME 50.
@@ -7,6 +9,9 @@ import type { Entry } from "./api";
 // them with <use>, so a 10k-entry folder doesn't carry 10k copies of the SVG.
 //   - Symbolic icons (16×16, monochrome, take `currentColor`): sym-*
 //   - Full-colour icons (64×64) for folders and file types: fc-*
+// The macOS theme redraws them under the same ids (icons-macos.ts), and
+// `setIconTheme` swaps the sprite's contents, so every icon on screen
+// follows a theme switch at once.
 // ---------------------------------------------------------------------------
 
 /** Symbolic glyphs, 16×16, drawn in currentColor. */
@@ -271,28 +276,57 @@ export function entryIcon(entry: Entry, folderKind: FolderKind = "plain", versio
   return `${icon}${link}${versions}`;
 }
 
-/** Inject the icon sprite into the document once, at startup. */
-export function installIconSprite(): void {
-  const folders: FolderKind[] = ["plain", "home", "desktop", "documents", "download", "music", "pictures", "videos", "publicshare", "templates"];
-  const files = Object.keys(FILE_GLYPHS) as FileKind[];
-  const symbolic = Object.entries(SYMBOLIC)
+const FOLDER_KINDS: FolderKind[] = ["plain", "home", "desktop", "documents", "download", "music", "pictures", "videos", "publicshare", "templates"];
+
+function symbolicSymbols(glyphs: Record<string, string>): string {
+  return Object.entries(glyphs)
     .map(([name, body]) => `<symbol id="sym-${name}" viewBox="0 0 16 16">${body}</symbol>`)
     .join("");
+}
 
-  const sprite = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  sprite.setAttribute("aria-hidden", "true");
-  sprite.style.position = "absolute";
-  sprite.style.width = "0";
-  sprite.style.height = "0";
-  sprite.innerHTML = `<defs>
+/** The sprite's contents for `theme`: the same symbol ids either way. */
+export function spriteMarkup(theme: Theme): string {
+  const files = Object.keys(FILE_GLYPHS) as FileKind[];
+  if (theme === "macos") {
+    const glyphs = { ...SYMBOLIC, ...MACOS_SYMBOLIC };
+    const glyphOf = (kind: FolderKind) => (kind === "plain" ? null : FOLDER_KIND_GLYPH[kind]);
+    return `<defs>${MACOS_DEFS}</defs>
+    ${symbolicSymbols(glyphs)}
+    ${FOLDER_KINDS.map((kind) => macFolderSymbol(kind, glyphs, glyphOf(kind))).join("")}
+    ${macFolderBackLayer()}
+    ${files.map(macFileSymbol).join("")}`;
+  }
+  return `<defs>
       <linearGradient id="fc-folder-front" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="#a4caee"/>
         <stop offset="1" stop-color="#8dbbf0"/>
       </linearGradient>
     </defs>
-    ${symbolic}
-    ${folders.map(folderSymbol).join("")}
+    ${symbolicSymbols(SYMBOLIC)}
+    ${FOLDER_KINDS.map(folderSymbol).join("")}
     ${folderBackLayer()}
     ${files.map(fileSymbol).join("")}`;
+}
+
+const SPRITE_ID = "icon-sprite";
+
+/** Inject the icon sprite into the document once, at startup. */
+export function installIconSprite(theme: Theme = "gnome"): void {
+  const sprite = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  sprite.id = SPRITE_ID;
+  sprite.setAttribute("aria-hidden", "true");
+  sprite.style.position = "absolute";
+  sprite.style.width = "0";
+  sprite.style.height = "0";
+  sprite.dataset.theme = theme;
+  sprite.innerHTML = spriteMarkup(theme);
   document.body.prepend(sprite);
+}
+
+/** Redraw every icon for `theme`: the views' `<use>` references stay. */
+export function setIconTheme(theme: Theme): void {
+  const sprite = document.getElementById(SPRITE_ID);
+  if (!sprite || sprite.dataset.theme === theme) return;
+  sprite.dataset.theme = theme;
+  sprite.innerHTML = spriteMarkup(theme);
 }

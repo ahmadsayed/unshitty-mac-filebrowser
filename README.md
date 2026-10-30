@@ -77,8 +77,8 @@ one out on its own platform.
   verify and install a signed update when you say so; `.deb` and `.rpm` installs
   are pointed to the release page. Nothing is checked unless you ask.
 - **Themes:** GNOME (GNOME Files 50) or macOS (macOS 26 Tahoe), light and
-  dark; Automatic picks the one that fits your platform. Switching is instant
-  and keeps your place.
+  dark, each with its own icons; Automatic picks the one that fits your
+  platform. Switching is instant and keeps your place.
 - Grid and list views, tabs, thumbnails, Space to preview, batch rename,
   extract and compress archives, Starred, Recent, bookmarks, a progress popover
   with Cancel, and fast 10,000-item folders.
@@ -139,8 +139,8 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 - Updates: no automatic checks, and `.deb` / `.rpm` installs update through
   the package manager, not from the app.
 - macOS theme: no native window translucency (the desktop showing through the
-  sidebar), no Mac-style file icons, and GNOME's sidebar layout and wording
-  rather than Finder's "Favorites" and "Locations".
+  sidebar), and GNOME's sidebar layout and wording rather than Finder's
+  "Favorites" and "Locations".
 
 ## Credits and thanks
 
@@ -153,7 +153,8 @@ tries to bring their work to other desktops.
   spacing, widgets and the
   [Human Interface Guidelines](https://developer.gnome.org/hig/).
 - **The Adwaita icon theme designers.** The icons here are original drawings in
-  the Adwaita style; no icon files were copied.
+  the Adwaita style (and, for the macOS theme, in a Mac-like style); no icon
+  files were copied.
 - **Adwaita Sans** by the Inter Project Authors, Renzhi Li, Jamie Gravendeel and
   Florian Müllner, bundled unmodified under the SIL Open Font License 1.1
   (`src/assets/fonts/AdwaitaSans-LICENSE.txt`).
