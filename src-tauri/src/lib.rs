@@ -1316,13 +1316,14 @@ async fn thumbnail(
 /// `file_share_status` and `file_share_stop`. See `share::file_share`.
 #[tauri::command]
 async fn file_share_prepare(
+    window: tauri::WebviewWindow,
     shares: tauri::State<'_, share::file_share::FileShares>,
     path: String,
 ) -> Result<String, String> {
     if cloud::is_cloud(&path) || share::location::is_share(&path) || sftp::is_sftp(&path) {
         return Err("Only files on this computer can be shared with a QR code.".into());
     }
-    shares.prepare(Path::new(&path))
+    shares.prepare(Path::new(&path), window.label())
 }
 
 /// Progress, link and downloads of a QR share; None once it was stopped.
@@ -1937,6 +1938,15 @@ pub fn run() {
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(UpdateState::default())
+        // A closed window's QR shares stop with it, even if its page had no
+        // time to say so.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                if let Some(shares) = window.try_state::<share::file_share::FileShares>() {
+                    shares.stop_window(window.label());
+                }
+            }
+        })
         .setup(|app| {
             let config_dir = share::identity::config_dir_override().unwrap_or_else(|| {
                 app.path()

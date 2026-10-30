@@ -63,6 +63,8 @@ enum Phase {
 }
 
 struct Entry {
+    /// The window whose dialog shows the share: closing it stops the share.
+    window: String,
     path: PathBuf,
     name: String,
     token: [u8; TOKEN_LEN],
@@ -133,8 +135,9 @@ impl FileShares {
         }
     }
 
-    /// Start sharing `path`; the returned id names it for `status` and `stop`.
-    pub fn prepare(&self, path: &Path) -> Result<String, String> {
+    /// Start sharing `path` from `window`; the returned id names it for
+    /// `status` and `stop`.
+    pub fn prepare(&self, path: &Path, window: &str) -> Result<String, String> {
         let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
         if !meta.is_file() {
             return Err(NOT_A_FILE.into());
@@ -149,6 +152,7 @@ impl FileShares {
         lock(&self.inner).entries.insert(
             id.clone(),
             Entry {
+                window: window.to_string(),
                 path: path.to_path_buf(),
                 name,
                 token,
@@ -182,6 +186,17 @@ impl FileShares {
         if let Some(entry) = lock(&self.inner).entries.remove(id) {
             entry.cancel.store(true, Ordering::SeqCst);
         }
+    }
+
+    /// A window closed: its dialogs went with it, so do its shares.
+    pub fn stop_window(&self, window: &str) {
+        lock(&self.inner).entries.retain(|_, entry| {
+            let keep = entry.window != window;
+            if !keep {
+                entry.cancel.store(true, Ordering::SeqCst);
+            }
+            keep
+        });
     }
 }
 
@@ -333,10 +348,16 @@ struct Found {
     modified: Option<SystemTime>,
 }
 
+/// Compare tokens without stopping at the first difference, so timing
+/// says nothing about how much of a guess was right.
+fn same_token(a: &[u8; TOKEN_LEN], b: &[u8; TOKEN_LEN]) -> bool {
+    a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
+}
+
 fn find(inner: &Inner, token: &[u8; TOKEN_LEN]) -> Option<Found> {
     let shares = lock(inner);
     shares.entries.iter().find_map(|(id, entry)| match &entry.phase {
-        Phase::Ready { size, modified, .. } if &entry.token == token => Some(Found {
+        Phase::Ready { size, modified, .. } if same_token(&entry.token, token) => Some(Found {
             id: id.clone(),
             path: entry.path.clone(),
             name: entry.name.clone(),
@@ -535,7 +556,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(30), async {
             let fx = fixture(700_000);
             let shares = FileShares::new(None, None);
-            let id = shares.prepare(&fx.file).unwrap();
+            let id = shares.prepare(&fx.file, "main").unwrap();
             let view = ready(&shares, &id).await;
             let View::Ready { qr, downloads: 0, sending: None, .. } = &view else { panic!("{view:?}") };
             assert!(qr.starts_with("<?xml") && qr.contains("<svg"), "{}", &qr[..60]);
@@ -560,7 +581,7 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(30), async {
             let fx = fixture(5_000);
             let shares = FileShares::new(Some("http://localhost:9/get/".into()), None);
-            let id = shares.prepare(&fx.file).unwrap();
+            let id = shares.prepare(&fx.file, "main").unwrap();
             let view = ready(&shares, &id).await;
             let View::Ready { link, .. } = &view else { panic!() };
             assert!(link.starts_with("http://localhost:9/get/#"));
@@ -587,10 +608,31 @@ mod tests {
     async fn folders_and_missing_files_cannot_be_shared() {
         let dir = tempfile::tempdir().unwrap();
         let shares = FileShares::new(None, None);
-        assert_eq!(shares.prepare(dir.path()).unwrap_err(), NOT_A_FILE);
-        assert!(shares.prepare(&dir.path().join("gone")).is_err());
+        assert_eq!(shares.prepare(dir.path(), "main").unwrap_err(), NOT_A_FILE);
+        assert!(shares.prepare(&dir.path().join("gone"), "main").is_err());
         assert_eq!(shares.status("nope"), None);
         shares.stop("nope");
+    }
+
+    #[tokio::test]
+    async fn closing_a_window_stops_only_its_shares() {
+        let fx = fixture(100);
+        let shares = FileShares::new(None, None);
+        let mine = shares.prepare(&fx.file, "main").unwrap();
+        let other = shares.prepare(&fx.file, "window-2").unwrap();
+        shares.stop_window("main");
+        assert_eq!(shares.status(&mine), None);
+        assert!(shares.status(&other).is_some());
+    }
+
+    #[test]
+    fn tokens_match_only_when_every_byte_does() {
+        let token = [7u8; TOKEN_LEN];
+        assert!(same_token(&token, &[7u8; TOKEN_LEN]));
+        let mut last = token;
+        last[TOKEN_LEN - 1] = 8;
+        assert!(!same_token(&token, &last));
+        assert!(!same_token(&token, &[0u8; TOKEN_LEN]));
     }
 
     #[test]
@@ -607,6 +649,7 @@ mod tests {
     #[test]
     fn views_report_progress() {
         let entry = |phase| Entry {
+            window: String::new(),
             path: PathBuf::new(),
             name: String::new(),
             token: [0; TOKEN_LEN],
