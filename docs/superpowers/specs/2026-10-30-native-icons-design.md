@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-30
 
-**Status:** Implemented. Linux checked against a real icon theme; macOS
+**Status:** Implemented. Linux checked in the real app; macOS
 type-checked only, not run on a Mac.
 
 **Amends:** [macOS icons](2026-10-30-macos-icons-design.md): the drawings
@@ -90,6 +90,13 @@ the blocking pool; none of these AppKit calls is main-thread-only.
   A one-off run against this machine's Adwaita theme found SVGs for PDF,
   text, archive, audio, image, Rust source, ODT, a folder and the home
   folder.
+- **The real Linux app** (debug build, Xvfb, a demo home folder) shows the
+  theme's icons, special folders included. With `gtk-icon-theme-name` set to
+  Humanity in GTK's settings, it shows Humanity's, so the name really comes
+  from the desktop.
+- **Empty files**, like in GNOME Files, are `application/x-zerosize` (GIO
+  sniffs content) and get the theme's generic icon. Where the theme has none,
+  they get the app's drawing by extension.
 - **The macOS code** type-checks (`cargo check --target aarch64-apple-darwin`)
   in a scratch crate with the same dependencies; it has not run.
 - **App tests** (`tests/native-icons.test.ts`) use a mock that can serve
@@ -102,5 +109,5 @@ the blocking pool; none of these AppKit calls is main-thread-only.
   - thumbnails win;
   - Network doesn't ask.
 - **Not verified:** the macOS drawing on a Mac (sharpness, app and custom
-  folder icons, speed in a big folder), and the real Linux app with a
-  desktop session (the theme name from GTK, a non-Adwaita theme).
+  folder icons, speed in a big folder), and a real Linux desktop session
+  (GNOME or KDE, switching the theme while the app runs needs a restart).
