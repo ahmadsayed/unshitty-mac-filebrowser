@@ -838,6 +838,8 @@ fn dmg_quarantine_bundle(source: &Path, destination: &Path, image: &Option<Vec<u
 fn dmg_quarantine_bundle(_: &Path, _: &Path, _: &Option<Vec<u8>>) -> Result<(), String> { Err("DMG installation requires macOS.".into()) }
 
 /// A bundled attribute must not downgrade the downloaded image's flags.
+/// Only the Mac installs bundles; tests run it everywhere.
+#[cfg(any(target_os = "macos", test))]
 fn dmg_combined_quarantine(image: &Option<Vec<u8>>, bundle: &Option<Vec<u8>>) -> Result<Option<Vec<u8>>, String> {
     let (Some(image), Some(bundle)) = (image, bundle) else { return Ok(image.clone().or_else(|| bundle.clone())); };
     let (image_flags, origin) = dmg_quarantine_parts(image)?;
@@ -845,6 +847,7 @@ fn dmg_combined_quarantine(image: &Option<Vec<u8>>, bundle: &Option<Vec<u8>>) ->
     Ok(Some(format!("{:04x};{origin}", image_flags | bundle_flags).into_bytes()))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn dmg_quarantine_parts(value: &[u8]) -> Result<(u32, &str), String> {
     let text = std::str::from_utf8(value).map_err(|_| "The quarantine attribute cannot be safely preserved.")?;
     let (flags, rest) = text.split_once(';').ok_or("The quarantine attribute cannot be safely preserved.")?;
@@ -1301,6 +1304,32 @@ mod tests {
         assert_eq!(apps.len(), 1);
         assert_eq!(apps[0].name, "Example Editor");
         assert_eq!(apps[0].id, "Editor.app");
+    }
+
+    #[test]
+    fn dmg_quarantine_keeps_both_flags_and_the_image_origin() {
+        let image = Some(b"0083;6a000000;Safari;00000000-0000-0000-0000-000000000001".to_vec());
+        let bundle = Some(b"0100;6a000000;BundledFlag;bundle".to_vec());
+        let combined = dmg_combined_quarantine(&image, &bundle).unwrap().unwrap();
+        assert_eq!(String::from_utf8(combined).unwrap(), "0183;6a000000;Safari;00000000-0000-0000-0000-000000000001");
+    }
+
+    #[test]
+    fn dmg_quarantine_with_one_side_keeps_that_side() {
+        let image = Some(b"0083;6a000000;Safari;id".to_vec());
+        assert_eq!(dmg_combined_quarantine(&image, &None).unwrap(), image);
+        assert_eq!(dmg_combined_quarantine(&None, &image).unwrap(), image);
+        assert_eq!(dmg_combined_quarantine(&None, &None).unwrap(), None);
+    }
+
+    #[test]
+    fn dmg_quarantine_refuses_values_it_cannot_combine() {
+        let image = Some(b"0083;6a000000;Safari;id".to_vec());
+        for bad in [&b"no separator"[..], b"zz;6a000000", b"\xff\xfe;x"] {
+            let bad = Some(bad.to_vec());
+            assert!(dmg_combined_quarantine(&image, &bad).unwrap_err().contains("cannot be safely preserved"));
+            assert!(dmg_combined_quarantine(&bad, &image).unwrap_err().contains("cannot be safely preserved"));
+        }
     }
 
     #[cfg(target_os = "macos")]
