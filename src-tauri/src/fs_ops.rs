@@ -340,8 +340,11 @@ pub fn search_dir(
     if needle.is_empty() {
         return Ok(walk.summary(None));
     }
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    // A queue, not a stack: every folder at one depth is read before any
+    // deeper one, so results come nearest first and the limits cut the
+    // farthest folders.
+    let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);
+    while let Some(dir) = queue.pop_front() {
         let read_dir = match std::fs::read_dir(&dir) {
             Ok(read_dir) => read_dir,
             Err(e) if dir == root => {
@@ -367,7 +370,7 @@ pub fn search_dir(
                 continue;
             };
             if entry.is_dir && !entry.is_symlink {
-                stack.push(child);
+                queue.push_back(child);
             }
             if fold(&entry.name).contains(&needle) {
                 walk.add(entry);
@@ -866,6 +869,45 @@ mod tests {
         let with_hidden = found_names(search(dir.path(), "alpha", true, 100).0);
         assert!(with_hidden.contains(&"alpha-secret.txt".to_string()));
         assert!(!with_hidden.contains(&"alpha-old.txt".to_string()));
+    }
+
+    /// How many folders below `root` an entry is: 1 for one directly inside.
+    fn depth(root: &Path, entry: &Entry) -> usize {
+        Path::new(&entry.path).strip_prefix(root).unwrap().components().count()
+    }
+
+    fn write_all(root: &Path, files: &[&str]) {
+        for file in files {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "x").unwrap();
+        }
+    }
+
+    /// Nearest first: every folder at one depth is read before any deeper
+    /// one, so results arrive in depth order whatever order folders list in.
+    #[test]
+    fn search_reads_each_level_before_the_next() {
+        let dir = tempdir().unwrap();
+        write_all(dir.path(), &["a/note-1a.txt", "a/b/note-2a.txt", "z/note-1z.txt", "z/y/note-2z.txt", "note-0.txt"]);
+        let found: Vec<usize> = search(dir.path(), "note", false, 100)
+            .0
+            .into_iter()
+            .flatten()
+            .map(|entry| depth(dir.path(), &entry))
+            .collect();
+        assert_eq!(found, [1, 2, 2, 3, 3]);
+    }
+
+    /// The result limit cuts the farthest folders, not whichever came first.
+    #[test]
+    fn search_limit_keeps_shallow_matches() {
+        let dir = tempdir().unwrap();
+        write_all(dir.path(), &["a/note.txt", "a/s/t/note.txt", "b/note.txt", "b/s/t/note.txt", "c/note.txt", "c/s/t/note.txt"]);
+        let (batches, summary) = search(dir.path(), "note", false, 3);
+        let depths: Vec<usize> = batches.into_iter().flatten().map(|entry| depth(dir.path(), &entry)).collect();
+        assert_eq!(depths, [2, 2, 2]);
+        assert_eq!(summary.stopped, Some(SearchStop::Results));
     }
 
     #[test]

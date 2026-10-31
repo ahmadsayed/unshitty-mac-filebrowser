@@ -732,9 +732,10 @@ function search(path: string, query: string, showHidden: boolean, limit: number,
   const out: Entry[] = [];
   let stopped: "results" | "scanned" | null = null;
   let scanned = 0;
-  const stack = needle ? [path.replace(/\/$/, "")] : [];
-  walk: while (stack.length) {
-    const dir = stack.pop()!;
+  // A queue, as in the backend: nearest folders first.
+  const queue = needle ? [path.replace(/\/$/, "")] : [];
+  walk: while (queue.length) {
+    const dir = queue.shift()!;
     let entries: Entry[];
     try {
       entries = list(dir, showHidden);
@@ -746,7 +747,7 @@ function search(path: string, query: string, showHidden: boolean, limit: number,
       if (stopped) break walk;
       scanned += 1;
       if (fold(entry.name).includes(needle)) out.push(entry);
-      if (entry.is_dir && !entry.is_symlink) stack.push(entry.path);
+      if (entry.is_dir && !entry.is_symlink) queue.push(entry.path);
     }
   }
   for (let i = 0; i < out.length; i += SEARCH_BATCH) channel?.onmessage(out.slice(i, i + SEARCH_BATCH));

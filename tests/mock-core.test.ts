@@ -531,6 +531,17 @@ test("search_dir ignores accents, streams batches and says why it stopped", asyn
   await expect(invoke("cancel_search")).resolves.toBeUndefined();
 });
 
+test("search_dir sends nearer matches first, like the backend's level-by-level walk", async () => {
+  const root = `${HOME}/Levels`;
+  for (const dir of ["", "/a", "/a/b", "/z", "/z/y"]) await invoke("make_dir", { path: root + dir });
+  for (const file of ["/a/b/lvl-2a.txt", "/a/lvl-1a.txt", "/z/y/lvl-2z.txt", "/z/lvl-1z.txt", "/lvl-0.txt"]) {
+    await invoke("create_file", { path: root + file });
+  }
+  const depth = (path: string) => path.slice(root.length + 1).split("/").length;
+  const { found } = await searchAll(root, "lvl");
+  expect(found.map((entry) => depth(entry.path))).toEqual([1, 2, 2, 3, 3]);
+});
+
 test("sharing commands create links, receive, go offline and clean up", async () => {  const mock = (globalThis as unknown as { __mockShare: { setOnline(v: boolean): void; reset(): void } }).__mockShare;
   mock.reset();
   expect(await invoke("share_identity")).toEqual({ name: null });
