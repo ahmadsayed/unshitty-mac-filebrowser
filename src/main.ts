@@ -33,7 +33,7 @@ import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl } from "./native-icons";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
-import { contentHeight, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
+import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
 import { closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { checkForUpdates } from "./updates";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
@@ -127,6 +127,9 @@ let searchTimer = 0;
 let searchSeq = 0;
 /** Whether a recursive search is still sending results. */
 let searching = false;
+/** In a recursive search, the index in `shown` of the first "In Subfolders"
+ * item; the ones before it are "In This Folder". -1 elsewhere. */
+let sectionStart = -1;
 /** Cap on recursive results, so a broad query can't build an endless view. */
 const SEARCH_LIMIT = 1000;
 
@@ -436,12 +439,55 @@ let shownFrom: unknown[] = [];
 
 function computeShown(): void {
   const q = searchQuery ? fold(searchQuery.trim()) : "";
-  const from = [entries, searchResults, q, location === RECENT, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && countsVersion];
+  const from = [entries, searchResults, q, location, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && countsVersion];
   if (from.every((value, i) => value === shownFrom[i])) return;
   shownFrom = from;
+  sectionStart = -1;
+  if (q && canSearchRecursively()) {
+    showSearchSections(q);
+    return;
+  }
   const fromResults = q && searchResults !== null;
   const list = !q ? entries : fromResults ? searchResults! : entries.filter((e) => fold(e.name).includes(q));
   shown = [...list].sort(compareEntries);
+}
+
+/** A recursive search: "In This Folder" at once from the listing in memory,
+ * then "In Subfolders" from the backend, nearest folders first. */
+function showSearchSections(q: string): void {
+  const here = entries.filter((e) => fold(e.name).includes(q)).sort(compareEntries);
+  const prefix = location.endsWith("/") ? location : `${location}/`;
+  const depth = (e: Entry) => e.path.slice(prefix.length).split("/").length;
+  const deeper = (searchResults ?? [])
+    .filter((e) => parentOf(e.path) !== location)
+    .sort((a, b) => depth(a) - depth(b) || compareEntries(a, b));
+  shown = [...here, ...deeper];
+  sectionStart = here.length;
+}
+
+interface SearchSection {
+  label: string;
+  start: number;
+  count: number;
+  busy: boolean;
+}
+
+/** The headed sections of a recursive search; none elsewhere. "In
+ * Subfolders" shows while the search runs, and afterwards only with matches. */
+function searchSections(): SearchSection[] {
+  if (sectionStart < 0) return [];
+  const deeper = shown.length - sectionStart;
+  const out: SearchSection[] = [];
+  if (sectionStart > 0) out.push({ label: "In This Folder", start: 0, count: sectionStart, busy: false });
+  if (deeper > 0 || (searching && sectionStart > 0)) {
+    out.push({ label: "In Subfolders", start: sectionStart, count: deeper, busy: searching });
+  }
+  return out;
+}
+
+/** Whether item `i` is one of "In This Folder", which needs no folder line. */
+function inThisFolderSection(i: number): boolean {
+  return i < sectionStart;
 }
 
 // ---------------------------------------------------------------------------
@@ -1131,15 +1177,17 @@ function runSearch(seq: number, query: string): void {
 /** Add streamed results. The first batch replaces the quick local matches;
  *  later ones keep the cursor and anchor on the same items as the list grows. */
 function addSearchResults(batch: Entry[]): void {
-  if (searchResults === null) {
-    searchResults = batch;
+  // "In This Folder" is already shown and never moves; only an empty view
+  // gets its first match selected.
+  const hadItems = shown.length > 0;
+  searchResults = (searchResults ?? []).concat(batch);
+  if (!hadItems) {
     renderView();
     selectFirstMatch();
     return;
   }
   const cursorPath = shown[cursorIndex]?.path;
   const anchorPath = shown[anchorIndex]?.path;
-  searchResults = searchResults.concat(batch);
   renderViewKeepingScroll();
   cursorIndex = shown.findIndex((e) => e.path === cursorPath);
   anchorIndex = shown.findIndex((e) => e.path === anchorPath);
@@ -1484,6 +1532,7 @@ function itemHtml(i: number): string {
   if (prefs.view === "grid") {
     const detail = location === NETWORK ? networkDetail(e) : "";
     const shared = detail ? `<div class="shared-by">${escapeHtml(detail)}</div>`
+      : inThisFolderSection(i) ? `<div class="shared-by where"></div>`
       : searchQuery !== null ? `<div class="shared-by where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</div>` : "";
     return `<div class="grid-item item${cls}" data-index="${i}" role="option" aria-selected="${sel}" title="${escapeHtml(e.name)}" ${pos}>` +
       `<div class="icon">${iconHtml(e)}</div>` +
@@ -1499,7 +1548,7 @@ function itemHtml(i: number): string {
   }
   const date = location === RECENT ? e.used ?? e.modified : e.trashed ?? e.modified;
   // In the Trash, the location is where the item came from.
-  const from = location === trashPath ? e.origin : e.path;
+  const from = location === trashPath ? e.origin : inThisFolderSection(i) ? undefined : e.path;
   const where = !showsWhere() ? "" : from
     ? `<span class="meta where" title="${escapeHtml(parentOf(from))}">${escapeHtml(whereText(from))}</span>`
     : `<span class="meta where"></span>`;
@@ -1685,7 +1734,21 @@ function computeLayout(): void {
 
 /** The sections `shown` is drawn in: one without a header outside search. */
 function viewSections(): { count: number; sections: Section[]; headerH: number } {
-  return { count: shown.length, sections: [{ start: 0, header: false }], headerH: 0 };
+  const headed = searchSections();
+  if (!headed.length) return { count: shown.length, sections: [{ start: 0, header: false }], headerH: 0 };
+  return {
+    count: shown.length,
+    sections: headed.map((s) => ({ start: s.start, header: true })),
+    headerH: LAYOUT_SIZES[currentTheme].sectionHeader,
+  };
+}
+
+/** A section's header row, drawn in the items layer like an item. */
+function sectionHeaderHtml(s: SearchSection, k: number): string {
+  const style = `top:${headerTop(layout, k)}px;left:${layout.padX}px;right:${layout.padX}px;height:${layout.headerH}px`;
+  const busy = s.busy ? `<span class="searching">Searching…</span>` : "";
+  return `<div class="section-header${k > 0 ? " later" : ""}" style="${style}">` +
+    `<span class="label">${s.label}</span><span class="count">${s.count}</span>${busy}</div>`;
 }
 
 /** Top-left of item `i` within the items layer. */
@@ -1713,7 +1776,8 @@ function renderWindow(force = false): void {
   const { start, end } = indicesInRows(layout, top - overscan, bottom + overscan);
   if (!force && start === windowRange.start && end === windowRange.end) return;
   windowRange = { start, end };
-  const html: string[] = [];
+  // At most two headers, so they are always drawn.
+  const html = searchSections().map(sectionHeaderHtml);
   for (let i = start; i <= end; i++) html.push(itemHtml(i));
   itemsLayer.innerHTML = html.join("");
   loadItemIcons(start, end);
