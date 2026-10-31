@@ -33,6 +33,7 @@ import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl } from "./native-icons";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
+import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
 import { closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { checkForUpdates } from "./updates";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
@@ -126,6 +127,9 @@ let searchTimer = 0;
 let searchSeq = 0;
 /** Whether a recursive search is still sending results. */
 let searching = false;
+/** In a recursive search, the index in `shown` of the first "In Subfolders"
+ * item; the ones before it are "In This Folder". -1 elsewhere. */
+let sectionStart = -1;
 /** Cap on recursive results, so a broad query can't build an endless view. */
 const SEARCH_LIMIT = 1000;
 
@@ -435,12 +439,55 @@ let shownFrom: unknown[] = [];
 
 function computeShown(): void {
   const q = searchQuery ? fold(searchQuery.trim()) : "";
-  const from = [entries, searchResults, q, location === RECENT, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && countsVersion];
+  const from = [entries, searchResults, q, location, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && countsVersion];
   if (from.every((value, i) => value === shownFrom[i])) return;
   shownFrom = from;
+  sectionStart = -1;
+  if (q && canSearchRecursively()) {
+    showSearchSections(q);
+    return;
+  }
   const fromResults = q && searchResults !== null;
   const list = !q ? entries : fromResults ? searchResults! : entries.filter((e) => fold(e.name).includes(q));
   shown = [...list].sort(compareEntries);
+}
+
+/** A recursive search: "In This Folder" at once from the listing in memory,
+ * then "In Subfolders" from the backend, nearest folders first. */
+function showSearchSections(q: string): void {
+  const here = entries.filter((e) => fold(e.name).includes(q)).sort(compareEntries);
+  const prefix = location.endsWith("/") ? location : `${location}/`;
+  const depth = (e: Entry) => e.path.slice(prefix.length).split("/").length;
+  const deeper = (searchResults ?? [])
+    .filter((e) => parentOf(e.path) !== location)
+    .sort((a, b) => depth(a) - depth(b) || compareEntries(a, b));
+  shown = [...here, ...deeper];
+  sectionStart = here.length;
+}
+
+interface SearchSection {
+  label: string;
+  start: number;
+  count: number;
+  busy: boolean;
+}
+
+/** The headed sections of a recursive search; none elsewhere. "In
+ * Subfolders" shows while the search runs, and afterwards only with matches. */
+function searchSections(): SearchSection[] {
+  if (sectionStart < 0) return [];
+  const deeper = shown.length - sectionStart;
+  const out: SearchSection[] = [];
+  if (sectionStart > 0) out.push({ label: "In This Folder", start: 0, count: sectionStart, busy: false });
+  if (deeper > 0 || (searching && sectionStart > 0)) {
+    out.push({ label: "In Subfolders", start: sectionStart, count: deeper, busy: searching });
+  }
+  return out;
+}
+
+/** Whether item `i` is one of "In This Folder", which needs no folder line. */
+function inThisFolderSection(i: number): boolean {
+  return i < sectionStart;
 }
 
 // ---------------------------------------------------------------------------
@@ -1130,15 +1177,17 @@ function runSearch(seq: number, query: string): void {
 /** Add streamed results. The first batch replaces the quick local matches;
  *  later ones keep the cursor and anchor on the same items as the list grows. */
 function addSearchResults(batch: Entry[]): void {
-  if (searchResults === null) {
-    searchResults = batch;
+  // "In This Folder" is already shown and never moves; only an empty view
+  // gets its first match selected.
+  const hadItems = shown.length > 0;
+  searchResults = (searchResults ?? []).concat(batch);
+  if (!hadItems) {
     renderView();
     selectFirstMatch();
     return;
   }
   const cursorPath = shown[cursorIndex]?.path;
   const anchorPath = shown[anchorIndex]?.path;
-  searchResults = searchResults.concat(batch);
   renderViewKeepingScroll();
   cursorIndex = shown.findIndex((e) => e.path === cursorPath);
   anchorIndex = shown.findIndex((e) => e.path === anchorPath);
@@ -1483,6 +1532,7 @@ function itemHtml(i: number): string {
   if (prefs.view === "grid") {
     const detail = location === NETWORK ? networkDetail(e) : "";
     const shared = detail ? `<div class="shared-by">${escapeHtml(detail)}</div>`
+      : inThisFolderSection(i) ? `<div class="shared-by where"></div>`
       : searchQuery !== null ? `<div class="shared-by where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</div>` : "";
     return `<div class="grid-item item${cls}" data-index="${i}" role="option" aria-selected="${sel}" title="${escapeHtml(e.name)}" ${pos}>` +
       `<div class="icon">${iconHtml(e)}</div>` +
@@ -1498,7 +1548,7 @@ function itemHtml(i: number): string {
   }
   const date = location === RECENT ? e.used ?? e.modified : e.trashed ?? e.modified;
   // In the Trash, the location is where the item came from.
-  const from = location === trashPath ? e.origin : e.path;
+  const from = location === trashPath ? e.origin : inThisFolderSection(i) ? undefined : e.path;
   const where = !showsWhere() ? "" : from
     ? `<span class="meta where" title="${escapeHtml(parentOf(from))}">${escapeHtml(whereText(from))}</span>`
     : `<span class="meta where"></span>`;
@@ -1655,18 +1705,10 @@ function itemEl(index: number): HTMLElement | null {
 // with 10k entries opens and scrolls like a small one.
 // ---------------------------------------------------------------------------
 
-interface Layout {
-  cols: number;
-  itemW: number;
-  itemH: number;
-  gap: number;
-  padX: number;
-  padY: number;
-  /** Where the items layer starts within the scrolled content. */
-  bodyTop: number;
-}
-
-let layout: Layout = { cols: 1, itemW: 0, itemH: 0, gap: 0, padX: 0, padY: 0, bodyTop: 0 };
+let layout: ViewLayout = {
+  cols: 1, itemW: 0, itemH: 0, gap: 0, padX: 0, padY: 0, bodyTop: 0,
+  count: 0, sections: [{ start: 0, header: false }], headerH: 0,
+};
 let itemsLayer: HTMLElement | null = null;
 let windowRange = { start: 0, end: -1 };
 
@@ -1683,25 +1725,41 @@ function computeLayout(): void {
     // "Shared by …", search one for the folder each result is in.
     const extraLine = location === NETWORK || searchQuery !== null;
     const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9 + (extraLine ? lineH : 0));
-    layout = { cols, itemW, itemH, gap: sizes.gridGap, padX: sizes.gridPad, padY: sizes.gridPad, bodyTop: 0 };
+    layout = { cols, itemW, itemH, gap: sizes.gridGap, padX: sizes.gridPad, padY: sizes.gridPad, bodyTop: 0, ...viewSections() };
   } else {
     const itemH = Math.max(LIST_SIZES[prefs.listZoom] + sizes.listPad, sizes.listMinRow);
-    layout = { cols: 1, itemW: width - 12, itemH, gap: 0, padX: 6, padY: 0, bodyTop: sizes.listHeader };
+    layout = { cols: 1, itemW: width - 12, itemH, gap: 0, padX: 6, padY: 0, bodyTop: sizes.listHeader, ...viewSections() };
   }
+}
+
+/** The sections `shown` is drawn in: one without a header outside search. */
+function viewSections(): { count: number; sections: Section[]; headerH: number } {
+  const headed = searchSections();
+  if (!headed.length) return { count: shown.length, sections: [{ start: 0, header: false }], headerH: 0 };
+  return {
+    count: shown.length,
+    sections: headed.map((s) => ({ start: s.start, header: true })),
+    headerH: LAYOUT_SIZES[currentTheme].sectionHeader,
+  };
+}
+
+/** A section's header row, drawn in the items layer like an item. */
+function sectionHeaderHtml(s: SearchSection, k: number): string {
+  const style = `top:${headerTop(layout, k)}px;left:${layout.padX}px;right:${layout.padX}px;height:${layout.headerH}px`;
+  const busy = s.busy ? `<span class="searching">Searching…</span>` : "";
+  return `<div class="section-header${k > 0 ? " later" : ""}" style="${style}">` +
+    `<span class="label">${s.label}</span><span class="count">${s.count}</span>${busy}</div>`;
 }
 
 /** Top-left of item `i` within the items layer. */
 function itemPos(i: number): { x: number; y: number } {
-  const row = Math.floor(i / layout.cols);
-  const col = i % layout.cols;
-  return { x: layout.padX + col * (layout.itemW + layout.gap), y: layout.padY + row * (layout.itemH + layout.gap) };
+  return slotPos(layout, i);
 }
 
 function relayout(): void {
   if (!itemsLayer) return;
   computeLayout();
-  const rows = Math.ceil(shown.length / layout.cols);
-  const height = layout.padY * 2 + rows * (layout.itemH + layout.gap) - layout.gap + (prefs.view === "list" ? 6 : 0);
+  const height = contentHeight(layout) + (prefs.view === "list" ? 6 : 0);
   itemsLayer.style.height = `${height}px`;
   viewEl.style.setProperty("--cell-w", `${layout.itemW}px`);
   viewEl.style.setProperty("--cell-h", `${layout.itemH}px`);
@@ -1711,25 +1769,19 @@ function relayout(): void {
 /** Render the items that intersect the viewport (plus a few rows either side). */
 function renderWindow(force = false): void {
   if (!itemsLayer) return;
-  const pitch = layout.itemH + layout.gap;
-  const top = scrollEl.scrollTop - layout.bodyTop - layout.padY;
-  const overscan = prefs.view === "grid" ? 2 : 8;
-  const firstVisible = Math.max(0, Math.floor(top / pitch));
-  const lastVisible = Math.floor((top + scrollEl.clientHeight) / pitch);
-  const firstRow = Math.max(0, firstVisible - overscan);
-  const lastRow = lastVisible + overscan;
-  const start = firstRow * layout.cols;
-  const end = Math.min(shown.length - 1, (lastRow + 1) * layout.cols - 1);
+  const top = scrollEl.scrollTop - layout.bodyTop;
+  const bottom = top + scrollEl.clientHeight;
+  const overscan = (prefs.view === "grid" ? 2 : 8) * (layout.itemH + layout.gap);
+  const visible = indicesInRows(layout, top, bottom);
+  const { start, end } = indicesInRows(layout, top - overscan, bottom + overscan);
   if (!force && start === windowRange.start && end === windowRange.end) return;
   windowRange = { start, end };
-  const html: string[] = [];
+  // At most two headers, so they are always drawn.
+  const html = searchSections().map(sectionHeaderHtml);
   for (let i = start; i <= end; i++) html.push(itemHtml(i));
   itemsLayer.innerHTML = html.join("");
   loadItemIcons(start, end);
-  loadThumbs(start, end, {
-    start: firstVisible * layout.cols,
-    end: Math.min(end, (lastVisible + 1) * layout.cols - 1),
-  });
+  loadThumbs(start, end, visible);
   // Both views: list view shows the counts, and either view shows the
   // version badge that comes with them. Only rendered folders are asked.
   const dirs: string[] = [];
@@ -1742,8 +1794,10 @@ function scrollToIndex(i: number): void {
   if (!itemsLayer || i < 0 || i >= shown.length) return;
   const y = layout.bodyTop + itemPos(i).y;
   const visibleTop = scrollEl.scrollTop + layout.bodyTop;
+  // Going up, the padding above the item (and its section's header) shows too.
+  const above = Math.min(revealTop(layout, i), y - layout.bodyTop - layout.padY);
   if (y - layout.padY < visibleTop) {
-    scrollEl.scrollTop = y - layout.bodyTop - layout.padY;
+    scrollEl.scrollTop = above;
   } else if (y + layout.itemH + layout.padY > scrollEl.scrollTop + scrollEl.clientHeight) {
     scrollEl.scrollTop = y + layout.itemH + layout.padY - scrollEl.clientHeight;
   }
@@ -2192,23 +2246,7 @@ function startRubberband(start: MouseEvent, additive: boolean): void {
     selected.clear();
     for (const p of base) selected.add(p);
     // Items hit by the band, found from the layout rather than the DOM.
-    const pitchX = layout.itemW + layout.gap;
-    const pitchY = layout.itemH + layout.gap;
-    const top = t - layout.bodyTop - layout.padY;
-    const bottom = b - layout.bodyTop - layout.padY;
-    const firstRow = Math.max(0, Math.floor(top / pitchY));
-    const lastRow = Math.floor(bottom / pitchY);
-    const firstCol = Math.max(0, Math.floor((l - layout.padX) / pitchX));
-    const lastCol = Math.min(layout.cols - 1, Math.floor((r - layout.padX) / pitchX));
-    for (let row = firstRow; row <= lastRow; row++) {
-      // Skip the gap below a row if the band only covers that gap.
-      if (row * pitchY + layout.itemH < top) continue;
-      for (let col = firstCol; col <= lastCol; col++) {
-        if ((l - layout.padX) > col * pitchX + layout.itemW) continue;
-        const i = row * layout.cols + col;
-        if (i < shown.length) selected.add(shown[i].path);
-      }
-    }
+    for (const i of indicesInRect(layout, l, t - layout.bodyTop, r, b - layout.bodyTop)) selected.add(shown[i].path);
     // Scroll when dragging past the top or bottom edge.
     const edge = e.clientY - origin.top;
     if (edge > overlay.clientHeight - 16) scrollEl.scrollTop += 12;
@@ -4533,12 +4571,12 @@ const VIEW_KEYS: Record<string, (k: ViewKey) => boolean> = {
   ArrowDown: (k) => {
     if (k.e.altKey) return false;
     if (k.mod) activateSelection();
-    else stepFrom(k, k.cols);
+    else moveCursor(k.cur < 0 ? 0 : stepRow(layout, k.cur, 1), k.e.shiftKey);
     return true;
   },
   ArrowUp: (k) => {
     if (k.e.altKey || k.mod) return false;
-    stepFrom(k, -k.cols);
+    moveCursor(k.cur < 0 ? 0 : stepRow(layout, k.cur, -1), k.e.shiftKey);
     return true;
   },
   Home: (k) => {

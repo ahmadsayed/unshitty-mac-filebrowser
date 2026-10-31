@@ -557,6 +557,45 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   position: relative;
 }
 
+/* ----- Search sections: "In This Folder", then "In Subfolders" -----
+   Positioned by the layout like items (left, right, top, height inline). */
+.section-header {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px;
+  font-size: 0.9em;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.section-header .label,
+.section-header .count { opacity: var(--dim); }
+.section-header .count { font-weight: 400; }
+
+/* The second section starts below a separator. */
+.section-header.later { border-top: 1px solid var(--border); }
+
+.section-header .searching {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 400;
+  opacity: var(--dim);
+}
+
+.section-header .searching::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  animation: search-spin 0.8s linear infinite;
+}
+
 .grid-item {
   position: absolute;
   width: var(--cell-w);

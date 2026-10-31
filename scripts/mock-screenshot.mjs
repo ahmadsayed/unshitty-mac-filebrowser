@@ -11,9 +11,10 @@
 // --size <width>x<height> (default 1100x720), --theme gnome|macos (default
 // macos; the theme follows the platform, so gnome loads the page with a
 // Linux user agent and the app takes its Linux code paths), --scene
-// grid|list|menu|dialog (default grid: the folder as it opens; list: list
-// view with the second item selected; menu: the main menu open; dialog: the
-// Keyboard Shortcuts dialog). Uses ?demo (no test-only folders). The page's
+// grid|list|menu|dialog|search|search-list (default grid: the folder as it
+// opens; list: list view with the second item selected; menu: the main menu
+// open; dialog: the Keyboard Shortcuts dialog; search, search-list: a search
+// for --query, default "e", once its results are in). Uses ?demo (no test-only folders). The page's
 // clock is fixed, so the same scene always gives the same image.
 import { createRequire } from "node:module";
 
@@ -23,10 +24,10 @@ const option = (name, fallback) => {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : fallback;
 };
-const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene"];
+const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene", "--query"];
 const [path, out] = args.filter((a, i) => !a.startsWith("--") && !VALUE_OPTIONS.includes(args[i - 1]));
 if (!path || !out) {
-  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|dialog]");
+  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|dialog|search|search-list] [--query <text>]");
   process.exit(2);
 }
 
@@ -72,7 +73,20 @@ const SCENES = {
     await page.click("#btn-main-menu");
     await page.getByText("Keyboard Shortcuts", { exact: true }).click();
   },
+  search: (page) => search(page),
+  "search-list": async (page) => {
+    await page.keyboard.press(`${MOD}+1`);
+    await page.waitForTimeout(300);
+    await search(page);
+  },
 };
+
+/** Search the folder for --query and wait for the recursive results. */
+async function search(page) {
+  await page.keyboard.press(`${MOD}+f`);
+  await page.keyboard.type(option("--query", "e"));
+  await page.waitForFunction(() => !document.querySelector("#searchbar.busy"), null, { timeout: 10_000 });
+}
 if (!SCENES[scene]) {
   console.error(`unknown scene ${scene}: use ${Object.keys(SCENES).join(", ")}`);
   process.exit(2);
