@@ -2,7 +2,8 @@
 
 **Date:** 2026-10-31
 
-**Status:** Design approved in conversation; not implemented yet.
+**Status:** Implemented. Checked in the mock preview and the tests; the real
+app search is for the human to try (see the PR).
 
 **Amends:** [File browser](2026-10-23-file-browser-design.md), search.
 
