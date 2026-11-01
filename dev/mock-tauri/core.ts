@@ -1630,6 +1630,66 @@ function finishInstall(): void {
   },
 };
 
+// ----- Open With: tests vary the installed applications through __mockApps -----
+
+type MockApp = { name: string; id: string };
+const DEFAULT_APPS: MockApp[] = [
+  { name: "TextEdit", id: "/Applications/TextEdit.app" },
+  { name: "Preview", id: "/Applications/Preview.app" },
+  { name: "Visual Studio Code", id: "/Applications/Visual Studio Code.app" },
+];
+
+function freshAppsState() {
+  return {
+    list: DEFAULT_APPS,
+    /** list_apps rejects with this. */
+    failList: "",
+    /** The next open_with rejects with this, once. */
+    failOpen: "",
+    /** list_apps waits for release() while set. */
+    holding: false,
+    waiters: [] as (() => void)[],
+    opened: [] as { path: string; app: string }[],
+  };
+}
+let apps = freshAppsState();
+
+(globalThis as Record<string, unknown>).__mockApps = {
+  set(o: Partial<Pick<typeof apps, "list" | "failList" | "failOpen">>) {
+    Object.assign(apps, o);
+  },
+  hold() {
+    apps.holding = true;
+  },
+  release() {
+    apps.holding = false;
+    apps.waiters.splice(0).forEach((resolve) => resolve());
+  },
+  opened: () => apps.opened.map((o) => ({ ...o })),
+  reset() {
+    apps.waiters.splice(0).forEach((resolve) => resolve());
+    apps = freshAppsState();
+  },
+};
+
+async function mockListApps(): Promise<MockApp[]> {
+  if (apps.holding) await new Promise<void>((resolve) => apps.waiters.push(resolve));
+  if (apps.failList) throw apps.failList;
+  return apps.list.map((app) => ({ ...app }));
+}
+
+function mockOpenWith(a: Args): undefined {
+  const path = str(a, "path");
+  if (!lookup(path)) throw "No such file or directory";
+  if (apps.failOpen) {
+    const failure = apps.failOpen;
+    apps.failOpen = "";
+    throw failure;
+  }
+  apps.opened.push({ path, app: str(a, "app") });
+  return undefined;
+}
+
 /** Every command the app calls, by name. */
 /** The window the header bar buttons act on; tests read `actions`. */
 const mockWindow = { maximized: false, actions: [] as string[] };
@@ -1819,11 +1879,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     const text = `Preview of ${path}\n\nThis is sample text from the mock filesystem.\n`;
     return { text: text.slice(0, limit), truncated: text.length > limit };
   },
-  list_apps: () => [
-    { name: "TextEdit", id: "/Applications/TextEdit.app" },
-    { name: "Preview", id: "/Applications/Preview.app" },
-    { name: "Visual Studio Code", id: "/Applications/Visual Studio Code.app" },
-  ],
+  list_apps: () => mockListApps(),
   // A Mac draws its own window buttons. Set __mockButtonLayout (GNOME's
   // button-layout, e.g. "close,minimize:maximize") before boot to try others.
   window_buttons: () => {
@@ -1856,10 +1912,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     console.log("mock open_url", url);
     return undefined;
   },
-  open_with: (a) => {
-    if (!lookup(str(a, "path"))) throw "No such file or directory";
-    return undefined;
-  },
+  open_with: (a) => mockOpenWith(a),
   new_folder_walk: () => ++mockWalks,
   cancel_folder_size: () => undefined,
   folder_size: (a) => {

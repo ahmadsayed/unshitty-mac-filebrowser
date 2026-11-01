@@ -793,3 +793,38 @@ test("restart_app counts restarts", async () => {
   await invoke("restart_app");
   expect(mockUpdate().restarts()).toBe(1);
 });
+
+// ----- Open With -----
+
+type MockApps = {
+  set(o: { list?: { name: string; id: string }[]; failList?: string; failOpen?: string }): void;
+  hold(): void; release(): void; opened(): { path: string; app: string }[]; reset(): void;
+};
+const mockApps = () => (globalThis as unknown as { __mockApps: MockApps }).__mockApps;
+
+test("list_apps lists, waits, fails and can be replaced; open_with fails once on request", async () => {
+  mockApps().reset();
+  expect((await invoke<{ name: string }[]>("list_apps")).map((a) => a.name)).toEqual(["TextEdit", "Preview", "Visual Studio Code"]);
+  mockApps().set({ list: [{ name: "Editor", id: "/a/Editor.app" }] });
+  expect(await invoke("list_apps")).toEqual([{ name: "Editor", id: "/a/Editor.app" }]);
+
+  mockApps().hold();
+  let done = false;
+  const listing = invoke("list_apps").then(() => (done = true));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(done).toBe(false);
+  mockApps().release();
+  await listing;
+  expect(done).toBe(true);
+
+  mockApps().set({ failList: "Permission denied" });
+  await expect(invoke("list_apps")).rejects.toBe("Permission denied");
+
+  await expect(invoke("open_with", { path: `${HOME}/missing.txt`, app: "/a/Editor.app" })).rejects.toMatch(/No such file/);
+  mockApps().set({ failOpen: "The application can't be opened." });
+  await expect(invoke("open_with", { path: `${HOME}/Desktop/todo.txt`, app: "/a/Editor.app" })).rejects.toMatch(/can't be opened/);
+  await expect(invoke("open_with", { path: `${HOME}/Desktop/todo.txt`, app: "/a/Editor.app" })).resolves.toBeUndefined();
+  expect(mockApps().opened()).toEqual([{ path: `${HOME}/Desktop/todo.txt`, app: "/a/Editor.app" }]);
+  mockApps().reset();
+  expect(mockApps().opened()).toEqual([]);
+});
