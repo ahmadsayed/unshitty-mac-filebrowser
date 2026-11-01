@@ -1425,12 +1425,41 @@ kbd {
 .compress-fields select:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
-}.app-list {
+}.open-with-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Open With's search entry, drawn like the header bar's search. */
+.app-search {
+  height: var(--button-height);
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--radius-button);
+  background: var(--fill);
+  color: inherit;
+  font: inherit;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.app-search:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-bg) 50%, transparent);
+  outline-offset: -2px;
+}
+
+.app-search::-webkit-search-cancel-button { display: none; }
+
+.app-list {
+  /* Rows' offsetTop is measured from here to keep the selection in view. */
+  position: relative;
   max-height: 300px;
   overflow-y: auto;
 }
 
-.app-loading { padding: 12px 0; opacity: var(--dim); }
+.app-loading,
+.app-status { padding: 12px 0; opacity: var(--dim); }
 
 .app-choice {
   width: 100%;
@@ -1446,6 +1475,8 @@ kbd {
 }
 
 .app-choice:hover { background: var(--hover); }
+.app-choice[aria-selected="true"] { background: var(--item-selected); }
+.app-choice[aria-selected="true"]:hover { background: var(--item-selected-hover); }
 .app-choice:disabled { opacity: 0.5; }
 
 .app-choice-icon {
@@ -1456,7 +1487,17 @@ kbd {
 
 .app-choice-icon .fc,
 .app-choice-icon .native-icon { width: 28px; height: 28px; }
-.app-choice-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-choice-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-choice-name,
+.app-choice-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The id that tells apart applications with the same name. */
+.app-choice-detail { font-size: 9pt; opacity: var(--dim); }
 
 /* ----- Network: an SSH server's icon, symbolic like GNOME's Network view ----- */
 .server-glyph {
