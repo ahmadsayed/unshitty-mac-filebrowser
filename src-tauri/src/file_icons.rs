@@ -44,23 +44,35 @@ pub struct Icons {
     theme: String,
     sources: Mutex<HashMap<String, Source>>,
     themes: Mutex<HashMap<String, Option<Arc<theme::Theme>>>>,
+    /// The user's special folders and their icons (Linux, from `user-dirs.dirs`).
+    special: HashMap<PathBuf, &'static str>,
 }
 
 impl Icons {
     /// `theme` is the icon theme the desktop uses (Linux only).
     pub fn new(home: Option<PathBuf>, theme: Option<String>) -> Self {
+        let special = read_user_dirs(home.as_deref());
         Icons {
             home,
             theme: theme.unwrap_or_else(|| "Adwaita".into()),
             sources: Mutex::new(HashMap::new()),
             themes: Mutex::new(HashMap::new()),
+            special: HashMap::new(),
         }
+        .with_user_dirs(special)
+    }
+
+    /// Give these special folders their icon, whatever GIO says.
+    fn with_user_dirs(mut self, dirs: Vec<(PathBuf, &'static str)>) -> Self {
+        self.special.extend(dirs);
+        self
     }
 
     /// The icon id for `path`, or None when the OS has none for it and the
     /// app draws its own.
     pub fn id(&self, path: &Path) -> Option<String> {
-        self.register(source_for(path, self.home.as_deref())?)
+        let source = source_for(path, self.home.as_deref())?;
+        self.register(with_special_folder(source, self.special.get(path).copied()))
     }
 
     /// The icon id for an app Open With offers: its `.app` bundle on macOS,
@@ -105,6 +117,67 @@ impl Icons {
             .entry(name.to_string())
             .or_insert_with(|| theme::Theme::load(name, bases).map(Arc::new))
             .clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Linux: the user's special folders. GIO names their icons, but only for the
+// folders its GLib knows: the AppImage carries an older GLib than the
+// desktop's, without Projects (GNOME 50). So they are read here too.
+// ---------------------------------------------------------------------------
+
+/// The icon GNOME gives each `XDG_<KEY>_DIR` of `user-dirs.dirs`.
+const USER_DIR_ICONS: [(&str, &str); 9] = [
+    ("DESKTOP", "user-desktop"),
+    ("DOCUMENTS", "folder-documents"),
+    ("DOWNLOAD", "folder-download"),
+    ("MUSIC", "folder-music"),
+    ("PICTURES", "folder-pictures"),
+    ("PROJECTS", "folder-projects"),
+    ("PUBLICSHARE", "folder-publicshare"),
+    ("TEMPLATES", "folder-templates"),
+    ("VIDEOS", "folder-videos"),
+];
+
+/// The special folders `user-dirs.dirs` lists, with their icons. A folder
+/// set to the home folder itself is turned off, as GLib reads it.
+fn user_dirs(text: &str, home: &Path) -> Vec<(PathBuf, &'static str)> {
+    text.lines().filter_map(|line| user_dir(line.trim(), home)).collect()
+}
+
+/// One `XDG_<KEY>_DIR="$HOME/…"` (or absolute) line.
+fn user_dir(line: &str, home: &Path) -> Option<(PathBuf, &'static str)> {
+    let (key, value) = line.strip_prefix("XDG_")?.split_once("_DIR=")?;
+    let icon = USER_DIR_ICONS.iter().find(|(k, _)| *k == key)?.1;
+    let value = value.trim_matches('"');
+    let path = match value.strip_prefix("$HOME") {
+        Some(rest) => home.join(rest.strip_prefix('/')?),
+        None if value.starts_with('/') => PathBuf::from(value),
+        None => return None,
+    };
+    Some((path, icon))
+}
+
+/// `$XDG_CONFIG_HOME/user-dirs.dirs` (or `~/.config`). Linux only.
+fn read_user_dirs(home: Option<&Path>) -> Vec<(PathBuf, &'static str)> {
+    let Some(home) = home.filter(|_| cfg!(target_os = "linux")) else { return Vec::new() };
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".config"));
+    std::fs::read_to_string(config.join("user-dirs.dirs"))
+        .map(|text| user_dirs(&text, home))
+        .unwrap_or_default()
+}
+
+/// A special folder's icon name first, ahead of the plain folder GIO named.
+fn with_special_folder(source: Source, icon: Option<&str>) -> Source {
+    match (source, icon) {
+        (Source::ThemeNames(mut names), Some(icon)) if !names.iter().any(|n| n == icon) => {
+            names.insert(0, icon.to_string());
+            Source::ThemeNames(names)
+        }
+        (source, _) => source,
     }
 }
 
@@ -668,6 +741,49 @@ mod tests {
             assert!(icons.sources.lock().unwrap().contains_key(&id));
         }
         assert_eq!(icons.id(&dir.path().join("missing.txt")), None);
+    }
+
+    #[test]
+    fn user_dirs_name_each_special_folder_icon() {
+        let home = Path::new("/home/me");
+        let text = "# written by xdg-user-dirs-update\n\
+            XDG_DESKTOP_DIR=\"$HOME/Desktop\"\n\
+            XDG_PROJECTS_DIR=\"$HOME/Projects\"\n\
+            XDG_MUSIC_DIR=\"/srv/music\"\n\
+            XDG_PUBLICSHARE_DIR=\"$HOME\"\n\
+            XDG_UNKNOWN_DIR=\"$HOME/Other\"\n\
+            XDG_VIDEOS_DIR=relative/Videos\n\
+            not a line\n";
+        assert_eq!(
+            user_dirs(text, home),
+            vec![
+                (PathBuf::from("/home/me/Desktop"), "user-desktop"),
+                (PathBuf::from("/home/me/Projects"), "folder-projects"),
+                (PathBuf::from("/srv/music"), "folder-music"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_special_folder_the_os_library_doesnt_know_still_gets_its_icon() {
+        let names = |list: &[&str]| Source::ThemeNames(list.iter().map(|n| n.to_string()).collect());
+        assert_eq!(with_special_folder(names(&["folder"]), Some("folder-projects")), names(&["folder-projects", "folder"]));
+        assert_eq!(with_special_folder(names(&["folder-projects", "folder"]), Some("folder-projects")), names(&["folder-projects", "folder"]));
+        assert_eq!(with_special_folder(names(&["folder"]), None), names(&["folder"]));
+        let file = Source::IconFile(PathBuf::from("/x/icon.png"));
+        assert_eq!(with_special_folder(file.clone(), Some("folder-projects")), file);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_special_folders_from_user_dirs_get_their_icon() {
+        let home = tempfile::tempdir().unwrap();
+        let projects = home.path().join("Projects");
+        std::fs::create_dir(&projects).unwrap();
+        let icons = Icons::new(None, None).with_user_dirs(user_dirs("XDG_PROJECTS_DIR=\"$HOME/Projects\"\n", home.path()));
+        let id = icons.id(&projects).expect("an id for the folder");
+        assert!(id.starts_with("names:folder-projects,"), "{id}");
+        assert!(icons.id(home.path()).is_some_and(|id| !id.contains("folder-projects")));
     }
 
     #[cfg(target_os = "linux")]
