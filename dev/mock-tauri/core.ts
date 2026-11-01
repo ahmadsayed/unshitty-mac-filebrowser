@@ -1035,9 +1035,10 @@ function fileShareStatus(id: string): unknown {
 // Icons from the OS: the preview has none (the app draws its own, as for
 // remote places), unless a test turns them on. Then folders and files share
 // one icon per type and apps get their own, like Finder's; every request is
-// logged.
+// logged. `delay` (ms) slows the id lookups, like a cold icon theme.
 export const nativeIconMock = {
   enabled: false,
+  delay: 0,
   log: { ids: [] as string[][], images: [] as string[] },
 };
 
@@ -1955,9 +1956,10 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     }
     return mockThumbnail(path, a.size as number);
   },
-  icon_ids: (a) => {
+  icon_ids: async (a) => {
     const paths = a.paths as string[];
     nativeIconMock.log.ids.push(paths);
+    if (nativeIconMock.delay) await new Promise((r) => setTimeout(r, nativeIconMock.delay));
     return paths.map(mockIconId);
   },
   file_share_prepare: (a) => prepareFileShare(a.paths as string[]),
