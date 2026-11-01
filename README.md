@@ -87,7 +87,8 @@ one out on its own platform.
   theme on Linux.
 - Grid and list views, tabs, thumbnails, Space to preview, batch rename,
   extract and compress archives, Starred, Recent, bookmarks, a progress popover
-  with Cancel, and fast 10,000-item folders.
+  with Cancel, and fast 10,000-item folders. **Open With…** finds an
+  application as you type its name; arrow keys and Enter open the file with it.
 - **macOS DMG installation:** right-click a disk image to choose an application
   and install it for yourself or all users. Existing apps ask Replace / Skip /
   Keep Both; quarantine is preserved ([guide](docs/mac-dmg-install.md)).

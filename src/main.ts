@@ -18,7 +18,6 @@ import {
   trashInfo, restoreEntry, deletePermanently, emptyTrash, cancelOperation, measure, listVolumes, trashDir, fileProperties, folderSize,
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
   previewText, thumbnail,
-  listApps, openWith,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
   driveClientStatus, driveClientSet, driveClientClear,
   openExternal,
@@ -38,6 +37,7 @@ import { closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPo
 import { checkForUpdates } from "./updates";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
 import { macDmgItems } from "./mac-dmg";
+import { showOpenWith as showOpenWithDialog } from "./open-with";
 import { linuxProgramItems } from "./linux-programs";
 import { qrShareItems } from "./qr-share";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
@@ -4390,78 +4390,21 @@ function togglePreview(): void {
   if (sel.length === 1) void showPreview(sel[0]);
 }
 
-/** A list of installed applications for "Open With…". */
+/** "Open With…" (src/open-with.ts), with the app's icons and Recent. */
 function showOpenWith(entry: Entry): void {
-  const extra = document.createElement("div");
-  extra.className = "app-list";
-  const loading = document.createElement("p");
-  loading.className = "app-loading";
-  loading.textContent = "Loading applications…";
-  const message = document.createElement("div");
-  message.className = "field-message";
-  extra.append(loading, message);
-
-  const dialog = openDialog({
-    heading: `Open “${entry.name}” With`,
-    extra,
-    className: "open-with-dialog",
-    responses: [{ id: "cancel", label: "Cancel" }],
-    defaultResponse: "cancel",
-    closeResponse: "cancel",
+  showOpenWithDialog(entry, {
+    icon(span, app) {
+      span.innerHTML = entryIcon(
+        { name: `${app.name}.app`, path: "", is_dir: true, size: 0, modified: 0, is_hidden: false, is_symlink: false },
+        "plain"
+      );
+      useNativeIcon(span, appIconKey(app.id), 28);
+    },
+    errorText: cleanError,
+    opened(file) {
+      if (!isCloud(file.path) && !isSharePath(file.path)) addRecent(file.path).catch(() => {});
+    },
   });
-
-  void listApps()
-    .then((apps) => {
-      if (!extra.isConnected) return;
-      loading.remove();
-      if (apps.length === 0) {
-        const empty = document.createElement("p");
-        empty.className = "app-loading";
-        empty.textContent = "No applications found.";
-        extra.prepend(empty);
-        return;
-      }
-      for (const app of apps) {
-        const button = document.createElement("button");
-        button.className = "app-choice";
-        const icon = document.createElement("span");
-        icon.className = "app-choice-icon";
-        icon.innerHTML = entryIcon(
-          {
-            name: `${app.name}.app`,
-            path: "",
-            is_dir: true,
-            size: 0,
-            modified: 0,
-            is_hidden: false,
-            is_symlink: false,
-          },
-          "plain"
-        );
-        useNativeIcon(icon, appIconKey(app.id), 28);
-        const label = document.createElement("span");
-        label.className = "app-choice-name";
-        label.textContent = app.name;
-        button.append(icon, label);
-        button.addEventListener("click", () => {
-          button.disabled = true;
-          openWith(entry.path, app.id)
-            .then(() => {
-              dialog.close();
-              if (!isCloud(entry.path) && !isSharePath(entry.path)) addRecent(entry.path).catch(() => {});
-            })
-            .catch((err) => {
-              button.disabled = false;
-              message.textContent = cleanError(err);
-            });
-        });
-        extra.insertBefore(button, message);
-      }
-    })
-    .catch((err) => {
-      if (!extra.isConnected) return;
-      loading.textContent = `Could not list applications: ${cleanError(err)}`;
-    });
 }
 
 // ---------------------------------------------------------------------------
