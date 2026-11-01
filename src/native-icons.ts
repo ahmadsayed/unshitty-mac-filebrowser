@@ -68,6 +68,17 @@ export function loadNativeIcons(keys: string[], size: number, onReady: (keys: st
   }
 }
 
+/** Load the icons for `keys` at `size`, asking for their ids in one batch,
+ *  and wait for them, but no longer than `ms`: a view drawn afterwards shows
+ *  the ones that arrived, and the rest still swap in when they come. */
+export async function preloadNativeIcons(keys: string[], size: number, ms: number): Promise<void> {
+  askIds(keys.filter((key) => !ids.has(key) && !idsLoading.has(key)));
+  let timer = 0;
+  const timeout = new Promise<void>((resolve) => (timer = window.setTimeout(resolve, ms)));
+  await Promise.race([Promise.all(keys.map((key) => nativeIcon(key, size))), timeout]);
+  clearTimeout(timer);
+}
+
 /** One request per kind: file paths and apps are named differently. */
 function askIds(keys: string[]): void {
   const apps = keys.filter((key) => key.startsWith(APP));

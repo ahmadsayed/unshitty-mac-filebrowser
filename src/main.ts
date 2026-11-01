@@ -29,7 +29,7 @@ import {
 } from "./api";
 import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
-import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl } from "./native-icons";
+import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl, preloadNativeIcons } from "./native-icons";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
@@ -706,6 +706,8 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
       }
     }
   }
+
+  await nativeIconsBeforeShowing(loc, next);
 
   if (opts.history !== "none" && location && loc !== location) {
     backStack.push(location);
@@ -1650,6 +1652,22 @@ function useNativeIcon(icon: HTMLElement, key: string, shownAt: number): void {
     img.draggable = false;
     drawing.replaceWith(img);
   });
+}
+
+/** The OS icons usually arrive a few milliseconds after the listing. Wait
+ *  for those of the first items, briefly, so a folder appears with them
+ *  instead of with the app's drawings swapped for them a moment later. */
+const ICON_WAIT_MS = 100;
+/** About a screenful: the items sorted first are the ones shown. */
+const ICON_WAIT_ITEMS = 200;
+/** Past this, sorting a copy just to find the first screenful costs more than it saves. */
+const ICON_WAIT_SORT_MAX = 5000;
+
+function nativeIconsBeforeShowing(loc: string, next: Entry[]): Promise<void> {
+  if (loc === NETWORK || next.length > ICON_WAIT_SORT_MAX) return Promise.resolve();
+  const first = next.length <= ICON_WAIT_ITEMS ? next : [...next].sort(compareEntries).slice(0, ICON_WAIT_ITEMS);
+  const paths = first.filter((e) => !isRemotePath(e.path)).map((e) => e.path);
+  return paths.length ? preloadNativeIcons(paths, nativeIconPx(), ICON_WAIT_MS) : Promise.resolve();
 }
 
 /** Ask for the OS icons of the rendered items. */

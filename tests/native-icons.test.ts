@@ -35,6 +35,44 @@ test("rendered items show the OS icon, loaded once per type", async () => {
   expect(item("Projects").querySelector("svg.fc")).toBeNull();
 });
 
+/** Names of items shown with the app's drawing at any moment while `run` goes on. */
+async function drawnWhile(run: () => Promise<void>): Promise<Set<string>> {
+  const drawn = new Set<string>();
+  const observer = new MutationObserver(() => {
+    for (const el of $$(".item")) if (el.querySelector(".icon svg.fc")) drawn.add(el.textContent!.trim());
+  });
+  observer.observe($("#view"), { childList: true, subtree: true });
+  await run();
+  observer.disconnect();
+  return drawn;
+}
+
+test("a folder appears with its OS icons, not with the app's drawings swapped a moment later", async () => {
+  const drawn = await drawnWhile(async () => {
+    await goTo("/Users/me/Music");
+    await settle(20);
+  });
+  expect(nativeIcon("Track 1.flac")).not.toBeNull();
+  expect([...drawn]).toEqual([]);
+});
+
+test("slow OS icons don't hold a folder back: it shows the drawings, then swaps", async () => {
+  nativeIconMock.delay = 400;
+  try {
+    const started = performance.now();
+    await goTo("/Users/me/Downloads");
+    await new Promise((r) => setTimeout(r, 250));
+    expect($("#crumbs").textContent).toContain("Downloads");
+    expect(performance.now() - started).toBeLessThan(400);
+    expect(item("photos-export.zip").querySelector(".icon svg.fc")).not.toBeNull();
+    await new Promise((r) => setTimeout(r, 300));
+    await settle(20);
+    expect(nativeIcon("photos-export.zip")).not.toBeNull();
+  } finally {
+    nativeIconMock.delay = 0;
+  }
+});
+
 test("the app's badges stay on OS icons", async () => {
   await goTo("/Users/me/Documents");
   await settle();
