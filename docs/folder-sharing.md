@@ -68,3 +68,11 @@ Specific Person rule still rejects claims from other installation identities.
 
 Folder sharing is experimental. Copying files or folders out through the
 normal transfer flow and live refresh are not yet implemented.
+
+## Your network
+
+While anything is shared or received, the app keeps an iroh connection open
+on a few UDP ports of its own choosing. It never asks your router to open or
+forward a port (no UPnP, NAT-PMP or PCP). When two computers can't reach each
+other directly, the traffic goes through one of n0's public relays, still
+encrypted, and may be slower.

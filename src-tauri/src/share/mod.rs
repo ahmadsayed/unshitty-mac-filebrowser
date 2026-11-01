@@ -45,6 +45,18 @@ mod tests {
     };
     use std::time::Duration;
 
+    /// Sharing must never ask the router to forward a port (UPnP, NAT-PMP,
+    /// PCP): iroh's `portmapper` feature stays off, so the code isn't even
+    /// built. Re-enabling iroh's default features would bring it back.
+    #[test]
+    fn port_mapping_is_not_built_in() {
+        let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock")).unwrap();
+        assert!(
+            !lock.contains("\nname = \"portmapper\"\n"),
+            "iroh's portmapper is in Cargo.lock: keep iroh's default features off"
+        );
+    }
+
     fn dir_size(p: &std::path::Path) -> u64 {
         std::fs::read_dir(p)
             .unwrap()
