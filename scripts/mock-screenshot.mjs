@@ -11,12 +11,13 @@
 // --size <width>x<height> (default 1100x720), --theme gnome|macos (default
 // macos; the theme follows the platform, so gnome loads the page with a
 // Linux user agent and the app takes its Linux code paths), --scene
-// grid|list|menu|dialog|search|search-list|open-with|qr-share (default grid: the folder as it
+// grid|list|menu|dialog|search|search-list|open-with|qr-share|preview (default grid: the folder as it
 // opens; list: list view with the second item selected; menu: the main menu
 // open; dialog: the Keyboard Shortcuts dialog; search, search-list: a search
 // for --query, default "e", once its results are in; open-with: Open With… on
 // --item, default "Notes.md", with --query typed into its search; qr-share:
-// Share with QR Code… on --item, once its code shows). Uses ?demo (no test-only folders). The page's
+// Share with QR Code… on --item, once its code shows; preview: Space on
+// --item). Uses ?demo (no test-only folders). The page's
 // clock is fixed, so the same scene always gives the same image.
 import { createRequire } from "node:module";
 
@@ -29,7 +30,7 @@ const option = (name, fallback) => {
 const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene", "--query", "--item"];
 const [path, out] = args.filter((a, i) => !a.startsWith("--") && !VALUE_OPTIONS.includes(args[i - 1]));
 if (!path || !out) {
-  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|dialog|search|search-list|open-with|qr-share] [--query <text>] [--item <name>]");
+  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|dialog|search|search-list|open-with|qr-share|preview] [--query <text>] [--item <name>]");
   process.exit(2);
 }
 
@@ -81,6 +82,11 @@ const SCENES = {
     await page.getByText("Open With…", { exact: true }).click();
     await page.waitForSelector(".app-choice, .app-loading, .app-status:not([hidden])");
     if (args.includes("--query")) await page.keyboard.type(option("--query", ""));
+  },
+  preview: async (page) => {
+    await page.locator("#view .item").filter({ hasText: option("--item", "Notes.md") }).click();
+    await page.keyboard.press("Space");
+    await page.waitForSelector("#preview-layer:not([hidden])");
   },
   "qr-share": async (page) => {
     await page.locator("#view .item").filter({ hasText: option("--item", "Notes.md") }).click({ button: "right" });
