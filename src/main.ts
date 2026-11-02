@@ -40,6 +40,7 @@ import { macDmgItems } from "./mac-dmg";
 import { showOpenWith as showOpenWithDialog } from "./open-with";
 import { linuxProgramItems } from "./linux-programs";
 import { qrShareItems } from "./qr-share";
+import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type PreviewPlace } from "./preview-actions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
@@ -211,6 +212,7 @@ let tabbar: HTMLElement;
 let previewLayer: HTMLElement;
 let previewName: HTMLElement;
 let previewBody: HTMLElement;
+let previewActionsEl: HTMLElement;
 
 // SECURITY: escape HTML entities in user-derived strings before innerHTML insertion
 export function escapeHtml(text: string): string {
@@ -4012,21 +4014,47 @@ interface Validation {
   error: boolean;
 }
 
-function validateName(name: string, isDir: boolean, original?: string): Validation {
+/**
+ * Whether `name` can be given to an item. `siblings` are the names to check
+ * for a clash: only the folder on screen is listed, so items elsewhere (a
+ * search result in a subfolder, Recent) are checked when renamed instead.
+ */
+function validateName(name: string, isDir: boolean, original?: string, siblings: Entry[] = entries): Validation {
   const noun = isDir ? "Folder" : "File";
   const lower = isDir ? "folder" : "file";
   if (name === "" || name === original) return { valid: false, message: "", error: false };
   if (name.includes("/")) return { valid: false, message: `${noun} names cannot contain “/”.`, error: true };
   if (name === "." || name === "..") return { valid: false, message: `A ${lower} cannot be called “${name}”.`, error: true };
   if (new TextEncoder().encode(name).length > 255) return { valid: false, message: `${noun} name is too long.`, error: true };
-  const clash = entries.find((e) => e.name === name && e.name !== original);
-  if (clash) {
-    return { valid: false, message: `A ${clash.is_dir ? "folder" : "file"} with that name already exists.`, error: true };
-  }
+  const clash = siblings.find((e) => e.name === name && e.name !== original);
+  if (clash) return { valid: false, message: clashMessage(clash.is_dir), error: true };
   if (name.startsWith(".")) {
     return { valid: true, message: `${noun}s with “.” at the beginning of their name are hidden.`, error: false };
   }
   return { valid: true, message: "", error: false };
+}
+
+function clashMessage(isDir: boolean): string {
+  return `A ${isDir ? "folder" : "file"} with that name already exists.`;
+}
+
+/** The listed items beside `entry`: known only for the folder on screen. */
+function siblingsOf(entry: Entry): Entry[] {
+  return parentOf(entry.path) === location ? entries : [];
+}
+
+/**
+ * Rename `entry` to `name` in its own folder, which isn't the folder on
+ * screen for a search result in a subfolder. Returns the new path. The
+ * backend refuses an existing target too; this gives GNOME's message.
+ */
+async function renameInPlace(entry: Entry, name: string): Promise<string> {
+  const target = joinPath(parentOf(entry.path), name);
+  if (siblingsOf(entry) !== entries && (await pathExists(target))) {
+    const [other] = await pathInfo([target]).catch(() => [null]);
+    throw new Error(clashMessage(other?.is_dir ?? entry.is_dir));
+  }
+  return renameEntry(entry.path, target);
 }
 
 function showValidation(v: Validation, entry: HTMLElement, message: HTMLElement): void {
@@ -4203,7 +4231,7 @@ function startRename(entry: Entry): void {
   input.value = entry.name;
 
   const validate = () => {
-    const v = validateName(input.value, entry.is_dir, entry.name);
+    const v = validateName(input.value, entry.is_dir, entry.name, siblingsOf(entry));
     showValidation(v, input, message);
     button.disabled = !v.valid;
     return v.valid;
@@ -4211,11 +4239,10 @@ function startRename(entry: Entry): void {
 
   const submit = async () => {
     if (!validate()) return;
-    const target = joinPath(location, input.value);
     button.disabled = true;
     let renamed: string;
     try {
-      renamed = await renameEntry(entry.path, target);
+      renamed = await renameInPlace(entry, input.value);
     } catch (err) {
       showValidation({ valid: false, message: cleanError(err), error: true }, input, message);
       return;
@@ -4319,6 +4346,7 @@ function closePreview(): void {
   previewSeq += 1;
   previewLayer.hidden = true;
   previewBody.replaceChildren();
+  previewActionsEl.replaceChildren();
   previewName.textContent = "";
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = null;
@@ -4344,6 +4372,7 @@ async function showPreview(entry: Entry): Promise<void> {
   previewLayer.hidden = false;
   previewName.textContent = entry.name;
   previewBody.replaceChildren();
+  renderPreviewActions(entry);
 
   if (isCloud(entry.path) || isSharePath(entry.path) || isSftpPath(entry.path)) {
     previewEmpty(entry, "Preview isn't available for remote items.");
@@ -4396,6 +4425,107 @@ async function previewThumbnailEntry(entry: Entry, seq: number): Promise<void> {
     if (previewStale(seq)) return;
     previewEmpty(entry, "No preview available.");
   }
+}
+
+// ---- Preview actions (#48) -------------------------------------------------
+
+function previewPlace(entry: Entry): PreviewPlace {
+  const trashed = !!trashPath && entry.path.startsWith(trashPath + "/");
+  return {
+    local: isLocalLocation(entry.path),
+    inTrash: trashed || inTrash(),
+    elsewhere: searchQuery !== null || parentOf(entry.path) !== location,
+  };
+}
+
+/** Close the preview and give the keyboard back to the view. */
+function leavePreview(): void {
+  closePreview();
+  viewEl.focus();
+}
+
+const PREVIEW_RUN: Record<PreviewAction, (entry: Entry) => void> = {
+  location: (entry) => {
+    leavePreview();
+    openItemLocation(entry);
+  },
+  rename: (entry) => showPreviewRename(entry),
+  trash: (entry) => {
+    leavePreview();
+    void trashPaths([entry.path]);
+  },
+  open: (entry) => {
+    leavePreview();
+    activate(entry);
+  },
+};
+
+function renderPreviewActions(entry: Entry): void {
+  const actions = previewActions(previewPlace(entry));
+  const buttons: HTMLElement[] = actions.map((action) => {
+    const button = document.createElement("button");
+    button.className = action === "open" ? "btn suggested" : "btn";
+    button.textContent = PREVIEW_ACTION_LABELS[action];
+    button.addEventListener("click", () => PREVIEW_RUN[action](entry));
+    return button;
+  });
+  // Open Item Location sits apart on the left; the rest are on the right.
+  const gap = document.createElement("span");
+  gap.className = "preview-actions-gap";
+  buttons.splice(actions[0] === "location" ? 1 : 0, 0, gap);
+  previewActionsEl.replaceChildren(...buttons);
+}
+
+/**
+ * Rename from the preview: a dialog, since the preview covers the item the
+ * rename popover points at. The preview stays open on the renamed item.
+ */
+function showPreviewRename(entry: Entry): void {
+  const noun = entry.is_dir ? "Folder" : "File";
+  const extra = document.createElement("div");
+  extra.innerHTML = `
+    <div class="entry-row"><label for="preview-rename-name">${noun} Name</label><input id="preview-rename-name" type="text" spellcheck="false" /></div>
+    <div class="field-message" style="margin-top:8px"></div>`;
+  const row = extra.querySelector<HTMLElement>(".entry-row")!;
+  const input = extra.querySelector<HTMLInputElement>("input")!;
+  const message = extra.querySelector<HTMLElement>(".field-message")!;
+  input.value = entry.name;
+
+  const validate = () => {
+    const v = validateName(input.value, entry.is_dir, entry.name, siblingsOf(entry));
+    showValidation(v, row, message);
+    dialog.setResponseEnabled("rename", v.valid);
+    return v.valid;
+  };
+
+  const dialog = openDialog({
+    heading: `Rename ${noun}`,
+    extra,
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "rename", label: "Rename", style: "suggested" },
+    ],
+    defaultResponse: "rename",
+    onResponse: async (id) => {
+      if (id !== "rename") return;
+      if (!validate()) return false;
+      let renamed: string;
+      try {
+        renamed = await renameInPlace(entry, input.value);
+      } catch (err) {
+        showValidation({ valid: false, message: cleanError(err), error: true }, row, message);
+        return false;
+      }
+      followMove(entry.path, renamed);
+      await reload([renamed]);
+      void showPreview({ ...entry, name: basename(renamed), path: renamed });
+    },
+  });
+  input.addEventListener("input", validate);
+  validate();
+  const dot = entry.name.lastIndexOf(".");
+  input.setSelectionRange(0, !entry.is_dir && dot > 0 ? dot : entry.name.length);
+  input.focus();
 }
 
 function togglePreview(): void {
@@ -5326,6 +5456,14 @@ async function init(): Promise<void> {
   previewLayer = $("#preview-layer");
   previewName = $("#preview-name");
   previewBody = $("#preview-body");
+  previewActionsEl = $("#preview-actions");
+  // Escape on a preview button: the view's own Escape doesn't see it.
+  previewLayer.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    leavePreview();
+  });
   $("#preview-close").innerHTML = sym("window-close");
   $("#preview-close").addEventListener("click", closePreview);
   previewLayer.addEventListener("click", (event) => {

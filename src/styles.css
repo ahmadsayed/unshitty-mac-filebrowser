@@ -936,6 +936,19 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 
 .preview-empty .sym { width: 96px; height: 96px; }
 
+/* Open, Rename…, Move to Trash, and Open Item Location apart on the left. */
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  background: var(--headerbar-bg);
+  box-shadow: inset 0 1px var(--headerbar-shade);
+}
+
+.preview-actions:empty { display: none; }
+.preview-actions-gap { flex: 1; }
+
 /* The same box for the app's drawing and the OS icon that replaces it. */
 .preview-empty-icon {
   position: relative;

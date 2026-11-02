@@ -89,6 +89,9 @@ one out on its own platform.
   extract and compress archives, Starred, Recent, bookmarks, a progress popover
   with Cancel, and fast 10,000-item folders. **Open With…** finds an
   application as you type its name; arrow keys and Enter open the file with it.
+- **Preview (Space)** shows text, pictures and PDFs, with Open, Rename…, Move to
+  Trash and, for search results and Recent or Starred items, Open Item
+  Location, without closing the preview first.
 - **macOS DMG installation:** right-click a disk image to choose an application
   and install it for yourself or all users. Existing apps ask Replace / Skip /
   Keep Both; quarantine is preserved ([guide](docs/mac-dmg-install.md)).
