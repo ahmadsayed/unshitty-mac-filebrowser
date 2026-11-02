@@ -10,12 +10,13 @@ git -C "$root" fetch --quiet --prune origin || echo "!! git fetch failed: everyt
 
 # Commits of $1 with no identical change on origin/main.
 unmerged() { git -C "$root" cherry origin/main "$1" 2>/dev/null | grep -c '^+'; }
+# GitHub queries go through REST (scripts/github.sh): cloud sessions have no GraphQL.
+source "$(dirname "${BASH_SOURCE[0]}")/github.sh"
 # The PR merged on GitHub from exactly the last commit of branch $1 (a squash
 # merge leaves its commits "unmerged" above).
 merged_pr() {
   command -v gh >/dev/null || return 0
-  gh pr list --head "$1" --state merged --json number,headRefOid \
-    --jq ".[] | select(.headRefOid == \"$(git -C "$root" rev-parse "$1")\") | .number" 2>/dev/null | head -1
+  gh_merged_pr "$1" "$(git -C "$root" rev-parse "$1")" 2>/dev/null
 }
 
 echo "== Main checkout ($root)"
@@ -47,14 +48,13 @@ done
 
 if command -v gh >/dev/null; then
   echo "== Open PRs (waiting for the human's review and merge)"
-  gh pr list --state open || echo "!! gh pr list failed"
+  gh_open_prs || echo "!! listing open PRs failed"
   echo "== Draft releases (not visible to users until published)"
-  gh release list --limit 10 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' || echo "!! gh release list failed"
+  gh_draft_releases || echo "!! listing releases failed"
   echo "== Release builds not finished (queued or running)"
-  gh run list --workflow release.yml --limit 10 --json headBranch,status,url \
-    --jq '.[] | select(.status != "completed") | "\(.headBranch) \(.status) \(.url)"' || echo "!! gh run list failed"
+  gh_unfinished_runs release.yml || echo "!! listing release runs failed"
   echo "== Issues waiting for verification on a real build or platform"
-  gh issue list --label needs-verification --state open || echo "!! gh issue list failed"
+  gh_open_issues needs-verification || echo "!! listing issues failed"
   echo "== Open issues"
-  gh issue list --state open --limit 20 || echo "!! gh issue list failed"
+  gh_open_issues || echo "!! listing issues failed"
 fi

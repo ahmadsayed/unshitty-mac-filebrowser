@@ -22,7 +22,9 @@ done
 branch=$(git branch --show-current)
 [[ -n $branch && $branch != main ]] || { echo "run this on a task branch, not main" >&2; exit 1; }
 folder=${branch//\//-}
-repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+# Through REST (scripts/github.sh): cloud sessions have no GraphQL.
+source "$(dirname "${BASH_SOURCE[0]}")/github.sh"
+repo=$(gh_repo)
 
 parent=""
 if git fetch --quiet origin captures 2>/dev/null; then

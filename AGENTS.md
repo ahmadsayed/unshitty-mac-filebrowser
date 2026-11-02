@@ -57,6 +57,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `tests/` | Vitest frontend tests: the real app in jsdom against `dev/mock-tauri/` (`tests/app.ts` boots and drives it) |
 | `scripts/crap-gate.mjs` | CRAP gate run by `.githooks/pre-commit` |
 | `scripts/session-start.sh` | Where the project stands, from fresh data: main vs GitHub, worktrees, merged branches, drafts, issues |
+| `scripts/github.sh` | The scripts' GitHub queries, all through the REST API (`gh api`): cloud sessions can't reach GraphQL |
 | `scripts/new-task.sh`, `scripts/end-task.sh` | A worktree per task in `.worktrees/<name>`; finalized (worktree and branches deleted) once its PR is merged |
 | `scripts/mock-screenshot.mjs`, `scripts/pr-screenshots.sh` | PR screenshots: capture the mock preview, upload to the `captures` branch |
 | `.github/pull_request_template.md` | The PR body every task follows |
@@ -293,6 +294,8 @@ variables around them: permission rules match whole commands.
 - **Body:** follow `.github/pull_request_template.md`, readable in two
   minutes. Write it to a file outside the repository (the scratchpad) and
   run `gh pr create --base main --title "…" --body-file <file>`.
+  In a cloud session, where `gh pr …` (GraphQL) fails, use REST:
+  `gh api 'repos/{owner}/{repo}/pulls' -f base=main -f head=<branch> -f title="…" -F body=@<file>`.
 - **Issues:** one line each at the top: `Closes #<n>` when the PR resolves
   all of it, `Refs #<n>` when a part or a verification stays open, `No
   issue` otherwise.
@@ -303,6 +306,7 @@ variables around them: permission rules match whole commands.
 - **How it was checked:** tick only what really ran, with the test counts.
   "Real app" names what was tried and by whom, or why it wasn't needed.
 - **Self-review comment**, posted with `gh pr comment <n> --body-file <file>`
+  (or `gh api 'repos/{owner}/{repo}/issues/<n>/comments' -F body=@<file>`)
   once the PR is open:
 
   ```markdown
