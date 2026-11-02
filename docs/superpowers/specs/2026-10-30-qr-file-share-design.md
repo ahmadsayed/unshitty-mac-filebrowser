@@ -1,12 +1,17 @@
 # Share files with a QR code
 
+The menu item is **Send with QR Code…** since 2026-11-02 (it was "Share with
+QR Code…"): "Send" for a one-off copy, "Share Folder…" for lasting access, so
+the two sharing features can't be confused.
+
 **Date:** 2026-10-30
 
 **Issue:** #73
 
 **Status:** Implemented. Checked end to end on Linux with a local relay and
 Chromium as the phone; several files (D12) also through n0's public relays.
-Not yet on real phones.
+Real phones (iPhone and Android, on another network) checked by the
+maintainer with 0.7.3 (#74).
 
 **Related:** [iroh sharing](2026-10-25-iroh-sharing-design.md), whose
 non-goal "sharing single files" this covers for phones only. Folder sharing is
@@ -25,16 +30,16 @@ code with a phone and the files download straight to the phone:
 ## What the user sees
 
 - **Menu:** right-click one or more local files (no folder, no remote file,
-  not in the Trash) → **Share with QR Code…**, right after Open With….
-- **The dialog,** "Share “name”" (or "Share 3 Files"), shows in order:
+  not in the Trash) → **Send with QR Code…**, right after Open With….
+- **The dialog,** "Send “name”" (or "Send 3 Files"), shows in order:
   - **Preparing… 40%** while the file is hashed, then **Connecting…** while
     the computer reaches its relay;
-  - the QR code, the hint "Scan with a phone's camera to download the file
-    (files). Works on any network while this window is open.", and the link with
-    **Copy**;
+  - the QR code, the hint "Scan with a phone's camera, or open the link in
+    any browser, to download the file (files). No app needed. Sending stops
+    when you close this window.", and the link with **Copy**;
   - a status line: **Waiting for a phone…**, **Sending… 42%**, **Downloaded by
     1 device**.
-- **Stopping:** **Stop Sharing** (the only button, also on Escape) ends the
+- **Stopping:** **Stop Sending** (the only button, also on Escape) ends the
   share, and so does closing the window.
 - **A failure** replaces the code and the hint with its reason, e.g. "Could
   not reach the relay server. Check the internet connection and try again."
@@ -132,7 +137,7 @@ code with a phone and the files download straight to the phone:
   - The menu item (one or more files, never with a folder).
   - Several files: the heading, the hint and the paths sent.
   - Preparing, code and link, Sending…, downloads, Copy.
-  - Stop Sharing, Escape, a failure, a share stopped elsewhere.
+  - Stop Sending, Escape, a failure, a share stopped elsewhere.
 - **End to end, run here.**
   - Setup: a local `iroh-relay --dev`, the real app (debug build) on Xvfb
     with `FILEBROWSER_RELAY`, the page served locally, and Chromium at

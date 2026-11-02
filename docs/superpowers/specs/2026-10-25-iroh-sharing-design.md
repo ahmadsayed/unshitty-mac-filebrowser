@@ -86,7 +86,7 @@ default preset (n0's public relays), which only ever carry encrypted traffic.
 No port mapping (added 2026-11-01): iroh is built without its `portmapper`
 feature, so the app never asks the router to forward a port (UPnP, NAT-PMP,
 PCP). A peer that can't connect directly goes through a relay instead. This
-also covers Share with QR Code's endpoint.
+also covers Send with QR Code's endpoint.
 
 **D2. Folder snapshots are trees of structure manifests.** Each folder
 becomes one manifest blob listing its entries: name, kind (file / folder),

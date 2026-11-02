@@ -4,9 +4,21 @@ Share a local folder read-only between File Browser installations on macOS
 and Linux. The recipient can browse its contents and open downloaded copies
 while your computer is online and File Browser is running.
 
+## Which one?
+
+| | Share Folder… | Send with QR Code… |
+|---|---|---|
+| For | People with File Browser on macOS or Linux | Any phone or browser, no app |
+| What | Read-only access to a whole folder | A copy of one or more files |
+| How long | Until you stop sharing (while File Browser runs) | While the dialog is open |
+| Who | Anyone with the link, or one person; optional passphrase | Anyone with the code or link |
+
+This guide is about **Share Folder…**. **Send with QR Code…** is on the
+right-click menu of files.
+
 ## Create a link
 
-1. Right-click a folder and choose **Share…**, or use **Share This Folder…**
+1. Right-click a folder and choose **Share Folder…**, or use **Share This Folder…**
    in the path-bar menu. Enter your display name the first time.
 2. Optionally select **Protect new links with a passphrase** and enter and
    confirm a strong passphrase. Spaces and capitalization matter.
@@ -66,8 +78,11 @@ so choose a strong passphrase. Revocation cannot retrieve downloaded copies,
 and anyone who has unlocked an invitation can retain its capability. The
 Specific Person rule still rejects claims from other installation identities.
 
-Folder sharing is experimental. Copying files or folders out through the
-normal transfer flow and live refresh are not yet implemented.
+Folder sharing is experimental. Not implemented yet:
+- **Live refresh:** files added or changed after you start sharing don't
+  reach the recipient until you restart File Browser (#98).
+- **Copying out:** the recipient can open files but not copy or drag them out
+  of the share (#99).
 
 ## Your network
 

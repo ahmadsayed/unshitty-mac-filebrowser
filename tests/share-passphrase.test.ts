@@ -20,7 +20,7 @@ async function shareDocuments(): Promise<void> {
   await invoke("set_share_name", { name: "Ahmed" });
   await mouse(hit("Documents"), "mousedown", { button: 2 });
   await mouse(hit("Documents"), "contextmenu", { button: 2 });
-  await chooseMenu("Share…");
+  await chooseMenu("Share Folder…");
   await settle(10);
 }
 

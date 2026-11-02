@@ -2132,7 +2132,7 @@ kbd {
   overflow: hidden;
 }
 
-/* Share with QR Code: the code, a hint, the link and what phones did. */
+/* Send with QR Code: the code, a hint, the link and what phones did. */
 .qr-share {
   display: flex;
   flex-direction: column;
