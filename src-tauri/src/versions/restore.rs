@@ -519,9 +519,17 @@ mod tests {
         (dir, history)
     }
 
+    /// Rewrites notes.txt and records it. Each edit gets its own later
+    /// mtime: two writes of the same size can land on the same filesystem
+    /// timestamp tick, and capture then (rightly) sees no change.
     fn edit(history: &History, bytes: &[u8]) {
+        static EDITS: AtomicU64 = AtomicU64::new(1);
         let path = history.root.join("notes.txt");
         fs::write(&path, bytes).unwrap();
+        let later = SystemTime::now() + Duration::from_secs(EDITS.fetch_add(1, Ordering::Relaxed));
+        let file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.set_times(FileTimes::new().set_modified(later)).unwrap();
+        drop(file);
         capture::record(history, Path::new("notes.txt")).unwrap();
     }
 
