@@ -4435,6 +4435,7 @@ function previewPlace(entry: Entry): PreviewPlace {
     local: isLocalLocation(entry.path),
     inTrash: trashed || inTrash(),
     elsewhere: searchQuery !== null || parentOf(entry.path) !== location,
+    inFolder: !isPseudo(location),
   };
 }
 

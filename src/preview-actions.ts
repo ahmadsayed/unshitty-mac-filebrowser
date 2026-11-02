@@ -10,6 +10,11 @@ export interface PreviewPlace {
   inTrash: boolean;
   /** Not in the folder on screen: a search result, Recent or Starred. */
   elsewhere: boolean;
+  /**
+   * Shown from a folder (or a search in one), not Recent or Starred: their
+   * menus have no Rename either, and Recent wouldn't follow the new name.
+   */
+  inFolder: boolean;
 }
 
 export const PREVIEW_ACTION_LABELS: Record<PreviewAction, string> = {
@@ -24,7 +29,8 @@ export function previewActions(place: PreviewPlace): PreviewAction[] {
   if (place.inTrash) return ["open"];
   return [
     ...(place.elsewhere ? (["location"] as const) : []),
-    ...(place.local ? (["rename", "trash"] as const) : []),
+    ...(place.local && place.inFolder ? (["rename"] as const) : []),
+    ...(place.local ? (["trash"] as const) : []),
     "open",
   ];
 }

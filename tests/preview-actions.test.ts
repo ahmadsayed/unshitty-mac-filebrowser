@@ -43,12 +43,14 @@ async function search(query: string): Promise<void> {
 }
 
 test("which actions a place offers", () => {
-  const here = { local: true, inTrash: false, elsewhere: false };
+  const here = { local: true, inTrash: false, elsewhere: false, inFolder: true };
   expect(previewActions(here)).toEqual(["rename", "trash", "open"]);
   expect(previewActions({ ...here, elsewhere: true })).toEqual(["location", "rename", "trash", "open"]);
   // Read-only shares, SFTP and Drive: nothing that changes the item.
   expect(previewActions({ ...here, local: false })).toEqual(["open"]);
   expect(previewActions({ ...here, local: false, elsewhere: true })).toEqual(["location", "open"]);
+  // Recent and Starred: no Rename, as in their menus.
+  expect(previewActions({ ...here, elsewhere: true, inFolder: false })).toEqual(["location", "trash", "open"]);
   // In the Trash: Restore and Delete Permanently stay in the menu.
   expect(previewActions({ ...here, inTrash: true, elsewhere: true })).toEqual(["open"]);
 });
@@ -166,6 +168,15 @@ test("Escape on a preview button closes the preview and returns to the view", as
   await settle(10);
   expect($("#preview-layer").hidden).toBe(true);
   expect(document.activeElement).toBe($("#view"));
+});
+
+test("a Recent item offers Open Item Location, Move to Trash and Open", async () => {
+  await click($$(".sidebar-row").find((r) => r.textContent?.trim() === "Recent")!);
+  await settle(20);
+  await preview("Notes.md");
+  expect(buttons()).toEqual(["Open Item Location", "Move to Trash", "Open"]);
+  await key("Escape");
+  await settle(10);
 });
 
 test("items in the Trash only offer Open", async () => {
