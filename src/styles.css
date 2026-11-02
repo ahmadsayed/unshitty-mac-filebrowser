@@ -2132,7 +2132,7 @@ kbd {
   height: 240px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-button);
+  border-radius: var(--radius-item);
   overflow: hidden;
   background: var(--fill);
 }
