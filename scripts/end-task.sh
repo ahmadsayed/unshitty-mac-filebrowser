@@ -44,8 +44,9 @@ git -C "$root" fetch --quiet origin
 unmerged=$(git -C "$root" cherry -v origin/main "$branch" | grep '^+' || true)
 if [[ -n $unmerged ]]; then
   head=$(git -C "$root" rev-parse "$branch")
-  merged_pr=$(gh pr list --head "$branch" --state merged --json number,headRefOid \
-    --jq ".[] | select(.headRefOid == \"$head\") | .number" 2>/dev/null | head -1)
+  # Through REST (scripts/github.sh): cloud sessions have no GraphQL.
+  source "$(dirname "${BASH_SOURCE[0]}")/github.sh"
+  merged_pr=$(gh_merged_pr "$branch" "$head" 2>/dev/null || true)
   if [[ -z $merged_pr ]]; then
     echo "$branch has commits that are not on origin/main, and no merged PR of its last commit:" >&2
     echo "$unmerged" >&2
@@ -59,8 +60,12 @@ rm -f "$dir/node_modules"
 git -C "$root" worktree remove --force "$dir"
 git -C "$root" branch -D "$branch" >/dev/null
 if git -C "$root" ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-  git -C "$root" push --quiet origin --delete "$branch"
-  echo "Deleted $branch on GitHub"
+  # Cloud sessions may not delete branches on GitHub: say so and carry on.
+  if git -C "$root" push --quiet origin --delete "$branch"; then
+    echo "Deleted $branch on GitHub"
+  else
+    echo "!! Could not delete $branch on GitHub; delete it there (the PR page has a button)"
+  fi
 fi
 echo "Removed $dir and branch $branch"
 
