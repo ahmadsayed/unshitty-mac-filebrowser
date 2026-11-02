@@ -1005,12 +1005,12 @@ const MOCK_QR =
   `<path d="M11 3h2v2h-2zM14 5h3v2h-3zM11 11h7v2h-7zM12 15h2v4h-2zM16 14h3v3h-3zM20 12h4v2h-4zM22 16h3v6h-3zM12 22h6v2h-6zM19 24h4v2h-4z" fill="#000"/></svg>`;
 
 function prepareFileShare(paths: string[]): string {
-  if (paths.length === 0) throw "Choose files to share.";
-  if (paths.some((path) => /^(gdrive|share|sftp):\/\//.test(path))) throw "Only files on this computer can be shared with a QR code.";
+  if (paths.length === 0) throw "Choose files to send.";
+  if (paths.some((path) => /^(gdrive|share|sftp):\/\//.test(path))) throw "Only files on this computer can be sent with a QR code.";
   for (const path of paths) {
     const node = lookup(path);
     if (!node) throw "No such file or directory (os error 2)";
-    if (node.dir) throw "Only files can be shared with a QR code.";
+    if (node.dir) throw "Only files can be sent with a QR code.";
   }
   const id = `qr-${fileShareMock.next++}`;
   fileShareMock.shares.set(id, { paths, polls: 0, downloads: 0, sending: null });

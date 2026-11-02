@@ -158,9 +158,8 @@ code with a phone and the files download straight to the phone:
     v0.7.0 sources (a version 1 link) still downloaded with the new page.
   - Not run for several files: the app's own menu and dialog (covered by
     the mock tests), and the QR code scanned from the screen.
-- **Not verified:**
-  - real phones (iPhone Safari, Android Chrome), on Wi-Fi and on mobile data;
-  - n0's public relays for a single file from the app itself;
-  - the published Pages site;
-  - macOS (the app side is the same Rust; a Mac firewall isn't involved,
-    since all connections are outgoing).
+- **Checked by the maintainer with 0.7.3** (#74, closed 2026-11-02): every
+  use case in #74 on real phones (iPhone and Android) on another network,
+  which means through n0's public relays and the published Pages site,
+  from Linux and from a Mac.
+- **Not verified:** nothing left from #74.

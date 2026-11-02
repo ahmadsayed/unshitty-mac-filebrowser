@@ -301,8 +301,9 @@ GNOME wording; `openDialog`, `openMenu`, `showToast` only.
 
 ### Sharer
 
-- **Share…** in a local folder's context menu and the path-bar menu. Not for
-  files, Trash, Drive or `share://`.
+- **Share Folder…** in a local folder's context menu (**Share This Folder…**
+  in the path-bar and background menus; it was "Share…" until 2026-11-02).
+  Not for files, Trash, Drive or `share://`.
 - **First share:** "Your Name" dialog (D12).
 - **Share dialog** (`Share “Photos”`):
   ```

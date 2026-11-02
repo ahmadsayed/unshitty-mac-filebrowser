@@ -139,8 +139,9 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 - SFTP and shares are read-only; no SMB or WebDAV.
 - Share passphrases unlock invitations once; they do not encrypt local settings
   or downloaded copies. Sharing requires the sharer's app to stay open.
-  Received shares don't update until the sharer restarts the app (#98), and
-  files can't be copied out of them yet (#99).
+  Received shares don't update until the sharer restarts the app
+  ([#98](https://github.com/ahmadsayed/unshitty-mac-filebrowser/issues/98)), and files can't be copied out of them yet
+  ([#99](https://github.com/ahmadsayed/unshitty-mac-filebrowser/issues/99)).
 - Send with QR Code: files only, no folders (up to 1,000 files). The phone
   keeps the files in memory until they are saved, and downloads go through
   iroh's public relays, which are rate-limited.

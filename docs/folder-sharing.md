@@ -79,10 +79,12 @@ and anyone who has unlocked an invitation can retain its capability. The
 Specific Person rule still rejects claims from other installation identities.
 
 Folder sharing is experimental. Not implemented yet:
-- **Live refresh:** files added or changed after you start sharing don't
-  reach the recipient until you restart File Browser (#98).
+- **Live refresh:** the recipient sees the folder as it was when you started
+  sharing (or last started File Browser). New files don't appear, removed ones
+  still show, and a changed file can't be opened until you restart File
+  Browser ([#98](https://github.com/ahmadsayed/unshitty-mac-filebrowser/issues/98)).
 - **Copying out:** the recipient can open files but not copy or drag them out
-  of the share (#99).
+  of the share ([#99](https://github.com/ahmadsayed/unshitty-mac-filebrowser/issues/99)).
 
 ## Your network
 
