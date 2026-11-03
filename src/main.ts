@@ -3894,7 +3894,38 @@ function endDrag(drop: boolean): void {
   }
 }
 
-/** Files dragged in from Finder (or any other app) arrive as paths. */
+const NOT_FILES = "Only files and folders can be dropped here";
+
+/** The local paths of a drop. On Linux a browser link arrives as its URL
+ * (wry strips only `file://`); those are not files. */
+function localDropPaths(paths: string[]): string[] {
+  return paths.filter((path) => path.startsWith("/"));
+}
+
+/** What a drop from another app does. It copies where an internal drag
+ * would move: the system shows a copy cursor, and the other app's window
+ * keeps its files. The Trash still trashes. Modifier keys aren't reported. */
+function externalDropOp(target: DropTarget, sources: string[], devices?: Map<string, number>): DropOp | null {
+  const op = dropOp(target, sources, { altKey: false, metaKey: false, ctrlKey: false, shiftKey: false }, devices);
+  return op === "move" ? "copy" : op;
+}
+
+/** Files dragged in from Finder, GNOME Files or a browser's downloads. */
+async function dropFromOtherApp(all: string[], target: DropTarget | null): Promise<void> {
+  if (!target) return;
+  const paths = localDropPaths(all);
+  // Web content (a link or an image on a page) has no local file: macOS
+  // reports no paths, Linux its URL.
+  if (paths.length < all.length || paths.length === 0) showToast(NOT_FILES);
+  if (paths.length === 0) return;
+  const op = externalDropOp(target, paths, await deviceMap([...paths, target.dir]));
+  if (!op) return;
+  const info = await pathInfo(paths).catch(() => []);
+  const dirs = new Set(paths.filter((_, i) => info[i]?.is_dir));
+  await performDrop(paths, dirs, target, op);
+}
+
+/** Drops from other apps arrive as Tauri drag-drop events, with paths. */
 function initExternalDrops(): void {
   let sources: string[] = [];
   getCurrentWebview()
@@ -3905,27 +3936,20 @@ function initExternalDrops(): void {
         setDropHighlight(null);
         return;
       }
-      const x = p.position.x / devicePixelRatio;
-      const y = p.position.y / devicePixelRatio;
-      if (p.type === "enter") sources = p.paths;
+      // wry reports CSS pixels relative to the webview on macOS and Linux;
+      // tauri only labels them physical. Scaling them would hit-test a 2×
+      // display at half the pointer's position and drop into the wrong folder.
+      const { x, y } = p.position;
+      if (p.type === "enter") sources = localDropPaths(p.paths);
       const target = dropTargetAt(x, y, sources);
-      // Finder doesn't tell us the modifier keys; use the default operation.
-      const noMods = { altKey: false, metaKey: false, ctrlKey: false, shiftKey: false };
       if (p.type !== "drop") {
-        const op = target ? dropOp(target, sources, noMods) : null;
+        const op = target && sources.length ? externalDropOp(target, sources) : null;
         setDropHighlight(op ? target!.el : null);
         return;
       }
       setDropHighlight(null);
-      const paths = p.paths;
       sources = [];
-      if (!target || paths.length === 0) return;
-      const devices = await deviceMap([...paths, target.dir]);
-      const op = dropOp(target, paths, noMods, devices);
-      if (!op) return;
-      const info = await pathInfo(paths).catch(() => []);
-      const dirs = new Set(paths.filter((_, i) => info[i]?.is_dir));
-      await performDrop(paths, dirs, target, op);
+      await dropFromOtherApp(p.paths, target);
     })
     .catch(() => {
       /* not running under Tauri */

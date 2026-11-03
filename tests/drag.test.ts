@@ -3,7 +3,7 @@
 // spring-loaded folders and auto-scroll.
 import { afterEach, beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, goTo, item, key, mouse, names, settle, title, hit } from "./app";
+import { $, $$, boot, goTo, item, key, mouse, names, settle, title, hit, toasts } from "./app";
 
 const HOME = "/Users/me";
 let pointAt: Element | null = null;
@@ -130,14 +130,18 @@ test("dragging near the bottom edge scrolls the view", async () => {
   await settle(10);
 });
 
-test("files dropped from another app are moved on the same disk and copied from another", async () => {
+const mockDrop = (paths: string[], x: number, y: number) =>
+  (window as unknown as { __mockDrop: (paths: string[], x: number, y: number) => void }).__mockDrop(paths, x, y);
+
+test("files dropped from another app are copied, on the same disk too", async () => {
   await goTo(`${HOME}/D`);
-  const drop = (window as unknown as { __mockDrop: (paths: string[], x: number, y: number) => void }).__mockDrop;
+  const drop = mockDrop;
   pointAt = item("Inbox");
   drop([`${HOME}/Desktop/todo.txt`], 10, 10);
   await settle(30);
+  // The system shows a copy cursor, and the file stays in the other app's window.
   expect(await invoke("path_exists", { path: `${HOME}/D/Inbox/todo.txt` })).toBe(true);
-  expect(await invoke("path_exists", { path: `${HOME}/Desktop/todo.txt` })).toBe(false);
+  expect(await invoke("path_exists", { path: `${HOME}/Desktop/todo.txt` })).toBe(true);
   await invoke("make_dir", { path: "/Volumes/Backup Drive/photo" });
   pointAt = item("Inbox"); // the view re-rendered after the first drop
   drop(["/Volumes/Backup Drive/photo"], 10, 10);
@@ -149,6 +153,48 @@ test("files dropped from another app are moved on the same disk and copied from 
   drop([`${HOME}/main.rs`], 10, 10);
   await settle(20);
   expect(await invoke("path_exists", { path: `${HOME}/main.rs` })).toBe(true);
+});
+
+test("a drop is hit-tested where the pointer is, also on a 2× display", async () => {
+  await goTo(`${HOME}/D`);
+  const seen: [number, number][] = [];
+  const realRatio = window.devicePixelRatio;
+  Object.defineProperty(window, "devicePixelRatio", { value: 2, configurable: true });
+  document.elementFromPoint = (x: number, y: number) => {
+    seen.push([x, y]);
+    return pointAt;
+  };
+  try {
+    pointAt = item("Inbox");
+    // The webview reports drop positions in CSS pixels on macOS and Linux.
+    mockDrop([`${HOME}/Desktop/todo.txt`], 120, 80);
+    await settle(30);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every(([x, y]) => x === 120 && y === 80)).toBe(true);
+  } finally {
+    Object.defineProperty(window, "devicePixelRatio", { value: realRatio, configurable: true });
+    document.elementFromPoint = () => pointAt;
+  }
+});
+
+test("web content from a browser is not taken for a file", async () => {
+  await goTo(`${HOME}/D`);
+  pointAt = item("Inbox");
+  // Linux hands over a link as its URL; macOS hands over no paths at all.
+  mockDrop(["https://example.com/cat.png"], 10, 10);
+  await settle(30);
+  expect(toasts()).toContain("Only files and folders can be dropped here");
+  await key("Escape");
+  pointAt = item("Inbox");
+  mockDrop([], 10, 10);
+  await settle(30);
+  expect(toasts()).toContain("Only files and folders can be dropped here");
+  // A link next to a real file: the file is still copied.
+  await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/Desktop/notes2.txt`, overwrite: false });
+  pointAt = item("Inbox");
+  mockDrop(["https://example.com/cat.png", `${HOME}/Desktop/notes2.txt`], 10, 10);
+  await settle(30);
+  expect(await invoke("path_exists", { path: `${HOME}/D/Inbox/notes2.txt` })).toBe(true);
 });
 
 test("the Google Drive row is not a drop target while disconnected", async () => {

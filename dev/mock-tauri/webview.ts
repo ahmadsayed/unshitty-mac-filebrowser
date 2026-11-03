@@ -11,7 +11,9 @@ export const getCurrentWebview = () => ({
 });
 
 (window as unknown as Record<string, unknown>).__mockDrop = (paths: string[], x: number, y: number) => {
-  const position = { x: x * devicePixelRatio, y: y * devicePixelRatio };
+  // wry reports the position in CSS pixels on macOS and Linux (tauri only
+  // labels it physical), so pass it on unscaled, as the real webview does.
+  const position = { x, y };
   handler?.({ payload: { type: "enter", paths, position } });
   handler?.({ payload: { type: "over", position } });
   handler?.({ payload: { type: "drop", paths, position } });
