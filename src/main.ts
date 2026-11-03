@@ -2590,13 +2590,15 @@ function showCompressDialog(sel: Entry[]): void {
   nameInput.focus();
 }
 
-/** Preview and Open With for a single local file. */
+/** Preview for a single local file; Open With for a single local file or
+ * folder (an IDE or a terminal can take a folder: the user picks the app). */
 function previewAndOpenWithItems(single: Entry | null): MenuItem[] {
-  const file = single && !single.is_dir && !isCloud(single.path) && !isSharePath(single.path) && !isSftpPath(single.path) ? single : null;
+  const local = single && !isCloud(single.path) && !isSharePath(single.path) && !isSftpPath(single.path) ? single : null;
+  const file = local && !local.is_dir ? local : null;
   return [
     ...macDmgItems(single, isMac && !inTrash()),
     { label: "Preview", disabled: !file, action: () => file && void showPreview(file) },
-    { label: "Open With…", disabled: !file, action: () => file && void showOpenWith(file) },
+    { label: "Open With…", disabled: !local, action: () => local && void showOpenWith(local) },
     ...linuxProgramItems(single, /Linux/.test(navigator.userAgent) && !inTrash()),
   ];
 }
@@ -2771,6 +2773,7 @@ function openBackgroundMenu(at: Anchor): void {
   openMenu(at, [
     { label: "New Folder…", action: promptNewFolder },
     { label: "New Document…", action: () => void showNewDocumentDialog() },
+    openCurrentFolderWithItem(),
     { label: "Share This Folder…", action: () => showShareDialogForPath(location) },
     { separator: true },
     { label: "Paste", disabled: !clipboard, action: () => paste(location) },
@@ -2820,7 +2823,7 @@ function openLocationMenu(anchor: HTMLElement): void {
   }
   openMenu(anchor, [
     { label: "New Folder…", disabled: !real, action: promptNewFolder },
-    ...(real ? [{ label: "New Document…" as const, action: () => void showNewDocumentDialog() }] : []),
+    ...(real ? [{ label: "New Document…" as const, action: () => void showNewDocumentDialog() }, openCurrentFolderWithItem()] : []),
     ...(real ? [bookmarkMenuItem(location), { label: "Share This Folder…" as const, action: () => showShareDialogForPath(location) }] : []),
     { separator: true },
     { label: "Copy Location", disabled: !real, action: copyLocation },
@@ -4539,6 +4542,12 @@ function togglePreview(): void {
   if (sel.length === 1) void showPreview(sel[0]);
 }
 
+/** "Open With…" for the folder on screen, as GNOME's background and path-bar
+ * menus offer it. Only called for local folders. */
+function openCurrentFolderWithItem(): MenuItem {
+  return { label: "Open With…", action: () => showOpenWith(folderEntry(location)) };
+}
+
 /** "Open With…" (src/open-with.ts), with the app's icons and Recent. */
 function showOpenWith(entry: Entry): void {
   showOpenWithDialog(entry, {
@@ -5080,16 +5089,13 @@ async function showShareDialog(entry: Entry): Promise<void> {
   });
 }
 
+/** An Entry for a folder known only by its path, such as the current one. */
+function folderEntry(path: string): Entry {
+  return { name: basename(path), path, is_dir: true, size: 0, modified: 0, is_hidden: false, is_symlink: false };
+}
+
 function showShareDialogForPath(path: string): void {
-  void showShareDialog({
-    name: basename(path),
-    path,
-    is_dir: true,
-    size: 0,
-    modified: 0,
-    is_hidden: false,
-    is_symlink: false,
-  });
+  void showShareDialog(folderEntry(path));
 }
 
 function promptPersonName(): Promise<string | null> {

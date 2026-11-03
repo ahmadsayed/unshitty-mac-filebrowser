@@ -180,3 +180,62 @@ test("a failed launch keeps the chooser open and can be retried", async () => {
   expect(document.querySelector(".dialog-layer")).toBeNull();
   expect(mockApps().opened()).toEqual([{ path: NOTES, app: "/Applications/TextEdit.app" }]);
 });
+
+// ----- Folders -----
+
+const chooseApp = async (name: string) => {
+  await click($$(".app-choice").find((button) => button.textContent === name)!);
+  await settle(20);
+};
+const menuItem = (label: string) => $$(".popover .menu-item").find((b) => b.textContent === label) as HTMLButtonElement | undefined;
+
+test("a folder can be opened with any application; Preview stays for files", async () => {
+  await goTo(HOME);
+  await rightClick(item("Empty folder"));
+  expect(menuItem("Open With…")?.disabled).toBe(false);
+  expect(menuItem("Preview")?.disabled).toBe(true);
+  await chooseMenu("Open With…");
+  await settle(20);
+  expect(dialogHeading()).toBe("Open “Empty folder” With");
+  await chooseApp("TextEdit");
+  expect(mockApps().opened()).toEqual([{ path: `${HOME}/Empty folder`, app: "/Applications/TextEdit.app" }]);
+});
+
+test("the current folder opens with an application from the background menu", async () => {
+  await goTo(`${HOME}/Documents`);
+  await rightClick($("#view"));
+  await chooseMenu("Open With…");
+  await settle(20);
+  expect(dialogHeading()).toBe("Open “Documents” With");
+  await chooseApp("Preview");
+  expect(mockApps().opened()).toEqual([{ path: `${HOME}/Documents`, app: "/Applications/Preview.app" }]);
+});
+
+test("the current folder opens with an application from the path-bar menu", async () => {
+  await goTo(`${HOME}/Documents`);
+  await click($("#btn-location-menu"));
+  await settle();
+  await chooseMenu("Open With…");
+  await settle(20);
+  expect(dialogHeading()).toBe("Open “Documents” With");
+  await chooseApp("TextEdit");
+  expect(mockApps().opened()).toEqual([{ path: `${HOME}/Documents`, app: "/Applications/TextEdit.app" }]);
+});
+
+test("places without a folder of their own don't offer Open With… for it", async () => {
+  for (const place of ["Recent", "Starred", "Network"]) {
+    await click($$(".sidebar-row").find((r) => r.textContent?.trim() === place)!);
+    await settle(10);
+    await rightClick($("#view"));
+    expect(menuItem("Open With…")).toBeUndefined();
+    await closeOverlays();
+    await click($("#btn-location-menu"));
+    await settle();
+    expect(menuItem("Open With…")).toBeUndefined();
+    await closeOverlays();
+  }
+  await goTo(`${HOME}/.Trash`);
+  await rightClick($("#view"));
+  expect(menuItem("Open With…")).toBeUndefined();
+  await closeOverlays();
+});

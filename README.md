@@ -89,6 +89,8 @@ one out on its own platform.
   extract and compress archives, Starred, Recent, bookmarks, a progress popover
   with Cancel, and fast 10,000-item folders. **Open With…** finds an
   application as you type its name; arrow keys and Enter open the file with it.
+  It works on folders too, including the one you're in (right-click the empty
+  area or use the path-bar menu) to open a project in your editor or IDE.
 - **Preview (Space)** shows text, pictures and PDFs, with Open, Rename…, Move to
   Trash and, for search results and Recent or Starred items, Open Item
   Location, without closing the preview first.
@@ -141,6 +143,8 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
   keeps the files in memory until they are saved, and downloads go through
   iroh's public relays, which are rate-limited.
 - Preview has no video or audio playback.
+- Open With… lists every application, also for a folder, and has no Open in
+  Terminal: most Linux terminals don't open at a folder passed this way.
 - Google Drive: no Shared Drives, "Shared with me" or Drive-wide search.
 - Keep Versions may miss changes made while the app is closed.
 - Linux: image thumbnails only (no Quick Look).
