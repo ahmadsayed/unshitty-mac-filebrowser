@@ -11,9 +11,10 @@
 // --size <width>x<height> (default 1100x720), --theme gnome|macos (default
 // macos; the theme follows the platform, so gnome loads the page with a
 // Linux user agent and the app takes its Linux code paths), --scene
-// grid|list|menu|dialog|search|search-list|open-with|qr-share|preview (default grid: the folder as it
+// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview (default grid: the folder as it
 // opens; list: list view with the second item selected; menu: the main menu
-// open; dialog: the Keyboard Shortcuts dialog; search, search-list: a search
+// open; item-menu: the right-click menu of --item; background-menu: the
+// right-click menu of the empty area; dialog: the Keyboard Shortcuts dialog; search, search-list: a search
 // for --query, default "e", once its results are in; open-with: Open With… on
 // --item, default "Notes.md", with --query typed into its search; qr-share:
 // Share with QR Code… on --item, once its code shows; preview: Space on
@@ -30,7 +31,7 @@ const option = (name, fallback) => {
 const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene", "--query", "--item"];
 const [path, out] = args.filter((a, i) => !a.startsWith("--") && !VALUE_OPTIONS.includes(args[i - 1]));
 if (!path || !out) {
-  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|dialog|search|search-list|open-with|qr-share|preview] [--query <text>] [--item <name>]");
+  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview] [--query <text>] [--item <name>]");
   process.exit(2);
 }
 
@@ -71,6 +72,14 @@ const SCENES = {
   },
   menu: async (page) => {
     await page.click("#btn-main-menu");
+  },
+  "item-menu": async (page) => {
+    await page.locator("#view .item").filter({ hasText: option("--item", "Notes.md") }).click({ button: "right" });
+  },
+  "background-menu": async (page) => {
+    // Bottom-right of the view, below and beside the items.
+    const box = await page.locator("#view").boundingBox();
+    await page.mouse.click(box.x + box.width - 40, box.y + box.height - 40, { button: "right" });
   },
   dialog: async (page) => {
     await page.click("#btn-main-menu");
