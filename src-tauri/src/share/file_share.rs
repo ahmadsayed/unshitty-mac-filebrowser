@@ -34,9 +34,9 @@ const REQUEST_WITHIN: Duration = Duration::from_secs(10);
 const HASH_CHUNK: usize = 1 << 20;
 const SEND_CHUNK: usize = 64 * 1024;
 
-const NOT_A_FILE: &str = "Only files can be shared with a QR code.";
-const NOTHING: &str = "Choose files to share.";
-const TOO_MANY: &str = "Up to 1,000 files can be shared at once.";
+const NOT_A_FILE: &str = "Only files can be sent with a QR code.";
+const NOTHING: &str = "Choose files to send.";
+const TOO_MANY: &str = "Up to 1,000 files can be sent at once.";
 const CHANGED_WHILE_PREPARING: &str = "The file changed while it was being prepared. Try again.";
 const OFFLINE: &str = "Could not reach the relay server. Check the internet connection and try again.";
 

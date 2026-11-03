@@ -1321,7 +1321,7 @@ async fn file_share_prepare(
     paths: Vec<String>,
 ) -> Result<String, String> {
     if paths.iter().any(|path| cloud::is_cloud(path) || share::location::is_share(path) || sftp::is_sftp(path)) {
-        return Err("Only files on this computer can be shared with a QR code.".into());
+        return Err("Only files on this computer can be sent with a QR code.".into());
     }
     let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     shares.prepare(&paths, window.label())

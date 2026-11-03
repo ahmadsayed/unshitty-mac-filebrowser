@@ -58,11 +58,11 @@ test("sharing asks for a name, copies links, and a person link starts unused", a
   resetShareMock();
   await goTo(HOME);
   await rightClick(item("main.rs"));
-  expect(menuLabels()).not.toContain("Share…");
+  expect(menuLabels()).not.toContain("Share Folder…");
   await settle();
   await rightClick(item("Documents"));
-  expect(menuLabels()).toContain("Share…");
-  await chooseMenu("Share…");
+  expect(menuLabels()).toContain("Share Folder…");
+  await chooseMenu("Share Folder…");
   await settle(10);
 
   expect(dialogHeading()).toBe("What name should people see?");
@@ -71,6 +71,10 @@ test("sharing asks for a name, copies links, and a person link starts unused", a
   await respond("Continue");
   await settle(20);
   expect(dialogHeading()).toBe("Share “Documents”");
+  // Says who can open it and for how long, and where phones go instead.
+  const text = $(".dialog-text").textContent;
+  expect(text).toContain("People with File Browser on macOS or Linux can open this folder read-only");
+  expect(text).toContain("Send with QR Code…");
 
   await respond("Copy Link");
   await settle(25);
@@ -119,7 +123,7 @@ test("a received share browses read-only and remembers an offline sharer", async
   expect(labels).not.toContain("Star");
   await settle();
   await rightClick(item("Photos"));
-  expect(menuLabels()).not.toContain("Share…");
+  expect(menuLabels()).not.toContain("Share Folder…");
   await closeOverlays();
 
   await rightClick($("#view"));
@@ -169,7 +173,7 @@ test("pasting your own link opens the local folder", async () => {
   resetShareMock();
   await goTo(HOME);
   await rightClick(item("Documents"));
-  await chooseMenu("Share…");
+  await chooseMenu("Share Folder…");
   await settle(10);
   await type($<HTMLInputElement>("#share-name"), "Ahmed");
   await respond("Continue");
@@ -194,7 +198,7 @@ test("your own link pasted in capitals and brackets still opens the local folder
   resetShareMock();
   await goTo(HOME);
   await rightClick(item("Documents"));
-  await chooseMenu("Share…");
+  await chooseMenu("Share Folder…");
   await settle(10);
   await type($<HTMLInputElement>("#share-name"), "Ahmed");
   await respond("Continue");
@@ -242,7 +246,7 @@ test("Stop Sharing confirms with Cancel as the default, and Remove from Network 
   resetShareMock();
   await goTo(HOME);
   await rightClick(item("Documents"));
-  await chooseMenu("Share…");
+  await chooseMenu("Share Folder…");
   await settle(10);
   await type($<HTMLInputElement>("#share-name"), "Ahmed");
   await respond("Continue");

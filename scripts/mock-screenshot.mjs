@@ -17,7 +17,7 @@
 // right-click menu of the empty area; dialog: the Keyboard Shortcuts dialog; search, search-list: a search
 // for --query, default "e", once its results are in; open-with: Open With… on
 // --item, default "Notes.md", with --query typed into its search; qr-share:
-// Share with QR Code… on --item, once its code shows; preview: Space on
+// Send with QR Code… on --item, once its code shows; preview: Space on
 // --item). Uses ?demo (no test-only folders). The page's
 // clock is fixed, so the same scene always gives the same image.
 import { createRequire } from "node:module";
@@ -99,7 +99,7 @@ const SCENES = {
   },
   "qr-share": async (page) => {
     await page.locator("#view .item").filter({ hasText: option("--item", "Notes.md") }).click({ button: "right" });
-    await page.getByText("Share with QR Code…", { exact: true }).click();
+    await page.getByText("Send with QR Code…", { exact: true }).click();
     await page.waitForSelector(".qr-share-image");
   },
   "search-list": async (page) => {

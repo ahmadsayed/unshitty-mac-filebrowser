@@ -34,13 +34,13 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/styles.css` | All styling: layout, views and widgets, reading every look-related value from theme tokens |
 | `src/themes/gnome.css`, `src/themes/macos.css` | The two themes' tokens (colours, font, sizes, radii, glass), light + dark; macOS also has a few scoped rules |
 | `src/theme.ts` | The platform's theme (macOS on a Mac, GNOME elsewhere) and the per-theme layout sizes the virtualized views use |
-| `src/qr-share.ts` | Share with QR Code…: the menu item and the dialog (code, link, progress, downloads) |
+| `src/qr-share.ts` | Send with QR Code…: the menu item and the dialog (code, link, progress, downloads) |
 | `src/preview-actions.ts` | Which actions the Space preview offers (Open, Rename…, Move to Trash, Open Item Location) for where the item is |
 | `src/open-with.ts` | Open With…: the searchable application chooser (filter, keyboard selection, launch and retry) |
 | `src/updates.ts` | Check for Updates dialogs: offer, download progress, restart, failures |
 | `src-tauri/src/fs_ops.rs` | Listing, item counts, mkdir, rename, copy/move/trash, path info |
 | `src-tauri/src/sftp.rs` | Read-only SSH/SFTP connections for Network: agent/key/password auth, known-host checks, listing and downloads |
-| `src-tauri/src/share/file_share.rs`, `file_link.rs` | Share with QR Code: hashing, the separate iroh endpoint and serving (`file_share`); the ticket, file list and `filebrowser/file/2` wire format (the page still reads version 1 links), compiled into the phone page too (`file_link`) |
+| `src-tauri/src/share/file_share.rs`, `file_link.rs` | Send with QR Code: hashing, the separate iroh endpoint and serving (`file_share`); the ticket, file list and `filebrowser/file/2` wire format (the page still reads version 1 links), compiled into the phone page too (`file_link`) |
 | `web/file-get/` | The page a phone opens from the QR code: Rust → WebAssembly (iroh in the browser), `build.sh`, `serve.sh` (test from this computer), published by `.github/workflows/file-page.yml`; `static/get/preview.js` (file types and sizes, the image preview, the rows for several files) is tested in `tests/file-page.test.ts` |
 | `src-tauri/src/properties.rs` | Properties dialog data: size, dates, permissions, symlink targets, recursive folder size |
 | `src-tauri/src/platform.rs` | Platform differences: volume roots per OS, `%XX` decoding, `file://` URIs, XDG data dir |

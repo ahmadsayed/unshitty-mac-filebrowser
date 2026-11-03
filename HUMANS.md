@@ -61,7 +61,7 @@ gh pr checkout <n>              # try a PR's branch locally
   programs, the agent asks you to try the installed app, saying exactly what
   to do and what you should see.
 
-- **Phones.** Share with QR Code… downloads on a phone through a page on
+- **Phones.** Send with QR Code… downloads on a phone through a page on
   GitHub Pages. Turn Pages on once (Settings → Pages → Source: GitHub
   Actions); the File page workflow publishes it from `main`, or by hand.
   Before that, `web/file-get/serve.sh` serves the page from your computer

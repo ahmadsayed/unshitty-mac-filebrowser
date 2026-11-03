@@ -65,14 +65,16 @@ one out on its own platform.
 - **Keep Versions (Experimental):** tick "Keep versions" when creating a folder
   and every saved state of its files is kept in `.versions/` inside it. Diff,
   restore, or bring back deleted files. Local only, **not a backup**.
-- **Folder Sharing (Experimental):** share a folder read-only with a
-  `share://` link, for anyone or one person, with optional passphrase-encrypted
-  invitations. Received shares show up in Network ([sharing guide](docs/folder-sharing.md)).
-- **Share with QR Code (Experimental):** right-click one or more files and
-  scan the code with a phone. The files download straight from your computer
-  over [iroh](https://www.iroh.computer/), encrypted, on any network, with no
-  app on the phone, and photos show on the page once they arrive. They're
-  shared while the dialog is open.
+- **Sharing (Experimental), two ways:**
+  - **Share Folder…** gives people with File Browser lasting, read-only access
+    to a folder through a `share://` link, for anyone or one person, with
+    optional passphrase-encrypted invitations. Received shares show up in
+    Network ([sharing guide](docs/folder-sharing.md)).
+  - **Send with QR Code…** sends a copy of one or more files to any phone or
+    browser: scan the code or open the link, no app needed. The files come
+    straight from your computer over [iroh](https://www.iroh.computer/),
+    encrypted, on any network, and photos show on the page once they arrive.
+    Sending stops when the dialog closes.
 - **Network (Experimental):** browse SSH/SFTP servers read-only.
 - **Google Drive (Experimental):** browse, copy, move and trash in My Drive
   with your own OAuth client ([setup](docs/google-drive.md)).
@@ -139,7 +141,10 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 - SFTP and shares are read-only; no SMB or WebDAV.
 - Share passphrases unlock invitations once; they do not encrypt local settings
   or downloaded copies. Sharing requires the sharer's app to stay open.
-- Share with QR Code: files only, no folders (up to 1,000 files). The phone
+  Received shares don't update until the sharer restarts the app
+  ([#98](https://github.com/ahmadsayed/unshitty-mac-filebrowser/issues/98)), and files can't be copied out of them yet
+  ([#99](https://github.com/ahmadsayed/unshitty-mac-filebrowser/issues/99)).
+- Send with QR Code: files only, no folders (up to 1,000 files). The phone
   keeps the files in memory until they are saved, and downloads go through
   iroh's public relays, which are rate-limited.
 - Preview has no video or audio playback.

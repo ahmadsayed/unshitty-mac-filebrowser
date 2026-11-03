@@ -2713,7 +2713,7 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
       : []),
     ...(app ? [{ label: "Show Package Contents", action: () => navigate(app.path) }] : []),
     ...(intoFolder ? [bookmarkMenuItem(intoFolder.path)] : []),
-    ...(shareable ? [{ label: "Share…", action: () => void showShareDialog(intoFolder) }] : []),
+    ...(shareable ? [{ label: "Share Folder…", action: () => void showShareDialog(intoFolder) }] : []),
     ...qrShareItems(sel, !inTrash()),
     { separator: true },
     ...cutCopyItems(),
@@ -5062,7 +5062,10 @@ async function showShareDialog(entry: Entry): Promise<void> {
 
   dialog = openDialog({
     heading: `Share “${entry.name}”`,
-    body: "Who can open this folder. People you share with can open it read-only.",
+    body:
+      "People with File Browser on macOS or Linux can open this folder read-only, from Network, " +
+      "while File Browser runs here and until you stop sharing. " +
+      "To send files to a phone or any browser instead, use Send with QR Code… on the files.",
     extra,
     className: "share-dialog",
     responses: [
