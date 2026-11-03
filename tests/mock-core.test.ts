@@ -152,6 +152,23 @@ test("window buttons follow the button layout; window_control toggles maximize",
   await expect(invoke("window_control", { action: "fullscreen" })).rejects.toMatch(/Unknown/);
 });
 
+test("start_file_drag records the dragged paths and refuses non-local ones", async () => {
+  const drags = (globalThis as unknown as { __mockWindow: { drags: string[][] } }).__mockWindow.drags;
+  const mock = (globalThis as unknown as { __mockWindow: { buttonUp: boolean; endDrag(landedHere?: boolean): void } }).__mockWindow;
+  const ended: unknown[] = [];
+  const onEnd = new Channel<boolean>();
+  onEnd.onmessage = (m) => ended.push(m);
+  expect(await invoke("start_file_drag", { paths: [`${HOME}/main.rs`], onEnd })).toBe(true);
+  expect(drags.at(-1)).toEqual([`${HOME}/main.rs`]);
+  mock.endDrag();
+  expect(ended).toEqual([false]);
+  mock.buttonUp = true;
+  expect(await invoke("start_file_drag", { paths: [`${HOME}/main.rs`] })).toBe(false);
+  mock.buttonUp = false;
+  await expect(invoke("start_file_drag", { paths: [] })).rejects.toBe("Nothing to drag.");
+  await expect(invoke("start_file_drag", { paths: ["relative.txt"] })).rejects.toBe("“relative.txt” is not a local file.");
+});
+
 test("thumbnails are empty for files without a preview", async () => {
   const buf = await invoke<ArrayBuffer>("thumbnail", { path: `${HOME}/main.rs`, size: 64 });
   expect(buf.byteLength).toBe(0);

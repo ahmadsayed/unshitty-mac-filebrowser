@@ -150,6 +150,9 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 - Preview has no video or audio playback.
 - Open With… lists every application, also for a folder, and has no Open in
   Terminal: most Linux terminals don't open at a folder passed this way.
+- Drag and drop with other apps carries files and folders only: a link or an
+  image dragged from a web page isn't downloaded. Files dropped from another
+  app are copied, never moved; Google Drive items can't be dragged out.
 - Google Drive: no Shared Drives, "Shared with me" or Drive-wide search.
 - Keep Versions may miss changes made while the app is closed.
 - Linux: image thumbnails only (no Quick Look).

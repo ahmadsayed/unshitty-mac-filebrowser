@@ -1,5 +1,6 @@
 import { CANCELLED, endOperation, finishItem, initOperationsButton, opTitle, setOperationState, startOperation, updateOperation, type Operation, type ProgressUpdate } from "./operations";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { forgetDragOut, isOwnDragOut, leftWindow, startSystemDrag } from "./drag-out";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
   listDir, searchDir, cancelSearch, type SearchSummary, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
@@ -3707,7 +3708,6 @@ interface DragState {
   devices: Map<string, number>;
   springTimer: number;
   scrollTimer: number;
-  nativeStarted: boolean;
 }
 
 let drag: DragState | null = null;
@@ -3767,7 +3767,6 @@ function beginDrag(e: MouseEvent): void {
     devices: new Map(),
     springTimer: 0,
     scrollTimer: window.setInterval(autoScrollDuringDrag, 50),
-    nativeStarted: false,
   };
   deviceMap(paths).then((m) => {
     if (drag?.paths === paths) for (const [k, v] of m) drag.devices.set(k, v);
@@ -3777,36 +3776,28 @@ function beginDrag(e: MouseEvent): void {
   window.addEventListener("mouseup", onDragEnd);
   window.addEventListener("keydown", onDragKey, true);
   window.addEventListener("keyup", onDragKey, true);
-  document.documentElement.addEventListener("mouseleave", onDragLeaveWindow);
   updateDrag();
 }
 
-/** A 1×1 transparent PNG, the drag image for native drag-out. */
-const DRAG_IMAGE =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z1ZkAAAAASUVORK5CYII=";
-
-/** Start a native file drag when the pointer leaves the window. */
-function onDragLeaveWindow(): void {
-  if (!drag || drag.nativeStarted) return;
-  const paths = drag.paths.filter((path) => !isCloud(path) && !isSharePath(path));
-  if (paths.length === 0) return;
-  drag.nativeStarted = true;
+/** Past the window's edge the system drag takes the local items to another
+ * app (src/drag-out.ts) and the window's own drag ends. Returns whether it
+ * did: Google Drive items can't leave, so a drag of only those stays. */
+function dragOutOfWindow(): boolean {
+  const all = drag!.paths;
+  const paths = all.filter((path) => !isCloud(path));
+  if (paths.length === 0) return false;
   endDrag(false);
-  startNativeDrag(paths);
-}
-
-function startNativeDrag(paths: string[]): void {
-  const api = (window as unknown as {
-    __TAURI__?: { drag?: { startDrag?: (options: unknown) => Promise<void> } };
-  }).__TAURI__?.drag;
-  if (!api?.startDrag) return;
-  api
-    .startDrag({ item: paths, icon: DRAG_IMAGE, mode: "copy" })
-    .catch((err) => showToast(`Could not drag out: ${cleanError(err)}`));
+  const left = all.length - paths.length;
+  startSystemDrag(paths).then(
+    () => left && showToast(left === 1 ? "A Google Drive item stays in File Browser" : `${left} Google Drive items stay in File Browser`),
+    (err) => showToast(`Could not drag out: ${cleanError(err)}`),
+  );
+  return true;
 }
 
 function onDragMove(e: MouseEvent): void {
   if (!drag) return;
+  if (leftWindow(e) && dragOutOfWindow()) return;
   drag.x = e.clientX;
   drag.y = e.clientY;
   drag.mods = { altKey: e.altKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey };
@@ -3862,7 +3853,9 @@ function autoScrollDuringDrag(): void {
   if (!drag) return;
   const r = scrollEl.getBoundingClientRect();
   if (drag.x < r.left || drag.x > r.right) return;
-  if (drag.y > r.bottom - 24 && drag.y < r.bottom + 24) scrollEl.scrollTop += 16;
+  // Past the window's bottom edge the drag goes out to other apps, so the
+  // band reaches further in than out.
+  if (drag.y > r.bottom - 32 && drag.y < r.bottom + 24) scrollEl.scrollTop += 16;
   else if (drag.y < r.top + 24 && drag.y > r.top - 24) scrollEl.scrollTop -= 16;
   else return;
   updateDrag();
@@ -3882,7 +3875,6 @@ function endDrag(drop: boolean): void {
   window.removeEventListener("mouseup", onDragEnd);
   window.removeEventListener("keydown", onDragKey, true);
   window.removeEventListener("keyup", onDragKey, true);
-  document.documentElement.removeEventListener("mouseleave", onDragLeaveWindow);
   d.ghost.remove();
   document.documentElement.classList.remove("dragging");
   document.documentElement.style.cursor = "";
@@ -3894,7 +3886,43 @@ function endDrag(drop: boolean): void {
   }
 }
 
-/** Files dragged in from Finder (or any other app) arrive as paths. */
+const NOT_FILES = "Only files and folders can be dropped here";
+
+/** The local paths of a drop. On Linux a browser link arrives as its URL
+ * (wry strips only `file://`); those are not files. */
+function localDropPaths(paths: string[]): string[] {
+  return paths.filter((path) => path.startsWith("/"));
+}
+
+/** What a drop from another app does. It copies where an internal drag
+ * would move: the system shows a copy cursor, and the other app's window
+ * keeps its files. The Trash still trashes. Modifier keys aren't reported. */
+function externalDropOp(target: DropTarget, sources: string[], own: boolean, devices?: Map<string, number>): DropOp | null {
+  const op = dropOp(target, sources, { altKey: false, metaKey: false, ctrlKey: false, shiftKey: false }, devices);
+  // The window's own drag that left it and came back keeps the window's rule.
+  return op === "move" && !own ? "copy" : op;
+}
+
+/** Files dragged in from Finder, GNOME Files or a browser's downloads. */
+async function dropFromOtherApp(all: string[], target: DropTarget | null): Promise<void> {
+  const paths = localDropPaths(all);
+  // Decided on arrival, before any wait: the drag's end can be reported
+  // meanwhile. A drag out that comes back is over once dropped here.
+  const own = isOwnDragOut(paths);
+  forgetDragOut();
+  if (!target) return;
+  // Web content (a link or an image on a page) has no local file: macOS
+  // reports no paths, Linux its URL.
+  if (paths.length < all.length || paths.length === 0) showToast(NOT_FILES);
+  if (paths.length === 0) return;
+  const op = externalDropOp(target, paths, own, await deviceMap([...paths, target.dir]));
+  if (!op) return;
+  const info = await pathInfo(paths).catch(() => []);
+  const dirs = new Set(paths.filter((_, i) => info[i]?.is_dir));
+  await performDrop(paths, dirs, target, op);
+}
+
+/** Drops from other apps arrive as Tauri drag-drop events, with paths. */
 function initExternalDrops(): void {
   let sources: string[] = [];
   getCurrentWebview()
@@ -3905,27 +3933,20 @@ function initExternalDrops(): void {
         setDropHighlight(null);
         return;
       }
-      const x = p.position.x / devicePixelRatio;
-      const y = p.position.y / devicePixelRatio;
-      if (p.type === "enter") sources = p.paths;
+      // wry reports CSS pixels relative to the webview on macOS and Linux;
+      // tauri only labels them physical. Scaling them would hit-test a 2×
+      // display at half the pointer's position and drop into the wrong folder.
+      const { x, y } = p.position;
+      if (p.type === "enter") sources = localDropPaths(p.paths);
       const target = dropTargetAt(x, y, sources);
-      // Finder doesn't tell us the modifier keys; use the default operation.
-      const noMods = { altKey: false, metaKey: false, ctrlKey: false, shiftKey: false };
       if (p.type !== "drop") {
-        const op = target ? dropOp(target, sources, noMods) : null;
+        const op = target && sources.length ? externalDropOp(target, sources, isOwnDragOut(sources)) : null;
         setDropHighlight(op ? target!.el : null);
         return;
       }
       setDropHighlight(null);
-      const paths = p.paths;
       sources = [];
-      if (!target || paths.length === 0) return;
-      const devices = await deviceMap([...paths, target.dir]);
-      const op = dropOp(target, paths, noMods, devices);
-      if (!op) return;
-      const info = await pathInfo(paths).catch(() => []);
-      const dirs = new Set(paths.filter((_, i) => info[i]?.is_dir));
-      await performDrop(paths, dirs, target, op);
+      await dropFromOtherApp(p.paths, target);
     })
     .catch(() => {
       /* not running under Tauri */
