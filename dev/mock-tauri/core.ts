@@ -1693,7 +1693,7 @@ function mockOpenWith(a: Args): undefined {
 
 /** Every command the app calls, by name. */
 /** The window the header bar buttons act on; tests read `actions`. */
-const mockWindow = { maximized: false, actions: [] as string[] };
+const mockWindow = { maximized: false, actions: [] as string[], drags: [] as string[][] };
 (globalThis as Record<string, unknown>).__mockWindow = mockWindow;
 
 function mockDmgInspection(path: string) {
@@ -1896,6 +1896,14 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     if (action === "maximize") mockWindow.maximized = !mockWindow.maximized;
     if (action !== "state") mockWindow.actions.push(action);
     return mockWindow.maximized;
+  },
+  // Drags out of the window (Linux): the paths of each, checked like the real one.
+  start_file_drag: (a) => {
+    const paths = a.paths as string[];
+    if (paths.length === 0) throw "Nothing to drag.";
+    const gone = paths.find((p) => !p.startsWith("/") || !lookup(p));
+    if (gone) throw `“${gone.split("/").pop()}” no longer exists.`;
+    mockWindow.drags.push(paths);
   },
   open_file: (a) => {
     const path = str(a, "path");

@@ -651,6 +651,88 @@ pub fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The `file://` URI of a local path, every byte outside RFC 3986's
+/// unreserved and sub-delimiter set percent-encoded, as GLib's
+/// `g_filename_to_uri` does. Unescaped, `#` would end the path and `%`
+/// would be read as an escape by the app receiving a drag.
+pub fn path_to_file_uri(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    const KEEP: &[u8] = b"-._~!$&'()*+,;=:@/";
+    let mut uri = String::from("file://");
+    for &byte in path.as_os_str().as_bytes() {
+        if byte.is_ascii_alphanumeric() || KEEP.contains(&byte) {
+            uri.push(byte as char);
+        } else {
+            uri.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    uri
+}
+
+/// The URIs a drag out of the window offers, one per path. Refuses an empty
+/// list, relative paths and paths that no longer exist.
+pub fn drag_uris(paths: &[String]) -> Result<Vec<String>, String> {
+    if paths.is_empty() {
+        return Err("Nothing to drag.".into());
+    }
+    paths
+        .iter()
+        .map(|p| {
+            let path = Path::new(p);
+            if !path.is_absolute() || fs::symlink_metadata(path).is_err() {
+                let name = path.file_name().map_or(p.clone(), |n| n.to_string_lossy().into_owned());
+                return Err(format!("“{name}” no longer exists."));
+            }
+            Ok(path_to_file_uri(path))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    /// The window and signal handlers of the drag in progress, if any.
+    static FILE_DRAG: std::cell::RefCell<Option<(gtk::ApplicationWindow, Vec<gtk::glib::SignalHandlerId>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Disconnect the handlers of the last drag out of the window.
+#[cfg(target_os = "linux")]
+fn end_file_drag() {
+    use gtk::prelude::*;
+    if let Some((window, ids)) = FILE_DRAG.with(|d| d.borrow_mut().take()) {
+        for id in ids {
+            window.disconnect(id);
+        }
+    }
+}
+
+/// Start dragging `uris` out of `window`, while the mouse button is held.
+/// The window answers the target's request for the files until the drag
+/// ends: a target asks for them after the drop, so cleaning up on the drop
+/// (as the drag plugin's GTK code does) leaves it with nothing. Only Copy is
+/// offered, so the files are never moved away from under the app. Must run
+/// on the GTK main thread.
+#[cfg(target_os = "linux")]
+pub fn begin_file_drag(window: &gtk::ApplicationWindow, uris: Vec<String>) -> Result<(), String> {
+    use gtk::prelude::*;
+    end_file_drag();
+    let targets = gtk::TargetList::new(&[]);
+    targets.add_uri_targets(0);
+    let data = window.connect_drag_data_get(move |_, _, selection, _, _| {
+        let refs: Vec<&str> = uris.iter().map(String::as_str).collect();
+        selection.set_uris(&refs);
+    });
+    // drag-end comes last, after a drop, a cancel or a failure.
+    let end = window.connect_drag_end(|_, _| end_file_drag());
+    FILE_DRAG.with(|d| *d.borrow_mut() = Some((window.clone(), vec![data, end])));
+    let started = window.drag_begin_with_coordinates(&targets, gtk::gdk::DragAction::COPY, 1, None, -1, -1);
+    if started.is_none() {
+        end_file_drag();
+        return Err("The drag could not start.".into());
+    }
+    Ok(())
+}
+
 /// The local path of a `file://` URI, if it is one.
 pub fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
@@ -2057,5 +2139,35 @@ mod tests {
         );
         assert_eq!(file_uri_to_path("https://example.com/x"), None);
         assert_eq!(file_uri_to_path("file://relative"), None);
+    }
+
+    #[test]
+    fn a_drag_offers_existing_absolute_paths_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("C# notes.txt");
+        fs::write(&file, "x").unwrap();
+        let path = file.to_string_lossy().to_string();
+        assert_eq!(drag_uris(&[path.clone()]).unwrap(), vec![path_to_file_uri(&file)]);
+        assert!(drag_uris(&[path.clone()]).unwrap()[0].ends_with("/C%23%20notes.txt"));
+        assert!(drag_uris(&[]).is_err());
+        assert!(drag_uris(&["relative.txt".into()]).is_err());
+        let gone = tmp.path().join("gone.txt").to_string_lossy().to_string();
+        assert_eq!(drag_uris(&[path, gone]).unwrap_err(), "“gone.txt” no longer exists.");
+    }
+
+    #[test]
+    fn paths_become_escaped_file_uris() {
+        let uri = |p: &str| path_to_file_uri(Path::new(p));
+        assert_eq!(uri("/home/me/C# notes.txt"), "file:///home/me/C%23%20notes.txt");
+        assert_eq!(uri("/home/me/100%.txt"), "file:///home/me/100%25.txt");
+        // A name that already looks escaped stays itself.
+        assert_eq!(uri("/home/me/50%20off.txt"), "file:///home/me/50%2520off.txt");
+        assert_eq!(uri("/home/me/a?b"), "file:///home/me/a%3Fb");
+        assert_eq!(uri("/home/me/Café"), "file:///home/me/Caf%C3%A9");
+        assert_eq!(uri("/home/me/it's (1).txt"), "file:///home/me/it's%20(1).txt");
+        // Every one of them reads back as the same path.
+        for p in ["/home/me/C# notes.txt", "/home/me/100%.txt", "/home/me/50%20off.txt", "/home/me/Café", "/tmp/a\nb"] {
+            assert_eq!(file_uri_to_path(&uri(p)), Some(PathBuf::from(p)), "{p}");
+        }
     }
 }
