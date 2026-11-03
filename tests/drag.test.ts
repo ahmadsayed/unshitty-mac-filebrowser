@@ -1,8 +1,9 @@
 // Drag and drop inside the app and from other apps: drop targets (items,
 // sidebar, breadcrumbs, the view), move vs copy, Trash, refusals, Escape,
 // spring-loaded folders and auto-scroll.
-import { afterEach, beforeAll, expect, test } from "vitest";
+import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
+import { DRAG_IMAGE } from "../src/drag-out";
 import { $, $$, boot, goTo, item, key, mouse, names, settle, title, hit, toasts } from "./app";
 
 const HOME = "/Users/me";
@@ -195,6 +196,59 @@ test("web content from a browser is not taken for a file", async () => {
   mockDrop(["https://example.com/cat.png", `${HOME}/Desktop/notes2.txt`], 10, 10);
   await settle(30);
   expect(await invoke("path_exists", { path: `${HOME}/D/Inbox/notes2.txt` })).toBe(true);
+});
+
+// ----- Dragging out to other apps -----
+
+type DragPlugin = { startDrag: ReturnType<typeof vi.fn> };
+const tauriGlobal = window as unknown as { __TAURI__?: { drag?: DragPlugin } };
+
+/** Press on `name`, start a drag inside the window, then move past its left edge. */
+async function dragOutOfWindow(name: string): Promise<void> {
+  await mouse(hit(name), "mousedown", { clientX: 50, clientY: 60 });
+  window.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 300, buttons: 1 }));
+  await settle(10);
+  // WebKit keeps sending moves outside the window while the button is held.
+  window.dispatchEvent(new MouseEvent("mousemove", { clientX: -5, clientY: 300, buttons: 1 }));
+  await settle(20);
+}
+
+test("past the window's edge, macOS hands the files to the system drag", async () => {
+  const startDrag = vi.fn(async () => {});
+  tauriGlobal.__TAURI__ = { drag: { startDrag } };
+  try {
+    await goTo(`${HOME}/D`);
+    await dragOutOfWindow("four.txt");
+    expect(startDrag).toHaveBeenCalledWith({ item: [`${HOME}/D/four.txt`], icon: DRAG_IMAGE, mode: "copy" });
+    // The window's own drag is over; nothing moved inside it.
+    expect($(".drag-ghost")).toBeNull();
+    window.dispatchEvent(new MouseEvent("mouseup", { clientX: -5, clientY: 300 }));
+    await settle(20);
+    expect(names()).toContain("four.txt");
+  } finally {
+    delete tauriGlobal.__TAURI__;
+  }
+});
+
+test("past the window's edge, Linux starts its own file drag", async () => {
+  const realAgent = navigator.userAgent;
+  Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (X11; Linux x86_64)", configurable: true });
+  try {
+    await goTo(`${HOME}/D`);
+    await dragOutOfWindow("one.txt");
+    const drags = (globalThis as unknown as { __mockWindow: { drags: string[][] } }).__mockWindow.drags;
+    expect(drags.at(-1)).toEqual([`${HOME}/D/one.txt`]);
+    expect($(".drag-ghost")).toBeNull();
+  } finally {
+    Object.defineProperty(navigator, "userAgent", { value: realAgent, configurable: true });
+  }
+});
+
+test("a drag out that can't start says so", async () => {
+  await goTo(`${HOME}/D`);
+  await dragOutOfWindow("two.txt");
+  expect(toasts().some((t) => t.startsWith("Could not drag out"))).toBe(true);
+  expect(names()).toContain("two.txt");
 });
 
 test("the Google Drive row is not a drop target while disconnected", async () => {

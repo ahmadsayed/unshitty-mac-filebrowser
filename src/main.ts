@@ -1,5 +1,6 @@
 import { CANCELLED, endOperation, finishItem, initOperationsButton, opTitle, setOperationState, startOperation, updateOperation, type Operation, type ProgressUpdate } from "./operations";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { leftWindow, startSystemDrag } from "./drag-out";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
   listDir, searchDir, cancelSearch, type SearchSummary, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
@@ -3707,7 +3708,6 @@ interface DragState {
   devices: Map<string, number>;
   springTimer: number;
   scrollTimer: number;
-  nativeStarted: boolean;
 }
 
 let drag: DragState | null = null;
@@ -3767,7 +3767,6 @@ function beginDrag(e: MouseEvent): void {
     devices: new Map(),
     springTimer: 0,
     scrollTimer: window.setInterval(autoScrollDuringDrag, 50),
-    nativeStarted: false,
   };
   deviceMap(paths).then((m) => {
     if (drag?.paths === paths) for (const [k, v] of m) drag.devices.set(k, v);
@@ -3777,36 +3776,28 @@ function beginDrag(e: MouseEvent): void {
   window.addEventListener("mouseup", onDragEnd);
   window.addEventListener("keydown", onDragKey, true);
   window.addEventListener("keyup", onDragKey, true);
-  document.documentElement.addEventListener("mouseleave", onDragLeaveWindow);
   updateDrag();
 }
 
-/** A 1×1 transparent PNG, the drag image for native drag-out. */
-const DRAG_IMAGE =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z1ZkAAAAASUVORK5CYII=";
-
-/** Start a native file drag when the pointer leaves the window. */
-function onDragLeaveWindow(): void {
-  if (!drag || drag.nativeStarted) return;
-  const paths = drag.paths.filter((path) => !isCloud(path) && !isSharePath(path));
-  if (paths.length === 0) return;
-  drag.nativeStarted = true;
+/** Past the window's edge the system drag takes the local items to another
+ * app (src/drag-out.ts) and the window's own drag ends. Returns whether it
+ * did: Google Drive items can't leave, so a drag of only those stays. */
+function dragOutOfWindow(): boolean {
+  const all = drag!.paths;
+  const paths = all.filter((path) => !isCloud(path));
+  if (paths.length === 0) return false;
   endDrag(false);
-  startNativeDrag(paths);
-}
-
-function startNativeDrag(paths: string[]): void {
-  const api = (window as unknown as {
-    __TAURI__?: { drag?: { startDrag?: (options: unknown) => Promise<void> } };
-  }).__TAURI__?.drag;
-  if (!api?.startDrag) return;
-  api
-    .startDrag({ item: paths, icon: DRAG_IMAGE, mode: "copy" })
-    .catch((err) => showToast(`Could not drag out: ${cleanError(err)}`));
+  const left = all.length - paths.length;
+  startSystemDrag(paths).then(
+    () => left && showToast(left === 1 ? "A Google Drive item stays in File Browser" : `${left} Google Drive items stay in File Browser`),
+    (err) => showToast(`Could not drag out: ${cleanError(err)}`),
+  );
+  return true;
 }
 
 function onDragMove(e: MouseEvent): void {
   if (!drag) return;
+  if (leftWindow(e) && dragOutOfWindow()) return;
   drag.x = e.clientX;
   drag.y = e.clientY;
   drag.mods = { altKey: e.altKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey };
@@ -3882,7 +3873,6 @@ function endDrag(drop: boolean): void {
   window.removeEventListener("mouseup", onDragEnd);
   window.removeEventListener("keydown", onDragKey, true);
   window.removeEventListener("keyup", onDragKey, true);
-  document.documentElement.removeEventListener("mouseleave", onDragLeaveWindow);
   d.ghost.remove();
   document.documentElement.classList.remove("dragging");
   document.documentElement.style.cursor = "";
