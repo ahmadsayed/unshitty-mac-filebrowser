@@ -1,6 +1,6 @@
 // Open With: list installed applications, search them, and launch the chosen one.
 import { afterEach, beforeAll, expect, test } from "vitest";
-import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, mouse, settle, type } from "./app";
+import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, mouse, names, settle, type } from "./app";
 
 const HOME = "/Users/me";
 const NOTES = `${HOME}/Documents/Notes.md`;
@@ -199,6 +199,10 @@ test("a folder can be opened with any application; Preview stays for files", asy
   expect(dialogHeading()).toBe("Open “Empty folder” With");
   await chooseApp("TextEdit");
   expect(mockApps().opened()).toEqual([{ path: `${HOME}/Empty folder`, app: "/Applications/TextEdit.app" }]);
+  // Like a file, it joins Recent: a list of recent projects for free.
+  await click($$(".sidebar-row").find((r) => r.textContent?.trim() === "Recent")!);
+  await settle(10);
+  expect(names()[0]).toBe("Empty folder");
 });
 
 test("the current folder opens with an application from the background menu", async () => {
