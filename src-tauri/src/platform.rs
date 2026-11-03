@@ -712,16 +712,20 @@ fn left_button_held(window: &gtk::ApplicationWindow) -> bool {
 /// drop (as the drag plugin's GTK code does) leaves it with nothing. The
 /// handlers check the drag context, so a second drag that starts before the
 /// first one finished doesn't get or remove the other's files. Only Copy is
-/// offered: the files are never moved away from under the app. Returns
-/// `Ok` without a drag when the button was already released. Must run on
-/// the GTK main thread.
+/// offered: the files are never moved away from under the app. `on_end`
+/// runs at the drag's drag-end. Returns whether a drag started: not when the
+/// button was already released. Must run on the GTK main thread.
 #[cfg(target_os = "linux")]
-pub fn begin_file_drag(window: &gtk::ApplicationWindow, uris: Vec<String>) -> Result<(), String> {
+pub fn begin_file_drag(
+    window: &gtk::ApplicationWindow,
+    uris: Vec<String>,
+    on_end: impl Fn() + 'static,
+) -> Result<bool, String> {
     use gtk::prelude::*;
     use std::cell::RefCell;
     use std::rc::Rc;
     if !left_button_held(window) {
-        return Ok(());
+        return Ok(false);
     }
     let targets = gtk::TargetList::new(&[]);
     targets.add_uri_targets(0);
@@ -741,13 +745,14 @@ pub fn begin_file_drag(window: &gtk::ApplicationWindow, uris: Vec<String>) -> Re
             for id in own.borrow_mut().drain(..) {
                 window.disconnect(id);
             }
+            on_end();
         }
     });
     handlers.borrow_mut().extend([data, end]);
     match window.drag_begin_with_coordinates(&targets, gtk::gdk::DragAction::COPY, 1, None, -1, -1) {
         Some(context) => {
             *this.borrow_mut() = Some(context);
-            Ok(())
+            Ok(true)
         }
         None => {
             for id in handlers.borrow_mut().drain(..) {

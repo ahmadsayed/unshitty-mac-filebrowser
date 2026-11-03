@@ -20,10 +20,11 @@ export function leftWindow(e: MouseEvent): boolean {
   return e.clientX < 0 || e.clientY < 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight;
 }
 
-/** The items of the last drag out of this window. If the system drag comes
- * back and is dropped here, it is still the window's own drag, not one from
- * another app. Forgotten on the next click in the page or once that drop is
- * handled. */
+/** The items of the drag out of this window in progress. If the system drag
+ * comes back and is dropped here, it is still the window's own drag, not one
+ * from another app. Forgotten when the drag ends (GTK's drag-end on Linux,
+ * the plugin's callback on macOS), on the next click in the page, or once a
+ * drop back here is handled. */
 let lastDragOut: string[] | null = null;
 
 /** Remember the items handed to the system drag. */
@@ -44,13 +45,27 @@ export function forgetDragOut(): void {
 window.addEventListener("mousedown", forgetDragOut, true);
 
 interface DragPlugin {
-  startDrag?: (options: { item: string[]; icon: string; mode: "copy" | "move" }) => Promise<void>;
+  startDrag?: (
+    options: { item: string[]; icon: string; mode: "copy" | "move" },
+    onEvent?: () => void,
+  ) => Promise<void>;
 }
 
-/** Hand local `paths` to the system drag. Rejects with a message when it can't start. */
+/** Hand local `paths` to the system drag, remembering them until it ends.
+ * Rejects with a message when it can't start. */
 export async function startSystemDrag(paths: string[]): Promise<void> {
-  if (/Linux/.test(navigator.userAgent)) return startFileDrag(paths);
-  const plugin = (window as unknown as { __TAURI__?: { drag?: DragPlugin } }).__TAURI__?.drag;
-  if (!plugin?.startDrag) throw "Dragging out isn't available.";
-  await plugin.startDrag({ item: paths, icon: DRAG_IMAGE, mode: "copy" });
+  noteDragOut(paths);
+  try {
+    if (/Linux/.test(navigator.userAgent)) {
+      // No drag when the button was released before it could start.
+      if (!(await startFileDrag(paths, forgetDragOut))) forgetDragOut();
+      return;
+    }
+    const plugin = (window as unknown as { __TAURI__?: { drag?: DragPlugin } }).__TAURI__?.drag;
+    if (!plugin?.startDrag) throw "Dragging out isn't available.";
+    await plugin.startDrag({ item: paths, icon: DRAG_IMAGE, mode: "copy" }, forgetDragOut);
+  } catch (err) {
+    forgetDragOut();
+    throw err;
+  }
 }

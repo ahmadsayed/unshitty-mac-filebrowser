@@ -219,7 +219,7 @@ test("past the window's edge, macOS hands the files to the system drag", async (
   try {
     await goTo(`${HOME}/D`);
     await dragOutOfWindow("four.txt");
-    expect(startDrag).toHaveBeenCalledWith({ item: [`${HOME}/D/four.txt`], icon: DRAG_IMAGE, mode: "copy" });
+    expect(startDrag).toHaveBeenCalledWith({ item: [`${HOME}/D/four.txt`], icon: DRAG_IMAGE, mode: "copy" }, expect.any(Function));
     // The window's own drag is over; nothing moved inside it.
     expect($(".drag-ghost")).toBeNull();
     window.dispatchEvent(new MouseEvent("mouseup", { clientX: -5, clientY: 300 }));
@@ -290,6 +290,93 @@ test("a click after a drag out forgets it: later drops of those files copy", asy
     await settle(30);
     expect(await invoke("path_exists", { path: `${HOME}/D/Inbox/gone-out.txt` })).toBe(true);
     expect(await invoke("path_exists", { path: `${HOME}/D/gone-out.txt` })).toBe(true);
+  } finally {
+    delete tauriGlobal.__TAURI__;
+  }
+});
+
+type MockWindow = { drags: string[][]; endDrag(): void; buttonUp: boolean };
+const mockWindow = () => (globalThis as unknown as { __mockWindow: MockWindow }).__mockWindow;
+
+/** Run `body` with a Linux user agent: drags out go through start_file_drag. */
+async function onLinux(body: () => Promise<void>): Promise<void> {
+  const realAgent = navigator.userAgent;
+  Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (X11; Linux x86_64)", configurable: true });
+  try {
+    await body();
+  } finally {
+    Object.defineProperty(navigator, "userAgent", { value: realAgent, configurable: true });
+  }
+}
+
+/** A new file in ~/D, shown in the view. */
+async function freshFile(name: string): Promise<string> {
+  await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/D/${name}`, overwrite: false });
+  await goTo(`${HOME}/D`);
+  return `${HOME}/D/${name}`;
+}
+
+test("Linux: a drag out that ended in another app is forgotten, so the same file dropped later copies", async () => {
+  await onLinux(async () => {
+    const path = await freshFile("ended.txt");
+    await dragOutOfWindow("ended.txt");
+    // GTK's drag-end, reported by the backend once the other app took the drop.
+    mockWindow().endDrag();
+    pointAt = item("Inbox");
+    mockDrop([path], 10, 10);
+    await settle(30);
+    expect(await invoke("path_exists", { path: `${HOME}/D/Inbox/ended.txt` })).toBe(true);
+    expect(await invoke("path_exists", { path })).toBe(true);
+  });
+});
+
+test("Linux: when the button was already up no drag starts, and nothing is remembered", async () => {
+  await onLinux(async () => {
+    const path = await freshFile("flicked.txt");
+    mockWindow().buttonUp = true;
+    try {
+      await dragOutOfWindow("flicked.txt");
+    } finally {
+      mockWindow().buttonUp = false;
+    }
+    pointAt = item("Inbox");
+    mockDrop([path], 10, 10);
+    await settle(30);
+    expect(await invoke("path_exists", { path })).toBe(true);
+    expect(await invoke("path_exists", { path: `${HOME}/D/Inbox/flicked.txt` })).toBe(true);
+  });
+});
+
+test("Linux: a drag out that comes back is decided on arrival, even if its end is reported meanwhile", async () => {
+  await onLinux(async () => {
+    const path = await freshFile("roundtrip.txt");
+    await dragOutOfWindow("roundtrip.txt");
+    pointAt = item("Inbox");
+    mockDrop([path], 10, 10);
+    // GTK reports drag-end right after the drop, while the drop still runs.
+    mockWindow().endDrag();
+    await settle(30);
+    expect(await invoke("path_exists", { path: `${HOME}/D/Inbox/roundtrip.txt` })).toBe(true);
+    expect(await invoke("path_exists", { path })).toBe(false);
+  });
+});
+
+test("macOS: the plugin's end-of-drag callback forgets the drag", async () => {
+  let onEvent: (() => void) | undefined;
+  const startDrag = vi.fn(async (_options: unknown, callback?: () => void) => {
+    onEvent = callback;
+  });
+  tauriGlobal.__TAURI__ = { drag: { startDrag } };
+  try {
+    const path = await freshFile("mac-ended.txt");
+    await dragOutOfWindow("mac-ended.txt");
+    expect(onEvent).toBeTypeOf("function");
+    onEvent!();
+    pointAt = item("Inbox");
+    mockDrop([path], 10, 10);
+    await settle(30);
+    expect(await invoke("path_exists", { path })).toBe(true);
+    expect(await invoke("path_exists", { path: `${HOME}/D/Inbox/mac-ended.txt` })).toBe(true);
   } finally {
     delete tauriGlobal.__TAURI__;
   }

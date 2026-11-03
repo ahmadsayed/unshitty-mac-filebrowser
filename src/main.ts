@@ -1,6 +1,6 @@
 import { CANCELLED, endOperation, finishItem, initOperationsButton, opTitle, setOperationState, startOperation, updateOperation, type Operation, type ProgressUpdate } from "./operations";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { forgetDragOut, isOwnDragOut, leftWindow, noteDragOut, startSystemDrag } from "./drag-out";
+import { forgetDragOut, isOwnDragOut, leftWindow, startSystemDrag } from "./drag-out";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
   listDir, searchDir, cancelSearch, type SearchSummary, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
@@ -3787,7 +3787,6 @@ function dragOutOfWindow(): boolean {
   const paths = all.filter((path) => !isCloud(path));
   if (paths.length === 0) return false;
   endDrag(false);
-  noteDragOut(paths);
   const left = all.length - paths.length;
   startSystemDrag(paths).then(
     () => left && showToast(left === 1 ? "A Google Drive item stays in File Browser" : `${left} Google Drive items stay in File Browser`),
@@ -3898,10 +3897,10 @@ function localDropPaths(paths: string[]): string[] {
 /** What a drop from another app does. It copies where an internal drag
  * would move: the system shows a copy cursor, and the other app's window
  * keeps its files. The Trash still trashes. Modifier keys aren't reported. */
-function externalDropOp(target: DropTarget, sources: string[], devices?: Map<string, number>): DropOp | null {
+function externalDropOp(target: DropTarget, sources: string[], own: boolean, devices?: Map<string, number>): DropOp | null {
   const op = dropOp(target, sources, { altKey: false, metaKey: false, ctrlKey: false, shiftKey: false }, devices);
   // The window's own drag that left it and came back keeps the window's rule.
-  return op === "move" && !isOwnDragOut(sources) ? "copy" : op;
+  return op === "move" && !own ? "copy" : op;
 }
 
 /** Files dragged in from Finder, GNOME Files or a browser's downloads. */
@@ -3912,8 +3911,11 @@ async function dropFromOtherApp(all: string[], target: DropTarget | null): Promi
   // reports no paths, Linux its URL.
   if (paths.length < all.length || paths.length === 0) showToast(NOT_FILES);
   if (paths.length === 0) return;
-  const op = externalDropOp(target, paths, await deviceMap([...paths, target.dir]));
+  // Decided on arrival: the drag's end is reported right after the drop and
+  // would forget it while the drop still waits for device ids.
+  const own = isOwnDragOut(paths);
   forgetDragOut();
+  const op = externalDropOp(target, paths, own, await deviceMap([...paths, target.dir]));
   if (!op) return;
   const info = await pathInfo(paths).catch(() => []);
   const dirs = new Set(paths.filter((_, i) => info[i]?.is_dir));
@@ -3938,7 +3940,7 @@ function initExternalDrops(): void {
       if (p.type === "enter") sources = localDropPaths(p.paths);
       const target = dropTargetAt(x, y, sources);
       if (p.type !== "drop") {
-        const op = target && sources.length ? externalDropOp(target, sources) : null;
+        const op = target && sources.length ? externalDropOp(target, sources, isOwnDragOut(sources)) : null;
         setDropHighlight(op ? target!.el : null);
         return;
       }

@@ -1693,7 +1693,19 @@ function mockOpenWith(a: Args): undefined {
 
 /** Every command the app calls, by name. */
 /** The window the header bar buttons act on; tests read `actions`. */
-const mockWindow = { maximized: false, actions: [] as string[], drags: [] as string[][] };
+const mockWindow = {
+  maximized: false,
+  actions: [] as string[],
+  drags: [] as string[][],
+  /** Set to act as if the button was released before the drag could start. */
+  buttonUp: false,
+  dragEnded: null as Channel<null> | null,
+  /** GTK's drag-end for the last drag out. */
+  endDrag() {
+    mockWindow.dragEnded?.onmessage(null);
+    mockWindow.dragEnded = null;
+  },
+};
 (globalThis as Record<string, unknown>).__mockWindow = mockWindow;
 
 function mockDmgInspection(path: string) {
@@ -1904,7 +1916,10 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     if (paths.length === 0) throw "Nothing to drag.";
     const relative = paths.find((p) => !p.startsWith("/"));
     if (relative) throw `“${relative}” is not a local file.`;
+    if (mockWindow.buttonUp) return false;
     mockWindow.drags.push(paths);
+    mockWindow.dragEnded = (a.onEnd as Channel<null> | undefined) ?? null;
+    return true;
   },
   open_file: (a) => {
     const path = str(a, "path");

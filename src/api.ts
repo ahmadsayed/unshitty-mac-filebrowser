@@ -141,9 +141,13 @@ export async function windowControl(action: "minimize" | "maximize" | "close" | 
   return invoke<boolean>("window_control", { action });
 }
 
-/** Linux: drag local files out of the window, while the button is held. */
-export async function startFileDrag(paths: string[]): Promise<void> {
-  return invoke<void>("start_file_drag", { paths });
+/** Linux: drag local files out of the window, while the button is held.
+ * Resolves false when the button was already released (no drag); `onEnd`
+ * runs when a started drag is over (dropped anywhere, or cancelled). */
+export async function startFileDrag(paths: string[], onEnd: () => void): Promise<boolean> {
+  const channel = new Channel<null>();
+  channel.onmessage = onEnd;
+  return invoke<boolean>("start_file_drag", { paths, onEnd: channel });
 }
 
 /** Open another File Browser window at `path` (home when omitted). */

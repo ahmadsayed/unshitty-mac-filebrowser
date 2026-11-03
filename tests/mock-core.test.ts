@@ -154,8 +154,17 @@ test("window buttons follow the button layout; window_control toggles maximize",
 
 test("start_file_drag records the dragged paths and refuses non-local ones", async () => {
   const drags = (globalThis as unknown as { __mockWindow: { drags: string[][] } }).__mockWindow.drags;
-  await invoke("start_file_drag", { paths: [`${HOME}/main.rs`] });
+  const mock = (globalThis as unknown as { __mockWindow: { buttonUp: boolean; endDrag(): void } }).__mockWindow;
+  const ended: unknown[] = [];
+  const onEnd = new Channel<null>();
+  onEnd.onmessage = (m) => ended.push(m);
+  expect(await invoke("start_file_drag", { paths: [`${HOME}/main.rs`], onEnd })).toBe(true);
   expect(drags.at(-1)).toEqual([`${HOME}/main.rs`]);
+  mock.endDrag();
+  expect(ended).toEqual([null]);
+  mock.buttonUp = true;
+  expect(await invoke("start_file_drag", { paths: [`${HOME}/main.rs`] })).toBe(false);
+  mock.buttonUp = false;
   await expect(invoke("start_file_drag", { paths: [] })).rejects.toBe("Nothing to drag.");
   await expect(invoke("start_file_drag", { paths: ["relative.txt"] })).rejects.toBe("“relative.txt” is not a local file.");
 });
