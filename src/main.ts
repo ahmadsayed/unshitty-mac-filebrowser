@@ -3905,16 +3905,16 @@ function externalDropOp(target: DropTarget, sources: string[], own: boolean, dev
 
 /** Files dragged in from Finder, GNOME Files or a browser's downloads. */
 async function dropFromOtherApp(all: string[], target: DropTarget | null): Promise<void> {
-  if (!target) return;
   const paths = localDropPaths(all);
+  // Decided on arrival, before any wait: the drag's end can be reported
+  // meanwhile. A drag out that comes back is over once dropped here.
+  const own = isOwnDragOut(paths);
+  forgetDragOut();
+  if (!target) return;
   // Web content (a link or an image on a page) has no local file: macOS
   // reports no paths, Linux its URL.
   if (paths.length < all.length || paths.length === 0) showToast(NOT_FILES);
   if (paths.length === 0) return;
-  // Decided on arrival: the drag's end is reported right after the drop and
-  // would forget it while the drop still waits for device ids.
-  const own = isOwnDragOut(paths);
-  forgetDragOut();
   const op = externalDropOp(target, paths, own, await deviceMap([...paths, target.dir]));
   if (!op) return;
   const info = await pathInfo(paths).catch(() => []);

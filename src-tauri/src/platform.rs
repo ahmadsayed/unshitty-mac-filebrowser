@@ -706,6 +706,21 @@ fn left_button_held(window: &gtk::ApplicationWindow) -> bool {
     mask.contains(gtk::gdk::ModifierType::BUTTON1_MASK)
 }
 
+/// Whether the drop of a drag that just ended landed on `window` itself.
+/// GDK has no destination for a cancelled drag; gtk-rs's `dest_window()`
+/// can't express that (it would panic), so this reads it through the C call.
+#[cfg(target_os = "linux")]
+fn dropped_on(window: &gtk::ApplicationWindow, context: &gtk::gdk::DragContext) -> bool {
+    use gtk::glib::translate::{from_glib_none, ToGlibPtr};
+    use gtk::prelude::*;
+    let dest: Option<gtk::gdk::Window> =
+        unsafe { from_glib_none(gtk::gdk::ffi::gdk_drag_context_get_dest_window(context.to_glib_none().0)) };
+    match (dest, window.window()) {
+        (Some(dest), Some(ours)) => dest.toplevel() == ours.toplevel(),
+        _ => false,
+    }
+}
+
 /// Start dragging `uris` out of `window`, while the mouse button is held.
 /// Each drag answers the target's request for its files until its own
 /// drag-end: a target asks for them after the drop, so cleaning up on the
@@ -713,13 +728,14 @@ fn left_button_held(window: &gtk::ApplicationWindow) -> bool {
 /// handlers check the drag context, so a second drag that starts before the
 /// first one finished doesn't get or remove the other's files. Only Copy is
 /// offered: the files are never moved away from under the app. `on_end`
-/// runs at the drag's drag-end. Returns whether a drag started: not when the
-/// button was already released. Must run on the GTK main thread.
+/// runs at the drag's drag-end, told whether it was dropped on `window`
+/// itself. Returns whether a drag started: not when the button was already
+/// released. Must run on the GTK main thread.
 #[cfg(target_os = "linux")]
 pub fn begin_file_drag(
     window: &gtk::ApplicationWindow,
     uris: Vec<String>,
-    on_end: impl Fn() + 'static,
+    on_end: impl Fn(bool) + 'static,
 ) -> Result<bool, String> {
     use gtk::prelude::*;
     use std::cell::RefCell;
@@ -745,7 +761,7 @@ pub fn begin_file_drag(
             for id in own.borrow_mut().drain(..) {
                 window.disconnect(id);
             }
-            on_end();
+            on_end(dropped_on(window, context));
         }
     });
     handlers.borrow_mut().extend([data, end]);

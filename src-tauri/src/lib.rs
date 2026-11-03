@@ -405,17 +405,18 @@ fn window_control(window: tauri::WebviewWindow, action: String) -> Result<bool, 
 
 /// Drag local files out of the window to another app (see
 /// `platform::begin_file_drag`); called while the button is still held.
-/// Returns whether a drag started; `on_end` gets a message when it is over.
+/// Returns whether a drag started; `on_end` gets a message when it is over:
+/// whether it was dropped on this window.
 /// Linux only: macOS uses the drag plugin. A plain (sync) command, so it
 /// runs on the main thread, where GTK must be called.
 #[tauri::command]
-fn start_file_drag(window: tauri::WebviewWindow, paths: Vec<String>, on_end: Channel<()>) -> Result<bool, String> {
+fn start_file_drag(window: tauri::WebviewWindow, paths: Vec<String>, on_end: Channel<bool>) -> Result<bool, String> {
     let uris = platform::drag_uris(&paths)?;
     #[cfg(target_os = "linux")]
     {
         let gtk_window = window.gtk_window().map_err(|e| e.to_string())?;
-        platform::begin_file_drag(&gtk_window, uris, move || {
-            let _ = on_end.send(());
+        platform::begin_file_drag(&gtk_window, uris, move |landed_here| {
+            let _ = on_end.send(landed_here);
         })
     }
     #[cfg(not(target_os = "linux"))]

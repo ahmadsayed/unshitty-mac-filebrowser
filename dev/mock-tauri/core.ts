@@ -1699,10 +1699,10 @@ const mockWindow = {
   drags: [] as string[][],
   /** Set to act as if the button was released before the drag could start. */
   buttonUp: false,
-  dragEnded: null as Channel<null> | null,
-  /** GTK's drag-end for the last drag out. */
-  endDrag() {
-    mockWindow.dragEnded?.onmessage(null);
+  dragEnded: null as Channel<boolean> | null,
+  /** GTK's drag-end for the last drag out: whether it landed on this window. */
+  endDrag(landedHere = false) {
+    mockWindow.dragEnded?.onmessage(landedHere);
     mockWindow.dragEnded = null;
   },
 };
@@ -1918,7 +1918,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     if (relative) throw `“${relative}” is not a local file.`;
     if (mockWindow.buttonUp) return false;
     mockWindow.drags.push(paths);
-    mockWindow.dragEnded = (a.onEnd as Channel<null> | undefined) ?? null;
+    mockWindow.dragEnded = (a.onEnd as Channel<boolean> | undefined) ?? null;
     return true;
   },
   open_file: (a) => {

@@ -44,10 +44,26 @@ export function forgetDragOut(): void {
 // During a system drag the page gets no clicks, so a click means it ended.
 window.addEventListener("mousedown", forgetDragOut, true);
 
+/** The system drag ended. A drop on this window reaches the page just after
+ * the end notice: wry queues the drop event, while the notice runs at once.
+ * So when the drop may have landed here, keep the drag for that drop, which
+ * forgets it itself, and at most a few seconds. */
+function dragEnded(mayHaveLandedHere: boolean): void {
+  if (!mayHaveLandedHere) return forgetDragOut();
+  const paths = lastDragOut;
+  window.setTimeout(() => lastDragOut === paths && forgetDragOut(), 3000);
+}
+
+/** What the drag plugin reports when a macOS drag session ends. It doesn't
+ * say where a drop landed. */
+interface PluginDragEnd {
+  result: "Dropped" | "Cancel";
+}
+
 interface DragPlugin {
   startDrag?: (
     options: { item: string[]; icon: string; mode: "copy" | "move" },
-    onEvent?: () => void,
+    onEvent?: (end: PluginDragEnd) => void,
   ) => Promise<void>;
 }
 
@@ -58,12 +74,13 @@ export async function startSystemDrag(paths: string[]): Promise<void> {
   try {
     if (/Linux/.test(navigator.userAgent)) {
       // No drag when the button was released before it could start.
-      if (!(await startFileDrag(paths, forgetDragOut))) forgetDragOut();
+      // GTK tells whether the drop landed on this window.
+      if (!(await startFileDrag(paths, dragEnded))) forgetDragOut();
       return;
     }
     const plugin = (window as unknown as { __TAURI__?: { drag?: DragPlugin } }).__TAURI__?.drag;
     if (!plugin?.startDrag) throw "Dragging out isn't available.";
-    await plugin.startDrag({ item: paths, icon: DRAG_IMAGE, mode: "copy" }, forgetDragOut);
+    await plugin.startDrag({ item: paths, icon: DRAG_IMAGE, mode: "copy" }, (end) => dragEnded(end?.result === "Dropped"));
   } catch (err) {
     forgetDragOut();
     throw err;
