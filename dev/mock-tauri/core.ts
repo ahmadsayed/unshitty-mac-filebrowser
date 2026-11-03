@@ -1897,12 +1897,13 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     if (action !== "state") mockWindow.actions.push(action);
     return mockWindow.maximized;
   },
-  // Drags out of the window (Linux): the paths of each, checked like the real one.
+  // Drags out of the window (Linux): the paths of each, checked like the real
+  // one (which reads nothing from disk).
   start_file_drag: (a) => {
     const paths = a.paths as string[];
     if (paths.length === 0) throw "Nothing to drag.";
-    const gone = paths.find((p) => !p.startsWith("/") || !lookup(p));
-    if (gone) throw `“${gone.split("/").pop()}” no longer exists.`;
+    const relative = paths.find((p) => !p.startsWith("/"));
+    if (relative) throw `“${relative}” is not a local file.`;
     mockWindow.drags.push(paths);
   },
   open_file: (a) => {

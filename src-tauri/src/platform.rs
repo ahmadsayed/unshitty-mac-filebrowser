@@ -670,7 +670,10 @@ pub fn path_to_file_uri(path: &Path) -> String {
 }
 
 /// The URIs a drag out of the window offers, one per path. Refuses an empty
-/// list, relative paths and paths that no longer exist.
+/// list and relative paths. It reads nothing from disk: it runs on the main
+/// thread, where a stat on a hung network mount would freeze every window,
+/// and the view has just listed these items (a vanished one fails in the
+/// receiving app).
 pub fn drag_uris(paths: &[String]) -> Result<Vec<String>, String> {
     if paths.is_empty() {
         return Err("Nothing to drag.".into());
@@ -679,58 +682,80 @@ pub fn drag_uris(paths: &[String]) -> Result<Vec<String>, String> {
         .iter()
         .map(|p| {
             let path = Path::new(p);
-            if !path.is_absolute() || fs::symlink_metadata(path).is_err() {
-                let name = path.file_name().map_or(p.clone(), |n| n.to_string_lossy().into_owned());
-                return Err(format!("“{name}” no longer exists."));
+            if !path.is_absolute() {
+                return Err(format!("“{p}” is not a local file."));
             }
             Ok(path_to_file_uri(path))
         })
         .collect()
 }
 
+/// Whether the left mouse button is held over `window`. The drag starts after
+/// a round trip through the web page; if the button was released meanwhile,
+/// GTK would start a drag that sticks to the pointer until the next click,
+/// and that click would drop the files wherever it lands.
 #[cfg(target_os = "linux")]
-thread_local! {
-    /// The window and signal handlers of the drag in progress, if any.
-    static FILE_DRAG: std::cell::RefCell<Option<(gtk::ApplicationWindow, Vec<gtk::glib::SignalHandlerId>)>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Disconnect the handlers of the last drag out of the window.
-#[cfg(target_os = "linux")]
-fn end_file_drag() {
+fn left_button_held(window: &gtk::ApplicationWindow) -> bool {
+    use gtk::gdk::prelude::*;
     use gtk::prelude::*;
-    if let Some((window, ids)) = FILE_DRAG.with(|d| d.borrow_mut().take()) {
-        for id in ids {
-            window.disconnect(id);
-        }
-    }
+    let Some(gdk_window) = window.window() else { return false };
+    let Some(pointer) = gdk_window.display().default_seat().and_then(|seat| seat.pointer()) else {
+        return true; // no seat to ask: let GTK decide
+    };
+    let (_, _, _, mask) = gdk_window.device_position(&pointer);
+    mask.contains(gtk::gdk::ModifierType::BUTTON1_MASK)
 }
 
 /// Start dragging `uris` out of `window`, while the mouse button is held.
-/// The window answers the target's request for the files until the drag
-/// ends: a target asks for them after the drop, so cleaning up on the drop
-/// (as the drag plugin's GTK code does) leaves it with nothing. Only Copy is
-/// offered, so the files are never moved away from under the app. Must run
-/// on the GTK main thread.
+/// Each drag answers the target's request for its files until its own
+/// drag-end: a target asks for them after the drop, so cleaning up on the
+/// drop (as the drag plugin's GTK code does) leaves it with nothing. The
+/// handlers check the drag context, so a second drag that starts before the
+/// first one finished doesn't get or remove the other's files. Only Copy is
+/// offered: the files are never moved away from under the app. Returns
+/// `Ok` without a drag when the button was already released. Must run on
+/// the GTK main thread.
 #[cfg(target_os = "linux")]
 pub fn begin_file_drag(window: &gtk::ApplicationWindow, uris: Vec<String>) -> Result<(), String> {
     use gtk::prelude::*;
-    end_file_drag();
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    if !left_button_held(window) {
+        return Ok(());
+    }
     let targets = gtk::TargetList::new(&[]);
     targets.add_uri_targets(0);
-    let data = window.connect_drag_data_get(move |_, _, selection, _, _| {
-        let refs: Vec<&str> = uris.iter().map(String::as_str).collect();
-        selection.set_uris(&refs);
+    let this: Rc<RefCell<Option<gtk::gdk::DragContext>>> = Rc::default();
+    let handlers: Rc<RefCell<Vec<gtk::glib::SignalHandlerId>>> = Rc::default();
+    let mine = this.clone();
+    let data = window.connect_drag_data_get(move |_, context, selection, _, _| {
+        if mine.borrow().as_ref() == Some(context) {
+            let refs: Vec<&str> = uris.iter().map(String::as_str).collect();
+            selection.set_uris(&refs);
+        }
     });
     // drag-end comes last, after a drop, a cancel or a failure.
-    let end = window.connect_drag_end(|_, _| end_file_drag());
-    FILE_DRAG.with(|d| *d.borrow_mut() = Some((window.clone(), vec![data, end])));
-    let started = window.drag_begin_with_coordinates(&targets, gtk::gdk::DragAction::COPY, 1, None, -1, -1);
-    if started.is_none() {
-        end_file_drag();
-        return Err("The drag could not start.".into());
+    let (mine, own) = (this.clone(), handlers.clone());
+    let end = window.connect_drag_end(move |window, context| {
+        if mine.borrow().as_ref() == Some(context) {
+            for id in own.borrow_mut().drain(..) {
+                window.disconnect(id);
+            }
+        }
+    });
+    handlers.borrow_mut().extend([data, end]);
+    match window.drag_begin_with_coordinates(&targets, gtk::gdk::DragAction::COPY, 1, None, -1, -1) {
+        Some(context) => {
+            *this.borrow_mut() = Some(context);
+            Ok(())
+        }
+        None => {
+            for id in handlers.borrow_mut().drain(..) {
+                window.disconnect(id);
+            }
+            Err("The drag could not start.".into())
+        }
     }
-    Ok(())
 }
 
 /// The local path of a `file://` URI, if it is one.
@@ -2142,17 +2167,12 @@ mod tests {
     }
 
     #[test]
-    fn a_drag_offers_existing_absolute_paths_only() {
-        let tmp = tempfile::tempdir().unwrap();
-        let file = tmp.path().join("C# notes.txt");
-        fs::write(&file, "x").unwrap();
-        let path = file.to_string_lossy().to_string();
-        assert_eq!(drag_uris(&[path.clone()]).unwrap(), vec![path_to_file_uri(&file)]);
-        assert!(drag_uris(&[path.clone()]).unwrap()[0].ends_with("/C%23%20notes.txt"));
-        assert!(drag_uris(&[]).is_err());
-        assert!(drag_uris(&["relative.txt".into()]).is_err());
-        let gone = tmp.path().join("gone.txt").to_string_lossy().to_string();
-        assert_eq!(drag_uris(&[path, gone]).unwrap_err(), "“gone.txt” no longer exists.");
+    fn a_drag_offers_absolute_paths_only() {
+        let uris = drag_uris(&["/home/me/C# notes.txt".into(), "/home/me/b".into()]).unwrap();
+        assert_eq!(uris, vec!["file:///home/me/C%23%20notes.txt", "file:///home/me/b"]);
+        assert_eq!(drag_uris(&[]).unwrap_err(), "Nothing to drag.");
+        assert_eq!(drag_uris(&["relative.txt".into()]).unwrap_err(), "“relative.txt” is not a local file.");
+        assert!(drag_uris(&["/home/me/a".into(), "gdrive://x".into()]).is_err());
     }
 
     #[test]

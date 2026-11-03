@@ -152,13 +152,12 @@ test("window buttons follow the button layout; window_control toggles maximize",
   await expect(invoke("window_control", { action: "fullscreen" })).rejects.toMatch(/Unknown/);
 });
 
-test("start_file_drag records the dragged paths and refuses missing ones", async () => {
+test("start_file_drag records the dragged paths and refuses non-local ones", async () => {
   const drags = (globalThis as unknown as { __mockWindow: { drags: string[][] } }).__mockWindow.drags;
   await invoke("start_file_drag", { paths: [`${HOME}/main.rs`] });
   expect(drags.at(-1)).toEqual([`${HOME}/main.rs`]);
-  await expect(invoke("start_file_drag", { paths: [] })).rejects.toMatch(/Nothing/);
-  await expect(invoke("start_file_drag", { paths: [`${HOME}/gone.txt`] })).rejects.toBe("“gone.txt” no longer exists.");
-  await expect(invoke("start_file_drag", { paths: ["relative.txt"] })).rejects.toMatch(/no longer exists/);
+  await expect(invoke("start_file_drag", { paths: [] })).rejects.toBe("Nothing to drag.");
+  await expect(invoke("start_file_drag", { paths: ["relative.txt"] })).rejects.toBe("“relative.txt” is not a local file.");
 });
 
 test("thumbnails are empty for files without a preview", async () => {

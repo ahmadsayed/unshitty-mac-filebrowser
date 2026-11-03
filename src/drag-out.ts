@@ -20,6 +20,29 @@ export function leftWindow(e: MouseEvent): boolean {
   return e.clientX < 0 || e.clientY < 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight;
 }
 
+/** The items of the last drag out of this window. If the system drag comes
+ * back and is dropped here, it is still the window's own drag, not one from
+ * another app. Forgotten on the next click in the page or once that drop is
+ * handled. */
+let lastDragOut: string[] | null = null;
+
+/** Remember the items handed to the system drag. */
+export function noteDragOut(paths: string[]): void {
+  lastDragOut = paths;
+}
+
+/** Whether a drop carries exactly the items of the last drag out. */
+export function isOwnDragOut(paths: string[]): boolean {
+  return !!lastDragOut && lastDragOut.length === paths.length && lastDragOut.every((p, i) => p === paths[i]);
+}
+
+export function forgetDragOut(): void {
+  lastDragOut = null;
+}
+
+// During a system drag the page gets no clicks, so a click means it ended.
+window.addEventListener("mousedown", forgetDragOut, true);
+
 interface DragPlugin {
   startDrag?: (options: { item: string[]; icon: string; mode: "copy" | "move" }) => Promise<void>;
 }

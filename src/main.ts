@@ -1,6 +1,6 @@
 import { CANCELLED, endOperation, finishItem, initOperationsButton, opTitle, setOperationState, startOperation, updateOperation, type Operation, type ProgressUpdate } from "./operations";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { leftWindow, startSystemDrag } from "./drag-out";
+import { forgetDragOut, isOwnDragOut, leftWindow, noteDragOut, startSystemDrag } from "./drag-out";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
   listDir, searchDir, cancelSearch, type SearchSummary, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
@@ -3787,6 +3787,7 @@ function dragOutOfWindow(): boolean {
   const paths = all.filter((path) => !isCloud(path));
   if (paths.length === 0) return false;
   endDrag(false);
+  noteDragOut(paths);
   const left = all.length - paths.length;
   startSystemDrag(paths).then(
     () => left && showToast(left === 1 ? "A Google Drive item stays in File Browser" : `${left} Google Drive items stay in File Browser`),
@@ -3853,7 +3854,9 @@ function autoScrollDuringDrag(): void {
   if (!drag) return;
   const r = scrollEl.getBoundingClientRect();
   if (drag.x < r.left || drag.x > r.right) return;
-  if (drag.y > r.bottom - 24 && drag.y < r.bottom + 24) scrollEl.scrollTop += 16;
+  // Past the window's bottom edge the drag goes out to other apps, so the
+  // band reaches further in than out.
+  if (drag.y > r.bottom - 32 && drag.y < r.bottom + 24) scrollEl.scrollTop += 16;
   else if (drag.y < r.top + 24 && drag.y > r.top - 24) scrollEl.scrollTop -= 16;
   else return;
   updateDrag();
@@ -3897,7 +3900,8 @@ function localDropPaths(paths: string[]): string[] {
  * keeps its files. The Trash still trashes. Modifier keys aren't reported. */
 function externalDropOp(target: DropTarget, sources: string[], devices?: Map<string, number>): DropOp | null {
   const op = dropOp(target, sources, { altKey: false, metaKey: false, ctrlKey: false, shiftKey: false }, devices);
-  return op === "move" ? "copy" : op;
+  // The window's own drag that left it and came back keeps the window's rule.
+  return op === "move" && !isOwnDragOut(sources) ? "copy" : op;
 }
 
 /** Files dragged in from Finder, GNOME Files or a browser's downloads. */
@@ -3909,6 +3913,7 @@ async function dropFromOtherApp(all: string[], target: DropTarget | null): Promi
   if (paths.length < all.length || paths.length === 0) showToast(NOT_FILES);
   if (paths.length === 0) return;
   const op = externalDropOp(target, paths, await deviceMap([...paths, target.dir]));
+  forgetDragOut();
   if (!op) return;
   const info = await pathInfo(paths).catch(() => []);
   const dirs = new Set(paths.filter((_, i) => info[i]?.is_dir));

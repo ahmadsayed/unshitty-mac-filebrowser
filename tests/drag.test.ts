@@ -251,6 +251,50 @@ test("a drag out that can't start says so", async () => {
   expect(names()).toContain("two.txt");
 });
 
+test("a drag that left the window and comes back is still the window's own: it moves", async () => {
+  tauriGlobal.__TAURI__ = { drag: { startDrag: vi.fn(async () => {}) } };
+  try {
+    await goTo(`${HOME}/D`);
+    await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/D/back.txt`, overwrite: false });
+    await goTo(`${HOME}/D`);
+    await dragOutOfWindow("back.txt");
+    // The system drag returns and is dropped on a folder of the same disk.
+    pointAt = item("Inbox");
+    mockDrop([`${HOME}/D/back.txt`], 10, 10);
+    await settle(30);
+    expect(await invoke("path_exists", { path: `${HOME}/D/Inbox/back.txt` })).toBe(true);
+    expect(await invoke("path_exists", { path: `${HOME}/D/back.txt` })).toBe(false);
+    // Once that drop is done, the same paths from another app copy again.
+    pointAt = $(".view-overlay");
+    mockDrop([`${HOME}/D/Inbox/back.txt`], 10, 10);
+    await settle(30);
+    expect(await invoke("path_exists", { path: `${HOME}/D/back.txt` })).toBe(true);
+    expect(await invoke("path_exists", { path: `${HOME}/D/Inbox/back.txt` })).toBe(true);
+  } finally {
+    delete tauriGlobal.__TAURI__;
+  }
+});
+
+test("a click after a drag out forgets it: later drops of those files copy", async () => {
+  tauriGlobal.__TAURI__ = { drag: { startDrag: vi.fn(async () => {}) } };
+  try {
+    await goTo(`${HOME}/D`);
+    await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/D/gone-out.txt`, overwrite: false });
+    await goTo(`${HOME}/D`);
+    await dragOutOfWindow("gone-out.txt");
+    // The drag ended in another app; the user carries on in the window.
+    await mouse($("#view"), "mousedown", { clientX: 5, clientY: 5 });
+    await mouse($("#view"), "mouseup", { clientX: 5, clientY: 5 });
+    pointAt = item("Inbox");
+    mockDrop([`${HOME}/D/gone-out.txt`], 10, 10);
+    await settle(30);
+    expect(await invoke("path_exists", { path: `${HOME}/D/Inbox/gone-out.txt` })).toBe(true);
+    expect(await invoke("path_exists", { path: `${HOME}/D/gone-out.txt` })).toBe(true);
+  } finally {
+    delete tauriGlobal.__TAURI__;
+  }
+});
+
 test("the Google Drive row is not a drop target while disconnected", async () => {
   await goTo(`${HOME}/D`);
   const driveRow = $$(".sidebar-row").find((r) => r.textContent?.includes("Google Drive"))!;
