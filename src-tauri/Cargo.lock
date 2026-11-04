@@ -1582,7 +1582,7 @@ dependencies = [
  "chrono",
  "data-encoding",
  "flate2",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "gio",
  "gtk",
  "image",
