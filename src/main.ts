@@ -43,6 +43,7 @@ import { linuxProgramItems } from "./linux-programs";
 import { qrShareItems } from "./qr-share";
 import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type PreviewPlace } from "./preview-actions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
+import { Selection, type Mark } from "./selection";
 import { acceptsNewItems, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
@@ -111,16 +112,10 @@ let entries: Entry[] = [];
 let shown: Entry[] = [];
 let listingError: string | null = null;
 
-const selected = new Set<string>();
-/** Bumped by every selection or view change the user makes, not by the
- *  app's own reloads. A copy or move selects what it made only when this
- *  hasn't moved since it was pasted: a newer choice by the user wins (#50). */
-let selectionIntent = 0;
-function noteSelectionIntent(): void {
-  selectionIntent++;
-}
-let anchorIndex = -1;
-let cursorIndex = -1;
+/** The selected items, cursor and anchor (src/selection.ts); its indices are
+ *  positions in `shown`. A copy or move selects what it made only when the
+ *  user hasn't chosen anything since pasting (`selection.intent`, #50). */
+const selection = new Selection<Entry>(() => shown);
 let searchQuery: string | null = null;
 /** Recursive search results; null means filter the current folder in memory. */
 let searchResults: Entry[] | null = null;
@@ -487,9 +482,9 @@ function tabSnapshot(): TabState {
     location,
     back: [...backStack],
     forward: [...forwardStack],
-    selected: [...selected],
-    anchorIndex,
-    cursorIndex,
+    selected: selection.paths(),
+    anchorIndex: selection.anchor,
+    cursorIndex: selection.cursor,
     searchQuery,
     searchText: searchEntry?.value ?? "",
     scrollTop: scrollEl?.scrollTop ?? 0,
@@ -562,12 +557,8 @@ async function restoreTab(tab: TabState): Promise<void> {
   if (!ok) return;
   backStack = [...tab.back];
   forwardStack = [...tab.forward];
-  selected.clear();
-  const paths = new Set(entries.map((entry) => entry.path));
-  for (const path of tab.selected) if (paths.has(path)) selected.add(path);
-  const last = shown.length - 1;
-  anchorIndex = last < 0 ? -1 : Math.min(tab.anchorIndex, last);
-  cursorIndex = last < 0 ? -1 : Math.min(tab.cursorIndex, last);
+  selection.retain(tab.selected, entries);
+  selection.place(tab.anchorIndex, tab.cursorIndex);
   if (tab.searchQuery !== null) {
     searchQuery = tab.searchQuery;
     searchEntry.value = tab.searchText;
@@ -575,9 +566,7 @@ async function restoreTab(tab: TabState): Promise<void> {
     searchbarEl.hidden = false;
     $("#btn-search").classList.add("open");
     renderView();
-    const filteredLast = shown.length - 1;
-    anchorIndex = filteredLast < 0 ? -1 : Math.min(tab.anchorIndex, filteredLast);
-    cursorIndex = filteredLast < 0 ? -1 : Math.min(tab.cursorIndex, filteredLast);
+    selection.place(tab.anchorIndex, tab.cursorIndex);
   }
   updateSelection();
   updateNavButtons();
@@ -616,9 +605,7 @@ async function newTab(): Promise<void> {
   if (searchQuery !== null) closeSearch(false);
   backStack = [];
   forwardStack = [];
-  selected.clear();
-  noteSelectionIntent();
-  anchorIndex = cursorIndex = -1;
+  selection.reset();
   renderView();
   updateNavButtons();
   updateSelection();
@@ -712,10 +699,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   countsVersion++;
   countsInFlight.clear();
   versionedFolders.clear();
-  selected.clear();
-  noteSelectionIntent();
-  anchorIndex = cursorIndex = -1;
-  if (opts.select) selected.add(opts.select);
+  selection.reset(opts.select);
 
   document.title = locationName(loc);
   if (activeTab >= 0 && tabs[activeTab]) tabs[activeTab].location = loc;
@@ -751,17 +735,13 @@ async function reload(select?: string[]): Promise<void> {
   } catch (err) {
     if (await listingFailed(err)) return;
   }
-  const keep = select ?? [...selected];
-  selected.clear();
-  const paths = new Set(entries.map((e) => e.path));
-  for (const p of keep) if (paths.has(p)) selected.add(p);
-  const cursorPath = shown[cursorIndex]?.path;
-  const anchorPath = shown[anchorIndex]?.path;
+  selection.retain(select ?? selection.paths(), entries);
+  const mark = selection.mark();
   const top = scrollEl.scrollTop;
   renderView();
   scrollEl.scrollTop = top;
   if (select?.[0]) revealPath(select[0]);
-  else followCursor(cursorPath, anchorPath);
+  else followCursor(mark);
   versionedRootPath = await lookupVersionedRoot(location);
   updateShareSubtitle();
   if (searchQuery !== null) onSearchInput();
@@ -769,16 +749,9 @@ async function reload(select?: string[]): Promise<void> {
 
 /** After a reload, keep the cursor and anchor on the same items: new ones
  *  may have landed above them. */
-function followCursor(cursorPath: string | undefined, anchorPath: string | undefined): void {
-  cursorIndex = indexOfPath(cursorPath, cursorIndex);
-  anchorIndex = indexOfPath(anchorPath, anchorIndex);
+function followCursor(mark: Mark): void {
+  selection.follow(mark, true);
   updateSelection();
-}
-
-/** Where `path` is now, or the old index (kept in range) when it's gone. */
-function indexOfPath(path: string | undefined, fallback: number): number {
-  const i = path === undefined ? -1 : shown.findIndex((e) => e.path === path);
-  return i >= 0 ? i : Math.min(fallback, shown.length - 1);
 }
 
 /** A received share that isn't online shows its status page instead of a listing. */
@@ -1115,15 +1088,13 @@ function canSearchRecursively(): boolean {
 
 function selectFirstMatch(): void {
   if (!searchQuery || shown.length === 0) return;
-  selected.clear();
-  selected.add(shown[0].path);
-  cursorIndex = anchorIndex = 0;
+  selection.selectFirst();
   updateSelection();
 }
 
 function onSearchInput(): void {
   searchQuery = searchEntry.value;
-  anchorIndex = cursorIndex = -1;
+  selection.dropCursor();
   searchResults = null;
   searchSeq += 1;
   clearTimeout(searchTimer);
@@ -1178,11 +1149,9 @@ function addSearchResults(batch: Entry[]): void {
     selectFirstMatch();
     return;
   }
-  const cursorPath = shown[cursorIndex]?.path;
-  const anchorPath = shown[anchorIndex]?.path;
+  const mark = selection.mark();
   renderViewKeepingScroll();
-  cursorIndex = shown.findIndex((e) => e.path === cursorPath);
-  anchorIndex = shown.findIndex((e) => e.path === anchorPath);
+  selection.follow(mark, false);
   updateSelection();
 }
 
@@ -1490,7 +1459,7 @@ function itemClasses(e: Entry, i: number): string {
   const cut = clipboard?.mode === "cut" && clipboard.paths.includes(e.path);
   const offline = e.shareStatus === "offline" || e.shareStatus === "no-access" || e.shareStatus === "missing";
   return (e.is_hidden ? " hidden-entry" : "") + (cut ? " cut" : "") + (offline ? " offline" : "") +
-    (selected.has(e.path) ? " selected" : "") + (i === cursorIndex ? " cursor" : "") +
+    (selection.has(e.path) ? " selected" : "") + (i === selection.cursor ? " cursor" : "") +
     // Striped lists (macOS theme): rows are virtualized, so :nth-child can't tell.
     (i % 2 ? " odd" : "");
 }
@@ -1520,7 +1489,7 @@ function itemHtml(i: number): string {
   const { x, y } = itemPos(i);
   const pos = `style="left:${x}px;top:${y}px"`;
   const cls = itemClasses(e, i);
-  const sel = selected.has(e.path);
+  const sel = selection.has(e.path);
   if (prefs.view === "grid") {
     const detail = location === NETWORK ? networkDetail(e) : "";
     const shared = detail ? `<div class="shared-by">${escapeHtml(detail)}</div>`
@@ -1873,7 +1842,7 @@ function zoom(delta: number): void {
   savePrefs();
   applyZoom();
   relayout();
-  scrollToIndex(cursorIndex);
+  scrollToIndex(selection.cursor);
 }
 
 function resetZoom(): void {
@@ -1882,7 +1851,7 @@ function resetZoom(): void {
   savePrefs();
   applyZoom();
   relayout();
-  scrollToIndex(cursorIndex);
+  scrollToIndex(selection.cursor);
 }
 
 // ---------------------------------------------------------------------------
@@ -1975,18 +1944,16 @@ function setView(view: ViewMode): void {
   prefs.view = view;
   savePrefs();
   renderView();
-  scrollToIndex(cursorIndex);
+  scrollToIndex(selection.cursor);
 }
 
 function setSort(key: SortKey, reversed: boolean): void {
   prefs.sortKey = key;
   prefs.sortReversed = reversed;
   savePrefs();
-  const keep = cursorIndex >= 0 ? shown[cursorIndex]?.path : undefined;
+  const keep = selection.mark().cursorPath;
   renderView();
-  if (keep) {
-    cursorIndex = anchorIndex = shown.findIndex((e) => e.path === keep);
-  }
+  if (keep) selection.focus(selection.indexOf(keep));
 }
 
 function toggleHidden(): void {
@@ -2061,51 +2028,42 @@ function renderViewKeepingScroll(): void {
 function updateSelection(): void {
   viewEl.querySelectorAll<HTMLElement>(".item").forEach((el) => {
     const i = Number(el.dataset.index);
-    const isSel = selected.has(shown[i]?.path);
+    const isSel = !!shown[i] && selection.has(shown[i].path);
     el.classList.toggle("selected", isSel);
     el.setAttribute("aria-selected", String(isSel));
-    el.classList.toggle("cursor", i === cursorIndex);
+    el.classList.toggle("cursor", i === selection.cursor);
   });
   updateFloatingBar();
 }
 
 function selectOnly(index: number): void {
-  noteSelectionIntent();
-  selected.clear();
-  if (shown[index]) selected.add(shown[index].path);
-  anchorIndex = cursorIndex = index;
+  selection.only(index);
   updateSelection();
 }
 
 function selectRange(from: number, to: number, additive: boolean): void {
-  noteSelectionIntent();
-  if (!additive) selected.clear();
-  const [a, b] = from < to ? [from, to] : [to, from];
-  for (let i = a; i <= b; i++) if (shown[i]) selected.add(shown[i].path);
-  cursorIndex = to;
+  selection.range(from, to, additive);
   updateSelection();
 }
 
 function selectAll(): void {
-  noteSelectionIntent();
-  for (const e of shown) selected.add(e.path);
+  selection.all();
   updateSelection();
 }
 
 function clearSelection(): void {
-  noteSelectionIntent();
-  selected.clear();
+  selection.clear();
   updateSelection();
 }
 
 function selectedEntries(): Entry[] {
-  return shown.filter((e) => selected.has(e.path));
+  return selection.selected();
 }
 
 function revealPath(path: string): void {
-  const i = shown.findIndex((e) => e.path === path);
+  const i = selection.indexOf(path);
   if (i < 0) return;
-  anchorIndex = cursorIndex = i;
+  selection.focus(i);
   updateSelection();
   scrollToIndex(i);
 }
@@ -2240,16 +2198,13 @@ function onViewMouseDown(e: MouseEvent): void {
   // whose press went to a menu backdrop.
   if (e.button !== 0) return;
 
-  if (e.shiftKey && anchorIndex >= 0) {
-    selectRange(anchorIndex, index, toggleMod);
+  if (e.shiftKey && selection.anchor >= 0) {
+    selectRange(selection.anchor, index, toggleMod);
   } else if (toggleMod) {
-    noteSelectionIntent();
-    const p = shown[index].path;
-    if (selected.has(p)) selected.delete(p);
-    else selected.add(p);
-    anchorIndex = cursorIndex = index;
+    selection.toggle(index);
+    selection.focus(index);
     updateSelection();
-  } else if (!selected.has(shown[index].path)) {
+  } else if (!selection.has(shown[index].path)) {
     selectOnly(index);
   } else {
     // Clicking inside an existing multi-selection narrows it on release,
@@ -2261,17 +2216,17 @@ function onViewMouseDown(e: MouseEvent): void {
     };
     pendingNarrow = narrow;
     viewEl.addEventListener("mouseup", narrow);
-    anchorIndex = cursorIndex = index;
+    selection.focus(index);
     updateSelection();
   }
-  if (selected.has(shown[index].path)) armDrag(e);
+  if (selection.has(shown[index].path)) armDrag(e);
 }
 
 function startRubberband(start: MouseEvent, additive: boolean): void {
-  noteSelectionIntent();
+  selection.noteIntent();
   const band = $("#rubberband");
   const overlay = scrollEl.parentElement!;
-  const base = new Set(additive ? selected : []);
+  const base = additive ? selection.paths() : [];
   const origin = overlay.getBoundingClientRect();
   const startX = start.clientX - origin.left;
   const startY = start.clientY - origin.top + scrollEl.scrollTop;
@@ -2289,10 +2244,10 @@ function startRubberband(start: MouseEvent, additive: boolean): void {
     band.style.top = `${t - scrollEl.scrollTop}px`;
     band.style.width = `${r - l}px`;
     band.style.height = `${b - t}px`;
-    selected.clear();
-    for (const p of base) selected.add(p);
+    const next = [...base];
     // Items hit by the band, found from the layout rather than the DOM.
-    for (const i of indicesInRect(layout, l, t - layout.bodyTop, r, b - layout.bodyTop)) selected.add(shown[i].path);
+    for (const i of indicesInRect(layout, l, t - layout.bodyTop, r, b - layout.bodyTop)) next.push(shown[i].path);
+    selection.replace(next);
     // Scroll when dragging past the top or bottom edge.
     const edge = e.clientY - origin.top;
     if (edge > overlay.clientHeight - 16) scrollEl.scrollTop += 12;
@@ -2321,7 +2276,7 @@ function onViewContextMenu(e: MouseEvent): void {
     // right-clicked, like GNOME Files, unless it is already part of a
     // selection (then the menu applies to the whole selection). Doing it here
     // rather than on mousedown also covers a press that closed another menu.
-    if (!selected.has(shown[index].path)) selectOnly(index);
+    if (!selection.has(shown[index].path)) selectOnly(index);
     openItemMenu(at);
   } else {
     openBackgroundMenu(at);
@@ -3273,7 +3228,7 @@ function transferOperation(paths: string[], moving: boolean, destDir: string, ca
 async function runTransfer(paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string): Promise<boolean> {
   if (isPseudo(destDir)) return false;
   // The user's selection as of this paste; see transferBatch's end.
-  const intent = selectionIntent;
+  const intent = selection.intent;
   const batch = { cancelled: false, started: false, measuring: false };
   const op = transferOperation(paths, paths.some(move), destDir, () => {
     batch.cancelled = true;
@@ -3426,7 +3381,7 @@ async function transferBatch(
   }
   // Select what landed only when the user hasn't chosen something else, or
   // gone anywhere, since pasting; otherwise keep their newer selection.
-  const untouched = destDir === location && intent === selectionIntent;
+  const untouched = destDir === location && intent === selection.intent;
   await reload(untouched && done.length ? done : undefined);
   return !batch.cancelled && errors.length === 0;
 }
@@ -4673,7 +4628,7 @@ function moveCursor(to: number, extend: boolean): void {
   if (shown.length === 0) return;
   to = Math.min(Math.max(to, 0), shown.length - 1);
   viewEl.classList.add("keyboard-nav");
-  if (extend && anchorIndex >= 0) selectRange(anchorIndex, to, false);
+  if (extend && selection.anchor >= 0) selectRange(selection.anchor, to, false);
   else selectOnly(to);
   scrollToIndex(to);
 }
@@ -4701,10 +4656,7 @@ function gridStep(k: ViewKey, delta: number): boolean {
 
 function toggleCursorItem(k: ViewKey): void {
   if (k.cur < 0 || !k.mod) return;
-  noteSelectionIntent();
-  const p = shown[k.cur].path;
-  if (selected.has(p)) selected.delete(p);
-  else selected.add(p);
+  selection.toggle(k.cur);
   updateSelection();
 }
 
@@ -4768,7 +4720,7 @@ function onViewKeyDown(e: KeyboardEvent): void {
   }
   const cols = layout.cols;
   const page = Math.max(Math.floor(scrollEl.clientHeight / (layout.itemH + layout.gap)), 1) * cols;
-  if (handler({ e, mod, cur: cursorIndex, cols, page })) e.preventDefault();
+  if (handler({ e, mod, cur: selection.cursor, cols, page })) e.preventDefault();
 }
 
 /** Printable keys start a search, like GNOME Files. */
@@ -4827,10 +4779,10 @@ const ANYWHERE_SHORTCUTS: Shortcut[] = [
 const VIEW_SHORTCUTS: Shortcut[] = [
   [(k) => plainMod(k, "z") && lastTrashed.length > 0, undoTrash],
   [(k) => k.mod && k.key === "a", selectAll],
-  [(k) => plainMod(k, "c") && selected.size > 0, () => setClipboard("copy")],
-  [(k) => plainMod(k, "x") && selected.size > 0, () => setClipboard("cut")],
+  [(k) => plainMod(k, "c") && selection.size > 0, () => setClipboard("copy")],
+  [(k) => plainMod(k, "x") && selection.size > 0, () => setClipboard("cut")],
   [(k) => plainMod(k, "v") && !!clipboard && !isPseudo(location), () => paste(location)],
-  [(k) => plainMod(k, "i") && selected.size === 1, showSelectedProperties],
+  [(k) => plainMod(k, "i") && selection.size === 1, showSelectedProperties],
 ];
 
 function showSelectedProperties(): void {
@@ -5575,7 +5527,7 @@ async function init(): Promise<void> {
   // Typing a search picks its first match: the user's choice, unlike the
   // reloads that rerun the search.
   searchEntry.addEventListener("input", () => {
-    noteSelectionIntent();
+    selection.noteIntent();
     onSearchInput();
   });
   searchEntry.addEventListener("keydown", (e) => {
@@ -5588,7 +5540,7 @@ async function init(): Promise<void> {
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
       viewEl.focus();
-      moveCursor(cursorIndex < 0 ? 0 : cursorIndex, false);
+      moveCursor(selection.cursor < 0 ? 0 : selection.cursor, false);
     }
   });
 
