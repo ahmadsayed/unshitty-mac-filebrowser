@@ -12,10 +12,15 @@
 # pushed tag. Actions are pinned to commits; the comment names the version.
 #
 # Secrets: TAURI_SIGNING_PRIVATE_KEY and its _PASSWORD sign the packages
-# Check for Updates installs (HUMANS.md). Without them a tag push fails at
-# "Write latest.json" rather than draft a release no installed copy could
-# update from; other runs still build, just without latest.json. Google
-# Drive users bring their own OAuth client
+# Check for Updates installs (HUMANS.md). Only the sign job sees them: it
+# runs after the builds, for a pushed tag, with nothing but the runner,
+# Ubuntu's minisign and scripts/sign-updater.sh. The build jobs, which run
+# npm packages and every crate's build scripts, never get the key, so a
+# compromised dependency can't sign a malicious update. The sign job uses
+# the `release` environment, which can hold the secrets and require your
+# approval (HUMANS.md). Without the secrets a tag push fails at signing
+# rather than draft a release no installed copy could update from; other
+# runs build unsigned. Google Drive users bring their own OAuth client
 # (docs/google-drive.md). macOS builds are ad-hoc signed, not notarized.
 name: Release
 
@@ -60,7 +65,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
+      # A tag build starts clean: nothing an earlier run cached (or poisoned)
+      # reaches a release, and older caches may hold the signing key, which
+      # a build script wrote into target/ while it was still in the build
+      # environment (RUSTSEC-2026-0418).
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        if: github.event_name != 'push'
         with:
           workspaces: src-tauri
 
@@ -113,25 +123,32 @@ jobs:
         with:
           targets: ${{ matrix.rust-targets }}
 
+      # A tag build starts clean: nothing an earlier run cached (or poisoned)
+      # reaches a release, and older caches may hold the signing key, which
+      # a build script wrote into target/ while it was still in the build
+      # environment (RUSTSEC-2026-0418).
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        if: github.event_name != 'push'
         with:
           workspaces: src-tauri
 
       - name: Install npm packages
         run: npm install --package-lock=false
 
+      # No signing key here: this job runs npm packages and build scripts.
+      # The sign job signs the updater packages afterwards.
       - name: Build
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          # Signed packages for Check for Updates, only when the key secret is
-          # set (a fork or a run without secrets builds as before).
-          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            npm run tauri build -- ${{ matrix.args }} --config '{"bundle":{"createUpdaterArtifacts":true}}'
-          else
-            npm run tauri build -- ${{ matrix.args }}
-          fi
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      # What Check for Updates installs on a Mac: the app in a .tar.gz, the
+      # app folder at its top, as Tauri's own updater bundle has it (the
+      # updater drops each entry's first path component). COPYFILE_DISABLE
+      # keeps macOS tar from adding ._ files, which would break the app's
+      # code signature.
+      - name: Pack the app for Check for Updates
+        if: runner.os == 'macOS'
+        working-directory: src-tauri/target/aarch64-apple-darwin/release/bundle/macos
+        run: COPYFILE_DISABLE=1 tar -czf "File Browser.app.tar.gz" "File Browser.app"
 
       - name: Keep the packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -144,21 +161,69 @@ jobs:
             src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
-      - name: Keep the signed updater packages
+      - name: Keep the updater package
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: file-browser-updater-${{ matrix.platform }}
-          path: |
-            src-tauri/target/release/bundle/appimage/*.AppImage.sig
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
-          # Absent when the signing key secret isn't set.
-          if-no-files-found: ignore
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+          if-no-files-found: error
+
+  # The only job with the signing key. It runs no npm package, no build
+  # script and no cache: the runner image, Ubuntu's minisign package and
+  # scripts/sign-updater.sh, which verifies each signature against the
+  # app's public key before anything is released.
+  sign:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: file-browser-*
+          path: packages
+          merge-multiple: true
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: source
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/sign-updater.sh
+            src-tauri/tauri.conf.json
+          sparse-checkout-cone-mode: false
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      # The check job made sure the tag is v<version of the app>.
+      - name: Sign the updater packages
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          pubkey=$(jq -r .plugins.updater.pubkey source/src-tauri/tauri.conf.json)
+          mapfile -d '' packages < <(find packages -type f \( -name '*.AppImage' -o -name '*.app.tar.gz' \) -print0)
+          bash source/scripts/sign-updater.sh "${GITHUB_REF_NAME#v}" "$pubkey" "${packages[@]}"
+
+      # Paths relative to packages/, so each .sig lands next to its package
+      # when the release job downloads everything into one folder.
+      - name: Keep the signatures
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: file-browser-signatures
+          path: packages/**/*.sig
+          if-no-files-found: error
 
   release:
     # A pushed tag only: a manual run on a tag ref builds but never releases.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    needs: build
+    needs: [build, sign]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

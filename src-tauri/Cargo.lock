@@ -1596,6 +1596,7 @@ version = "0.7.3"
 dependencies = [
  "argon2",
  "bao-tree",
+ "base64 0.22.1",
  "blake3",
  "bzip2",
  "chacha20poly1305",
@@ -1609,6 +1610,7 @@ dependencies = [
  "iroh",
  "iroh-blobs",
  "keyring",
+ "minisign-verify",
  "n0-future",
  "notify",
  "oauth2",

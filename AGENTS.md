@@ -61,6 +61,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `scripts/github.sh` | The scripts' GitHub queries, all through the REST API (`gh api`): cloud sessions can't reach GraphQL |
 | `scripts/new-task.sh`, `scripts/end-task.sh` | A worktree per task in `.worktrees/<name>`; finalized (worktree and branches deleted) once its PR is merged |
 | `scripts/mock-screenshot.mjs`, `scripts/pr-screenshots.sh` | PR screenshots: capture the mock preview, upload to the `captures` branch |
+| `scripts/sign-updater.sh` | Signs the updater packages with minisign in the Release workflow's `sign` job, the only job that gets the key; checked as the updater checks it by `src-tauri/tests/release_signing.rs` |
 | `.github/pull_request_template.md` | The PR body every task follows |
 | `HUMANS.md` | The human's side of the workflow: review, merge, test, release |
 
@@ -370,7 +371,12 @@ live only in the human's backup and in the `TAURI_SIGNING_PRIVATE_KEY` /
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets. Agents never generate, read,
 print, copy or replace it; the public key in `tauri.conf.json` changes only
 when the human says so (installed copies would reject every update signed
-with a new key).
+with a new key). Only the Release workflow's `sign` job may use the secrets:
+never pass them to a job or step that installs or builds anything (npm
+packages and crates' build scripts run there; one wrote the whole
+environment into `target/`, RUSTSEC-2026-0418). Agents never approve the
+`release` environment's deployment, through the web or the API, even though
+they use the human's account: the human approves each release.
 
 ## Licensing
 

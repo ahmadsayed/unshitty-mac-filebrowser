@@ -87,17 +87,36 @@ once:
 
 ```sh
 npm run tauri signer generate -- -w ~/.tauri/filebrowser.key
-gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/filebrowser.key
-gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 ```
 
 Keep `~/.tauri/filebrowser.key` and its password backed up (a password
 manager or an encrypted drive). If either is lost, installed copies can't
 update any more: everyone has to reinstall by hand once a new key is in
-`tauri.conf.json`. Agents never touch the private key. Without the secrets a
-tag push fails at "Write latest.json" instead of drafting a release that
-installed copies couldn't update from; a manual or pull-request run still
-builds, just without `latest.json`.
+`tauri.conf.json`. Agents never touch the private key.
+
+Only the Release workflow's **sign** job uses the key. It runs after the
+builds and installs nothing but Ubuntu's `minisign`, so a compromised npm
+package or crate in the build jobs can't read it. Keep the secrets in the
+`release` environment rather than the repository, so no other job can ask
+for them, and make each release wait for you. Once, in Settings →
+Environments → `release` (the first tag push creates it):
+
+- **Required reviewers:** add yourself. Every tag push then waits for your
+  approval before the key is used (Actions → the run → Review deployments).
+- **Deployment branches and tags:** "Selected branches and tags", add the
+  tag rule `v*`.
+- Move the secrets there and delete the repository-wide copies:
+
+  ```sh
+  gh secret set TAURI_SIGNING_PRIVATE_KEY --env release < ~/.tauri/filebrowser.key
+  gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --env release
+  gh secret delete TAURI_SIGNING_PRIVATE_KEY
+  gh secret delete TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+  ```
+
+Without the secrets a tag push fails at signing instead of drafting a
+release that installed copies couldn't update from; a manual or
+pull-request run still builds, unsigned and without `latest.json`.
 
 ## Where things are
 
