@@ -36,6 +36,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/theme.ts` | The platform's theme (macOS on a Mac, GNOME elsewhere) and the per-theme layout sizes the virtualized views use |
 | `src/qr-share.ts` | Send with QR Code…: the menu item and the dialog (code, link, progress, downloads) |
 | `src/preview-actions.ts` | Which actions the Space preview offers (Open, Rename…, Move to Trash, Open Item Location) for where the item is |
+| `src/locations.ts` | What each kind of location allows (Recent/Starred/Network, Drive, shares, SSH servers, the Trash): read only, local, recursive search, versions, new items |
 | `src/open-with.ts` | Open With…: the searchable application chooser (filter, keyboard selection, launch and retry) |
 | `src/updates.ts` | Check for Updates dialogs: offer, download progress, restart, failures |
 | `src/drag-out.ts` | Dragging files out of the window: when the pointer has left it, and the system drag (our GTK command on Linux, the drag plugin on macOS) |
@@ -253,6 +254,10 @@ GPL-3.0-or-later).
   good reason.
 - Persist small UI preferences in `prefs` (localStorage, wrapped in try/catch);
   persist durable settings through `config_store.rs`.
+- Ask `src/locations.ts` (or `isRemotePath`) what a location allows rather
+  than combining `isCloud`, `isSharePath`, `isSftpPath` and the Trash checks
+  at the call site; a new kind of location or rule is a row in
+  `tests/locations.test.ts`.
 - Commit messages: conventional style (`feat:`, `fix:`, `docs:`, `chore:`),
   imperative subject, a body explaining what and why.
 - Keep the README's feature list and "Not supported yet" section in sync with
