@@ -181,7 +181,7 @@ test("OS icons: none by default; when on, shared by type, apps their own, remote
   expect((await invoke<ArrayBuffer>("icon_image", { id: "type:rs", size: 64 })).byteLength).toBe(0);
   nativeIconMock.enabled = true;
   try {
-    expect(await invoke("icon_ids", { paths })).toEqual(["type:rs", "type:public.folder", "path:/Applications/Calculator.app", null, null]);
+    expect(await invoke("icon_ids", { paths })).toEqual(["type:rs", "full-folder", "path:/Applications/Calculator.app", null, null]);
     const svg = new TextDecoder().decode(await invoke<ArrayBuffer>("icon_image", { id: "type:rs", size: 64 }));
     expect(svg).toContain('data-id="type:rs"');
     expect(svg).toContain('width="64"');
@@ -191,6 +191,15 @@ test("OS icons: none by default; when on, shared by type, apps their own, remote
       "path:/Applications/TextEdit.app",
       null,
     ]);
+    // As on macOS 26: an empty folder is the plain one, and hidden items
+    // don't count.
+    const empty = `${HOME}/Icons empty folder`;
+    await invoke("make_dir", { path: empty });
+    expect(await invoke("icon_ids", { paths: [empty] })).toEqual(["type:public.folder"]);
+    await invoke("create_file", { path: `${empty}/.DS_Store` });
+    expect(await invoke("icon_ids", { paths: [empty] })).toEqual(["type:public.folder"]);
+    await invoke("create_file", { path: `${empty}/a.txt` });
+    expect(await invoke("icon_ids", { paths: [empty] })).toEqual(["full-folder"]);
   } finally {
     nativeIconMock.enabled = false;
   }

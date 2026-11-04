@@ -4,7 +4,7 @@
 // files share it. Badges stay the app's; thumbnails still win; remote places
 // keep the app's icons.
 import { beforeAll, expect, test, vi } from "vitest";
-import { nativeIconMock } from "../dev/mock-tauri/core";
+import { invoke, nativeIconMock } from "../dev/mock-tauri/core";
 import { $, $$, boot, chooseMenu, click, closeOverlays, goTo, hit, installFakeCanvas, item, key, mouse, settle } from "./app";
 
 let blobs = 0;
@@ -27,9 +27,9 @@ test("rendered items show the OS icon, loaded once per type", async () => {
   for (const name of ["Projects", "Versioned", "Quarterly report.pdf", "Budget 2026.xlsx", "Notes.md"]) {
     expect(nativeIcon(name), name).not.toBeNull();
   }
-  // Both folders show the one folder image, loaded once for Home's folders.
+  // Both folders hold items, so they share Finder's full folder, loaded once.
   expect(nativeIcon("Projects")!.src).toBe(nativeIcon("Versioned")!.src);
-  expect(imagesFor("type:public.folder")).toHaveLength(1);
+  expect(imagesFor("full-folder")).toHaveLength(1);
   expect(nativeIcon("Quarterly report.pdf")!.src).not.toBe(nativeIcon("Projects")!.src);
   // The app's drawing is gone for them.
   expect(item("Projects").querySelector("svg.fc")).toBeNull();
@@ -92,9 +92,12 @@ test("a folder visited again asks for nothing new", async () => {
   await settle();
   await goTo("/Users/me/Documents");
   await settle();
-  // Home asks for its own items; Documents is answered from the cache.
-  expect(nativeIconMock.log.ids.slice(asked).flat().some((p) => p.startsWith("/Users/me/Documents/"))).toBe(false);
-  expect(nativeIconMock.log.images.slice(drawn).some((r) => r.startsWith("type:public.folder@"))).toBe(false);
+  // Home asks for its own items; Documents' files are answered from the
+  // cache. Only its folders are asked again (on macOS what they hold shows
+  // in their icon), and no image is loaded again.
+  const again = nativeIconMock.log.ids.slice(asked).flat().filter((p) => p.startsWith("/Users/me/Documents/"));
+  expect(again.sort()).toEqual(["/Users/me/Documents/Projects", "/Users/me/Documents/Versioned"]);
+  expect(nativeIconMock.log.images.slice(drawn).some((r) => /^(type:public\.folder|full-folder|type:pdf)@/.test(r))).toBe(false);
 });
 
 test("apps get their own icon", async () => {
@@ -107,12 +110,12 @@ test("apps get their own icon", async () => {
 test("a zoom asks for the new size and keeps showing the old one meanwhile", async () => {
   await goTo("/Users/me/Documents");
   await settle();
-  const before = imagesFor("type:public.folder").length;
+  const before = imagesFor("full-folder").length;
   await key("+", { mod: true });
   // Drawn at once from the size already loaded, not the app's drawing.
   expect(nativeIcon("Projects")).not.toBeNull();
   await settle();
-  expect(imagesFor("type:public.folder").length).toBe(before + 1);
+  expect(imagesFor("full-folder").length).toBe(before + 1);
   await key("0", { mod: true });
   await settle();
 });
@@ -180,4 +183,26 @@ test("the preview of a folder shows its OS icon", async () => {
   expect($("#preview-body .preview-empty img.native-icon")).not.toBeNull();
   await key("Escape");
   await settle();
+});
+
+test("a folder's icon follows what it holds, as Finder's does on macOS 26", async () => {
+  const website = "/Users/me/Documents/Projects/website";
+  await goTo("/Users/me/Documents/Projects");
+  await settle(20);
+  const full = nativeIcon("unshitty-mac-filebrowser")!.src;
+  expect(nativeIcon("website")!.src).not.toBe(full);
+  // Hidden items alone leave it empty.
+  await invoke("create_file", { path: `${website}/.DS_Store` });
+  await goTo("/Users/me/Documents");
+  await goTo("/Users/me/Documents/Projects");
+  await settle(20);
+  expect(nativeIcon("website")!.src).not.toBe(full);
+  // Its first item: the icon cached for it is asked for again when the folder
+  // is shown, and swapped for the full folder.
+  await invoke("create_file", { path: `${website}/index.html` });
+  await goTo("/Users/me/Documents");
+  await goTo("/Users/me/Documents/Projects");
+  await settle(20);
+  expect(nativeIcon("website")!.src).toBe(full);
+  expect(item("website").querySelector("svg.fc")).toBeNull();
 });

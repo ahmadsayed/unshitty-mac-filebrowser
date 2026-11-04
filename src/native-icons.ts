@@ -68,6 +68,23 @@ export function loadNativeIcons(keys: string[], size: number, onReady: (keys: st
   }
 }
 
+/** Ask again for the ids of keys answered before: on macOS a folder's icon
+ *  shows whether it holds anything. The old icon stays until the new answer
+ *  comes; `onChanged` gets each key whose icon changed, once its new image
+ *  at `size` is loaded (or known to be missing). */
+export function recheckNativeIcons(keys: string[], size: number, onChanged: (keys: string[]) => void): void {
+  const known = keys.filter((key) => ids.has(key) && !idsLoading.has(key));
+  if (!known.length) return;
+  const before = new Map(known.map((key) => [key, ids.get(key)]));
+  askIds(known);
+  void Promise.all(known.map((key) => idsLoading.get(key))).then(() => {
+    for (const key of known) {
+      if (ids.get(key) === before.get(key)) continue;
+      void nativeIcon(key, size).then(() => onChanged([key]));
+    }
+  });
+}
+
 /** Load the icons for `keys` at `size`, asking for their ids in one batch,
  *  and wait for them, but no longer than `ms`: a view drawn afterwards shows
  *  the ones that arrived, and the rest still swap in when they come. */
