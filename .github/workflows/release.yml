@@ -35,6 +35,29 @@ permissions:
   contents: read
 
 jobs:
+  # The Rust dependencies of the app and of the phone page, against deny.toml:
+  # RustSec advisories (vulnerable, unsound, unmaintained, yanked), licences
+  # compatible with GPL-3.0-or-later, crates.io as the only source. A new
+  # advisory blocks the release until it is fixed or ignored with a reason
+  # (AGENTS.md). Release time only: there is no CI on pull requests.
+  rust-deps:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny@0.20.2
+
+      - name: Check the Rust dependencies
+        run: |
+          for manifest in src-tauri/Cargo.toml web/file-get/Cargo.toml; do
+            cargo deny --locked --manifest-path "$manifest" --config deny.toml check
+          done
+
   check:
     runs-on: ubuntu-22.04
     steps:
@@ -104,7 +127,7 @@ jobs:
         run: cargo test --locked
 
   build:
-    needs: check
+    needs: [check, rust-deps]
     strategy:
       fail-fast: false
       matrix:
