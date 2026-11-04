@@ -201,8 +201,30 @@ test("a folder's icon follows what it holds, as Finder's does on macOS 26", asyn
   // is shown, and swapped for the full folder.
   await invoke("create_file", { path: `${website}/index.html` });
   await goTo("/Users/me/Documents");
+  const seen = new Set<string>();
+  const observer = new MutationObserver(() => {
+    const el = $$(".item").find((it) => it.textContent!.trim() === "website");
+    const src = el?.querySelector("img.native-icon")?.getAttribute("src");
+    if (src) seen.add(src);
+  });
+  observer.observe($("#view"), { childList: true, subtree: true, attributes: true });
   await goTo("/Users/me/Documents/Projects");
   await settle(20);
+  observer.disconnect();
   expect(nativeIcon("website")!.src).toBe(full);
   expect(item("website").querySelector("svg.fc")).toBeNull();
+  // Asked again while the folder was being shown: the old icon never appears.
+  expect([...seen]).toEqual([full]);
+});
+
+test("a first visit asks for each folder's icon once", async () => {
+  await invoke("make_dir", { path: "/Users/me/Fresh" });
+  await invoke("make_dir", { path: "/Users/me/Fresh/One" });
+  await invoke("make_dir", { path: "/Users/me/Fresh/Two" });
+  const asked = nativeIconMock.log.ids.length;
+  await goTo("/Users/me/Fresh");
+  await settle(20);
+  const requests = nativeIconMock.log.ids.slice(asked).flat();
+  expect(requests.filter((p) => p === "/Users/me/Fresh/One")).toHaveLength(1);
+  expect(requests.filter((p) => p === "/Users/me/Fresh/Two")).toHaveLength(1);
 });

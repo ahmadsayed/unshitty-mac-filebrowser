@@ -261,8 +261,17 @@ fn is_special_folder(path: &Path, home: Option<&Path>) -> bool {
     parent.is_none()
         || parent == Some(Path::new("/"))
         || parent == Some(Path::new("/Volumes"))
-        || home.is_some_and(|home| path == home || parent == Some(home))
+        || home.is_some_and(|home| {
+            path == home
+                || parent == Some(home)
+                    && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| HOME_FOLDERS.contains(&n))
+        })
 }
+
+/// The folders in the home folder Finder draws with their own icon.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const HOME_FOLDERS: [&str; 10] =
+    ["Applications", "Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures", "Public", "Sites"];
 
 /// Whether Finder's flags (the `com.apple.FinderInfo` attribute) say the item
 /// has a custom icon: `kHasCustomIcon` in the big-endian flags at byte 8.
@@ -302,10 +311,12 @@ fn render(source: &Source, size: u32) -> Option<Vec<u8>> {
             #[allow(deprecated)]
             Source::OsType(kind) => workspace.iconForFileType(&NSString::from_str(kind)),
             Source::OsPath(path) => workspace.iconForFile(&NSString::from_str(path.to_str()?)),
-            Source::FullFolder => {
-                let sample = full_folder_sample(&std::env::temp_dir())?;
-                workspace.iconForFile(&NSString::from_str(sample.to_str()?))
-            }
+            // Without the sample folder, the plain folder rather than none.
+            #[allow(deprecated)]
+            Source::FullFolder => match full_folder_sample(&std::env::temp_dir()).and_then(|s| s.to_str().map(String::from)) {
+                Some(sample) => workspace.iconForFile(&NSString::from_str(&sample)),
+                None => workspace.iconForFileType(&NSString::from_str("public.folder")),
+            },
             _ => return None,
         };
         let px = size as isize;
@@ -758,6 +769,14 @@ mod tests {
         assert!(own("/Users/me/Work/Logo folder", true, true));
         assert!(own("/Users/me/Work/notes.txt", false, true));
         assert!(!own("/Users/me/Work/Logo folder", true, false));
+        // Only the folders Finder marks in the home folder: others there are
+        // plain folders, whose icon follows what they hold.
+        assert!(own("/Users/me/Library", true, false));
+        assert!(!own("/Users/me/Code", true, false));
+        assert_eq!(
+            with_folder_contents(mac_source(Path::new("/Users/me/Code"), true, false, false, Some(home)), || true),
+            Source::FullFolder
+        );
     }
 
     #[test]
