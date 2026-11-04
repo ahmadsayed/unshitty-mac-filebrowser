@@ -63,6 +63,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `scripts/mock-screenshot.mjs`, `scripts/pr-screenshots.sh` | PR screenshots: capture the mock preview, upload to the `captures` branch |
 | `.github/pull_request_template.md` | The PR body every task follows |
 | `HUMANS.md` | The human's side of the workflow: review, merge, test, release |
+| `deny.toml` | cargo-deny for both Rust projects: RustSec advisories, licences compatible with GPL-3.0-or-later, crates.io only; run by the Release workflow's `rust-deps` job |
 
 ## Commands
 
@@ -105,6 +106,16 @@ filesystem. `tests/setup.ts` stubs what jsdom lacks (layout sizes,
 Drive the UI with events (`key`, `mouse`, `goTo`, `respond`) and assert on
 the DOM. Code that adds a mock command needs a case in
 `tests/mock-core.test.ts`.
+
+**Rust dependencies** are checked against `deny.toml` before every release
+(the `rust-deps` job), and a new advisory stops it. When you add or update a
+crate, run cargo-deny 0.20.2 (`cargo install --locked cargo-deny@0.20.2`) on
+the project you changed:
+`cargo deny --locked --manifest-path src-tauri/Cargo.toml --config deny.toml check`.
+Fix a finding by updating the crate; ignore an advisory only with the reason
+it doesn't apply here, in `deny.toml`, and say so in the PR. A licence that
+isn't on the allow-list needs the human's decision (the app is
+GPL-3.0-or-later).
 
 ## Environment gotchas
 

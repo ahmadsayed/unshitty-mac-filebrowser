@@ -80,6 +80,13 @@ gh pr checkout <n>              # try a PR's branch locally
 A draft can still be fixed: delete it and move the tag. Once published, a
 version is permanent; a later fix ships as the next patch version.
 
+Before building, the workflow checks the Rust dependencies against the
+RustSec advisory database and the licence list in `deny.toml`. A newly
+published advisory can stop a release that passed the week before: the
+agent then updates the crate (or, if it can't affect the app, records why
+in `deny.toml`) in a PR, and tags again once you've merged it. A licence
+that isn't on the list is yours to decide.
+
 ### The updater signing key
 
 Check for Updates installs only packages signed with your key. You made it

@@ -1,0 +1,74 @@
+# cargo-deny (https://embarkstudios.github.io/cargo-deny/) for both Rust
+# projects: the app (src-tauri) and the phone page (web/file-get). The Release
+# workflow's rust-deps job runs, before any build:
+#
+#   cargo deny --locked --manifest-path <project>/Cargo.toml --config deny.toml check
+#
+# A new advisory fails the release. Fix it (update the crate), or add it to
+# `ignore` with the reason it doesn't apply here; never without a reason.
+
+[graph]
+# The app ships for Linux x86_64 and Apple Silicon, the phone page as wasm32;
+# Windows/Android/iOS crates in the lockfiles are never built, so don't
+# report on them.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-apple-darwin",
+  "wasm32-unknown-unknown",
+]
+all-features = false
+
+[advisories]
+# RustSec advisory DB (fetched fresh each run). Vulnerabilities always fail;
+# unmaintained/unsound notices fail too unless listed in `ignore` with a reason.
+db-urls = ["https://github.com/rustsec/advisory-db"]
+unmaintained = "workspace"   # fail only for crates we depend on directly
+unsound = "all"              # report unsound transitive crates too (glib 0.18)
+yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2024-0429", reason = "glib 0.18 VariantStrIter: comes with Tauri's GTK3 stack, not used by our code; goes away when Tauri moves off gtk-rs 0.18" },
+  # { id = "RUSTSEC-XXXX-NNNN", reason = "why it doesn't apply / tracking issue" },
+]
+
+[licenses]
+# Everything we ship is distributed under GPL-3.0-or-later, so every
+# dependency licence must be GPL-3.0 compatible. For "A OR B" expressions
+# one allowed licence is enough.
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "BSL-1.0",
+  "CC0-1.0",
+  "Unlicense",
+  "MPL-2.0",              # file-level copyleft, GPL-compatible (MPL 2.0 §3.3)
+  "Unicode-3.0",          # unicode-ident, ICU data tables
+  "CDLA-Permissive-2.0",  # webpki-roots: Mozilla's CA list as data
+  "GPL-3.0-or-later",     # our own crates
+]
+confidence-threshold = 0.9
+unused-allowed-license = "allow"  # one list shared by src-tauri and web/file-get
+# ring is "Apache-2.0 AND ISC"; both are allowed, no clarify needed with ring >= 0.17.
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+deny = [
+  # Native OpenSSL only where ssh2 needs it (vendored on macOS); everything
+  # else must use rustls.  Uncomment to enforce:
+  # { crate = "native-tls", reason = "use rustls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
