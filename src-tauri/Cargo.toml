@@ -63,6 +63,10 @@ unicode-normalization = "0.1.26"
 
 [dev-dependencies]
 tempfile = "3"
+# tests/release_signing.rs checks release signatures as tauri-plugin-updater
+# does; both are already in Cargo.lock through tauri.
+base64 = "0.22"
+minisign-verify = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
