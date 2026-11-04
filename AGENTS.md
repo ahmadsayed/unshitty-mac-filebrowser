@@ -57,6 +57,8 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `dev/mock-tauri/` | In-memory fake backend for browser previews and the frontend tests |
 | `tests/` | Vitest frontend tests: the real app in jsdom against `dev/mock-tauri/` (`tests/app.ts` boots and drives it) |
 | `scripts/crap-gate.mjs` | CRAP gate run by `.githooks/pre-commit` |
+| `scripts/check-lockfile.mjs` | Refuses a `package-lock.json` that could install anything but the public npm registry's own tarballs; run by the Release workflow before `npm ci` |
+| `.github/dependabot.yml` | Weekly update PRs for npm, both Cargo projects and the actions, with a 7-day cooldown (30 for majors); each one is reviewed like any PR |
 | `scripts/session-start.sh` | Where the project stands, from fresh data: main vs GitHub, worktrees, merged branches, drafts, issues |
 | `scripts/github.sh` | The scripts' GitHub queries, all through the REST API (`gh api`): cloud sessions can't reach GraphQL |
 | `scripts/new-task.sh`, `scripts/end-task.sh` | A worktree per task in `.worktrees/<name>`; finalized (worktree and branches deleted) once its PR is merged |
@@ -68,7 +70,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 ## Commands
 
 ```sh
-npm install                 # see "npm registry" below
+npm ci                      # exactly package-lock.json; see "npm registry" below
 npm run tauri dev           # run the app
 npm run tauri build         # macOS: bundle/macos/*.app; Linux: bundle/{deb,rpm,appimage}
 npx tsc --noEmit            # type-check the frontend
@@ -134,11 +136,23 @@ the DOM. Code that adds a mock command needs a case in
   opening files. Say so explicitly when reporting work that touches them. The
   mirror image also holds: Linux-side behaviour (`.trashinfo`, `recently-used.xbel`,
   udisks2 mount paths) is unverified on a Mac.
-- **npm registry**: `package-lock.json` is git-ignored on purpose. An earlier
-  lockfile pinned every package to a private corporate registry. Never commit a
-  lockfile and never add registry URLs or `.npmrc` entries pointing at private
-  registries. If `npm install` hangs, run
-  `npm install --package-lock=false`.
+- **npm registry and the lockfile**: `package-lock.json` is committed and must
+  resolve only to `https://registry.npmjs.org/` (an earlier lockfile pinned
+  every package to a private corporate registry). The Release workflow runs
+  `scripts/check-lockfile.mjs`, which refuses any other host, an entry whose
+  tarball isn't its own package's, a missing sha512, or an `.npmrc` that sets
+  another registry or credentials, then installs with
+  `npm ci --ignore-scripts`. Never add registry URLs or `.npmrc` entries
+  pointing at private registries.
+  - Install with `npm ci` in the main checkout. **Never run `npm ci` or
+    `npm install` inside a worktree**: its `node_modules` is a link to the
+    main checkout's, and npm would wipe or rewrite that.
+  - Change dependencies in a task (or take Dependabot's PR) and regenerate the
+    lock in a scratch copy of the tree, against the public registry and only
+    with versions at least a week old:
+    `npx -y npm@11.21.1 install --package-lock-only --ignore-scripts --registry=https://registry.npmjs.org/ --min-release-age=7`.
+    Copy the lock back, run `node scripts/check-lockfile.mjs`, and check the
+    diff touches only what you meant to change.
 - `Cargo.lock` *is* committed. When adding a crate, update it minimally (e.g.
   `cargo metadata --format-version 1 >/dev/null` in `src-tauri/`) and check the
   diff only adds entries.

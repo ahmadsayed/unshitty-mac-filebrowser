@@ -74,9 +74,22 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # package-lock.json is git-ignored on purpose (see AGENTS.md).
+      # Exactly the committed package-lock.json, all from the public registry
+      # (scripts/check-lockfile.mjs), each tarball checked against its sha512.
+      # No install scripts: none of these packages needs one on Linux or
+      # macOS (fsevents ships prebuilt).
+      - name: Check package-lock.json
+        run: node scripts/check-lockfile.mjs
+
       - name: Install npm packages
-        run: npm install --package-lock=false
+        run: npm ci --ignore-scripts --no-fund
+
+      # The registry's signatures (and provenance, where published) for every
+      # installed package, and known vulnerabilities in what ships in the app.
+      - name: Verify npm signatures and audit
+        run: |
+          npm audit signatures
+          npm audit --omit=dev --audit-level=high
 
       - name: Type-check and build the frontend
         run: |
@@ -88,7 +101,7 @@ jobs:
 
       - name: Backend tests
         working-directory: src-tauri
-        run: cargo test
+        run: cargo test --locked
 
   build:
     needs: check
@@ -132,8 +145,11 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Check package-lock.json
+        run: node scripts/check-lockfile.mjs
+
       - name: Install npm packages
-        run: npm install --package-lock=false
+        run: npm ci --ignore-scripts --no-fund
 
       # No signing key here: this job runs npm packages and build scripts.
       # The sign job signs the updater packages afterwards.
