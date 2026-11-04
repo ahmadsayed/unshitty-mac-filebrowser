@@ -57,12 +57,12 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `dev/mock-tauri/` | In-memory fake backend for browser previews and the frontend tests |
 | `tests/` | Vitest frontend tests: the real app in jsdom against `dev/mock-tauri/` (`tests/app.ts` boots and drives it) |
 | `scripts/crap-gate.mjs` | CRAP gate run by `.githooks/pre-commit` |
+| `scripts/check-lockfile.mjs` | Refuses a `package-lock.json` that could install anything but the public npm registry's own tarballs; run by the Release workflow before `npm ci` |
+| `.github/dependabot.yml` | Weekly update PRs for npm, both Cargo projects and the actions, with a 7-day cooldown (30 for majors); each one is reviewed like any PR |
 | `scripts/session-start.sh` | Where the project stands, from fresh data: main vs GitHub, worktrees, merged branches, drafts, issues |
 | `scripts/github.sh` | The scripts' GitHub queries, all through the REST API (`gh api`): cloud sessions can't reach GraphQL |
 | `scripts/new-task.sh`, `scripts/end-task.sh` | A worktree per task in `.worktrees/<name>`; finalized (worktree and branches deleted) once its PR is merged |
 | `scripts/mock-screenshot.mjs`, `scripts/pr-screenshots.sh` | PR screenshots: capture the mock preview, upload to the `captures` branch |
-| `scripts/check-lockfile.mjs` | Refuses a `package-lock.json` that could install anything but the public npm registry's own tarballs; run by the Release workflow before `npm ci` |
-| `.github/dependabot.yml` | Weekly update PRs for npm, both Cargo projects and the actions, with a 7-day cooldown (30 for majors); each one is reviewed like any PR |
 | `.github/pull_request_template.md` | The PR body every task follows |
 | `HUMANS.md` | The human's side of the workflow: review, merge, test, release |
 
