@@ -183,9 +183,11 @@ jobs:
         run: npm ci --ignore-scripts --no-fund
 
       # No signing key here: this job runs npm packages and build scripts.
-      # The sign job signs the updater packages afterwards.
+      # The sign job signs the updater packages afterwards. `-- --locked` goes
+      # to cargo: the build uses exactly the committed Cargo.lock, which the
+      # rust-deps job checked.
       - name: Build
-        run: npm run tauri build -- ${{ matrix.args }}
+        run: npm run tauri build -- ${{ matrix.args }} -- --locked
 
       # What Check for Updates installs on a Mac: the app in a .tar.gz, the
       # app folder at its top, as Tauri's own updater bundle has it (the
