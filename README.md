@@ -85,8 +85,8 @@ one out on its own platform.
   are pointed to the release page. Nothing is checked unless you ask.
 - **Looks at home:** the GNOME Files 50 look on Linux, the macOS 26 Tahoe
   look on a Mac, light and dark. Files and folders show your system's own
-  icons: Finder's on a Mac (real app icons, custom folder icons), your icon
-  theme on Linux.
+  icons: Finder's on a Mac (real app icons, custom folder icons, and folders
+  with paper showing once they hold something), your icon theme on Linux.
 - Grid and list views, tabs, thumbnails, Space to preview, batch rename,
   extract and compress archives, Starred, Recent, bookmarks, a progress popover
   with Cancel, and fast 10,000-item folders. **Open With…** finds an

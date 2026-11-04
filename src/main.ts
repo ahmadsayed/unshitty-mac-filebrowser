@@ -30,7 +30,7 @@ import {
 } from "./api";
 import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
-import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl, preloadNativeIcons } from "./native-icons";
+import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl, preloadNativeIcons, recheckNativeIcons } from "./native-icons";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
@@ -710,6 +710,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
     }
   }
 
+  folderIconsChecked.clear();
   await nativeIconsBeforeShowing(loc, next);
 
   if (opts.history !== "none" && location && loc !== location) {
@@ -761,6 +762,7 @@ async function reload(select?: string[]): Promise<void> {
     entries = await listLocation(location);
     listingError = null;
     sharePage = null;
+    folderIconsChecked.clear();
   } catch (err) {
     if (await listingFailed(err)) return;
   }
@@ -1669,8 +1671,25 @@ const ICON_WAIT_SORT_MAX = 5000;
 function nativeIconsBeforeShowing(loc: string, next: Entry[]): Promise<void> {
   if (loc === NETWORK || next.length > ICON_WAIT_SORT_MAX) return Promise.resolve();
   const first = next.length <= ICON_WAIT_ITEMS ? next : [...next].sort(compareEntries).slice(0, ICON_WAIT_ITEMS);
-  const paths = first.filter((e) => !isRemotePath(e.path)).map((e) => e.path);
-  return paths.length ? preloadNativeIcons(paths, nativeIconPx(), ICON_WAIT_MS) : Promise.resolve();
+  const local = first.filter((e) => !isRemotePath(e.path));
+  if (!local.length) return Promise.resolve();
+  const px = nativeIconPx();
+  // The folders' icons cached on an earlier visit are asked for again in the
+  // same wait, so going back shows them as they are now, not swapped later.
+  const folders = isMac ? local.filter((e) => e.is_dir).map((e) => e.path) : [];
+  for (const path of folders) folderIconsChecked.add(path);
+  const recheck = recheckNativeIcons(folders, px, refreshItemIcons);
+  return Promise.all([
+    preloadNativeIcons(local.map((e) => e.path), px, ICON_WAIT_MS),
+    Promise.race([recheck, new Promise<void>((resolve) => setTimeout(resolve, ICON_WAIT_MS))]),
+  ]).then(() => {});
+}
+
+/** Redraw items whose OS icon changed, loading it at the current size too:
+ *  a zoom may have come while it was asked for. */
+function refreshItemIcons(paths: string[]): void {
+  paths.forEach(patchIcon);
+  loadNativeIcons(paths, nativeIconPx(), (ready) => ready.forEach(patchIcon));
 }
 
 /** Ask for the OS icons of the rendered items. */
@@ -1678,6 +1697,26 @@ function loadItemIcons(start: number, end: number): void {
   const paths: string[] = [];
   for (let i = start; i <= end; i++) if (wantsNativeIcon(shown[i])) paths.push(shown[i].path);
   if (paths.length) loadNativeIcons(paths, nativeIconPx(), (ready) => ready.forEach(patchIcon));
+  recheckFolderIcons(start, end);
+}
+
+/** Rendered folders whose OS icon was asked for again since the listing loaded. */
+const folderIconsChecked = new Set<string>();
+
+/** On macOS a folder's icon shows whether it holds anything (Finder's full
+ *  folder), so an icon cached on an earlier visit is asked for again, once
+ *  per listing, for the folders rendered. */
+function recheckFolderIcons(start: number, end: number): void {
+  if (!isMac) return;
+  const folders: string[] = [];
+  for (let i = start; i <= end; i++) {
+    const e = shown[i];
+    if (e?.is_dir && wantsNativeIcon(e) && !folderIconsChecked.has(e.path)) {
+      folderIconsChecked.add(e.path);
+      folders.push(e.path);
+    }
+  }
+  if (folders.length) void recheckNativeIcons(folders, nativeIconPx(), refreshItemIcons);
 }
 
 /** Request thumbnails for the rendered items; queued ones scrolled away are dropped. */
@@ -2123,6 +2162,7 @@ function updateFloatingBar(): void {
 function fetchCount(path: string): void {
   counts.set(path, null);
   countsVersion++;
+  if (isMac && !isRemotePath(path)) void recheckNativeIcons([path], nativeIconPx(), refreshItemIcons);
   itemCounts([path], prefs.showHidden).then(([summary]) => {
     rememberSummary(path, summary);
     updateFloatingBar();

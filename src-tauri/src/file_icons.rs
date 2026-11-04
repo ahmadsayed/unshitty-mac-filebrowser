@@ -20,6 +20,10 @@ pub enum Source {
     /// A path macOS draws its own icon for: apps, special folders, volumes,
     /// items with a custom icon.
     OsPath(PathBuf),
+    /// A plain folder with something in it: since macOS 26 Finder draws it
+    /// with paper showing, and an empty one without.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    FullFolder,
     /// Icon names to look up in the icon theme, best first (Linux).
     ThemeNames(Vec<String>),
     /// An image file set as this item's icon (Linux: GIO's custom icon).
@@ -32,6 +36,7 @@ impl Source {
         match self {
             Source::OsType(kind) => format!("type:{kind}"),
             Source::OsPath(path) => format!("path:{}", path.display()),
+            Source::FullFolder => "full-folder".into(),
             Source::ThemeNames(names) => format!("names:{}", names.join(",")),
             Source::IconFile(path) => format!("file:{}", path.display()),
         }
@@ -209,14 +214,64 @@ fn mac_source(path: &Path, is_dir: bool, executable: bool, custom_icon: bool, ho
     })
 }
 
+/// A plain folder's icon by what it holds: Finder's full folder when it has
+/// something in it. `has_items` only runs for plain folders; the ones macOS
+/// draws one by one already show their own state.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn with_folder_contents(source: Source, has_items: impl FnOnce() -> bool) -> Source {
+    match source {
+        Source::OsType(kind) if kind == "public.folder" => {
+            if has_items() {
+                Source::FullFolder
+            } else {
+                Source::OsType(kind)
+            }
+        }
+        source => source,
+    }
+}
+
+/// Whether a folder holds anything Finder shows. Hidden items don't count:
+/// Finder leaves a `.DS_Store` in most folders it opens. Stops at the first
+/// visible item; an unreadable folder counts as empty.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn has_visible_items(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|mut entries| {
+        entries.any(|entry| entry.is_ok_and(|e| !e.file_name().as_encoded_bytes().starts_with(b".")))
+    })
+}
+
+/// A folder of the app's own under `base` with one item in it, for macOS to
+/// draw the full folder from: a user's folder could carry a tag colour or a
+/// custom symbol. No dot in its name, or Finder would draw the plain folder.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn full_folder_sample(base: &Path) -> Option<PathBuf> {
+    let dir = base.join("File Browser full folder icon");
+    std::fs::create_dir_all(&dir).ok()?;
+    let item = dir.join("item");
+    if !item.exists() {
+        std::fs::write(&item, b"").ok()?;
+    }
+    has_visible_items(&dir).then_some(dir)
+}
+
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn is_special_folder(path: &Path, home: Option<&Path>) -> bool {
     let parent = path.parent();
     parent.is_none()
         || parent == Some(Path::new("/"))
         || parent == Some(Path::new("/Volumes"))
-        || home.is_some_and(|home| path == home || parent == Some(home))
+        || home.is_some_and(|home| {
+            path == home
+                || parent == Some(home)
+                    && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| HOME_FOLDERS.contains(&n))
+        })
 }
+
+/// The folders in the home folder Finder draws with their own icon.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const HOME_FOLDERS: [&str; 10] =
+    ["Applications", "Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures", "Public", "Sites"];
 
 /// Whether Finder's flags (the `com.apple.FinderInfo` attribute) say the item
 /// has a custom icon: `kHasCustomIcon` in the big-endian flags at byte 8.
@@ -234,7 +289,8 @@ fn source_for(path: &Path, home: Option<&Path>) -> Option<Source> {
         .flatten()
         .is_some_and(|info| finder_info_has_custom_icon(&info));
     let executable = meta.permissions().mode() & 0o111 != 0;
-    Some(mac_source(path, meta.is_dir(), executable, custom_icon, home))
+    let source = mac_source(path, meta.is_dir(), executable, custom_icon, home);
+    Some(with_folder_contents(source, || has_visible_items(path)))
 }
 
 /// PNG of the icon macOS shows for `source`, `size` pixels square.
@@ -255,6 +311,12 @@ fn render(source: &Source, size: u32) -> Option<Vec<u8>> {
             #[allow(deprecated)]
             Source::OsType(kind) => workspace.iconForFileType(&NSString::from_str(kind)),
             Source::OsPath(path) => workspace.iconForFile(&NSString::from_str(path.to_str()?)),
+            // Without the sample folder, the plain folder rather than none.
+            #[allow(deprecated)]
+            Source::FullFolder => match full_folder_sample(&std::env::temp_dir()).and_then(|s| s.to_str().map(String::from)) {
+                Some(sample) => workspace.iconForFile(&NSString::from_str(&sample)),
+                None => workspace.iconForFileType(&NSString::from_str("public.folder")),
+            },
             _ => return None,
         };
         let px = size as isize;
@@ -707,6 +769,53 @@ mod tests {
         assert!(own("/Users/me/Work/Logo folder", true, true));
         assert!(own("/Users/me/Work/notes.txt", false, true));
         assert!(!own("/Users/me/Work/Logo folder", true, false));
+        // Only the folders Finder marks in the home folder: others there are
+        // plain folders, whose icon follows what they hold.
+        assert!(own("/Users/me/Library", true, false));
+        assert!(!own("/Users/me/Code", true, false));
+        assert_eq!(
+            with_folder_contents(mac_source(Path::new("/Users/me/Code"), true, false, false, Some(home)), || true),
+            Source::FullFolder
+        );
+    }
+
+    #[test]
+    fn mac_folders_with_items_show_finders_full_folder() {
+        let plain = Source::OsType("public.folder".into());
+        assert_eq!(with_folder_contents(plain.clone(), || true), Source::FullFolder);
+        assert_eq!(with_folder_contents(plain.clone(), || false), plain);
+        assert_ne!(Source::FullFolder.id(), plain.id());
+        // Folders macOS draws one by one keep their own icon, and their
+        // contents aren't read at all.
+        let special = Source::OsPath(PathBuf::from("/Users/me/Downloads"));
+        let unread = || -> bool { panic!("contents read for a folder with its own icon") };
+        assert_eq!(with_folder_contents(special.clone(), unread), special);
+        assert_eq!(with_folder_contents(Source::OsType("pdf".into()), unread), Source::OsType("pdf".into()));
+    }
+
+    #[test]
+    fn only_visible_items_make_a_folder_full() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!has_visible_items(dir.path()));
+        // Finder leaves a .DS_Store in most folders it opens.
+        std::fs::write(dir.path().join(".DS_Store"), "").unwrap();
+        std::fs::create_dir(dir.path().join(".hidden")).unwrap();
+        assert!(!has_visible_items(dir.path()));
+        std::fs::create_dir(dir.path().join("Sub")).unwrap();
+        assert!(has_visible_items(dir.path()));
+        assert!(!has_visible_items(&dir.path().join("missing")));
+    }
+
+    #[test]
+    fn the_full_folder_sample_has_one_visible_item() {
+        let base = tempfile::tempdir().unwrap();
+        let sample = full_folder_sample(base.path()).expect("sample folder");
+        assert!(has_visible_items(&sample));
+        // No dot in its name: Finder draws a folder whose name ends in an
+        // extension as the plain one.
+        assert_eq!(sample.extension(), None);
+        // Asking again reuses it.
+        assert_eq!(full_folder_sample(base.path()), Some(sample));
     }
 
     #[test]

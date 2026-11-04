@@ -1046,7 +1046,11 @@ function mockIconId(path: string): string | null {
   if (!nativeIconMock.enabled || /^(gdrive|share|sftp):\/\//.test(path)) return null;
   const node = lookup(path);
   if (!node) return null;
-  if (node.dir) return /\.app$/i.test(path) ? `path:${path}` : "type:public.folder";
+  if (node.dir) {
+    if (/\.app$/i.test(path)) return `path:${path}`;
+    // As Finder on macOS 26: a folder with visible items shows paper in it.
+    return Object.keys(node.children).some((name) => !name.startsWith(".")) ? "full-folder" : "type:public.folder";
+  }
   const ext = /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase();
   return `type:${ext ?? "public.data"}`;
 }
