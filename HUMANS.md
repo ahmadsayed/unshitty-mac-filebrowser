@@ -67,6 +67,20 @@ gh pr checkout <n>              # try a PR's branch locally
   Before that, `web/file-get/serve.sh` serves the page from your computer
   to a phone on the same Wi-Fi, and prints how to start the app.
 
+## Dependency updates
+
+Dependabot opens update PRs every week: npm packages, the Rust crates of the
+app and of the phone page, and the GitHub Actions. It only offers a version
+once it has been public for 7 days (30 for a new major), so a hijacked
+release is usually pulled before it gets here; security fixes come at once.
+Nothing runs on these PRs (there is no CI on pull requests), so before you
+merge one, ask an agent to "check the Dependabot PR #<n>": it runs the tests
+and the lockfile check on the branch and tells you what changed. The next
+release's check job runs everything again anyway.
+
+Turn on, once, in Settings → Code security: Dependabot alerts and Dependabot
+security updates.
+
 ## Releases
 
 1. Ask: "release 0.5.2". The agent opens a `chore: release 0.5.2` PR; you

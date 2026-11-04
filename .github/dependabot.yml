@@ -1,0 +1,53 @@
+# Dependabot: weekly update PRs for npm, both Cargo projects and the
+# workflows' actions (kept pinned to commit SHAs). Nothing merges by itself:
+# each PR waits for the human, like any other (HUMANS.md).
+#
+# Cooldown: a version is offered only once it has been public for 7 days
+# (30 for a new major), so a hijacked release, usually caught and pulled
+# within days, doesn't reach this repository. Security updates skip the
+# cooldown and arrive at once.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+    open-pull-requests-limit: 5
+    groups:
+      # Keep the JS side of Tauri on the same minor as the Rust crates.
+      tauri:
+        patterns: ["@tauri-apps/*"]
+      build-tools:
+        patterns: ["vite", "vitest", "@vitest/*", "typescript", "jsdom"]
+
+  - package-ecosystem: cargo
+    directories:
+      - /src-tauri
+      - /web/file-get
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+    open-pull-requests-limit: 5
+    groups:
+      tauri:
+        patterns: ["tauri", "tauri-*", "wry", "tao"]
+      iroh:
+        patterns: ["iroh", "iroh-*", "n0-*", "bao-tree"]
+      # Everything else that isn't a new major, in one weekly PR.
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

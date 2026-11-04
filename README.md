@@ -125,7 +125,7 @@ Fork it, change it, ship it. You need Rust and Node.js (and, on Linux, the
 WebKitGTK 4.1 headers: `libwebkit2gtk-4.1-dev` or `webkit2gtk4.1-devel`).
 
 ```sh
-npm install
+npm ci                 # exactly the committed package-lock.json
 npm run tauri dev      # run it
 npm run tauri build    # package it
 npm run dev:mock       # UI only, in a browser, with a fake filesystem

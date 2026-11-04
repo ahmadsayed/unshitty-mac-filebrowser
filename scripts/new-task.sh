@@ -34,7 +34,7 @@ git -C "$root" worktree add --quiet -b "$branch" "$dir" origin/main
 if [[ -d $root/node_modules ]]; then
   ln -s "$root/node_modules" "$dir/node_modules"
 else
-  echo "note: no node_modules in $root; run npm install there first" >&2
+  echo "note: no node_modules in $root; run npm ci there first" >&2
 fi
 
 echo "Task worktree: $dir"

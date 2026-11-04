@@ -5,7 +5,6 @@ src-tauri/target/
 .superpowers/
 .DS_Store
 .superpowers/
-package-lock.json
 coverage/
 
 # Task worktrees (scripts/new-task.sh) and Claude Code's own.
