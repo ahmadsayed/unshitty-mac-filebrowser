@@ -43,6 +43,7 @@ import { linuxProgramItems } from "./linux-programs";
 import { qrShareItems } from "./qr-share";
 import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type PreviewPlace } from "./preview-actions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
+import { acceptsNewItems, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
 // ---------------------------------------------------------------------------
@@ -92,13 +93,11 @@ function savePrefs(): void {
 // ---------------------------------------------------------------------------
 
 /** Sidebar places that aren't folders. Recent and Starred list items from anywhere; Network lists received shares and SSH servers. */
-type Pseudo = "recent" | "starred" | "network";
 const PSEUDO: Record<Pseudo, { label: string; icon: string; title: string; text: string }> = {
   recent: { label: "Recent", icon: "document-open-recent", title: "No Recent Files", text: "" },
   starred: { label: "Starred", icon: "starred", title: "Starred files will appear here", text: "" },
   network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Enter a server address or paste a share link below." },
 };
-const PSEUDO_PREFIX = "pseudo:";
 const RECENT = `${PSEUDO_PREFIX}recent`;
 const STARRED = `${PSEUDO_PREFIX}starred`;
 const NETWORK = `${PSEUDO_PREFIX}network`;
@@ -307,16 +306,6 @@ function networkStatus(entry: Entry): { cls: string; label: string } {
   return { cls: entry.shareStatus ?? "", label: shareStatusLabel(entry.shareStatus) };
 }
 
-/** Shared folders are read only: no New Folder, Paste, Rename, Trash or drops. */
-function isReadOnlyLocation(path: string): boolean {
-  return isSharePath(path) || isSftpPath(path);
-}
-
-/** A path on this machine or a mounted volume, not a place or a remote. */
-function isLocalLocation(path: string): boolean {
-  return !isPseudo(path) && !isCloud(path) && !isReadOnlyLocation(path);
-}
-
 function shareStatusLabel(status: Entry["shareStatus"]): string {
   switch (status) {
     case "online":
@@ -353,10 +342,6 @@ function joinPath(dir: string, name: string): string {
   if (isCloud(dir)) return joinCloudPath(dir, name);
   if (isSftpPath(dir)) return joinSftpPath(dir, name);
   return dir.replace(/\/+$/, "") + "/" + name;
-}
-
-function isPseudo(loc: string): loc is `pseudo:${Pseudo}` {
-  return loc.startsWith(PSEUDO_PREFIX);
 }
 
 /** Pseudo locations that list entries (Recent, Starred, Network). */
@@ -853,7 +838,7 @@ async function refreshSftpServers(): Promise<void> {
 
 /** The folder that keeps versions for `loc`, if any (never for Trash or Recent). */
 function lookupVersionedRoot(loc: string): Promise<string | null> {
-  if (isCloud(loc) || isSharePath(loc) || isSftpPath(loc) || isPseudo(loc) || (!!trashPath && loc === trashPath)) return Promise.resolve(null);
+  if (!mayHaveVersions(loc, trashPath)) return Promise.resolve(null);
   return versionedRoot(loc).catch(() => null);
 }
 
@@ -1125,7 +1110,7 @@ function closeSearch(rerender = true): void {
 
 /** Recursive name search is for local folders; pseudo, Drive and shares filter in place. */
 function canSearchRecursively(): boolean {
-  return !isPseudo(location) && !isCloud(location) && !isSharePath(location) && !isSftpPath(location) && !inTrash();
+  return searchesRecursively(location, trashPath);
 }
 
 function selectFirstMatch(): void {
@@ -2023,7 +2008,7 @@ const countsInFlight = new Set<string>();
 async function requestCounts(paths: string[], resortWhenDone: boolean): Promise<void> {
   const loc = location;
   // Remote items have no local item count; Drive returns null, Network has no size cell.
-  const pending = paths.filter((p) => !isCloud(p) && !isSharePath(p) && !isSftpPath(p) && !counts.has(p) && !countsInFlight.has(p));
+  const pending = paths.filter((p) => !isRemotePath(p) && !counts.has(p) && !countsInFlight.has(p));
   if (pending.length === 0) return;
   pending.forEach((p) => countsInFlight.add(p));
   for (let i = 0; i < pending.length; i += 400) {
@@ -2199,7 +2184,7 @@ async function openEntry(entry: Entry): Promise<void> {
     cloudOpenNoticeShown = true;
     showToast("Opened a local copy. Changes are not uploaded to Google Drive.");
   }
-  if (!isAppBundle(entry) && !isCloud(entry.path) && !isSharePath(entry.path) && !isSftpPath(entry.path)) addRecent(entry.path).catch(() => {});
+  if (!isAppBundle(entry) && !isRemotePath(entry.path)) addRecent(entry.path).catch(() => {});
 }
 
 /** Enter / Open: one item activates; several open every file (folders can't all be shown). */
@@ -2434,7 +2419,7 @@ function openLocationItem(single: Entry | null): MenuItem {
 
 /** Duplicate every local selected item beside itself. */
 async function duplicateSelection(): Promise<void> {
-  const sel = selectedEntries().filter((entry) => !isCloud(entry.path) && !isSharePath(entry.path));
+  const sel = selectedEntries().filter((entry) => !isRemotePath(entry.path));
   if (sel.length === 0) return;
   let last = "";
   let done = 0;
@@ -2477,7 +2462,7 @@ async function freeDocumentName(dir: string, name: string): Promise<string> {
 
 /** New Document: an empty text file or a copy of a file from ~/Templates. */
 async function showNewDocumentDialog(): Promise<void> {
-  if (isPseudo(location) || isReadOnlyLocation(location) || listingError !== null) return;
+  if (!acceptsNewItems(location) || listingError !== null) return;
   const extra = document.createElement("div");
   extra.className = "app-list";
   const loading = document.createElement("p");
@@ -2552,7 +2537,7 @@ async function showNewDocumentDialog(): Promise<void> {
 
 /** Compress the selection into a new zip/tar.gz/tar.xz beside it. */
 function showCompressDialog(sel: Entry[]): void {
-  if (sel.length === 0 || sel.some((entry) => isCloud(entry.path) || isSharePath(entry.path))) return;
+  if (sel.length === 0 || sel.some((entry) => isRemotePath(entry.path))) return;
   const dirs = new Set(sel.map((entry) => parentOf(entry.path)));
   if (dirs.size !== 1) {
     showToast("Compress works inside one folder.");
@@ -2634,7 +2619,7 @@ function showCompressDialog(sel: Entry[]): void {
 /** Preview for a single local file; Open With for a single local file or
  * folder (an IDE or a terminal can take a folder: the user picks the app). */
 function previewAndOpenWithItems(single: Entry | null): MenuItem[] {
-  const local = single && !isCloud(single.path) && !isSharePath(single.path) && !isSftpPath(single.path) ? single : null;
+  const local = single && !isRemotePath(single.path) ? single : null;
   const file = local && !local.is_dir ? local : null;
   return [
     ...macDmgItems(single, isMac && !inTrash()),
@@ -2670,7 +2655,7 @@ async function freeFolderName(dir: string, base: string): Promise<string> {
 
 /** Extract an archive into its folder or a new folder beside it. */
 async function extractArchiveEntry(entry: Entry, toNewFolder: boolean): Promise<void> {
-  if (isCloud(entry.path) || isSharePath(entry.path)) return;
+  if (isRemotePath(entry.path)) return;
   const dir = parentOf(entry.path);
   const dest = toNewFolder ? joinPath(dir, await freeFolderName(dir, archiveStem(entry.name))) : dir;
   showToast(`Extracting “${entry.name}”…`);
@@ -2738,12 +2723,12 @@ function starredItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
 function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
   const intoFolder = single?.is_dir && !isAppBundle(single) ? single : null;
   const app = single && isAppBundle(single) ? single : null;
-  const shareable = intoFolder && !isCloud(intoFolder.path) && !isSharePath(intoFolder.path) && !inTrash();
+  const shareable = intoFolder && !isRemotePath(intoFolder.path) && !inTrash();
   const renameable = sel.length > 1 || !!single;
   return [
     { label: "Open", action: activateSelection },
     ...previewAndOpenWithItems(single),
-    ...(single && !single.is_dir && !isCloud(single.path) && !isSharePath(single.path) && isExtractableArchive(single.name)
+    ...(single && !single.is_dir && !isRemotePath(single.path) && isExtractableArchive(single.name)
       ? [
           { label: "Extract Here", action: () => void extractArchiveEntry(single, false) },
           {
@@ -3094,7 +3079,7 @@ async function showProperties(entry: Entry): Promise<void> {
 
   // Closing the dialog stops the size walk, which can take minutes on Home.
   const walk = sizeValue ? await newFolderWalk().catch(() => 0) : 0;
-  const canChangePermissions = !isCloud(info.path) && !isSharePath(info.path);
+  const canChangePermissions = !isRemotePath(info.path);
   const propertiesDialog = openDialog({
     heading: "Properties",
     className: "properties-dialog",
@@ -3204,7 +3189,7 @@ async function copyLocation(): Promise<void> {
 function setClipboard(mode: "copy" | "cut"): void {
   const sel = selectedEntries();
   if (sel.length === 0) return;
-  if (sel.some((entry) => isSharePath(entry.path) || isSftpPath(entry.path))) {
+  if (sel.some((entry) => isReadOnlyLocation(entry.path))) {
     showToast(isSftpPath(sel[0].path) ? "Copying from SSH servers comes next." : "Copying out of a shared folder comes next.");
     return;
   }
@@ -3462,7 +3447,7 @@ async function paste(destDir: string): Promise<void> {
 }
 
 function inTrash(): boolean {
-  return !!trashPath && (location === trashPath || location.startsWith(trashPath + "/"));
+  return isInTrash(location, trashPath);
 }
 
 async function trashSelection(): Promise<void> {
@@ -3687,7 +3672,7 @@ function volumeRoot(path: string): string {
 /** The operation a drop would do, or null if it would do nothing useful. */
 function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, devices?: Map<string, number>): DropOp | null {
   const dir = target.dir;
-  if (isReadOnlyLocation(dir) || sources.some(isSharePath) || sources.some(isSftpPath)) return null;
+  if (isReadOnlyLocation(dir) || sources.some(isReadOnlyLocation)) return null;
   // Into itself or its own subfolder: refused.
   if (sources.some((src) => dir === src || dir.startsWith(src + "/"))) return null;
   // Drive items go to Drive's Trash with Move to Trash, not the app's Trash.
@@ -3781,7 +3766,7 @@ function armDrag(start: MouseEvent): void {
 function beginDrag(e: MouseEvent): void {
   const sel = selectedEntries();
   if (sel.length === 0) return;
-  if (sel.some((entry) => isSharePath(entry.path) || isSftpPath(entry.path))) {
+  if (sel.some((entry) => isReadOnlyLocation(entry.path))) {
     showToast(isSftpPath(sel[0].path) ? "Copying from SSH servers comes next." : "Copying out of a shared folder comes next.");
     return;
   }
@@ -4337,7 +4322,7 @@ function startRename(entry: Entry): void {
 // ---------------------------------------------------------------------------
 
 function promptNewFolder(): void {
-  if (isPseudo(location) || isReadOnlyLocation(location) || listingError !== null) return;
+  if (!acceptsNewItems(location) || listingError !== null) return;
   const inside = !!versionedRootPath;
   // Keep Versions never applies to Drive (spec D9).
   const versionsRow = isCloud(location)
@@ -4438,7 +4423,7 @@ async function showPreview(entry: Entry): Promise<void> {
   previewBody.replaceChildren();
   renderPreviewActions(entry);
 
-  if (isCloud(entry.path) || isSharePath(entry.path) || isSftpPath(entry.path)) {
+  if (isRemotePath(entry.path)) {
     previewEmpty(entry, "Preview isn't available for remote items.");
     return;
   }
@@ -4621,7 +4606,7 @@ function showOpenWith(entry: Entry): void {
     },
     errorText: cleanError,
     opened(file) {
-      if (!isCloud(file.path) && !isSharePath(file.path)) addRecent(file.path).catch(() => {});
+      if (!isRemotePath(file.path)) addRecent(file.path).catch(() => {});
     },
   });
 }
@@ -5008,7 +4993,7 @@ function shareAccessHtml(info: ShareInfo): string {
 
 /** The Share dialog for a local folder (and, later, Manage Sharing). */
 async function showShareDialog(entry: Entry): Promise<void> {
-  if (!entry.is_dir || isReadOnlyLocation(entry.path) || isCloud(entry.path) || inTrash()) return;
+  if (!entry.is_dir || isRemotePath(entry.path) || inTrash()) return;
   if (!(await ensureShareName())) return;
 
   // A big folder takes a moment to walk and hash, so say so instead of
