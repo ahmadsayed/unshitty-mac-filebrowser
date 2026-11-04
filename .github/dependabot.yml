@@ -33,6 +33,13 @@ updates:
       default-days: 7
       semver-major-days: 30
     open-pull-requests-limit: 5
+    ignore:
+      # bao-tree's types are part of iroh-blobs' API (ChunkRanges in
+      # share/guest.rs), so it must stay on the version iroh-blobs uses: a
+      # bump on its own (#109, 0.16 -> 0.17) doesn't compile. In 0.x a minor
+      # is a breaking release; move it by hand with iroh-blobs.
+      - dependency-name: bao-tree
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
       tauri:
         patterns: ["tauri", "tauri-*"]
