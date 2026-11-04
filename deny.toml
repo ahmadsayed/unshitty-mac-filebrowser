@@ -62,6 +62,9 @@ wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
 deny = [
+  # iroh-blobs' API hands out bao-tree types, so the app must use the same
+  # bao-tree as iroh-blobs; two in the lock mean they drifted apart (#109).
+  { crate = "bao-tree", deny-multiple-versions = true, reason = "must match iroh-blobs' bao-tree" },
   # Native OpenSSL only where ssh2 needs it (vendored on macOS); everything
   # else must use rustls.  Uncomment to enforce:
   # { crate = "native-tls", reason = "use rustls" },
