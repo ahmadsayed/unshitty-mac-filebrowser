@@ -40,6 +40,14 @@ updates:
       # is a breaking release; move it by hand with iroh-blobs.
       - dependency-name: bao-tree
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # gio and gtk are the gtk-rs crates Tauri's GTK3 stack is built on
+      # (0.18); on their own they pull in a second set of GLib bindings, and
+      # gio 0.22 (#117) moved DesktopAppInfo out, breaking the Linux build.
+      # They move by hand when Tauri does.
+      - dependency-name: gio
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: gtk
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
       tauri:
         patterns: ["tauri", "tauri-*"]

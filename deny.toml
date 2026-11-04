@@ -65,6 +65,9 @@ deny = [
   # iroh-blobs' API hands out bao-tree types, so the app must use the same
   # bao-tree as iroh-blobs; two in the lock mean they drifted apart (#109).
   { crate = "bao-tree", deny-multiple-versions = true, reason = "must match iroh-blobs' bao-tree" },
+  # One set of GLib bindings: the gtk-rs 0.18 that Tauri's GTK3 stack uses (#117).
+  { crate = "glib", deny-multiple-versions = true, reason = "must match Tauri's gtk-rs" },
+  { crate = "gio", deny-multiple-versions = true, reason = "must match Tauri's gtk-rs" },
   # Native OpenSSL only where ssh2 needs it (vendored on macOS); everything
   # else must use rustls.  Uncomment to enforce:
   # { crate = "native-tls", reason = "use rustls" },
