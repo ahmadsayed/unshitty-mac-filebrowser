@@ -35,7 +35,7 @@ updates:
     open-pull-requests-limit: 5
     groups:
       tauri:
-        patterns: ["tauri", "tauri-*", "wry", "tao"]
+        patterns: ["tauri", "tauri-*"]
       iroh:
         patterns: ["iroh", "iroh-*", "n0-*", "bao-tree"]
       # Everything else that isn't a new major, in one weekly PR.
@@ -49,5 +49,8 @@ updates:
     cooldown:
       default-days: 7
     groups:
+      # Minor and patch bumps together; a new major (which can change the
+      # Node runtime an action needs) gets a PR of its own.
       actions:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
