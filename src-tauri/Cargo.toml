@@ -65,7 +65,7 @@ unicode-normalization = "0.1.26"
 tempfile = "3"
 # tests/release_signing.rs checks release signatures as tauri-plugin-updater
 # does; both are already in Cargo.lock through tauri.
-base64 = "0.22"
+base64 = "0.23"
 minisign-verify = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
