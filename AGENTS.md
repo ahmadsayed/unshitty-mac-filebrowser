@@ -366,9 +366,10 @@ Release only when the human asks, and only after something significant.
    or worktree holds work meant for it, no draft from an earlier attempt
    lingers.
 2. In a `chore` task (`release-X.Y.Z`), bump the version in `package.json`,
-   `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` (the `filebrowser` package
-   only), `src-tauri/tauri.conf.json` and `docs/linux-appimage.md`, and open
-   the PR `chore: release X.Y.Z` listing what's new. The human merges it.
+   `package-lock.json` (its two root entries), `src-tauri/Cargo.toml`,
+   `src-tauri/Cargo.lock` (the `filebrowser` package only),
+   `src-tauri/tauri.conf.json` and `docs/linux-appimage.md`, and open the PR
+   `chore: release X.Y.Z` listing what's new. The human merges it.
 3. Tag `vX.Y.Z` (annotated) on the merged commit of `origin/main` and push
    the tag. The Release workflow
    checks the tag matches the version, runs the tests, builds macOS and Linux
