@@ -66,6 +66,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `scripts/new-task.sh`, `scripts/end-task.sh` | A worktree per task in `.worktrees/<name>`; finalized (worktree and branches deleted) once its PR is merged |
 | `scripts/mock-screenshot.mjs`, `scripts/pr-screenshots.sh` | PR screenshots: capture the mock preview, upload to the `captures` branch |
 | `scripts/sign-updater.sh` | Signs the updater packages with minisign in the Release workflow's `sign` job, the only job that gets the key; checked as the updater checks it by `src-tauri/tests/release_signing.rs` |
+| `scripts/check-macos-libraries.sh` | Refuses a macOS build that loads a library from outside macOS (0.7.5 loaded the runner's Homebrew liblzma and couldn't open); run by the Release workflow after the macOS build |
 | `.github/pull_request_template.md` | The PR body every task follows |
 | `HUMANS.md` | The human's side of the workflow: review, merge, test, release |
 | `deny.toml` | cargo-deny for both Rust projects: RustSec advisories, licences compatible with GPL-3.0-or-later, crates.io only; run by the Release workflow's `rust-deps` job |
