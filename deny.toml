@@ -50,6 +50,11 @@ allow = [
   "MPL-2.0",              # file-level copyleft, GPL-compatible (MPL 2.0 §3.3)
   "Unicode-3.0",          # unicode-ident, ICU data tables
   "CDLA-Permissive-2.0",  # webpki-roots: Mozilla's CA list as data
+  # libbz2-rs-sys (bzip2 0.6, .tar.bz2 archives): libbzip2's own BSD-style
+  # licence (keep the notice, mark altered versions, no endorsement), as
+  # permissive as zlib's. bzip2 0.5 bundled the C libbzip2 under it too.
+  # Allowed by the maintainer for 0.7.5.
+  "bzip2-1.0.6",
   "GPL-3.0-or-later",     # our own crates
 ]
 confidence-threshold = 0.9
