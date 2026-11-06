@@ -41,7 +41,7 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
 bzip2 = "0.6"
-xz2 = "0.1"
+xz2 = { version = "0.1", features = ["static"] }
 blake3 = "1.8.7"
 notify = "8.2.0"
 similar = "3.2.0"

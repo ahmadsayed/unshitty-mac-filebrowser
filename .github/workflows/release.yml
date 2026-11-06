@@ -189,6 +189,12 @@ jobs:
       - name: Build
         run: npm run tauri build -- ${{ matrix.args }} -- --locked
 
+      # The runner has Homebrew; a library linked from it (0.7.5 loaded
+      # Homebrew's liblzma) makes the app fail to open on users' Macs.
+      - name: Check the app loads only macOS's own libraries
+        if: runner.os == 'macOS'
+        run: scripts/check-macos-libraries.sh "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/File Browser.app/Contents/MacOS/filebrowser"
+
       # What Check for Updates installs on a Mac: the app in a .tar.gz, the
       # app folder at its top, as Tauri's own updater bundle has it (the
       # updater drops each entry's first path component). COPYFILE_DISABLE
