@@ -1,7 +1,7 @@
 // Tabs: independent locations, switching, closing and new tabs from the
 // keyboard. Each test file boots a fresh app.
 import { beforeAll, expect, test } from "vitest";
-import { $, $$, boot, click, goTo, key, names, settle, title } from "./app";
+import { $, $$, boot, click, cursorName, goTo, key, names, selectedNames, settle, title } from "./app";
 
 const HOME = "/Users/me";
 
@@ -76,4 +76,27 @@ test("⌘W closes the active tab and Ctrl+Page Down cycles", async () => {
   await settle(20);
   expect($$(".tab")).toHaveLength(2);
   expect(title()).toBe("Music");
+});
+
+test("switching back to a tab brings back its selection, cursor and anchor", async () => {
+  await goTo(HOME);
+  const all = names();
+  await key("ArrowDown"); // the first item
+  await key("ArrowDown"); // the second: cursor and anchor
+  await key("ArrowDown", { shift: true }); // second and third, cursor on the third
+  expect(selectedNames()).toEqual(all.slice(1, 3));
+  expect(cursorName()).toBe(all[2]);
+
+  const here = $$(".tab").findIndex((tab) => tab.classList.contains("active"));
+  await click($$(".tab")[1 - here]);
+  await settle(20);
+  expect(title()).not.toBe("Home");
+  await click($$(".tab")[here]);
+  await settle(20);
+  expect(title()).toBe("Home");
+  expect(selectedNames()).toEqual(all.slice(1, 3));
+  expect(cursorName()).toBe(all[2]);
+  // The anchor came back too: Shift extends the range from it.
+  await key("ArrowDown", { shift: true });
+  expect(selectedNames()).toEqual(all.slice(1, 4));
 });
