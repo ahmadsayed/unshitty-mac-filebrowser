@@ -627,3 +627,44 @@ test("New Document: a failure stays in the dialog, cleaned, with every choice en
   expect(choice("Empty Text File").disabled).toBe(false);
   expect(button("Cancel").disabled).toBe(false);
 });
+
+// ----- The F2 rename popover -----
+
+test("Rename popover: a double Enter renames once, with no error", async () => {
+  const dir = await folder("popover-twice");
+  await click(hit("a.txt"));
+  await key("F2");
+  const input = $<HTMLInputElement>(".rename-popover input");
+  const rename = $<HTMLButtonElement>(".rename-popover button");
+  await type(input, "c.txt");
+  calls().hold("rename_entry");
+  await key("Enter", { target: input });
+  await key("Enter", { target: input });
+  expect(rename.disabled).toBe(true);
+  await type(input, "d.txt");
+  expect(rename.disabled).toBe(true);
+  await click(rename);
+  calls().release("rename_entry");
+  await settle(30);
+  expect(calls().count("rename_entry")).toBe(1);
+  expect(document.querySelector(".rename-popover")).toBeNull();
+  expect(await invoke("path_exists", { path: `${dir}/c.txt` })).toBe(true);
+  expect(names()).toEqual(["b.txt", "c.txt"]);
+});
+
+test("Rename popover: a failure stays in the popover, and Enter tries again", async () => {
+  const dir = await folder("popover-fail");
+  await click(hit("a.txt"));
+  await key("F2");
+  const input = $<HTMLInputElement>(".rename-popover input");
+  await type(input, "c.txt");
+  calls().failNext("rename_entry", "Failed to rename: Permission denied (os error 13)");
+  await key("Enter", { target: input });
+  await settle(20);
+  expect($(".rename-popover .field-message").textContent).toBe("Permission denied");
+  await key("Enter", { target: input });
+  await settle(30);
+  expect(calls().count("rename_entry")).toBe(2);
+  expect(document.querySelector(".rename-popover")).toBeNull();
+  expect(await invoke("path_exists", { path: `${dir}/c.txt` })).toBe(true);
+});

@@ -3938,21 +3938,25 @@ function startRename(entry: Entry): void {
   const button = box.querySelector("button")!;
   const message = box.querySelector<HTMLElement>(".field-message")!;
   input.value = entry.name;
+  /** A rename is in flight: a second Enter or click waits for it. */
+  let renaming = false;
 
   const validate = () => {
     const v = validateName(input.value, entry.is_dir, entry.name, siblingsOf(entry));
     showValidation(v, input, message);
-    button.disabled = !v.valid;
+    button.disabled = !v.valid || renaming;
     return v.valid;
   };
 
   const submit = async () => {
-    if (!validate()) return;
+    if (renaming || !validate()) return;
+    renaming = true;
     button.disabled = true;
     let renamed: string;
     try {
       renamed = await renameInPlace(entry, input.value);
     } catch (err) {
+      renaming = false;
       showValidation({ valid: false, message: cleanError(err), error: true }, input, message);
       return;
     }
