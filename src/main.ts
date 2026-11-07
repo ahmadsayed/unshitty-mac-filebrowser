@@ -44,7 +44,7 @@ import { qrShareItems } from "./qr-share";
 import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type PreviewPlace } from "./preview-actions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { Selection, type Mark } from "./selection";
-import { fold } from "./search";
+import { arrangeSearch, fold, searchSections as arrangedSections, type SearchSection } from "./search";
 import { acceptsNewItems, canRename, hasProperties, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
@@ -417,51 +417,17 @@ function compareEntries(a: Entry, b: Entry): number {
 let shownFrom: unknown[] = [];
 
 function computeShown(): void {
-  const q = searchQuery ? fold(searchQuery.trim()) : "";
-  const from = [entries, searchResults, q, location, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && countsVersion];
+  const text = searchQuery ?? "";
+  // Keyed on the folded text: "Cafe" and "café " show the same items.
+  const from = [entries, searchResults, fold(text.trim()), location, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && countsVersion];
   if (from.every((value, i) => value === shownFrom[i])) return;
   shownFrom = from;
-  sectionStart = -1;
-  if (q && canSearchRecursively()) {
-    showSearchSections(q);
-    return;
-  }
-  const fromResults = q && searchResults !== null;
-  const list = !q ? entries : fromResults ? searchResults! : entries.filter((e) => fold(e.name).includes(q));
-  shown = [...list].sort(compareEntries);
+  ({ items: shown, sectionStart } = arrangeSearch(entries, searchResults, text, location, compareEntries, canSearchRecursively()));
 }
 
-/** A recursive search: "In This Folder" at once from the listing in memory,
- * then "In Subfolders" from the backend, nearest folders first. */
-function showSearchSections(q: string): void {
-  const here = entries.filter((e) => fold(e.name).includes(q)).sort(compareEntries);
-  const prefix = location.endsWith("/") ? location : `${location}/`;
-  const depth = (e: Entry) => e.path.slice(prefix.length).split("/").length;
-  const deeper = (searchResults ?? [])
-    .filter((e) => parentOf(e.path) !== location)
-    .sort((a, b) => depth(a) - depth(b) || compareEntries(a, b));
-  shown = [...here, ...deeper];
-  sectionStart = here.length;
-}
-
-interface SearchSection {
-  label: string;
-  start: number;
-  count: number;
-  busy: boolean;
-}
-
-/** The headed sections of a recursive search; none elsewhere. "In
- * Subfolders" shows while the search runs, and afterwards only with matches. */
+/** The headed sections of a recursive search; none elsewhere. */
 function searchSections(): SearchSection[] {
-  if (sectionStart < 0) return [];
-  const deeper = shown.length - sectionStart;
-  const out: SearchSection[] = [];
-  if (sectionStart > 0) out.push({ label: "In This Folder", start: 0, count: sectionStart, busy: false });
-  if (deeper > 0 || (searching && sectionStart > 0)) {
-    out.push({ label: "In Subfolders", start: sectionStart, count: deeper, busy: searching });
-  }
-  return out;
+  return arrangedSections(sectionStart, shown.length, searching);
 }
 
 /** Whether item `i` is one of "In This Folder", which needs no folder line. */
