@@ -707,6 +707,22 @@ test("protected sharing commands detect protection, require unlocking and preser
   mock.reset();
 });
 
+test("a sharer can drop while Network still says online", async () => {
+  const mock = (globalThis as unknown as {
+    __mockShare: { setUnreachable(v: boolean): void; reset(): void };
+  }).__mockShare;
+  mock.reset();
+  const received = await invoke<{ id: string }>("add_received", { link: "share://mockunreachable" });
+  mock.setUnreachable(true);
+  expect(await invoke("list_received")).toMatchObject([{ status: "online" }]);
+  await expect(invoke("list_dir", { path: `share://${received.id}` })).rejects.toMatch(/offline/);
+  mock.reset();
+  expect(await invoke("list_received")).toEqual([]);
+  const again = await invoke<{ id: string }>("add_received", { link: "share://mockunreachable" });
+  expect(await invoke<unknown[]>("list_dir", { path: `share://${again.id}` })).toHaveLength(2);
+  mock.reset();
+});
+
 test("listing received shares can be held like a slow sharer", async () => {
   const mock = (globalThis as unknown as { __mockShare: { holdReceived(hold: boolean): void } }).__mockShare;
   mock.holdReceived(true);

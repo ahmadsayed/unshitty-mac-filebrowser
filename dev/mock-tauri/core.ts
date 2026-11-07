@@ -293,6 +293,9 @@ let mockShareSeq = 0;
 let mockLinkSeq = 0;
 let mockSharersOnline = true;
 let mockNoAccess = false;
+// The sharer dropped after Network last asked: the status still says online,
+// but listing fails as if offline.
+let mockSharerUnreachable = false;
 
 // Simulate unlocking in memory. Real cryptography is exercised by Rust tests.
 const mockProtectedLinks = new Map<string, { ticket: string; passphrase: string }>();
@@ -328,7 +331,7 @@ function unlockMockShare(link: string, passphrase?: string): string {
 }
 
 function listShare(path: string): Entry[] {
-  if (!mockSharersOnline) throw "Ahmed is offline.";
+  if (!mockSharersOnline || mockSharerUnreachable) throw "Ahmed is offline.";
   const entries = SHARE_FILES[path];
   if (!entries) throw "The shared folder was moved or deleted.";
   return entries.map((entry) => ({
@@ -498,6 +501,9 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
   setNoAccess(value: boolean) {
     mockNoAccess = value;
   },
+  setUnreachable(value: boolean) {
+    mockSharerUnreachable = value;
+  },
   holdReceived(hold: boolean) {
     receivedHeld = hold;
     if (!hold) receivedWaiters.splice(0).forEach((resolve) => resolve());
@@ -513,6 +519,7 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     mockLinkSeq = 0;
     mockSharersOnline = true;
     mockNoAccess = false;
+    mockSharerUnreachable = false;
   },
 };
 

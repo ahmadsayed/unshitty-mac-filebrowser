@@ -1,7 +1,8 @@
 // What a folder that can't be listed turns into, depending on how the view
 // got there: the first view shows an error page, going to it keeps the view
 // and shows a toast (with Grant Access for a macOS privacy block), the path
-// entry checks before going, and a reload of a share shows its status page.
+// entry checks before going, and a share shows its status page, whether
+// Network already knew its sharer was offline or the listing found out.
 import { beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
 import { $, $$, boot, click, closeOverlays, dialogHeading, goTo, key, names, open, settle, title } from "./app";
@@ -10,7 +11,7 @@ const HOME = "/Users/me";
 const place = (label: string) => $$(".sidebar-row").find((row) => row.textContent?.trim() === label)!;
 const share = () =>
   (globalThis as unknown as {
-    __mockShare: { reset(): void; setOnline(v: boolean): void; setNoAccess(v: boolean): void };
+    __mockShare: { reset(): void; setOnline(v: boolean): void; setNoAccess(v: boolean): void; setUnreachable(v: boolean): void };
   }).__mockShare;
 
 /** The toast that says `text`, if one is on screen. */
@@ -96,5 +97,42 @@ test("reloading a share whose sharer went offline, or took access away, shows it
   await settle(20);
   expect($("#view").textContent).toContain("No Access");
   expect($("#view").textContent).toContain("Ahmed stopped sharing this folder with you.");
+  share().reset();
+});
+
+// Network still says the share is online, so these go past the status check
+// and reach the listing, which fails: listingReaction picks the status page.
+test("opening a share whose sharer dropped since Network asked shows its status page", async () => {
+  share().reset();
+  await invoke("add_received", { link: `share://${"mockdropped".padEnd(64, "a")}` });
+  await click(place("Network"));
+  await settle(20);
+  share().setUnreachable(true);
+  await open("Photos");
+  await settle(20);
+  expect(title()).toBe("Photos");
+  expect($("#view").textContent).toContain("Ahmed Is Offline");
+  share().reset();
+});
+
+test("reloading a share whose sharer dropped since Network asked shows its status page", async () => {
+  share().reset();
+  await invoke("add_received", { link: `share://${"mockdropped".padEnd(64, "a")}` });
+  await click(place("Network"));
+  await settle(20);
+  await open("Photos");
+  await settle(20);
+  expect(names()).toEqual(["Photos", "hello.txt"]);
+
+  share().setUnreachable(true);
+  await key("F5");
+  await settle(20);
+  expect($("#view").textContent).toContain("Ahmed Is Offline");
+  expect(names()).toEqual([]);
+
+  share().setUnreachable(false);
+  await key("F5");
+  await settle(20);
+  expect(names()).toEqual(["Photos", "hello.txt"]);
   share().reset();
 });
