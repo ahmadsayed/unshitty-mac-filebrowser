@@ -1,16 +1,24 @@
 // A window opened with ?path= (New Window from an SSH folder). The window
 // opens only the kinds of path it knows; anything else opens Home.
 import { beforeAll, expect, test } from "vitest";
-import { $$, boot, title } from "./app";
+import { invoke } from "../dev/mock-tauri/core";
+import { $$, boot, names, title } from "./app";
 
 beforeAll(async () => {
-  window.history.replaceState(null, "", `/?path=${encodeURIComponent("sftp://user@host/")}`);
+  // Connections belong to the app, not a window: the new window finds the
+  // server already connected.
+  await invoke("sftp_connect", { url: "user@host" });
+  window.history.replaceState(null, "", `/?path=${encodeURIComponent("sftp://user@host/home/user/Documents")}`);
   await boot();
 });
 
-test("?path= with an SSH location opens Home", () => {
-  // today's behaviour, fixed in a follow-up: the init whitelist omits
-  // sftp://, so New Window from an SSH folder opens Home.
-  expect(title()).toBe("Home");
-  expect($$("#crumbs .crumb").map((c) => c.dataset.path)).toEqual(["/Users/me"]);
+test("?path= with an SSH location opens that folder on the server", () => {
+  expect(title()).toBe("Documents");
+  expect($$("#crumbs .crumb").map((c) => c.dataset.path)).toEqual([
+    "sftp://user@host/",
+    "sftp://user@host/home",
+    "sftp://user@host/home/user",
+    "sftp://user@host/home/user/Documents",
+  ]);
+  expect(names()).toEqual(["hello.txt"]);
 });

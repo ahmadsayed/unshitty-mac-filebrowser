@@ -36,9 +36,10 @@ test("Network connects to an SSH server and browses it read-only", async () => {
   expect(title()).toBe("Network");
   expect($("#view").textContent).toContain("No Network Locations");
 
-  // A server address connects straight away when an SSH key works.
+  // A server address connects straight away when an SSH key works, and
+  // opens the user's home on the server.
   await enterAddress("user@host");
-  expect(title()).toBe("user@host");
+  expect(title()).toBe("user");
   expect(names()).toEqual(["Documents", "notes.txt"]);
   expect($("#share-subtitle").textContent).toBe("SSH server · Read only");
 
@@ -81,7 +82,7 @@ test("a password is requested when no key works", async () => {
   await type($<HTMLInputElement>("#sftp-password"), "secret");
   await respond("Connect");
   await settle(30);
-  expect(title()).toBe("user@host");
+  expect(title()).toBe("user");
   expect(names()).toEqual(["Documents", "notes.txt"]);
 });
 
@@ -96,6 +97,6 @@ test("an unknown host key asks before connecting", async () => {
 
   await respond("Trust");
   await settle(30);
-  expect(title()).toBe("user@host");
+  expect(title()).toBe("user");
   expect(names()).toEqual(["Documents", "notes.txt"]);
 });

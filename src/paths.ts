@@ -10,6 +10,12 @@
 /** Every pseudo location (Recent, Starred, Network) starts with this. */
 export const PSEUDO_PREFIX = "pseudo:";
 
+/** The pseudo locations the app has: `pseudo:<name>`. */
+export const PSEUDO_NAMES = ["recent", "starred", "network"] as const;
+
+/** A pseudo location's name. */
+export type Pseudo = (typeof PSEUDO_NAMES)[number];
+
 /** Every Google Drive location starts with this. */
 export const CLOUD_PREFIX = "gdrive://";
 
@@ -75,6 +81,17 @@ export function joinSftpPath(dir: string, name: string): string {
 /** The authority (user@host:port) of an sftp:// path, for server lookups. */
 export function sftpAuthority(path: string): string {
   return path.slice(SFTP_PREFIX.length).split("/")[0] ?? "";
+}
+
+/** A server's root, `sftp://<authority>/`: always with its slash, as the
+ *  server's URL is written, so Up, the root crumb and Network agree. */
+export function sftpRoot(authority: string): string {
+  return `${SFTP_PREFIX}${authority}/`;
+}
+
+/** A received share's root, `share://<id>`, without a slash. */
+function shareRoot(id: string): string {
+  return `${SHARE_PREFIX}${id}`;
 }
 
 /** The account key in `gdrive://<account>/…`. */
@@ -155,7 +172,15 @@ export function resolveTypedPath(
     typed = `${location.replace(/\/+$/, "")}/${typed}`;
   }
 
-  return { path: typed.length > 1 ? typed.replace(/\/+$/, "") : typed };
+  return { path: withoutTrailingSlash(typed) };
+}
+
+/** Typed text without its trailing slashes, except "/" and a server's root
+ *  (`sftp://<authority>`, nothing after it), which keeps exactly one. */
+function withoutTrailingSlash(typed: string): string {
+  const path = typed.length > 1 ? typed.replace(/\/+$/, "") : typed;
+  const authority = isSftpPath(path) ? path.slice(SFTP_PREFIX.length) : "";
+  return authority && !authority.includes("/") ? sftpRoot(authority) : path;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,12 +268,18 @@ function remoteSegments(path: string, kind: Exclude<Place, "local">, prefix: str
   return { root: { kind, key, path: shape.root(key), name: shape.rootName(key) }, segments };
 }
 
-/** Up from a share or server path: null above its root. */
-function remoteParent(path: string, prefix: string): string | null {
+/** The decoded last segment after `prefix`: the share id or the server's
+ *  authority at the root. Malformed escapes are shown as they are. */
+function remoteName(path: string, prefix: string): string {
+  return decodeSegment(afterPrefix(path, prefix).pop() ?? "");
+}
+
+/** Up from a share or server path: its root written as `root` writes it,
+ *  null above it. */
+function remoteParent(path: string, prefix: string, root: (key: string) => string): string | null {
   const parts = afterPrefix(path, prefix);
   parts.pop();
-  // today's behaviour, fixed in a follow-up: an SSH subfolder's parent is
-  // `sftp://<authority>`, without the trailing slash of the server's root.
+  if (parts.length === 1) return root(parts[0]);
   return parts.length ? `${prefix}${parts.join("/")}` : null;
 }
 
@@ -278,32 +309,24 @@ const SCHEMES: Record<Place, Scheme> = {
       }),
   },
   share: {
-    name: (path) => decodeSegment(afterPrefix(path, SHARE_PREFIX).pop() ?? ""),
-    parent: (path) => remoteParent(path, SHARE_PREFIX),
-    // today's behaviour, fixed in a follow-up: a share child is joined like a
-    // local one, unencoded (joinSharePath would encode it).
-    child: localChild,
+    name: (path) => remoteName(path, SHARE_PREFIX),
+    parent: (path) => remoteParent(path, SHARE_PREFIX, shareRoot),
+    child: joinSharePath,
     segments: (path) =>
       remoteSegments(path, "share", SHARE_PREFIX, {
-        root: (key) => `${SHARE_PREFIX}${key}`,
+        root: shareRoot,
         rootName: (key) => key,
         segment: decodeSegment,
       }),
   },
   sftp: {
-    name: (path) => {
-      const parts = afterPrefix(path, SFTP_PREFIX);
-      // today's behaviour, fixed in a follow-up: a malformed authority throws URIError.
-      if (parts.length <= 1) return parts[0] ? decodeURIComponent(parts[0]) : "";
-      return decodeSegment(parts.pop()!);
-    },
-    parent: (path) => remoteParent(path, SFTP_PREFIX),
+    name: (path) => remoteName(path, SFTP_PREFIX),
+    parent: (path) => remoteParent(path, SFTP_PREFIX, sftpRoot),
     child: joinSftpPath,
     segments: (path) =>
       remoteSegments(path, "sftp", SFTP_PREFIX, {
-        root: (key) => `${SFTP_PREFIX}${key}/`,
-        // today's behaviour, fixed in a follow-up: a malformed authority throws URIError.
-        rootName: (key) => decodeURIComponent(key),
+        root: sftpRoot,
+        rootName: decodeSegment,
         segment: decodeSegment,
       }),
   },
@@ -328,7 +351,8 @@ export function parentPath(path: string): string | null {
 }
 
 /** The path of a child named `name` inside `dir`, encoded as the backend
- *  decodes it: a pending `~name` in Drive, `%XX` names on SSH servers. */
+ *  decodes it: a pending `~name` in Drive, `%XX` names in shares and on SSH
+ *  servers. */
 export function childPath(dir: string, name: string): string {
   return SCHEMES[placeOf(dir)].child(dir, name);
 }
@@ -348,14 +372,22 @@ export function isUnder(path: string, dir: string): boolean {
 /** Whether `path` is `dir` itself or inside it, with `dir` taken as written:
  *  "/" holds only "/", and a `dir` ending in a slash holds only itself. For
  *  Home (which is "/" when HOME=/), the Trash, volumes and items, where "/"
- *  must keep its own crumb and the Location column slices after `dir + "/"`. */
+ *  must keep its own crumb and the Location column slices after `dir + "/"`.
+ *
+ *  It differs from `isUnder` only when `dir` is "/" or ends in a slash, so
+ *  normalising Home's slash wouldn't let one go: HOME=/ still needs this
+ *  "/", and a transfer into "/" still needs `isUnder`'s (#149). */
 export function isWithin(path: string, dir: string): boolean {
   return path === dir || path.startsWith(dir + "/");
 }
 
-/** Whether a window may open `path` from its `?path=` (New Window). */
+/** Whether a window may open `path` from its `?path=` (New Window): a local
+ *  path, one of the app's pseudo locations, or a Drive, share or SSH
+ *  location. An unknown `pseudo:` name has no label or crumb to show. */
 export function isKnownPath(path: string): boolean {
-  // today's behaviour, fixed in a follow-up: sftp:// isn't listed, so New
-  // Window from an SSH folder opens Home.
-  return path.startsWith("/") || path.startsWith(PSEUDO_PREFIX) || isCloudPath(path) || isSharePath(path);
+  return path.startsWith("/") || isKnownPseudo(path) || isRemotePath(path);
+}
+
+function isKnownPseudo(path: string): boolean {
+  return PSEUDO_NAMES.some((name) => path === `${PSEUDO_PREFIX}${name}`);
 }
