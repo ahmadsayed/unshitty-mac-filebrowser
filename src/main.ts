@@ -3097,19 +3097,25 @@ async function persistStarred(): Promise<void> {
 
 /** Keep stars on items renamed or moved from `from` to `to`, and on anything inside them. */
 function followMove(from: string, to: string): void {
+  followMoves([{ from, to }]);
+}
+
+/** `followMove` for several items at once, saving the stars once. */
+function followMoves(moves: { from: string; to: string }[]): void {
   let changed = false;
-  const next = new Set<string>();
-  for (const p of starred) {
-    if (p === from || p.startsWith(from + "/")) {
-      next.add(to + p.slice(from.length));
-      changed = true;
-    } else {
-      next.add(p);
+  for (const { from, to } of moves) {
+    const next = new Set<string>();
+    for (const p of starred) {
+      if (p === from || p.startsWith(from + "/")) {
+        next.add(to + p.slice(from.length));
+        changed = true;
+      } else {
+        next.add(p);
+      }
     }
+    starred = next;
   }
-  if (!changed) return;
-  starred = next;
-  persistStarred();
+  if (changed) persistStarred();
 }
 
 /** Show the folder holding `entry`, with it selected. */
@@ -4195,7 +4201,10 @@ function showBatchRename(sel: Entry[]): void {
       if (!changed) return false;
       void (async () => {
         try {
-          await renameMany(changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) })));
+          const items = changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) }));
+          await renameMany(items);
+          // The backend renames all of them or, undoing what it did, none.
+          followMoves(items);
           dialog.close();
           showToast(`Renamed ${changed.length} ${changed.length === 1 ? "item" : "items"}`);
           await reload();
