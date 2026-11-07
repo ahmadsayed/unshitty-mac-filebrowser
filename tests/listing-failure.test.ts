@@ -73,6 +73,24 @@ test("the path entry asks to connect to an SSH server that isn't connected", asy
   expect(title()).toBe("Home");
 });
 
+test("a bare name typed in Recent, Starred or Network is refused, not read from the app's working directory", async () => {
+  // resolveTypedPath leaves it as typed there (tests/paths.test.ts); the
+  // backend's place::local refuses a relative path.
+  for (const label of ["Recent", "Starred", "Network"]) {
+    await click(place(label));
+    await settle(20);
+    expect(title()).toBe(label);
+    await goTo("Documents");
+    expect(title()).toBe(label);
+    const refused = toastWith("Unable to find “Documents”: “Documents” is not a local file.");
+    expect(refused, label).toBeTruthy();
+    expect(refused!.querySelector(".btn")).toBeNull();
+    await closeOverlays();
+  }
+  await goTo(HOME);
+  expect(title()).toBe("Home");
+});
+
 test("reloading a share whose sharer went offline, or took access away, shows its status page", async () => {
   share().reset();
   await invoke("add_received", { link: `share://${"mockreload".padEnd(64, "a")}` });

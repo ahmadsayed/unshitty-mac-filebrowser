@@ -120,10 +120,6 @@ export async function sftpDisconnect(id: string): Promise<void> {
   return invoke<void>("sftp_disconnect", { id });
 }
 
-export async function sftpOpen(path: string): Promise<string> {
-  return invoke<string>("sftp_open", { path });
-}
-
 /** Window buttons for each end of the header bars; none on macOS. */
 export interface WindowButtons {
   start: string[];
@@ -358,10 +354,6 @@ export async function listReceived(): Promise<ReceivedShare[]> {
 
 export async function removeReceived(id: string): Promise<void> {
   return invoke<void>("remove_received", { id });
-}
-
-export async function shareOpen(path: string): Promise<string> {
-  return invoke<string>("share_open", { path });
 }
 
 /**
