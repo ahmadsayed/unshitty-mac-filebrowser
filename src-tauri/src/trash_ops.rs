@@ -103,38 +103,80 @@ fn dev_of(_: &Path) -> Option<u64> {
     Some(0)
 }
 
+/// Which filesystem a path is on (`dev_of`); tests stand in mounted volumes.
+type DeviceOf = Box<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
+
 /// Topmost folder above `path` on the same filesystem, i.e. its mount point.
-fn mount_root(path: &Path) -> PathBuf {
-    let dev = dev_of(path);
-    let mut root = path.to_path_buf();
-    for parent in path.ancestors().skip(1) {
-        if dev_of(parent) != dev {
+/// Starts from the nearest folder that exists, so a path not made yet still
+/// has its volume.
+fn mount_root(path: &Path, device_of: &dyn Fn(&Path) -> Option<u64>) -> PathBuf {
+    let mut ancestors = path.ancestors().skip_while(|p| device_of(p).is_none());
+    let Some(mut root) = ancestors.next() else {
+        return path.to_path_buf();
+    };
+    let device = device_of(root);
+    for parent in ancestors {
+        if device_of(parent) != device {
             break;
         }
-        root = parent.to_path_buf();
+        root = parent;
     }
-    root
+    root.to_path_buf()
 }
 
 /// The Trash folder an item at `path` goes to when trashed.
 fn trash_dir_for(path: &Path, home: &Path) -> PathBuf {
-    trash_dir_from(path, home, &home_trash(home))
+    Trash::new(home.to_path_buf(), None).dir_for(path)
 }
 
-/// `trash_dir_for` with the home Trash's root given (see `home_trash`).
-fn trash_dir_from(path: &Path, home: &Path, home_root: &Path) -> PathBuf {
-    if dev_of(path.parent().unwrap_or(path)) == dev_of(home) {
-        return items_in(home_root);
+/// The two Trash layouts in the table above. A `Trash` keeps the host's, and
+/// tests lay out either one on any host. `.trashinfo` sidecars are read on a
+/// freedesktop host only (`info_dir_of`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layout {
+    /// macOS: items directly in `~/.Trash` and `<volume>/.Trashes/<uid>`,
+    /// origins in Finder's `.DS_Store` of each.
+    Finder,
+    /// Linux: `files/` and `info/` in `$XDG_DATA_HOME/Trash` and
+    /// `<volume>/.Trash-<uid>`.
+    Freedesktop,
+}
+
+impl Layout {
+    /// This platform's layout.
+    const HOST: Layout = if cfg!(target_os = "macos") {
+        Layout::Finder
+    } else {
+        Layout::Freedesktop
+    };
+
+    /// The Trash that items on the home filesystem go to, as the *root*: on
+    /// macOS the folder holding the items, on Linux the folder holding
+    /// `files/` and `info/`.
+    fn home_trash(self, home: &Path) -> PathBuf {
+        match self {
+            Layout::Finder => home.join(".Trash"),
+            Layout::Freedesktop => crate::platform::data_home(home).join("Trash"),
+        }
     }
-    if cfg!(target_os = "macos") {
-        return mount_root(path)
-            .join(".Trashes")
-            .join(uid(home).to_string());
+
+    /// The root of user `uid`'s Trash on the volume mounted at `mount`.
+    fn volume_trash(self, mount: &Path, uid: u32) -> PathBuf {
+        match self {
+            Layout::Finder => mount.join(".Trashes").join(uid.to_string()),
+            Layout::Freedesktop => mount.join(format!(".Trash-{uid}")),
+        }
     }
-    // freedesktop.org layout (Linux), for development and tests.
-    mount_root(path)
-        .join(format!(".Trash-{}", uid(home)))
-        .join("files")
+
+    /// The folder whose *contents* are the listing of the Trash whose root
+    /// is `root`: the root itself on macOS, its `files/` subfolder on Linux.
+    /// For the home Trash this is the path the UI opens.
+    fn items_in(self, root: &Path) -> PathBuf {
+        match self {
+            Layout::Finder => root.to_path_buf(),
+            Layout::Freedesktop => root.join("files"),
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -146,40 +188,6 @@ fn uid(home: &Path) -> u32 {
 #[cfg(not(unix))]
 fn uid(_: &Path) -> u32 {
     0
-}
-
-/// The Trash that items on the home filesystem go to, as the *root*: on macOS
-/// the folder holding the items, on Linux the folder holding `files/` and
-/// `info/`.
-fn home_trash(home: &Path) -> PathBuf {
-    if cfg!(target_os = "macos") {
-        home.join(".Trash")
-    } else {
-        crate::platform::data_home(home).join("Trash")
-    }
-}
-
-/// The folder whose *contents* are the listing of the Trash whose root is
-/// `root`: the root itself on macOS, its `files/` subfolder on Linux. For the
-/// home Trash this is the path the UI opens.
-fn items_in(root: &Path) -> PathBuf {
-    if cfg!(target_os = "macos") {
-        root.to_path_buf()
-    } else {
-        root.join("files")
-    }
-}
-
-/// `items_in`, created first on Linux: a fresh account has no `Trash/files`
-/// until something is trashed, and the Trash view must show "Trash is
-/// Empty" rather than an error. Creating `files/` and `info/` is what any
-/// freedesktop implementation does on first use. `~/.Trash` is left to
-/// macOS.
-fn ensure_items_in(root: &Path) -> PathBuf {
-    if !cfg!(target_os = "macos") {
-        create_freedesktop_trash(root);
-    }
-    items_in(root)
 }
 
 /// Create `files/` and `info/` under a freedesktop Trash root if missing.
@@ -566,12 +574,13 @@ fn delete_counted(
 /// with the item by whoever trashed it, so it is always about *this* item;
 /// a log entry can outlive its item (restored by another app) and then
 /// describe a later one that reused the name.
-/// `trash_dir` is the Trash folder `trashed` sits in (see `trash_dir_for`).
+/// `trash_dir` is the Trash folder `trashed` sits in (see `trash_dir_for`);
+/// `put_back` looks up Finder's record, only when nothing else knows.
 fn origin_of(
     trashed: &Path,
     trash_dir: &Path,
     log: &TrashLog,
-    put_back: &HashMap<String, PathBuf>,
+    put_back: impl FnOnce() -> Option<PathBuf>,
 ) -> Option<PathBuf> {
     if let Some(origin) = sidecar_origin(trashed, trash_dir) {
         return Some(origin);
@@ -579,17 +588,16 @@ fn origin_of(
     if let Some(item) = log.items.get(&*trashed.to_string_lossy()) {
         return Some(PathBuf::from(&item.origin));
     }
-    let name = trashed.file_name()?.to_string_lossy();
-    put_back.get(&*name).cloned()
+    put_back()
 }
 
 /// Origin and trash date for each path in the Trash, which `dir_for` gives
-/// the Trash folder of.
+/// the Trash folder of; `put_back(item, trash_dir)` finds Finder's record.
 fn info_with(
     paths: &[String],
     dir_for: impl Fn(&Path) -> PathBuf,
     log: &TrashLog,
-    put_back: &HashMap<String, PathBuf>,
+    mut put_back: impl FnMut(&Path, &Path) -> Option<PathBuf>,
 ) -> Vec<TrashInfo> {
     paths
         .iter()
@@ -602,7 +610,7 @@ fn info_with(
                 None => log.items.get(p).map(|i| i.time),
             };
             TrashInfo {
-                origin: origin_of(path, &trash_dir, log, put_back)
+                origin: origin_of(path, &trash_dir, log, || put_back(path, &trash_dir))
                     .map(|o| o.to_string_lossy().to_string()),
                 trashed: logged.unwrap_or_else(|| changed_time(path)),
             }
@@ -735,8 +743,12 @@ const NO_LOG: &str = "Cannot restore: the app's settings folder is unknown";
 /// The user's home Trash and this app's log of what it sent to a Trash.
 pub struct Trash {
     home: PathBuf,
-    /// The home Trash's root (`home_trash`).
+    /// The home Trash's root (`Layout::home_trash`).
     root: PathBuf,
+    layout: Layout,
+    /// Tells volumes apart: an item off the home filesystem goes to its
+    /// volume's own Trash.
+    device_of: DeviceOf,
     /// Where `trash_log.json` lives; None when the config folder is unknown.
     /// Then `record` logs nothing, `info` answers without the log and
     /// `restore` fails.
@@ -745,27 +757,37 @@ pub struct Trash {
     lock: Mutex<()>,
 }
 
+/// Finder's Put Back records per Trash folder, each read once.
+type PutBackRecords = HashMap<PathBuf, HashMap<String, PathBuf>>;
+
 impl Trash {
     pub fn new(home: PathBuf, log: Option<PathBuf>) -> Self {
-        let root = home_trash(&home);
+        let root = Layout::HOST.home_trash(&home);
         Self::with_root(home, root, log)
     }
 
     /// A Trash whose root is given rather than found from `home`.
     fn with_root(home: PathBuf, root: PathBuf, log: Option<PathBuf>) -> Self {
-        Trash { home, root, log, lock: Mutex::new(()) }
+        let device_of: DeviceOf = Box::new(dev_of);
+        Trash { home, root, layout: Layout::HOST, device_of, log, lock: Mutex::new(()) }
     }
 
-    /// The folder the Trash view lists (`items_in` the root). On Linux its `files/`
-    /// and `info/` are created if missing, so a fresh account shows "Trash
-    /// is Empty"; this is the only lookup that creates anything.
+    /// The folder the Trash view lists (`items_in` the root). On Linux its
+    /// `files/` and `info/` are created if missing: a fresh account has no
+    /// `Trash/files` until something is trashed, and the Trash view must show
+    /// "Trash is Empty" rather than an error. Creating them is what any
+    /// freedesktop implementation does on first use; `~/.Trash` is left to
+    /// macOS. This is the only lookup that creates anything.
     pub fn listing_root(&self) -> PathBuf {
-        ensure_items_in(&self.root)
+        if self.layout == Layout::Freedesktop {
+            create_freedesktop_trash(&self.root);
+        }
+        self.layout.items_in(&self.root)
     }
 
     /// Whether `path` is inside the home Trash. Only compares paths.
     pub fn contains(&self, path: &Path) -> bool {
-        path.starts_with(&self.root) || path.starts_with(items_in(&self.root))
+        path.starts_with(&self.root) || path.starts_with(self.layout.items_in(&self.root))
     }
 
     /// Remember where trashed items went (`(trashed, origin)` pairs), for
@@ -793,7 +815,10 @@ impl Trash {
             }
             None => TrashLog::default(),
         };
-        info_with(paths, |path| self.dir_for(path), &log, &self.put_back())
+        let mut records = PutBackRecords::new();
+        info_with(paths, |path| self.dir_for(path), &log, |item, trash_dir| {
+            self.put_back(item, trash_dir, &mut records)
+        })
     }
 
     /// Move `trashed` back where it came from and forget its log entry.
@@ -805,8 +830,9 @@ impl Trash {
         let _guard = self.lock();
         let mut log = read_log(log_path);
         let trash_dir = self.dir_for(trashed);
-        let origin = origin_of(trashed, &trash_dir, &log, &self.put_back())
-            .ok_or("The original location is unknown")?;
+        let put_back = || self.put_back(trashed, &trash_dir, &mut PutBackRecords::new());
+        let origin =
+            origin_of(trashed, &trash_dir, &log, put_back).ok_or("The original location is unknown")?;
         restore(trashed, &origin, &trash_dir)?;
         log.items.remove(&*trashed.to_string_lossy());
         let _ = crate::config_store::write_json(log_path, &log);
@@ -823,28 +849,60 @@ impl Trash {
         empty(&self.root, progress)
     }
 
-    /// The Trash folder an item at `path` sits in (`trash_dir_for`).
+    /// The Trash folder an item at `path` goes to, or sits in: the home
+    /// Trash's for the home filesystem, else its volume's own.
     fn dir_for(&self, path: &Path) -> PathBuf {
-        trash_dir_from(path, &self.home, &self.root)
+        let device_of = &self.device_of;
+        if device_of(path.parent().unwrap_or(path)) == device_of(&self.home) {
+            return self.layout.items_in(&self.root);
+        }
+        self.layout.items_in(&self.volume_trash(path))
     }
 
-    /// Finder's Put Back records, which only macOS keeps.
-    fn put_back(&self) -> HashMap<String, PathBuf> {
-        if cfg!(target_os = "macos") {
-            return home_put_back(&self.home);
+    /// The root of the Trash on the volume `path` is on.
+    fn volume_trash(&self, path: &Path) -> PathBuf {
+        self.layout.volume_trash(&mount_root(path, &*self.device_of), uid(&self.home))
+    }
+
+    /// Finder's Put Back record for `trashed`, from the `.DS_Store` of the
+    /// Trash folder it sits directly in (`trash_dir`). Records are by name,
+    /// so another Trash's, or a top-level item's for something inside a
+    /// trashed folder, would describe a different item. Only the Finder
+    /// layout keeps them; `records` holds each folder's once read.
+    fn put_back(&self, trashed: &Path, trash_dir: &Path, records: &mut PutBackRecords) -> Option<PathBuf> {
+        if self.layout != Layout::Finder || !same_dir(trashed.parent()?, trash_dir) {
+            return None;
         }
-        HashMap::new()
+        let found = records.entry(trash_dir.to_path_buf()).or_insert_with(|| {
+            read_put_back(&trash_dir.join(".DS_Store"), &self.put_back_root(trash_dir))
+        });
+        found.get(&*trashed.file_name()?.to_string_lossy()).cloned()
+    }
+
+    /// What the Put Back folders of the Trash folder `trash_dir` are relative
+    /// to: `/` for the home Trash, the volume's mount point for
+    /// `<volume>/.Trashes/<uid>`.
+    fn put_back_root(&self, trash_dir: &Path) -> PathBuf {
+        if trash_dir == self.layout.items_in(&self.root) {
+            return PathBuf::from("/");
+        }
+        trash_dir.ancestors().nth(2).unwrap_or(Path::new("/")).to_path_buf()
     }
 
     fn lock(&self) -> MutexGuard<'_, ()> {
         self.lock.lock().unwrap_or_else(|e| e.into_inner())
     }
-}
 
-/// The Put Back records of the home Trash: `~/.Trash/.DS_Store`, on the
-/// volume mounted at `/`.
-fn home_put_back(home: &Path) -> HashMap<String, PathBuf> {
-    read_put_back(&home.join(".Trash/.DS_Store"), Path::new("/"))
+    /// This Trash laid out as `layout`, with `device_of` telling volumes
+    /// apart.
+    #[cfg(test)]
+    fn laid_out(
+        self,
+        layout: Layout,
+        device_of: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static,
+    ) -> Self {
+        Trash { layout, device_of: Box::new(device_of), ..self }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1152,7 +1210,7 @@ mod tests {
             &[a.to_string_lossy().to_string()],
             |p| trash_dir_for(p, dir.path()),
             &log,
-            &HashMap::new(),
+            |_, _| None,
         );
         assert_eq!(
             info[0],
@@ -1608,13 +1666,13 @@ mod tests {
             },
         );
         assert_eq!(
-            origin_of(&trashed, &files, &log, &HashMap::new()),
+            origin_of(&trashed, &files, &log, || None),
             Some(PathBuf::from("/home/me/a.txt"))
         );
         // Without a sidecar the log answers.
         fs::remove_file(info.join("a.txt.trashinfo")).unwrap();
         assert_eq!(
-            origin_of(&trashed, &files, &log, &HashMap::new()),
+            origin_of(&trashed, &files, &log, || None),
             Some(PathBuf::from("/home/me/stale/a.txt"))
         );
     }
@@ -1713,7 +1771,7 @@ mod tests {
         // Its "record" would send Restore to /etc/a.txt.
         assert_eq!(sidecar_origin(&nested, &files), None);
         assert_eq!(
-            origin_of(&nested, &files, &TrashLog::default(), &HashMap::new()),
+            origin_of(&nested, &files, &TrashLog::default(), || None),
             None
         );
         // Asked about the wrong Trash folder, a real record is ignored too.
@@ -1764,7 +1822,7 @@ mod tests {
     #[test]
     fn home_trash_matches_the_platform_layout() {
         let home = Path::new("/home/me");
-        let root = home_trash(home);
+        let root = Layout::HOST.home_trash(home);
         if cfg!(target_os = "macos") {
             assert_eq!(root, PathBuf::from("/home/me/.Trash"));
         } else {
@@ -1872,13 +1930,67 @@ mod tests {
         read_log(trash.log.as_ref().unwrap())
     }
 
-    /// Finder's Put Back record in `home`'s `.Trash/.DS_Store`: `name` came
-    /// from `folder`, given as an absolute path.
-    fn put_back_record(home: &Path, name: &str, folder: &Path) {
-        let folder = format!("{}/", folder.to_string_lossy().trim_start_matches('/'));
-        let leaf = node(0, &[(None, ustr_record(name, b"ptbL", &folder))]);
-        fs::create_dir_all(home.join(".Trash")).unwrap();
-        fs::write(home.join(".Trash/.DS_Store"), ds_store(&[leaf], 1)).unwrap();
+    /// The home Trash and a USB stick's, laid out as `layout`, both made.
+    struct Volumes {
+        trash: Trash,
+        home: PathBuf,
+        /// The home Trash's items folder.
+        items: PathBuf,
+        /// Where the stick is mounted.
+        usb: PathBuf,
+        /// The stick's Trash's items folder.
+        usb_items: PathBuf,
+    }
+
+    /// A Trash laid out as `layout` for a temp home, its log in a temp
+    /// config folder, with a USB stick mounted at `<dir>/usb`: the one
+    /// folder on another filesystem.
+    fn with_usb(dir: &Path, layout: Layout) -> Volumes {
+        let home = dir.join("home");
+        let usb = dir.join("usb");
+        fs::create_dir_all(&home).unwrap();
+        let root = match layout {
+            Layout::Finder => home.join(".Trash"),
+            Layout::Freedesktop => home.join(".local/share/Trash"),
+        };
+        let on_usb = usb.clone();
+        let log = Some(dir.join("config/trash_log.json"));
+        let trash = Trash::with_root(home.clone(), root.clone(), log)
+            .laid_out(layout, move |p| Some(if p.starts_with(&on_usb) { 2 } else { 1 }));
+        let items = make_trash(layout, &root);
+        let usb_items = make_trash(layout, &layout.volume_trash(&usb, uid(&home)));
+        Volumes { trash, home, items, usb, usb_items }
+    }
+
+    /// Make the Trash whose root is `root` in `layout`; returns its items
+    /// folder.
+    fn make_trash(layout: Layout, root: &Path) -> PathBuf {
+        let items = layout.items_in(root);
+        fs::create_dir_all(&items).unwrap();
+        if layout == Layout::Freedesktop {
+            fs::create_dir_all(root.join("info")).unwrap();
+        }
+        items
+    }
+
+    /// Finder's Put Back record in the Trash folder `trash_dir`'s
+    /// `.DS_Store`: `name` came from `folder`, relative to its volume's root.
+    fn put_back_record(trash_dir: &Path, name: &str, folder: &str) {
+        let leaf = node(0, &[(None, ustr_record(name, b"ptbL", folder))]);
+        fs::write(trash_dir.join(".DS_Store"), ds_store(&[leaf], 1)).unwrap();
+    }
+
+    /// `folder` as the home Trash's Put Back records hold it: relative to `/`.
+    fn from_root(folder: &Path) -> String {
+        format!("{}/", folder.to_string_lossy().trim_start_matches('/'))
+    }
+
+    /// The `.trashinfo` of `name` in the freedesktop items folder `items`.
+    #[cfg(not(target_os = "macos"))]
+    fn sidecar(items: &Path, name: &str, origin: &Path) -> PathBuf {
+        let info = items.parent().unwrap().join("info").join(format!("{name}.trashinfo"));
+        fs::write(&info, format!("[Trash Info]\nPath={}\n", origin.display())).unwrap();
+        info
     }
 
     #[test]
@@ -1994,54 +2106,82 @@ mod tests {
     }
 
     #[test]
-    fn put_back_comes_from_the_home_trash_on_the_root_volume() {
+    fn put_back_comes_from_the_trash_the_item_is_in_finder() {
         let dir = tempdir().unwrap();
-        let home = dir.path().join("home");
-        put_back_record(&home, "p.txt", &dir.path().join("Pictures"));
-        let records = home_put_back(&home);
-        assert_eq!(records.get("p.txt"), Some(&dir.path().join("Pictures/p.txt")));
-        assert_eq!(records.len(), 1);
-        assert!(home_put_back(&dir.path().join("elsewhere")).is_empty());
+        let v = with_usb(dir.path(), Layout::Finder);
+        // Finder trashed a "report.pdf" from home and another from the stick.
+        let at_home = put_in(&v.items, "report.pdf");
+        let on_usb = put_in(&v.usb_items, "report.pdf");
+        put_back_record(&v.items, "report.pdf", &from_root(&v.home.join("Documents")));
+        put_back_record(&v.usb_items, "report.pdf", "Projects/");
+        // Inside a folder trashed whole, an item has no record of its own.
+        fs::create_dir(v.items.join("Old")).unwrap();
+        let inside = put_in(&v.items.join("Old"), "report.pdf");
+
+        let info = v.trash.info(&[text(&at_home), text(&on_usb), text(&inside)]);
+        let origins: Vec<Option<String>> = info.into_iter().map(|i| i.origin).collect();
+        let on_stick = v.usb.join("Projects/report.pdf");
+        assert_eq!(
+            origins,
+            [Some(text(&v.home.join("Documents/report.pdf"))), Some(text(&on_stick)), None],
+            "the stick's own record, relative to the stick"
+        );
+        assert_eq!(v.trash.restore(&on_usb), Ok(on_stick.clone()));
+        assert_eq!(fs::read_to_string(&on_stick).unwrap(), "report.pdf");
+        assert_eq!(v.trash.restore(&inside), Err("The original location is unknown".into()));
+        assert!(inside.exists());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn each_trash_keeps_its_own_records_freedesktop() {
+        let dir = tempdir().unwrap();
+        let v = with_usb(dir.path(), Layout::Freedesktop);
+        let at_home = put_in(&v.items, "report.pdf");
+        let on_usb = put_in(&v.usb_items, "report.pdf");
+        let from_home = v.home.join("Documents/report.pdf");
+        let from_stick = v.usb.join("Projects/report.pdf");
+        sidecar(&v.items, "report.pdf", &from_home);
+        let usb_sidecar = sidecar(&v.usb_items, "report.pdf", &from_stick);
+        // Finder's records belong to the other layout and are never read.
+        put_back_record(&v.usb_items, "report.pdf", "Elsewhere/");
+
+        let info = v.trash.info(&[text(&at_home), text(&on_usb)]);
+        let origins: Vec<Option<String>> = info.into_iter().map(|i| i.origin).collect();
+        assert_eq!(origins, [Some(text(&from_home)), Some(text(&from_stick))]);
+        assert_eq!(v.trash.restore(&on_usb), Ok(from_stick.clone()));
+        assert!(from_stick.exists() && !usb_sidecar.exists());
     }
 
     #[test]
-    fn put_back_answers_on_macos_only_and_after_the_log() {
-        let dir = tempdir().unwrap();
-        let (trash, home, items) = temp_trash(dir.path());
-        let item = put_in(&items, "p.txt");
-        let found = dir.path().join("Pictures/p.txt");
-        put_back_record(&home, "p.txt", &dir.path().join("Pictures"));
+    fn put_back_answers_in_the_finder_layout_only_and_after_the_log() {
+        for layout in [Layout::Finder, Layout::Freedesktop] {
+            let dir = tempdir().unwrap();
+            let v = with_usb(dir.path(), layout);
+            let item = put_in(&v.items, "p.txt");
+            let found = dir.path().join("Pictures/p.txt");
+            put_back_record(&v.items, "p.txt", &from_root(&dir.path().join("Pictures")));
 
-        let info = trash.info(&[text(&item)]);
-        if cfg!(target_os = "macos") {
-            assert_eq!(info[0].origin, Some(text(&found)));
-        } else {
-            assert_eq!(info[0].origin, None, "no .DS_Store is read outside macOS");
+            let expected = (layout == Layout::Finder).then(|| text(&found));
+            assert_eq!(v.trash.info(&[text(&item)])[0].origin, expected, "{layout:?}");
+            // The log answers before Put Back, and restores there.
+            let logged_origin = v.home.join("Documents/p.txt");
+            v.trash.record(&[(item.clone(), logged_origin.clone())]);
+            assert_eq!(v.trash.info(&[text(&item)])[0].origin, Some(text(&logged_origin)));
+            assert_eq!(v.trash.restore(&item), Ok(logged_origin));
         }
-        // The log answers before Put Back.
-        let logged_origin = home.join("Documents/p.txt");
-        trash.record(&[(item.clone(), logged_origin.clone())]);
-        assert_eq!(trash.info(&[text(&item)])[0].origin, Some(text(&logged_origin)));
-        // And restores there.
-        assert_eq!(trash.restore(&item), Ok(logged_origin));
     }
 
     #[test]
-    fn put_back_restores_an_item_finder_trashed_on_macos() {
+    fn put_back_restores_an_item_finder_trashed() {
         let dir = tempdir().unwrap();
-        let (trash, home, items) = temp_trash(dir.path());
-        let item = put_in(&items, "p.txt");
-        put_back_record(&home, "p.txt", &dir.path().join("Pictures"));
+        let v = with_usb(dir.path(), Layout::Finder);
+        let item = put_in(&v.items, "p.txt");
+        put_back_record(&v.items, "p.txt", &from_root(&dir.path().join("Pictures")));
         let found = dir.path().join("Pictures/p.txt");
 
-        let restored = trash.restore(&item);
-        if cfg!(target_os = "macos") {
-            assert_eq!(restored, Ok(found.clone()));
-            assert!(found.exists() && !item.exists());
-        } else {
-            assert_eq!(restored, Err("The original location is unknown".into()));
-            assert!(item.exists() && !found.exists());
-        }
+        assert_eq!(v.trash.restore(&item), Ok(found.clone()));
+        assert!(found.exists() && !item.exists());
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -2071,8 +2211,8 @@ mod tests {
     fn a_new_trash_is_the_home_trash() {
         let home = Path::new("/home/me");
         let trash = Trash::new(home.into(), None);
-        assert_eq!(trash.root, home_trash(home));
-        let item = items_in(&home_trash(home)).join("a.txt");
+        assert_eq!(trash.root, Layout::HOST.home_trash(home));
+        let item = Layout::HOST.items_in(&Layout::HOST.home_trash(home)).join("a.txt");
         assert_eq!(trash.dir_for(&item), trash_dir_for(&item, home));
     }
 
@@ -2086,7 +2226,7 @@ mod tests {
             home.join(".local/share/Trash")
         };
         let trash = Trash::with_root(home.clone(), root.clone(), None);
-        let items = items_in(&root);
+        let items = Layout::HOST.items_in(&root);
 
         assert!(trash.contains(&items.join("a.txt")));
         assert!(trash.contains(&root));
