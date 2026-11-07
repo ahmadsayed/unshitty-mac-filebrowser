@@ -73,15 +73,18 @@ export class FolderSummaries {
     return true;
   }
 
-  /** Store one folder's summary, fetched by the caller. */
-  remember(path: string, summary: FolderSummary | null): boolean {
-    this.counts.set(path, summary?.count ?? null);
+  /**
+   * Count one folder (the selected one, for the floating bar) by the same
+   * rules as request(). It is marked as asked for at once, so asking again
+   * before the answer doesn't fetch it twice.
+   */
+  one(path: string, showHidden: boolean): void {
+    if (isRemotePath(path) || this.counts.has(path)) return;
+    this.counts.set(path, null);
     this.changes++;
-    const versioned = !!summary?.versioned;
-    if (versioned === this.badges.has(path)) return false;
-    if (versioned) this.badges.add(path);
-    else this.badges.delete(path);
-    return true;
+    if (this.inFlight.has(path)) return;
+    this.inFlight.add(path);
+    void this.answer([path], showHidden, this.ask());
   }
 
   /** Forget everything: a new location. Answers still on their way are dropped. */
@@ -108,6 +111,17 @@ export class FolderSummaries {
     batch.forEach((p) => this.inFlight.delete(p));
     const badges = batch.filter((p, i) => this.remember(p, result[i] ?? null));
     this.onChange({ counts: batch, badges });
+    return true;
+  }
+
+  /** Store a folder's summary; true when its version badge changed. */
+  private remember(path: string, summary: FolderSummary | null): boolean {
+    this.counts.set(path, summary?.count ?? null);
+    this.changes++;
+    const versioned = !!summary?.versioned;
+    if (versioned === this.badges.has(path)) return false;
+    if (versioned) this.badges.add(path);
+    else this.badges.delete(path);
     return true;
   }
 }

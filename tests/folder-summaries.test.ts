@@ -112,12 +112,33 @@ test("reset forgets everything and drops answers still on their way", async () =
   expect(changes.map((c) => c.counts)).toEqual([["/home/a"], ["/home/b"]]);
 });
 
-test("remember stores a summary and says whether the badge changed", () => {
-  const { summaries } = setup();
-  expect(summaries.remember("/home/a", { count: 1, versioned: true })).toBe(true);
-  expect(summaries.remember("/home/a", { count: 2, versioned: true })).toBe(false);
-  expect(summaries.count("/home/a")).toBe(2);
-  expect(summaries.remember("/home/a", null)).toBe(true);
+test("one() counts a single folder by the same rules", async () => {
+  const { summaries, calls, changes, here } = setup();
+  summaries.one("sftp://me@host/x", false);
+  summaries.one("share://abc/x", false);
+  expect(calls).toEqual([]);
+  expect(summaries.count("sftp://me@host/x")).toBeUndefined();
+
+  // Asked for at once, so asking again doesn't fetch twice.
+  summaries.one("/home/a", true);
   expect(summaries.count("/home/a")).toBeNull();
-  expect(summaries.versioned("/home/a")).toBe(false);
+  summaries.one("/home/a", true);
+  expect(calls.map((c) => [c.paths, c.showHidden])).toEqual([[["/home/a"], true]]);
+  await calls[0].answer([{ count: 7, versioned: true }]);
+  expect(summaries.count("/home/a")).toBe(7);
+  expect(changes).toEqual([{ counts: ["/home/a"], badges: ["/home/a"] }]);
+
+  // A folder a request is already counting isn't fetched again.
+  void summaries.request(["/home/b"], false);
+  summaries.one("/home/b", false);
+  expect(calls).toHaveLength(2);
+  await calls[1].answer([{ count: 1, versioned: false }]);
+  expect(summaries.count("/home/b")).toBe(1);
+
+  // A late answer is dropped.
+  summaries.one("/home/c", false);
+  here.location = "/elsewhere";
+  await calls[2].answer();
+  expect(summaries.count("/home/c")).toBeNull();
+  expect(changes).toHaveLength(2);
 });

@@ -1971,13 +1971,10 @@ function updateFloatingBar(): void {
   floatingBar.hidden = false;
 }
 
+/** The selected folder's count, for the floating bar, which `summaries` updates when it lands. */
 function fetchCount(path: string): void {
-  summaries.remember(path, null);
   if (isMac && !isRemotePath(path)) void recheckNativeIcons([path], nativeIconPx(), refreshItemIcons);
-  itemCounts([path], prefs.showHidden).then(([summary]) => {
-    if (summaries.remember(path, summary)) patchIcon(path);
-    updateFloatingBar();
-  }).catch(() => {});
+  summaries.one(path, prefs.showHidden);
 }
 
 // ---------------------------------------------------------------------------

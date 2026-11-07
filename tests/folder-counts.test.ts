@@ -2,7 +2,7 @@
 // except when sorting by size, and the selected folder's count reaches the
 // floating bar. The rules themselves are tested in folder-summaries.test.ts.
 import { afterEach, beforeAll, expect, test } from "vitest";
-import { $, boot, chooseMenu, click, goTo, item, prefs, settle } from "./app";
+import { $, $$, boot, chooseMenu, click, goTo, item, prefs, settle, type } from "./app";
 
 const HOME = "/Users/me";
 type MockCounts = { log: { asked: string[][] }; hold(hold: boolean): void; held(): number; reset(): void };
@@ -55,4 +55,32 @@ test("the floating bar shows the selected folder's count", async () => {
   await click(item("Desktop").querySelector(".icon")!);
   await settle(10);
   expect($("#floating-bar").textContent).toBe("“Desktop” selected (containing 1 item)");
+});
+
+test("selecting a folder that is already being counted doesn't ask for it again", async () => {
+  counts().hold(true);
+  await goTo(HOME);
+  const desktop = `${HOME}/Desktop`;
+  expect(asked()).toContain(desktop);
+  await click(item("Desktop").querySelector(".icon")!);
+  await settle(10);
+  expect($("#floating-bar").textContent).toBe("“Desktop” selected");
+  counts().hold(false);
+  await settle(10);
+  expect(asked().filter((p) => p === desktop)).toEqual([desktop]);
+  expect($("#floating-bar").textContent).toBe("“Desktop” selected (containing 1 item)");
+});
+
+test("selecting a folder on an SSH server doesn't ask for a count", async () => {
+  (globalThis as unknown as { __mockSftp: { reset(): void } }).__mockSftp.reset();
+  await click($$(".sidebar-row").find((row) => row.textContent?.trim() === "Network")!);
+  await settle(20);
+  await type($<HTMLInputElement>(".network-link"), "user@host");
+  await click($(".network-paste .btn"));
+  await settle(30);
+  counts().reset();
+  await click(item("Documents").querySelector(".icon")!);
+  await settle(10);
+  expect($("#floating-bar").textContent).toBe("“Documents” selected");
+  expect(asked().filter((p) => p.startsWith("sftp://"))).toEqual([]);
 });
