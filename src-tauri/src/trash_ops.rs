@@ -643,7 +643,8 @@ fn changed_time(_: &Path) -> i64 {
 /// `origin`, unless another item is there now, and forget its `.trashinfo`.
 /// For undoing a step that failed a moment later (a Replace whose last
 /// rename failed), as Drive untrashes: unlike Restore it recreates no
-/// folder, and it never overwrites, even an item that appears meanwhile.
+/// folder; like it, it never overwrites, even an item that appears
+/// meanwhile.
 pub fn untrash(trashed: &Path, origin: &Path) -> Result<(), String> {
     crate::placement::rename_back(trashed, origin)?;
     if let Some(trash_dir) = trashed.parent() {
@@ -652,35 +653,49 @@ pub fn untrash(trashed: &Path, origin: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Move `trashed`, which sits in `trash_dir`, back to `origin`, recreating
-/// missing parent folders. Never overwrites: an existing item at `origin` is
-/// an error.
-fn restore(trashed: &Path, origin: &Path, trash_dir: &Path) -> Result<(), String> {
+/// Moves an item back out of the Trash. Restore takes it as a parameter so
+/// tests can make another item take the name after the check.
+type MoveBack<'a> = &'a dyn Fn(&Path, &Path) -> std::io::Result<()>;
+
+/// How Restore moves an item back: never over one that took the name after
+/// the check (`fs::rename` would replace a file there, or an empty folder).
+const MOVE_BACK: MoveBack<'static> = &crate::placement::rename_new;
+
+/// Move `trashed`, which sits in `trash_dir`, back to `origin` with
+/// `move_back`, recreating missing parent folders. Never overwrites: an
+/// item at `origin` is an error, even one that appears after the check
+/// (`move_back` refuses it), and then the sidecar stays with the item.
+fn restore(trashed: &Path, origin: &Path, trash_dir: &Path, move_back: MoveBack) -> Result<(), String> {
     if fs::symlink_metadata(trashed).is_err() {
         return Err(format!("“{}” is no longer in the Trash", trashed.display()));
     }
     if fs::symlink_metadata(origin).is_ok() {
-        let folder = origin
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/".into());
-        let name = origin
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        return Err(format!(
-            "An item named “{}” already exists in “{}”",
-            name, folder
-        ));
+        return Err(name_taken(origin));
     }
     if let Some(parent) = origin.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Cannot recreate “{}”: {}", parent.display(), e))?;
     }
-    fs::rename(trashed, origin).map_err(|e| format!("Cannot restore: {}", e))?;
+    move_back(trashed, origin).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => name_taken(origin),
+        _ => format!("Cannot restore: {}", e),
+    })?;
     drop_sidecar(trashed, trash_dir);
     Ok(())
+}
+
+/// Why Restore refuses: another item is at `origin`.
+fn name_taken(origin: &Path) -> String {
+    let folder = origin
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "/".into());
+    let name = origin
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    format!("An item named “{}” already exists in “{}”", name, folder)
 }
 
 fn remove_tree(path: &Path) -> std::io::Result<()> {
@@ -866,10 +881,17 @@ impl Trash {
     }
 
     /// Move `trashed` back where it came from and forget its log entry.
-    /// Never overwrites: an existing item there is an error. Fails without a
-    /// config folder, even when the item's own records know its origin.
-    /// Returns the restored path.
+    /// Never overwrites: an item there, even one that appears after the
+    /// check, is an error, and the entry stays. Fails without a config
+    /// folder, even when the item's own records know its origin. Returns the
+    /// restored path.
     pub fn restore(&self, trashed: &Path) -> Result<PathBuf, String> {
+        self.restore_by(trashed, MOVE_BACK)
+    }
+
+    /// `restore` with the move back given, so tests can make another item
+    /// take the name after the check.
+    fn restore_by(&self, trashed: &Path, move_back: MoveBack) -> Result<PathBuf, String> {
         let log_path = self.log.as_ref().ok_or(NO_LOG)?;
         let _guard = self.lock();
         let mut log = read_log(log_path);
@@ -877,7 +899,7 @@ impl Trash {
         let put_back = || self.put_back(trashed, &trash_dir, &mut PutBackRecords::new());
         let origin =
             origin_of(trashed, &trash_dir, &log, put_back).ok_or("The original location is unknown")?;
-        restore(trashed, &origin, &trash_dir)?;
+        restore(trashed, &origin, &trash_dir, move_back)?;
         log.items.remove(&*trashed.to_string_lossy());
         let _ = crate::config_store::write_json(log_path, &log);
         Ok(origin)
@@ -1185,7 +1207,7 @@ mod tests {
         fs::write(&trashed, "pdf").unwrap();
         let origin = dir.path().join("gone/deeper/report.pdf");
 
-        restore(&trashed, &origin, trashed.parent().unwrap()).unwrap();
+        restore(&trashed, &origin, trashed.parent().unwrap(), MOVE_BACK).unwrap();
         assert_eq!(fs::read_to_string(&origin).unwrap(), "pdf");
         assert!(!trashed.exists());
     }
@@ -1198,17 +1220,13 @@ mod tests {
         fs::write(&trashed, "trashed").unwrap();
         fs::write(&origin, "keep me").unwrap();
 
-        let err = restore(&trashed, &origin, dir.path()).unwrap_err();
+        let err = restore(&trashed, &origin, dir.path(), MOVE_BACK).unwrap_err();
         assert!(err.contains("already exists"), "{}", err);
         assert_eq!(fs::read_to_string(&origin).unwrap(), "keep me");
         assert!(trashed.exists());
         assert!(
-            restore(
-                &dir.path().join("missing"),
-                &dir.path().join("x"),
-                dir.path()
-            )
-            .is_err()
+            restore(&dir.path().join("missing"), &dir.path().join("x"), dir.path(), MOVE_BACK)
+                .is_err()
         );
     }
 
@@ -1891,7 +1909,7 @@ mod tests {
         )
         .unwrap();
         let origin = dir.path().join("back/a.txt");
-        restore(&trashed, &origin, &files).unwrap();
+        restore(&trashed, &origin, &files, MOVE_BACK).unwrap();
         assert_eq!(fs::read_to_string(&origin).unwrap(), "hi");
         assert!(
             !info.join("a.txt.trashinfo").exists(),
@@ -1953,7 +1971,7 @@ mod tests {
         let (files, project) = trashed_lookalike(&dir.path().join("Trash"));
 
         let origin = dir.path().join("back/a.txt");
-        restore(&project.join("files/a.txt"), &origin, &files).unwrap();
+        restore(&project.join("files/a.txt"), &origin, &files, MOVE_BACK).unwrap();
         assert!(origin.exists());
         assert!(project.join("info/a.txt.trashinfo").exists());
     }
@@ -2208,6 +2226,66 @@ mod tests {
         assert_eq!(fs::read_to_string(&origin).unwrap(), "keep me");
         assert_eq!(fs::read_to_string(&item).unwrap(), "a.txt");
         assert!(logged(&trash).items.contains_key(&text(&item)));
+    }
+
+    /// A file holding `body`, or a folder whose `x` holds it.
+    fn make_item(path: &Path, folder: bool, body: &str) {
+        if folder {
+            fs::create_dir(path).unwrap();
+            fs::write(path.join("x"), body).unwrap();
+        } else {
+            fs::write(path, body).unwrap();
+        }
+    }
+
+    /// What `make_item` put in `path`.
+    fn item_body(path: &Path) -> String {
+        let file = if path.is_dir() { path.join("x") } else { path.to_path_buf() };
+        fs::read_to_string(file).unwrap()
+    }
+
+    /// Restore and Undo check that nothing is at the origin, then move the
+    /// item back. What takes the name in between is left alone, in either
+    /// Trash layout: a file, or an empty folder, which a plain rename would
+    /// put a trashed file or folder over, or an item of the other kind. The
+    /// restore fails as the check would have, and the item stays in the
+    /// Trash with its log entry and, in a freedesktop Trash, its
+    /// `.trashinfo`.
+    #[test]
+    fn a_restore_leaves_alone_what_took_the_name_after_the_check() {
+        let kinds = [(false, false), (false, true), (true, false), (true, true)];
+        for layout in [Layout::Finder, Layout::Freedesktop] {
+            for (mine_folder, theirs_folder) in kinds {
+                let dir = tempdir().unwrap();
+                let v = with_usb(dir.path(), layout);
+                let (item, origin) = (v.items.join("a"), v.home.join("Documents/a"));
+                make_item(&item, mine_folder, "mine");
+                v.trash.record(&[(item.clone(), origin.clone())]);
+                let info = v.trash.root.join("info/a.trashinfo");
+                if layout == Layout::Freedesktop {
+                    fs::write(&info, format!("[Trash Info]\nPath={}\n", origin.display())).unwrap();
+                }
+                // Another app takes the name: a file, or an empty folder.
+                let take_the_name = |from: &Path, to: &Path| {
+                    match theirs_folder {
+                        true => fs::create_dir(to).unwrap(),
+                        false => fs::write(to, "theirs").unwrap(),
+                    }
+                    MOVE_BACK(from, to)
+                };
+
+                let got = v.trash.restore_by(&item, &take_the_name);
+                let case = format!("{layout:?}: folder → {mine_folder}, theirs a folder → {theirs_folder}");
+                assert_eq!(got, Err("An item named “a” already exists in “Documents”".into()), "{case}");
+                match theirs_folder {
+                    true => assert_eq!(fs::read_dir(&origin).unwrap().count(), 0, "{case}"),
+                    false => assert_eq!(fs::read_to_string(&origin).unwrap(), "theirs", "{case}"),
+                }
+                assert_eq!(item_body(&item), "mine", "{case}");
+                assert!(logged(&v.trash).items.contains_key(&text(&item)), "{case}");
+                assert_eq!(info.exists(), layout == Layout::Freedesktop, "{case}");
+            }
+        }
     }
 
     #[test]
