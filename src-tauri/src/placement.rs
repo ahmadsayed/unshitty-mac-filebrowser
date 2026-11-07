@@ -225,7 +225,7 @@ fn clear(unfilled: Unfilled, dest: &Path, staged: bool, stage: &Stage) -> String
 
 /// A free hidden name next to `to`, used to stage an item before it takes
 /// `to`'s place.
-pub(crate) fn staging_path(to: &Path) -> PathBuf {
+fn staging_path(to: &Path) -> PathBuf {
     let dir = to.parent().unwrap_or(Path::new("/"));
     let name = to
         .file_name()
