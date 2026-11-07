@@ -266,7 +266,7 @@ test("Connect to Server: a second Enter waits, Escape closes, and the connection
   calls().release("sftp_connect");
   await settle(30);
   expect(calls().count("sftp_connect")).toBe(1);
-  expect(title()).toBe("user@host");
+  expect(title()).toBe("user");
 });
 
 test("Connect to Server: a failure stays in the dialog, cleaned, with everything enabled", async () => {

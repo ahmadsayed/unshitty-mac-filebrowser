@@ -105,19 +105,22 @@ test("an SSH server's crumbs start at the server; Up from its root selects it in
   await type($<HTMLInputElement>(".network-link"), "user@host");
   await click($(".network-paste .btn"));
   await settle(30);
-  expect(crumbs()).toEqual([["user@host", "sftp://user@host/"]]);
-  expect(title()).toBe("user@host");
-
-  await openItem("Documents");
+  // A server starts in the user's home on it, as sftp.rs connects, and its
+  // Network entry is that folder, not the root.
   expect(crumbs()).toEqual([
     ["user@host", "sftp://user@host/"],
-    ["Documents", "sftp://user@host/Documents"],
+    ["home", "sftp://user@host/home"],
+    ["user", "sftp://user@host/home/user"],
   ]);
+  expect(title()).toBe("user");
+
+  await openItem("Documents");
+  expect(crumbs().at(-1)).toEqual(["Documents", "sftp://user@host/home/user/Documents"]);
   expect(title()).toBe("Documents");
 
   await $$("#crumbs .crumb")[0].click();
   await settle(20);
-  expect(names()).toEqual(["Documents", "notes.txt"]);
+  expect(names()).toEqual(["home"]);
   await up();
   expect(title()).toBe("Network");
   expect(selectedNames()).toEqual(["user@host"]);
@@ -129,6 +132,9 @@ test("Up from an SSH subfolder reaches the server's root; Up again selects it in
   await up();
   expect(names()).toEqual(["Documents", "notes.txt"]);
   expect(selectedNames()).toEqual(["Documents"]);
+  await up();
+  await up();
+  expect(selectedNames()).toEqual(["home"]);
   expect(crumbs()).toEqual([["user@host", "sftp://user@host/"]]);
   await up();
   expect(title()).toBe("Network");
@@ -144,7 +150,7 @@ test("a server's root typed with or without its slash is the same place", async 
     expect(selectedNames()).toEqual(["user@host"]);
   }
   // "/" typed on a server is its root too.
-  await goTo("sftp://user@host/Documents");
+  await goTo("sftp://user@host/home/user/Documents");
   await goTo("/");
   expect(crumbs()).toEqual([["user@host", "sftp://user@host/"]]);
   await up();

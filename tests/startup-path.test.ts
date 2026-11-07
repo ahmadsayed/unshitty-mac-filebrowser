@@ -8,12 +8,17 @@ beforeAll(async () => {
   // Connections belong to the app, not a window: the new window finds the
   // server already connected.
   await invoke("sftp_connect", { url: "user@host" });
-  window.history.replaceState(null, "", `/?path=${encodeURIComponent("sftp://user@host/Documents")}`);
+  window.history.replaceState(null, "", `/?path=${encodeURIComponent("sftp://user@host/home/user/Documents")}`);
   await boot();
 });
 
 test("?path= with an SSH location opens that folder on the server", () => {
   expect(title()).toBe("Documents");
-  expect($$("#crumbs .crumb").map((c) => c.dataset.path)).toEqual(["sftp://user@host/", "sftp://user@host/Documents"]);
+  expect($$("#crumbs .crumb").map((c) => c.dataset.path)).toEqual([
+    "sftp://user@host/",
+    "sftp://user@host/home",
+    "sftp://user@host/home/user",
+    "sftp://user@host/home/user/Documents",
+  ]);
   expect(names()).toEqual(["hello.txt"]);
 });

@@ -175,11 +175,12 @@ export function resolveTypedPath(
   return { path: withoutTrailingSlash(typed) };
 }
 
-/** Typed text without its trailing slashes, except "/" and a server's root,
- *  which keeps exactly one. */
+/** Typed text without its trailing slashes, except "/" and a server's root
+ *  (`sftp://<authority>`, nothing after it), which keeps exactly one. */
 function withoutTrailingSlash(typed: string): string {
   const path = typed.length > 1 ? typed.replace(/\/+$/, "") : typed;
-  return isSftpPath(path) && afterPrefix(path, SFTP_PREFIX).length === 1 ? sftpRoot(sftpAuthority(path)) : path;
+  const authority = isSftpPath(path) ? path.slice(SFTP_PREFIX.length) : "";
+  return authority && !authority.includes("/") ? sftpRoot(authority) : path;
 }
 
 // ---------------------------------------------------------------------------

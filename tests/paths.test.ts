@@ -85,6 +85,8 @@ test("SFTP paths are remote and resolve as absolute locations", () => {
   expect(resolveTypedPath("sftp://me@host", HOME, HOME)).toEqual({ path: "sftp://me@host/" });
   expect(resolveTypedPath("sftp://me@host//", HOME, HOME)).toEqual({ path: "sftp://me@host/" });
   expect(resolveTypedPath("sftp://me@host/docs/", HOME, HOME)).toEqual({ path: "sftp://me@host/docs" });
+  // Without a server there is no root to keep: the path stays as typed.
+  expect(resolveTypedPath("sftp:///docs", HOME, HOME)).toEqual({ path: "sftp:///docs" });
 });
 
 test("pasted Drive links become locations for the current account", () => {
