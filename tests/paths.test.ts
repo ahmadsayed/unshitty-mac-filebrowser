@@ -297,8 +297,8 @@ test.each([
   ["pseudo:bogus",               true],
   [DRIVE_ROOT,                   true],
   ["share://r1/Photos",          true],
-  // today's behaviour, fixed in a follow-up: New Window from an SSH folder opens Home.
-  ["sftp://me@host/",            false],
+  ["sftp://me@host/",            true],
+  ["sftp://me@host/docs",        true],
   ["Documents",                  false],
   ["https://example.com",        false],
   ["",                           false],

@@ -371,9 +371,8 @@ export function isWithin(path: string, dir: string): boolean {
   return path === dir || path.startsWith(dir + "/");
 }
 
-/** Whether a window may open `path` from its `?path=` (New Window). */
+/** Whether a window may open `path` from its `?path=` (New Window): a local
+ *  path, a pseudo location, or a Drive, share or SSH location. */
 export function isKnownPath(path: string): boolean {
-  // today's behaviour, fixed in a follow-up: sftp:// isn't listed, so New
-  // Window from an SSH folder opens Home.
-  return path.startsWith("/") || path.startsWith(PSEUDO_PREFIX) || isCloudPath(path) || isSharePath(path);
+  return path.startsWith("/") || path.startsWith(PSEUDO_PREFIX) || isRemotePath(path);
 }
