@@ -25,7 +25,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | --- | --- |
 | `src/main.ts` | App state, navigation, path bar, search, virtualized grid/list views, selection, menus, clipboard + paste, drag and drop, bookmarks, keyboard shortcuts, sidebar, init |
 | `src/ui.ts` | libadwaita-style widgets: popovers, popover menus, dialogs, toasts |
-| `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), drawn for the theme; file-kind detection |
+| `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), drawn for the theme; file-kind detection; `itemIcon`, every item icon's markup: its picture (drawing, OS icon, thumbnail, glyph) and which emblems (link, versions, shared) go on it, in what order |
 | `src/icons-macos.ts` | The macOS theme's drawings under the same symbol ids: folders, file pages, line icons |
 | `src/thumbnails.ts` | Thumbnail request queue (4 concurrent) and bounded blob-URL cache |
 | `src/native-icons.ts` | Icons from the OS: ids in one batch per render, one image per type and size; single icons for Open With, Properties and the preview |
