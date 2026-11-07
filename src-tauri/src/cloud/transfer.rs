@@ -329,7 +329,12 @@ pub(crate) fn download_into(
     if in_place {
         // Already in place.
     } else if replacing {
-        crate::fs_ops::replace_with_staged(&staging, to)?;
+        crate::fs_ops::replace_with_staged(
+            &staging,
+            to,
+            crate::fs_ops::Staged::Copy,
+            &crate::fs_ops::to_trash,
+        )?;
     } else if let Err(error) = std::fs::rename(&staging, to) {
         let _ = crate::fs_ops::remove_any(&staging);
         return Err(format!("Failed to copy: {error}"));
