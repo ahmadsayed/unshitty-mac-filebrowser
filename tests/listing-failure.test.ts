@@ -14,6 +14,9 @@ const share = () =>
     __mockShare: { reset(): void; setOnline(v: boolean): void; setNoAccess(v: boolean): void; setUnreachable(v: boolean): void };
   }).__mockShare;
 
+type MockCalls = { hold(cmd: string): void; release(cmd: string): void; failNext(cmd: string, error: string): void; reset(): void };
+const calls = () => (globalThis as unknown as { __mockCalls: MockCalls }).__mockCalls;
+
 /** The toast that says `text`, if one is on screen. */
 const toastWith = (text: string) => $$(".toast").find((t) => t.textContent?.includes(text));
 
@@ -153,4 +156,31 @@ test("reloading a share whose sharer dropped since Network asked shows its statu
   await settle(20);
   expect(names()).toEqual(["Photos", "hello.txt"]);
   share().reset();
+});
+
+// Opening a share lists it only when Network says it is online; if Network
+// learns that access was taken away while that listing is on its way (here
+// a reload of Network; a slow sharer can take a connect timeout to answer),
+// the failed listing shows No Access rather than Offline. This is the one
+// way listingReaction's no-access row is reached when going to a share.
+test("a share whose sharer took access away while it opened shows No Access", async () => {
+  share().reset();
+  calls().reset();
+  await invoke("add_received", { link: `share://${"mockrevoked".padEnd(64, "a")}` });
+  await click(place("Network"));
+  await settle(20);
+  calls().hold("list_dir");
+  calls().failNext("list_dir", "Ahmed stopped sharing this folder with you.");
+  await open("Photos");
+  share().setNoAccess(true);
+  await key("F5");
+  await settle(20);
+  expect(title()).toBe("Network");
+  calls().release("list_dir");
+  await settle(20);
+  expect(title()).toBe("Photos");
+  expect($("#view").textContent).toContain("No Access");
+  expect($("#view").textContent).toContain("Ahmed stopped sharing this folder with you.");
+  share().reset();
+  calls().reset();
 });

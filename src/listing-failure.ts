@@ -79,7 +79,9 @@ function accessToast(name: string, f: Failure): Reaction {
 
 /** First match wins. */
 const ROWS: Row[] = [
-  // A share: reload says offline; going there trusts the status Network just refreshed.
+  // A share: reload says offline. Going there lists only a share Network
+  // called online, so its status says no access only when Network learned
+  // that while the listing was on its way (tests/listing-failure.test.ts).
   { when: (f) => isSharePath(f.loc) && f.ctx.phase === "reload", then: () => ({ kind: "sharePage", status: "offline" }) },
   {
     when: (f) => isSharePath(f.loc) && !entry(f),
