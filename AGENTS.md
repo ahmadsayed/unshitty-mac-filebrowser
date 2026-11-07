@@ -11,9 +11,10 @@ project, GPL-3.0-or-later; it contains no GNOME code and must not copy any (see
 "Licensing" below).
 
 Platform differences are confined to `src-tauri/src/platform.rs` (volumes,
-percent-decoding, XDG paths) and `src-tauri/src/trash_ops.rs` (the two Trash
-layouts); `recent.rs` branches for its source and `file_icons.rs` for whose
-icons it asks (NSWorkspace on macOS, GIO and the icon theme on Linux).
+percent-decoding, XDG paths, the rename that refuses a taken name) and
+`src-tauri/src/trash_ops.rs` (the two Trash layouts); `recent.rs` branches
+for its source and `file_icons.rs` for whose icons it asks (NSWorkspace on
+macOS, GIO and the icon theme on Linux).
 Everything else must stay platform-neutral.
 
 Design intent and decisions live in `docs/superpowers/specs/` and the task plan
@@ -50,15 +51,15 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/drag-out.ts` | Dragging files out of the window: when the pointer has left it, and the system drag (our GTK command on Linux, the drag plugin on macOS) |
 | `src-tauri/src/fs_ops.rs` | Listing, item counts, mkdir, rename, copy/move/trash, path info |
 | `src-tauri/src/place.rs` | The backend twin of `placeOf`: a path's kind (`Local`/`Drive`/`Share`/`Sftp`), a local path or why it isn't one (remote, malformed or relative), the read-only refusals (`writable`), where a copy, move or rename runs (`transfer`), and answering a batch for its local paths only (`local_only`) |
-| `src-tauri/src/placement.rs` | How a copy, move or Drive download reaches its local path: the refusals and their wording (`Refusal`), the `.`/`..` guard, staging names, Replace (stage, trash the old item, rename in) and what a failure undoes (`Target::place`) |
+| `src-tauri/src/placement.rs` | How a copy, move or Drive download reaches its local path: the refusals and their wording (`Refusal`), the `.`/`..` guard, staging names, Replace (stage, trash the old item, rename in), the rename that never replaces (`rename_new`) and what a failure undoes (`Target::place`) |
 | `src-tauri/src/sftp.rs` | Read-only SSH/SFTP connections for Network: agent/key/password auth, known-host checks, listing and downloads |
 | `src-tauri/src/share/file_share.rs`, `file_link.rs` | Send with QR Code: hashing, the separate iroh endpoint and serving (`file_share`); the ticket, file list and `filebrowser/file/2` wire format (the page still reads version 1 links), compiled into the phone page too (`file_link`) |
 | `web/file-get/` | The page a phone opens from the QR code: Rust → WebAssembly (iroh in the browser), `build.sh`, `serve.sh` (test from this computer), published by `.github/workflows/file-page.yml`; `static/get/preview.js` (file types and sizes, the image preview, the rows for several files) is tested in `tests/file-page.test.ts` |
 | `src-tauri/src/properties.rs` | Properties dialog data: size, dates, permissions, symlink targets, recursive folder size |
-| `src-tauri/src/platform.rs` | Platform differences: volume roots per OS, `%XX` decoding, `file://` URIs, XDG data dir |
+| `src-tauri/src/platform.rs` | Platform differences: volume roots per OS, `%XX` decoding, `file://` URIs, XDG data dir, the rename that refuses a taken name (`rename_exclusive`: `renameat2` on Linux, `renamex_np` on macOS) |
 | `src-tauri/src/thumbnails.rs` | Quick Look (`qlmanage`) thumbnails on macOS with an `image`-crate fallback everywhere, disk cache |
 | `src-tauri/src/file_icons.rs` | File and folder icons from the OS: Finder's (NSWorkspace) on macOS, the desktop's icon theme (GIO + freedesktop lookup) on Linux |
-| `src-tauri/src/trash_ops.rs` | `Trash` (one in `lib.rs`'s state): `trash_log.json` and its lock, where an item came from (sidecar, log, Put Back), restore, delete permanently, empty, what is inside the Trash; trash + locate (for Undo) as free functions; macOS `~/.Trash` + Finder "Put Back" in `.DS_Store`, Linux `Trash/{files,info}` + `.trashinfo` |
+| `src-tauri/src/trash_ops.rs` | `Trash` (one in `lib.rs`'s state): `trash_log.json` and its lock, where an item came from (sidecar, log, Put Back), restore, delete permanently, empty, what is inside the Trash; trash + locate (for Undo) and untrash (for a Replace that failed after trashing the old item) as free functions; macOS `~/.Trash` + Finder "Put Back" in `.DS_Store`, Linux `Trash/{files,info}` + `.trashinfo` |
 | `src-tauri/src/updates.rs` | Check for Updates: how this copy was installed (only the AppImage and the Mac app replace themselves), failure kinds, one install at a time; `lib.rs` wraps `tauri-plugin-updater` |
 | `src-tauri/src/downloads.rs` | Copies of opened SFTP/Drive/share files in the app cache: marks them as downloaded, prunes them after a week (edited copies go to the Trash) |
 | `src-tauri/src/recent.rs` | Recent: Spotlight (`mdfind`) on macOS, `recently-used.xbel` on Linux, merged with `recent.json` |
@@ -148,11 +149,12 @@ GPL-3.0-or-later).
   `trash_ops.rs`, `downloads.rs`, `file_icons.rs` and `versions/` into a scratch crate depending on `serde`,
   `serde_json`, `trash`, `image` (same features as `src-tauri/Cargo.toml`),
   `rusqlite` (`default-features = false`, features `bundled` + `backup`), `zstd`,
-  `blake3`, `notify` and `similar` (and `gio` on Linux, `objc2`, `objc2-foundation`,
-  `objc2-app-kit` and `xattr` on macOS, with the features `src-tauri/Cargo.toml`
-  lists), plus dev-dependency `tempfile`, strip the
-  `#[tauri::command]` lines, and run `cargo test`. Keep new backend logic in
-  plain functions; only `lib.rs` may use `AppHandle` and other Tauri types.
+  `blake3`, `notify` and `similar` (and `libc` on Linux and macOS, `gio` on
+  Linux, `objc2`, `objc2-foundation`, `objc2-app-kit` and `xattr` on macOS,
+  with the features `src-tauri/Cargo.toml` lists), plus dev-dependency
+  `tempfile`, strip the `#[tauri::command]` lines, and run `cargo test`.
+  Keep new backend logic in plain functions; only `lib.rs` may use
+  `AppHandle` and other Tauri types.
 - **macOS-only behaviour can't be verified from Linux**: window chrome, traffic
   lights, Quick Look thumbnails, Spotlight results in Recent, where Finder puts
   trashed items and its `.DS_Store` "Put Back" records, Full Disk Access,
@@ -220,6 +222,20 @@ GPL-3.0-or-later).
   the old one to the Trash, then renames into place. Local copy, move and
   Drive downloads do this only through `placement.rs` (`Target::place`);
   don't build the sequence again at a call site.
+- Placing renames with `placement::rename_new`, never `std::fs::rename`:
+  on Unix that replaces a file that took the name after it was checked free.
+- A new file a copy makes is staged too and appears only whole; a new
+  folder fills in place (`Stage::by_kind`) and counts as a partial copy to
+  clean up only once the fill has created it, so a failure never removes
+  what took the name after the check.
+- A move that replaces nothing is one `rename_new` straight onto the target
+  (`Target::free_path`): the user's own item never waits under a staging
+  name, where a crash would leave it hidden. Only its copy across volumes
+  is staged, like any copy.
+- If Replace's last rename fails once the old item is in the Trash, the old
+  item comes back out (`trash_ops::untrash`, as Drive untrashes) unless
+  something took its place; then it stays in the Trash and the error says
+  where.
 - A cross-volume move deletes the source only after the copy fully succeeded.
 - Copy/move refuse: vanished source, same path, destination inside the source,
   existing target without `overwrite`, replacing a folder with its own child,
