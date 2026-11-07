@@ -731,6 +731,44 @@ function search(path: string, query: string, showHidden: boolean, limit: number,
   return { stopped, scanned };
 }
 
+type SearchSummaryMock = ReturnType<typeof search>;
+/** A held search, answered when the test says so. */
+interface HeldSearch {
+  path: string;
+  query: string;
+  /** Walk now: send the batches, then end with the summary (or `summary` instead). */
+  answer(summary?: Partial<SearchSummaryMock>): void;
+  /** End with an error, as a vanished folder does. */
+  fail(error: string): void;
+}
+
+/** Tests hold searches to answer them late (each waits in `held`), and count
+ *  `cancel_search` calls. */
+export const searchMock = {
+  hold: false,
+  held: [] as HeldSearch[],
+  cancels: 0,
+};
+
+function searchCommand(a: Args): unknown {
+  const run = () => search(str(a, "path"), str(a, "query"), a.showHidden as boolean, a.limit as number, a.onResults as Channel<Entry[]> | undefined);
+  if (!searchMock.hold) return run();
+  return new Promise((resolve, reject) => {
+    searchMock.held.push({
+      path: str(a, "path"),
+      query: str(a, "query"),
+      answer: (summary) => {
+        try {
+          resolve({ ...run(), ...summary });
+        } catch (err) {
+          reject(err);
+        }
+      },
+      fail: reject,
+    });
+  });
+}
+
 function parentAndName(path: string): [Node | undefined, string] {
   const i = path.lastIndexOf("/");
   return [lookup(path.slice(0, i) || "/"), path.slice(i + 1)];
@@ -1759,15 +1797,10 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     if (path.startsWith("share://")) return listShare(path);
     return path.startsWith("gdrive://") ? listDrive(path) : list(path, a.showHidden as boolean);
   },
-  search_dir: (a) =>
-    search(
-      str(a, "path"),
-      str(a, "query"),
-      a.showHidden as boolean,
-      a.limit as number,
-      a.onResults as Channel<Entry[]> | undefined,
-    ),
-  cancel_search: () => {},
+  search_dir: searchCommand,
+  cancel_search: () => {
+    searchMock.cancels += 1;
+  },
   item_counts: (a) =>
     (a.paths as string[]).map((path) =>
       path.startsWith("gdrive://") || path.startsWith("share://") || path.startsWith("sftp://")
