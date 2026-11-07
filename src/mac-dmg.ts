@@ -54,45 +54,28 @@ function installDialog(entry: Entry, info: DmgInspection): void {
     apps.appendChild(option);
   }
   message.textContent = info.warning ?? "";
-  let busy = false;
   const dialog = openDialog({
     heading: "Install Application?",
     body: `Choose an application from “${entry.name}”. Only install software you trust: applications can access your files. The original disk image and macOS security checks will be preserved. Package installers are not run by this action.`,
     extra,
     responses: [{ id: "cancel", label: "Cancel" }, { id: "install", label: "Install", style: "suggested" }],
     defaultResponse: "cancel", closeResponse: "cancel",
+    busy: { status: message, errorText: String },
     onResponse: async (id) => {
-      if (busy) return false;
       if (id !== "install") return;
-      busy = true;
-      apps.disabled = destination.disabled = true;
-      dialog.setResponseEnabled("install", false);
-      dialog.setResponseEnabled("cancel", false);
-      message.classList.remove("error");
-      message.textContent = "Installing…";
-      try {
-        const target = destination.value as "user" | "system";
-        let result = await installDmg(entry.path, info.fingerprint, apps.value, target, "install");
-        if (result.kind === "conflict") {
-          const choice = await conflictChoice(result.name);
-          if (!choice) return;
-          result = await installDmg(entry.path, info.fingerprint, apps.value, target, choice);
-        }
-        if (result.kind !== "installed") throw "Another item appeared at the destination. Try again.";
-        const installed = result;
-        showToast(`Installed “${installed.name}”.${installed.warning ? ` ${installed.warning}` : ""}`, {
-          button: { label: "Open", onClick: () => void openFile(installed.path).catch((err) => showToast(`Could not open application: ${String(err)}`)) },
-        });
-      } catch (err) {
-        message.classList.add("error");
-        message.textContent = String(err);
-        return false;
-      } finally {
-        busy = false;
-        apps.disabled = destination.disabled = false;
-        dialog.setResponseEnabled("install", true);
-        dialog.setResponseEnabled("cancel", true);
+      dialog.setStatus("Installing…");
+      const target = destination.value as "user" | "system";
+      let result = await installDmg(entry.path, info.fingerprint, apps.value, target, "install");
+      if (result.kind === "conflict") {
+        const choice = await conflictChoice(result.name);
+        if (!choice) return;
+        result = await installDmg(entry.path, info.fingerprint, apps.value, target, choice);
       }
+      if (result.kind !== "installed") throw "Another item appeared at the destination. Try again.";
+      const installed = result;
+      showToast(`Installed “${installed.name}”.${installed.warning ? ` ${installed.warning}` : ""}`, {
+        button: { label: "Open", onClick: () => void openFile(installed.path).catch((err) => showToast(`Could not open application: ${String(err)}`)) },
+      });
     },
   });
   dialog.setResponseEnabled("install", info.apps.length > 0);

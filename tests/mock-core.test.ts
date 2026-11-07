@@ -1,7 +1,7 @@
 // Characterization tests for the in-memory backend in dev/mock-tauri/core.ts:
 // every command it serves, including its errors.
 import { expect, test, vi } from "vitest";
-import { Channel, fileShareMock, invoke, nativeIconMock } from "../dev/mock-tauri/core";
+import { Channel, fileShareMock, invoke, nativeIconMock, searchMock } from "../dev/mock-tauri/core";
 import { installFakeCanvas } from "./app";
 
 const HOME = "/Users/me";
@@ -56,6 +56,26 @@ test("item_counts summarises folders: count, versioned, null when unreadable", a
   expect(
     await invoke("item_counts", { paths: [`${HOME}/Desktop`, `${HOME}/Documents/Versioned`, "/nope"], showHidden: false }),
   ).toEqual([{ count: 1, versioned: false }, { count: 3, versioned: true }, null]);
+});
+
+test("item_counts logs what it was asked, answers null for remote folders, and can be held", async () => {
+  type MockCounts = { log: { asked: string[][] }; hold(hold: boolean): void; held(): number; reset(): void };
+  const counts = (globalThis as unknown as { __mockCounts: MockCounts }).__mockCounts;
+  counts.reset();
+  expect(await invoke("item_counts", { paths: ["sftp://user@host/x", "share://abc/x", "gdrive://root"], showHidden: false }))
+    .toEqual([null, null, null]);
+  counts.hold(true);
+  let answer: unknown;
+  const pending = invoke("item_counts", { paths: [`${HOME}/Desktop`], showHidden: false }).then((a) => (answer = a));
+  await new Promise((r) => setTimeout(r, 5));
+  expect(counts.held()).toBe(1);
+  expect(answer).toBeUndefined();
+  counts.hold(false);
+  await pending;
+  expect(answer).toEqual([{ count: 1, versioned: false }]);
+  expect(counts.log.asked).toEqual([["sftp://user@host/x", "share://abc/x", "gdrive://root"], [`${HOME}/Desktop`]]);
+  counts.reset();
+  expect(counts.log.asked).toEqual([]);
 });
 
 test("file_properties describes files, folders and links", async () => {
@@ -601,6 +621,39 @@ test("search_dir sends nearer matches first, like the backend's level-by-level w
   expect(found.map((entry) => depth(entry.path))).toEqual([1, 2, 2, 3, 3]);
 });
 
+test("held searches answer, end early or fail when the test says, and cancels are counted", async () => {
+  searchMock.hold = true;
+  try {
+    const batches: Found[][] = [];
+    const onResults = new Channel<Found[]>();
+    onResults.onmessage = (batch) => batches.push(batch);
+    const args = { path: HOME, query: "README", showHidden: false, limit: 20, onResults };
+    const answered = invoke<{ stopped: string | null }>("search_dir", args);
+    const stopped = invoke<{ stopped: string | null }>("search_dir", args);
+    const failed = invoke("search_dir", args);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(searchMock.held.map((h) => [h.path, h.query])).toEqual([[HOME, "README"], [HOME, "README"], [HOME, "README"]]);
+    expect(batches).toHaveLength(0);
+    const [first, second, third] = searchMock.held.splice(0);
+    first.answer();
+    await expect(answered).resolves.toMatchObject({ stopped: null });
+    expect(batches.flat().map((e) => e.name)).toContain("README.md");
+    second.answer({ stopped: "results" });
+    await expect(stopped).resolves.toMatchObject({ stopped: "results" });
+    third.fail("gone");
+    await expect(failed).rejects.toBe("gone");
+    const missing = invoke("search_dir", { ...args, path: "/nowhere" });
+    await new Promise((r) => setTimeout(r, 10));
+    searchMock.held.splice(0)[0].answer();
+    await expect(missing).rejects.toMatch(/No such file/);
+  } finally {
+    searchMock.hold = false;
+  }
+  const before = searchMock.cancels;
+  await invoke("cancel_search");
+  expect(searchMock.cancels).toBe(before + 1);
+});
+
 test("sharing commands create links, receive, go offline and clean up", async () => {  const mock = (globalThis as unknown as { __mockShare: { setOnline(v: boolean): void; reset(): void } }).__mockShare;
   mock.reset();
   expect(await invoke("share_identity")).toEqual({ name: null });
@@ -684,6 +737,22 @@ test("protected sharing commands detect protection, require unlocking and preser
   await expect(invoke("add_received", { link: remote, passphrase: "Ahmed" })).rejects.toMatch(/Incorrect passphrase/);
   expect(await invoke("list_received")).toEqual([]);
   expect(await invoke("add_received", { link: remote, passphrase: "A separate passphrase" })).toMatchObject({ folder: "Photos", status: "online" });
+  mock.reset();
+});
+
+test("a sharer can drop while Network still says online", async () => {
+  const mock = (globalThis as unknown as {
+    __mockShare: { setUnreachable(v: boolean): void; reset(): void };
+  }).__mockShare;
+  mock.reset();
+  const received = await invoke<{ id: string }>("add_received", { link: "share://mockunreachable" });
+  mock.setUnreachable(true);
+  expect(await invoke("list_received")).toMatchObject([{ status: "online" }]);
+  await expect(invoke("list_dir", { path: `share://${received.id}` })).rejects.toMatch(/offline/);
+  mock.reset();
+  expect(await invoke("list_received")).toEqual([]);
+  const again = await invoke<{ id: string }>("add_received", { link: "share://mockunreachable" });
+  expect(await invoke<unknown[]>("list_dir", { path: `share://${again.id}` })).toHaveLength(2);
   mock.reset();
 });
 
@@ -886,4 +955,43 @@ test("list_apps lists, waits, fails and can be replaced; open_with fails once on
   expect(mockApps().opened()).toEqual([{ path: `${HOME}/Desktop/todo.txt`, app: "/a/Editor.app" }]);
   mockApps().reset();
   expect(mockApps().opened()).toEqual([]);
+});
+
+// ----- Any command -----
+
+type MockCalls = {
+  count(cmd: string): number; hold(cmd: string): void; release(cmd: string): void;
+  failNext(cmd: string, error: string): void; reset(): void;
+};
+const mockCalls = () => (globalThis as unknown as { __mockCalls: MockCalls }).__mockCalls;
+
+test("any command can be counted, held until released and failed once", async () => {
+  mockCalls().reset();
+  await invoke("path_exists", { path: HOME });
+  await invoke("path_exists", { path: HOME });
+  expect(mockCalls().count("path_exists")).toBe(2);
+  expect(mockCalls().count("list_dir")).toBe(0);
+
+  mockCalls().hold("path_exists");
+  mockCalls().hold("path_exists");
+  let done = false;
+  const held = invoke("path_exists", { path: HOME }).then((exists) => (done = exists as boolean));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(done).toBe(false);
+  expect(mockCalls().count("path_exists")).toBe(3);
+  mockCalls().release("path_exists");
+  await held;
+  expect(done).toBe(true);
+
+  mockCalls().failNext("path_exists", "Permission denied (os error 13)");
+  await expect(invoke("path_exists", { path: HOME })).rejects.toBe("Permission denied (os error 13)");
+  await expect(invoke("path_exists", { path: HOME })).resolves.toBe(true);
+
+  mockCalls().hold("path_exists");
+  mockCalls().failNext("path_exists", "gone");
+  const reset = invoke("path_exists", { path: HOME }).catch((err) => err);
+  await new Promise((r) => setTimeout(r, 20));
+  mockCalls().reset();
+  expect(await reset).toBe(true);
+  expect(mockCalls().count("path_exists")).toBe(0);
 });

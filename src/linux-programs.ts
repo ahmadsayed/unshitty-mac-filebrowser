@@ -25,12 +25,11 @@ function installDialog(entry: Entry): void {
   const input = extra.querySelector<HTMLInputElement>("input")!;
   const message = extra.querySelector<HTMLElement>(".field-message")!;
   input.value = entry.name.replace(/\.appimage$/i, "");
-  let busy = false;
   const validate = () => {
     const error = applicationNameError(input.value);
     message.textContent = error;
     message.classList.toggle("error", !!error);
-    dialog.setResponseEnabled("install", !busy && !error);
+    dialog.setResponseEnabled("install", !error);
     return !error;
   };
   const dialog = openDialog({
@@ -40,29 +39,13 @@ function installDialog(entry: Entry): void {
     responses: [{ id: "cancel", label: "Cancel" }, { id: "install", label: "Install", style: "suggested" }],
     defaultResponse: "cancel",
     closeResponse: "cancel",
+    busy: { status: message, errorText: String },
     onResponse: async (id) => {
-      if (busy) return false;
       if (id !== "install") return;
       if (!validate()) return false;
-      busy = true;
-      input.disabled = true;
-      dialog.setResponseEnabled("cancel", false);
-      dialog.setResponseEnabled("install", false);
-      message.textContent = "Installing…";
-      try {
-        const installed = await installAppImage(entry.path, input.value.trim());
-        showToast(`Installed “${installed.name}”. Find it in application search.`);
-        return;
-      } catch (err) {
-        message.classList.add("error");
-        message.textContent = String(err);
-        return false;
-      } finally {
-        busy = false;
-        input.disabled = false;
-        dialog.setResponseEnabled("cancel", true);
-        dialog.setResponseEnabled("install", true);
-      }
+      dialog.setStatus("Installing…");
+      const installed = await installAppImage(entry.path, input.value.trim());
+      showToast(`Installed “${installed.name}”. Find it in application search.`);
     },
   });
   input.addEventListener("input", validate);
@@ -73,31 +56,18 @@ function runDialog(entry: Entry): void {
   const extra = document.createElement("div");
   extra.className = "field-message error";
   extra.setAttribute("role", "status");
-  let busy = false;
-  const dialog = openDialog({
+  openDialog({
     heading: "Run Script?",
     body: `“${entry.name}” will run using Bash in a terminal, from its containing folder. Only run scripts you trust: they can change or delete your files. File permissions will not be changed.`,
     extra,
     responses: [{ id: "cancel", label: "Cancel" }, { id: "run", label: "Run in Terminal", style: "suggested" }],
     defaultResponse: "cancel",
     closeResponse: "cancel",
+    busy: { status: extra, errorText: String },
     onResponse: async (id) => {
-      if (busy) return false;
       if (id !== "run") return;
-      busy = true;
-      dialog.setResponseEnabled("run", false);
-      dialog.setResponseEnabled("cancel", false);
-      try {
-        await runShellScript(entry.path);
-        showToast("Terminal requested. Check the script’s output there.");
-      } catch (err) {
-        extra.textContent = String(err);
-        return false;
-      } finally {
-        busy = false;
-        dialog.setResponseEnabled("run", true);
-        dialog.setResponseEnabled("cancel", true);
-      }
+      await runShellScript(entry.path);
+      showToast("Terminal requested. Check the script’s output there.");
     },
   });
 }

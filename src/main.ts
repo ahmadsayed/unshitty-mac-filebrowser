@@ -3,7 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { forgetDragOut, isOwnDragOut, leftWindow, startSystemDrag } from "./drag-out";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
-  listDir, searchDir, cancelSearch, type SearchSummary, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
+  listDir, searchDir, cancelSearch, type SearchSummary, makeDir, renameEntry, renameMany, itemCounts, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
   extractArchive,
   newWindow,
   windowButtons,
@@ -34,7 +34,7 @@ import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl,
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
-import { closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
+import { cleanError, closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { checkForUpdates } from "./updates";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
 import { macDmgItems } from "./mac-dmg";
@@ -44,8 +44,11 @@ import { qrShareItems } from "./qr-share";
 import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type PreviewPlace } from "./preview-actions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { Selection, type Mark } from "./selection";
+import { arrangeSearch, fold, SEARCH_LIMIT, SearchSession, searchSections as arrangedSections, type SearchChange, type SearchSection } from "./search";
+import { FolderSummaries } from "./folder-summaries";
+import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
 import { acceptsNewItems, canRename, hasProperties, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
-import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
+import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -116,24 +119,21 @@ let listingError: string | null = null;
  *  positions in `shown`. A copy or move selects what it made only when the
  *  user hasn't chosen anything since pasting (`selection.intent`, #50). */
 const selection = new Selection<Entry>(() => shown);
-let searchQuery: string | null = null;
-/** Recursive search results; null means filter the current folder in memory. */
-let searchResults: Entry[] | null = null;
-let searchTimer = 0;
-let searchSeq = 0;
-/** Whether a recursive search is still sending results. */
-let searching = false;
+/** The search: open or not, its text, the walk and its results (src/search.ts). */
+const search = new SearchSession(
+  (at, query, limit, onFound) => searchDir(at, query, prefs.showHidden, limit, onFound),
+  cancelSearch,
+  onSearchChange,
+);
 /** In a recursive search, the index in `shown` of the first "In Subfolders"
  * item; the ones before it are "In This Folder". -1 elsewhere. */
 let sectionStart = -1;
-/** Cap on recursive results, so a broad query can't build an endless view. */
-const SEARCH_LIMIT = 1000;
 
-const counts = new Map<string, number | null>();
-/** Bumped whenever `counts` changes; sorting by size depends on it. */
-let countsVersion = 0;
-/** Folders whose summary said they keep versions; drives the version badge. */
-const versionedFolders = new Set<string>();
+/** Folder item counts and version badges for the view (src/folder-summaries.ts). */
+const summaries = new FolderSummaries(itemCounts, () => location, ({ badges }) => {
+  badges.forEach(patchIcon);
+  patchCounts();
+});
 let backStack: string[] = [];
 let forwardStack: string[] = [];
 
@@ -145,8 +145,8 @@ interface TabState {
   selected: string[];
   anchorIndex: number;
   cursorIndex: number;
-  searchQuery: string | null;
-  searchText: string;
+  /** The search's text, null when it was closed. */
+  search: string | null;
   scrollTop: number;
 }
 
@@ -218,58 +218,20 @@ export function escapeHtml(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** What a path with no name of its own is called: a scheme's root. */
+const UNNAMED: Record<Place, string> = { drive: "My Drive", share: "Shared Folder", sftp: "SSH Server", local: "/" };
+
 function basename(path: string): string {
-  if (isCloud(path)) {
-    const segment = path.replace(/\/+$/, "").split("/").pop() ?? "";
-    return cloudSegmentName(segment) || "My Drive";
-  }
-  if (isSharePath(path)) {
-    const segment = path.slice(SHARE_PREFIX.length).split("/").filter(Boolean).pop() ?? "";
-    try {
-      return decodeURIComponent(segment) || "Shared Folder";
-    } catch {
-      return segment || "Shared Folder";
-    }
-  }
-  if (isSftpPath(path)) {
-    const rest = path.slice(SFTP_PREFIX.length).split("/").filter(Boolean);
-    if (rest.length <= 1) return rest[0] ? decodeURIComponent(rest[0]) : "SSH Server";
-    const segment = rest.pop()!;
-    try {
-      return decodeURIComponent(segment) || "SSH Server";
-    } catch {
-      return segment || "SSH Server";
-    }
-  }
-  return path.replace(/\/+$/, "").split("/").pop() || "/";
+  return pathName(path) || UNNAMED[placeOf(path)];
 }
 
+/** Above a share's or a server's root is Network. */
 function parentOf(path: string): string {
-  if (isCloud(path)) {
-    const trimmed = path.replace(/\/+$/, "");
-    const slash = trimmed.lastIndexOf("/");
-    return slash > "gdrive://".length ? trimmed.slice(0, slash) : trimmed;
-  }
-  if (isSharePath(path)) {
-    const rest = path.slice(SHARE_PREFIX.length).split("/").filter(Boolean);
-    rest.pop();
-    return rest.length ? `${SHARE_PREFIX}${rest.join("/")}` : NETWORK;
-  }
-  if (isSftpPath(path)) {
-    const rest = path.slice(SFTP_PREFIX.length).split("/").filter(Boolean);
-    rest.pop();
-    return rest.length ? `${SFTP_PREFIX}${rest.join("/")}` : NETWORK;
-  }
-  const p = path.replace(/\/+$/, "").replace(/\/[^/]*$/, "");
-  return p || "/";
-}
-
-function shareIdOf(path: string): string {
-  return path.slice(SHARE_PREFIX.length).split("/")[0] ?? "";
+  return parentPath(path) ?? NETWORK;
 }
 
 function receivedFor(path: string): ReceivedShare | undefined {
-  return networkShares.find((share) => share.id === shareIdOf(path));
+  return networkShares.find((share) => share.id === shareId(path));
 }
 
 /** What Network lists: one folder entry per received share, then one per connected server. */
@@ -316,27 +278,9 @@ function shareStatusLabel(status: Entry["shareStatus"]): string {
   }
 }
 
-/** The display name inside a `<file-id>~<encoded name>` segment. */
-function cloudSegmentName(segment: string): string {
-  const tilde = segment.indexOf("~");
-  const encoded = tilde >= 0 ? segment.slice(tilde + 1) : segment;
-  try {
-    return decodeURIComponent(encoded);
-  } catch {
-    return encoded;
-  }
-}
-
-/** The first folder of an account, whose parent is the account itself. */
-function isCloudRoot(path: string): boolean {
-  return isCloud(path) && path.slice(CLOUD_PREFIX.length).split("/").filter(Boolean).length <= 1;
-}
-
 /** The path of `name` inside `dir`. In Drive it is a pending `~name` path. */
 function joinPath(dir: string, name: string): string {
-  if (isCloud(dir)) return joinCloudPath(dir, name);
-  if (isSftpPath(dir)) return joinSftpPath(dir, name);
-  return dir.replace(/\/+$/, "") + "/" + name;
+  return childPath(dir, name);
 }
 
 /** Pseudo locations that list entries (Recent, Starred, Network). */
@@ -346,7 +290,7 @@ function hasEntries(loc: string): boolean {
 
 /** Views of items from many folders, which get a Location column. */
 function showsWhere(): boolean {
-  return location === RECENT || location === STARRED || location === trashPath || searchQuery !== null;
+  return location === RECENT || location === STARRED || location === trashPath || search.isOpen;
 }
 
 /** The entries shown at `loc`. */
@@ -370,8 +314,7 @@ function locationName(loc: string): string {
   if (loc === trashPath) return "Trash";
   if (isSharePath(loc)) {
     // The root's label is the sharer's folder name (the id is opaque).
-    const parts = loc.slice(SHARE_PREFIX.length).split("/").filter(Boolean);
-    return parts.length <= 1 ? receivedFor(loc)?.folder || basename(loc) : basename(loc);
+    return pathSegments(loc).segments.length === 0 ? receivedFor(loc)?.folder || basename(loc) : basename(loc);
   }
   if (isSftpPath(loc)) return basename(loc) || "SSH Server";
   return basename(loc);
@@ -385,7 +328,7 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "bas
 
 function sortValue(e: Entry): number {
   if (prefs.sortKey === "modified") return e.trashed ?? e.modified;
-  if (e.is_dir) return counts.get(e.path) ?? -1;
+  if (e.is_dir) return summaries.count(e.path) ?? -1;
   return e.size;
 }
 
@@ -411,61 +354,22 @@ function compareEntries(a: Entry, b: Entry): number {
   return prefs.sortReversed ? -r : r;
 }
 
-function fold(s: string): string {
-  // Strips combining marks exactly as the backend's search does.
-  return s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-}
-
 /** What `shown` was last built from: a presentation-only render (grid ↔ list,
  * thumbnails) reuses it instead of sorting a huge folder again. */
 let shownFrom: unknown[] = [];
 
 function computeShown(): void {
-  const q = searchQuery ? fold(searchQuery.trim()) : "";
-  const from = [entries, searchResults, q, location, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && countsVersion];
+  const { text, results } = search;
+  // Keyed on the folded text: "Cafe" and "café " show the same items.
+  const from = [entries, results, fold(text.trim()), location, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && summaries.version];
   if (from.every((value, i) => value === shownFrom[i])) return;
   shownFrom = from;
-  sectionStart = -1;
-  if (q && canSearchRecursively()) {
-    showSearchSections(q);
-    return;
-  }
-  const fromResults = q && searchResults !== null;
-  const list = !q ? entries : fromResults ? searchResults! : entries.filter((e) => fold(e.name).includes(q));
-  shown = [...list].sort(compareEntries);
+  ({ items: shown, sectionStart } = arrangeSearch(entries, results, text, location, compareEntries, canSearchRecursively()));
 }
 
-/** A recursive search: "In This Folder" at once from the listing in memory,
- * then "In Subfolders" from the backend, nearest folders first. */
-function showSearchSections(q: string): void {
-  const here = entries.filter((e) => fold(e.name).includes(q)).sort(compareEntries);
-  const prefix = location.endsWith("/") ? location : `${location}/`;
-  const depth = (e: Entry) => e.path.slice(prefix.length).split("/").length;
-  const deeper = (searchResults ?? [])
-    .filter((e) => parentOf(e.path) !== location)
-    .sort((a, b) => depth(a) - depth(b) || compareEntries(a, b));
-  shown = [...here, ...deeper];
-  sectionStart = here.length;
-}
-
-interface SearchSection {
-  label: string;
-  start: number;
-  count: number;
-  busy: boolean;
-}
-
-/** The headed sections of a recursive search; none elsewhere. "In
- * Subfolders" shows while the search runs, and afterwards only with matches. */
+/** The headed sections of a recursive search; none elsewhere. */
 function searchSections(): SearchSection[] {
-  if (sectionStart < 0) return [];
-  const deeper = shown.length - sectionStart;
-  const out: SearchSection[] = [];
-  if (sectionStart > 0) out.push({ label: "In This Folder", start: 0, count: sectionStart, busy: false });
-  if (deeper > 0 || (searching && sectionStart > 0)) {
-    out.push({ label: "In Subfolders", start: sectionStart, count: deeper, busy: searching });
-  }
-  return out;
+  return arrangedSections(sectionStart, shown.length, search.busy);
 }
 
 /** Whether item `i` is one of "In This Folder", which needs no folder line. */
@@ -485,8 +389,7 @@ function tabSnapshot(): TabState {
     selected: selection.paths(),
     anchorIndex: selection.anchor,
     cursorIndex: selection.cursor,
-    searchQuery,
-    searchText: searchEntry?.value ?? "",
+    search: search.saved,
     scrollTop: scrollEl?.scrollTop ?? 0,
   };
 }
@@ -557,11 +460,11 @@ async function restoreTab(tab: TabState): Promise<boolean> {
   if (!ok) return false;
   backStack = [...tab.back];
   forwardStack = [...tab.forward];
-  if (tab.searchQuery !== null) {
+  if (tab.search !== null) {
     // navigate() closed the search; open it again the way the search button
     // does, so the placeholder names this folder and the recursive search runs.
     showSearchBar();
-    searchEntry.value = tab.searchText;
+    searchEntry.value = tab.search;
     onSearchInput();
   }
   selection.retain(tab.selected, entries);
@@ -601,12 +504,11 @@ async function newTab(): Promise<void> {
     selected: [],
     anchorIndex: -1,
     cursorIndex: -1,
-    searchQuery: null,
-    searchText: "",
+    search: null,
     scrollTop: 0,
   });
   activeTab = tabs.length - 1;
-  if (searchQuery !== null) closeSearch(false);
+  if (search.isOpen) closeSearch(false);
   backStack = [];
   forwardStack = [];
   selection.reset();
@@ -659,7 +561,7 @@ function openNewWindow(): void {
  * can't be read leaves the current view intact and shows a toast instead.
  */
 async function navigate(loc: string, opts: { history?: "push" | "none"; select?: string } = {}): Promise<boolean> {
-  if (searchQuery !== null) closeSearch(false);
+  if (search.isOpen) closeSearch(false);
   closePreview();
 
   // Started now so it runs alongside the listing instead of after it.
@@ -675,14 +577,12 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
     try {
       next = await listLocation(loc);
     } catch (err) {
-      if (isSharePath(loc)) {
-        page = receivedFor(loc)?.status === "no-access" ? "no-access" : "offline";
-      } else if (location) {
-        showAccessError(basename(loc), cleanError(err));
+      const failed = listingReaction(loc, err, listingContext(loc, location ? "navigate" : "first"));
+      if (failed.kind === "sharePage") page = failed.status;
+      else if (failed.kind === "toast") {
+        showListingToast(failed);
         return false;
-      } else {
-        error = cleanError(err);
-      }
+      } else error = failed.message;
     }
   }
 
@@ -699,11 +599,9 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   versionedRootPath = await rootLookup;
   entries = next;
   listingError = error;
-  counts.clear();
-  countsVersion++;
-  countsInFlight.clear();
-  versionedFolders.clear();
+  summaries.reset();
   selection.reset(opts.select);
+  if (search.isOpen) moveSearchHere();
 
   document.title = locationName(loc);
   if (activeTab >= 0 && tabs[activeTab]) tabs[activeTab].location = loc;
@@ -748,7 +646,7 @@ async function reload(select?: string[]): Promise<void> {
   else followCursor(mark);
   versionedRootPath = await lookupVersionedRoot(location);
   updateShareSubtitle();
-  if (searchQuery !== null) onSearchInput();
+  search.rerun();
 }
 
 /** After a reload, keep the cursor and anchor on the same items: new ones
@@ -771,18 +669,20 @@ function showShareStatusPage(): boolean {
 /** Show why `reload` couldn't list the folder. True when it navigated away instead. */
 async function listingFailed(err: unknown): Promise<boolean> {
   entries = [];
-  if (isSharePath(location)) {
-    sharePage = "offline";
+  const failed = listingReaction(location, err, listingContext(location, "reload"));
+  if (failed.kind === "sharePage") {
+    sharePage = failed.status;
     return false;
   }
-  if (isLocalLocation(location) && isMissingPathError(err)) {
-    // The folder went away under us: a cancelled copy deletes the folder it
-    // was writing, and the view can still be showing it. Go to its parent
-    // rather than stranding the view on an error page.
-    if (await navigate(parentOf(location), { history: "none" })) return true;
-  }
-  listingError = cleanError(err);
+  // A folder that went away goes to its parent, or shows the error page if that fails too.
+  if (failed.kind === "goTo" && (await navigate(failed.parent, { history: "none" }))) return true;
+  listingError = failed.message;
   return false;
+}
+
+/** What listingReaction needs to know about `loc` (src/listing-failure.ts). */
+function listingContext(loc: string, phase: ListingPhase): ListingContext {
+  return { phase, isMac, share: isSharePath(loc) ? receivedFor(loc)?.status : undefined, nameOf: basename, parentOf };
 }
 
 /** "Shared by Ahmed · Read only" under the path bar. */
@@ -820,23 +720,12 @@ function lookupVersionedRoot(loc: string): Promise<string | null> {
 }
 
 /** A failed folder open; macOS privacy blocks get a shortcut to the setting. */
-function showAccessError(name: string, message: string): void {
-  const blocked = isMac && /not permitted/i.test(message);
-  showToast(`Unable to access “${name}”: ${message}`, blocked ? { button: { label: "Grant Access", onClick: openSettingsSafely } } : {});
+function showListingToast(failed: { text: string; grantAccess: boolean }): void {
+  showToast(failed.text, failed.grantAccess ? { button: { label: "Grant Access", onClick: openSettingsSafely } } : {});
 }
 
 function openSettingsSafely(): void {
   openFullDiskAccessSettings().catch((err) => showToast(`Could not open System Settings: ${cleanError(err)}`));
-}
-
-function cleanError(err: unknown): string {
-  // "Failed to read directory: Permission denied (os error 13)" → "Permission denied"
-  return String(err).replace(/^[^:]*:\s*/, "").replace(/\s*\(os error \d+\)$/, "");
-}
-
-/** True for ENOENT: the path was removed, not merely unreadable. */
-function isMissingPathError(err: unknown): boolean {
-  return /no such file or directory/i.test(String(err));
 }
 
 function goBack(): void {
@@ -892,70 +781,17 @@ function crumbsFor(loc: string): Crumb[] {
     const p = PSEUDO[loc.slice(PSEUDO_PREFIX.length) as Pseudo];
     return [{ label: p.label, path: loc, icon: p.icon }];
   }
-  if (isCloud(loc)) {
-    const parts = loc.slice(CLOUD_PREFIX.length).split("/").filter(Boolean);
-    const account = parts.shift() ?? "";
-    if (parts.length === 0) {
-      return [{ label: "Google Drive", path: loc, icon: "network-workgroup" }];
-    }
-    let base = `${CLOUD_PREFIX}${account}`;
-    const crumbs: Crumb[] = [];
-    for (const segment of parts) {
-      base += `/${segment}`;
-      crumbs.push({ label: cloudSegmentName(segment) || "My Drive", path: base });
-    }
-    crumbs[0] = { ...crumbs[0], icon: "network-workgroup" };
-    return crumbs;
-  }
-  if (isSharePath(loc)) {
-    const parts = loc.slice(SHARE_PREFIX.length).split("/").filter(Boolean);
-    const id = parts.shift() ?? "";
-    if (!id) return [{ label: "Network", path: NETWORK, icon: "network-workgroup" }];
-    const received = receivedFor(loc);
-    const crumbs: Crumb[] = [
-      { label: received?.folder || "Shared Folder", path: `${SHARE_PREFIX}${id}`, icon: "network-workgroup" },
-    ];
-    let base = `${SHARE_PREFIX}${id}`;
-    for (const segment of parts) {
-      base += `/${segment}`;
-      let label = segment;
-      try {
-        label = decodeURIComponent(segment);
-      } catch {
-        /* keep the encoded name */
-      }
-      crumbs.push({ label, path: base });
-    }
-    return crumbs;
-  }
-  if (isSftpPath(loc)) {
-    const parts = loc.slice(SFTP_PREFIX.length).split("/").filter(Boolean);
-    const authority = parts.shift() ?? "";
-    if (!authority) return [{ label: "Network", path: NETWORK, icon: "network-workgroup" }];
-    const crumbs: Crumb[] = [
-      { label: decodeURIComponent(authority), path: `${SFTP_PREFIX}${authority}/`, icon: "network-workgroup" },
-    ];
-    let base = `${SFTP_PREFIX}${authority}`;
-    for (const segment of parts) {
-      base += `/${segment}`;
-      let label = segment;
-      try {
-        label = decodeURIComponent(segment);
-      } catch {
-        /* keep the encoded name */
-      }
-      crumbs.push({ label, path: base });
-    }
-    return crumbs;
-  }
-  if (trashPath && (loc === trashPath || loc.startsWith(trashPath + "/"))) {
+  const place = placeOf(loc);
+  if (place === "drive") return driveCrumbs(loc);
+  if (place !== "local") return remoteCrumbs(loc, place);
+  if (isInTrash(loc, trashPath)) {
     return [{ label: "Trash", path: trashPath, icon: "user-trash" }, ...segments(trashPath, loc)];
   }
-  if (home && (loc === home || loc.startsWith(home + "/"))) {
+  if (home && isWithin(loc, home)) {
     return [{ label: "Home", path: home, icon: "user-home" }, ...segments(home, loc)];
   }
   const volume = mountedVolumes
-    .filter((v) => loc === v.path || loc.startsWith(v.path + "/"))
+    .filter((v) => isWithin(loc, v.path))
     .sort((a, b) => b.path.length - a.path.length)[0];
   if (volume) {
     return [{ label: volume.name, path: volume.path, icon: "drive-harddisk" }, ...segments(volume.path, loc)];
@@ -963,9 +799,25 @@ function crumbsFor(loc: string): Crumb[] {
   return [{ label: "", path: "/", icon: "drive-harddisk" }, ...segments("/", loc)];
 }
 
+/** Drive's crumbs: one per folder from My Drive down; the account alone is "Google Drive". */
+function driveCrumbs(loc: string): Crumb[] {
+  const { segments } = pathSegments(loc);
+  if (!segments.length) return [{ label: "Google Drive", path: loc, icon: "network-workgroup" }];
+  const crumbs: Crumb[] = segments.map((s) => ({ label: s.name || "My Drive", path: s.path }));
+  crumbs[0] = { ...crumbs[0], icon: "network-workgroup" };
+  return crumbs;
+}
+
+/** A share's or a server's crumbs: its root (the sharer's folder name, or the server), then its folders. */
+function remoteCrumbs(loc: string, place: "share" | "sftp"): Crumb[] {
+  const { root, segments } = pathSegments(loc);
+  if (!root.key) return [{ label: "Network", path: NETWORK, icon: "network-workgroup" }];
+  const label = place === "share" ? receivedFor(loc)?.folder || "Shared Folder" : root.name;
+  return [{ label, path: root.path, icon: "network-workgroup" }, ...segments.map((s) => ({ label: s.name, path: s.path }))];
+}
+
 function segments(base: string, loc: string): Crumb[] {
-  const rest = loc.slice(base.length).split("/").filter(Boolean);
-  return rest.map((name, i) => ({ label: name, path: joinPath(base, rest.slice(0, i + 1).join("/")) }));
+  return localSegments(base, loc).map((s) => ({ label: s.name, path: s.path }));
 }
 
 function buildPathbar(): void {
@@ -988,7 +840,7 @@ function buildPathbar(): void {
 }
 
 function openPathEntry(prefill?: string): void {
-  if (searchQuery !== null) closeSearch(false);
+  if (search.isOpen) closeSearch(false);
   pathbarEl.classList.add("editing");
   crumbsEl.hidden = true;
   pathEntry.hidden = false;
@@ -1032,14 +884,13 @@ async function submitPathEntry(): Promise<void> {
   try {
     await listDir(typed, prefs.showHidden);
   } catch (err) {
-    const message = cleanError(err);
-    if (isSftpPath(typed) && /Connect to this server first/.test(message)) {
+    const failed = listingReaction(typed, err, listingContext(typed, "entry"));
+    if (failed.kind === "connect") {
       closePathEntry();
-      showConnectServerDialog(typed);
+      showConnectServerDialog(failed.url);
       return;
     }
-    if (/not permitted/i.test(message)) showAccessError(typed, message);
-    else showToast(`Unable to find “${typed}”: ${message}`);
+    if (failed.kind === "toast") showListingToast(failed);
     pathEntry.focus();
     return;
   }
@@ -1054,7 +905,7 @@ async function submitPathEntry(): Promise<void> {
 function openSearch(initial = ""): void {
   if (!hasEntries(location)) return;
   closePathEntry();
-  if (searchQuery === null) showSearchBar();
+  if (!search.isOpen) showSearchBar();
   if (initial) searchEntry.value = initial;
   searchEntry.focus();
   onSearchInput();
@@ -1062,21 +913,24 @@ function openSearch(initial = ""): void {
 
 /** Put the search bar in the path bar's place, for the current folder. */
 function showSearchBar(): void {
-  searchQuery = "";
+  search.open(location, canSearchRecursively());
   pathbarEl.hidden = true;
   searchbarEl.hidden = false;
   $("#btn-search").classList.add("open");
   searchEntry.placeholder = `Search ${locationName(location)}`;
 }
 
+/** A key typed while a navigation waited opened the search on the folder
+ *  being left; once the view has moved, the search goes with it. */
+function moveSearchHere(): void {
+  searchEntry.placeholder = `Search ${locationName(location)}`;
+  search.moveTo(location, canSearchRecursively());
+}
+
 function closeSearch(rerender = true): void {
-  if (searchQuery === null) return;
-  searchQuery = null;
-  searchResults = null;
-  searchSeq += 1;
-  clearTimeout(searchTimer);
-  if (searching) void cancelSearch().catch(() => {});
-  setSearching(false);
+  if (!search.isOpen) return;
+  search.close();
+  showSearchBusy();
   showSearchStop(null);
   searchEntry.value = "";
   searchbarEl.hidden = true;
@@ -1094,63 +948,46 @@ function canSearchRecursively(): boolean {
 }
 
 function selectFirstMatch(): void {
-  if (!searchQuery || shown.length === 0) return;
+  if (!search.text || shown.length === 0) return;
   selection.selectFirst();
   updateSelection();
 }
 
 function onSearchInput(): void {
-  searchQuery = searchEntry.value;
-  selection.dropCursor();
-  searchResults = null;
-  searchSeq += 1;
-  clearTimeout(searchTimer);
-  showSearchStop(null);
-  const query = searchQuery.trim();
-  const recursive = !!query && canSearchRecursively();
-  if (searching && !recursive) void cancelSearch().catch(() => {});
-  setSearching(recursive);
-  if (recursive) {
-    // Wait for a pause, then replace the quick local matches with the
-    // recursive backend results as they arrive.
-    const seq = searchSeq;
-    searchTimer = window.setTimeout(() => runSearch(seq, query), 160);
-  }
-  renderView();
-  // Like GNOME Files, the first local match is selected while search runs.
-  selectFirstMatch();
+  search.setText(searchEntry.value);
 }
 
-function runSearch(seq: number, query: string): void {
-  const at = location;
-  const current = () => seq === searchSeq && searchQuery !== null && location === at;
-  if (!current()) return;
-  searchDir(at, query, prefs.showHidden, SEARCH_LIMIT, (batch) => {
-    if (current()) addSearchResults(batch);
-  })
-    .then((summary) => {
-      if (!current()) return;
-      setSearching(false);
-      if (searchResults === null) addSearchResults([]);
-      else renderViewKeepingScroll(); // "Searching…" becomes "No Results Found"
-      showSearchStop(summary);
-    })
-    .catch((err) => {
-      if (!current()) return;
-      setSearching(false);
-      searchResults = [];
+/** Draw what the search says has changed. The selection rules live here:
+ *  a new text selects its first match, as GNOME Files does while the
+ *  search runs, and results arriving later don't move the cursor. */
+function onSearchChange(change: SearchChange, error?: unknown): void {
+  showSearchBusy();
+  switch (change) {
+    case "restarted":
+      selection.dropCursor();
+      showSearchStop(null);
       renderView();
-      showToast(`Could not search: ${cleanError(err)}`);
-    });
+      selectFirstMatch();
+      break;
+    case "grew":
+      showSearchResults();
+      break;
+    case "ended":
+      renderViewKeepingScroll(); // "Searching…" becomes "No Results Found"
+      showSearchStop(search.stop);
+      break;
+    case "failed":
+      renderView();
+      showToast(`Could not search: ${cleanError(error)}`);
+      break;
+  }
 }
 
-/** Add streamed results. The first batch replaces the quick local matches;
- *  later ones keep the cursor and anchor on the same items as the list grows. */
-function addSearchResults(batch: Entry[]): void {
-  // "In This Folder" is already shown and never moves; only an empty view
-  // gets its first match selected.
+/** Show streamed results. "In This Folder" is already shown and never
+ *  moves: later results keep the cursor and anchor on the same items as the
+ *  list grows, and only an empty view gets its first match selected. */
+function showSearchResults(): void {
   const hadItems = shown.length > 0;
-  searchResults = (searchResults ?? []).concat(batch);
   if (!hadItems) {
     renderView();
     selectFirstMatch();
@@ -1162,9 +999,8 @@ function addSearchResults(batch: Entry[]): void {
   updateSelection();
 }
 
-function setSearching(on: boolean): void {
-  searching = on;
-  searchbarEl.classList.toggle("busy", on);
+function showSearchBusy(): void {
+  searchbarEl.classList.toggle("busy", search.busy);
 }
 
 /** Say when a search stopped before looking everywhere, so a short list isn't
@@ -1188,7 +1024,7 @@ function folderKind(entry: Entry): FolderKind {
 
 function sizeText(entry: Entry): string {
   if (!entry.is_dir) return formatSize(entry.size);
-  const n = counts.get(entry.path);
+  const n = summaries.count(entry.path);
   return n === undefined || n === null ? "" : formatItemCount(n);
 }
 
@@ -1201,13 +1037,13 @@ function renderView(): void {
 
   if (sharePage) {
     viewEl.innerHTML = shareStatusPage(sharePage);
-  } else if (pseudo && (!hasEntries(location) || (shown.length === 0 && !searchQuery))) {
+  } else if (pseudo && (!hasEntries(location) || (shown.length === 0 && !search.text))) {
     viewEl.innerHTML = statusPage(pseudo.icon, pseudo.title, pseudo.text);
   } else if (listingError !== null) {
     viewEl.innerHTML = statusPage("dialog-error", "Unable to Access Location", listingError);
-  } else if (shown.length === 0 && searchQuery && searching) {
+  } else if (shown.length === 0 && search.text && search.busy) {
     viewEl.innerHTML = statusPage("system-search", "Searching…", "");
-  } else if (shown.length === 0 && searchQuery) {
+  } else if (shown.length === 0 && search.text) {
     viewEl.innerHTML = statusPage("system-search", "No Results Found", "Try a different search.");
   } else if (shown.length === 0 && location === trashPath) {
     viewEl.innerHTML = statusPage("user-trash", "Trash is Empty", "");
@@ -1220,7 +1056,7 @@ function renderView(): void {
     viewEl.innerHTML = `<div class="list">${listHeaderHtml()}<div class="list-body"></div></div>`;
     itemsLayer = viewEl.querySelector<HTMLElement>(".list-body");
     // Sorting by size needs every folder's count; otherwise only visible rows ask.
-    if (prefs.sortKey === "size") requestCounts(shown.filter((e) => e.is_dir).map((e) => e.path), true);
+    if (prefs.sortKey === "size") void requestCounts(shown.filter((e) => e.is_dir).map((e) => e.path), true);
   }
   const overlay = viewEl.closest(".view-overlay") ?? viewEl;
   overlay.querySelector(".network-paste")?.remove();
@@ -1256,18 +1092,19 @@ function showConnectServerDialog(prefill = "", connectNow = false): void {
   serverInput.value = prefill;
 
   let dialog: ReturnType<typeof openDialog>;
-  let busy = false;
   const attempt = async (trust: boolean) => {
-    if (busy) return;
+    if (dialog.busy) return;
     const server = serverInput.value.trim();
     if (!server) {
       message.textContent = "Enter a server, for example user@host.";
       serverInput.focus();
       return;
     }
-    busy = true;
-    dialog.setResponseEnabled("connect", false);
-    message.textContent = "Connecting…";
+    const refused = await dialog.run(() => connectOnce(server, trust), "Connecting…");
+    if (refused) passwordInput.focus();
+  };
+  /** One connection attempt; true when the server refused the key or password. */
+  const connectOnce = async (server: string, trust: boolean): Promise<boolean> => {
     try {
       const outcome = await sftpConnect(server, passwordInput.value || undefined, trust);
       if (outcome.kind === "connected") {
@@ -1275,7 +1112,7 @@ function showConnectServerDialog(prefill = "", connectNow = false): void {
         await refreshSftpServers();
         await navigate(outcome.server.url);
         showToast(`Connected to ${outcome.server.label}`);
-        return;
+        return false;
       }
       if (outcome.kind === "host-key-unknown") {
         message.textContent = "";
@@ -1293,17 +1130,15 @@ function showConnectServerDialog(prefill = "", connectNow = false): void {
             void attempt(true);
           },
         });
-        return;
+        return false;
       }
       message.textContent = passwordInput.value
         ? "Authentication failed. Check your username and password."
         : "No SSH key was accepted. Enter your password.";
-      passwordInput.focus();
+      return true;
     } catch (err) {
       message.textContent = cleanError(err);
-    } finally {
-      busy = false;
-      dialog.setResponseEnabled("connect", true);
+      return false;
     }
   };
 
@@ -1318,6 +1153,8 @@ function showConnectServerDialog(prefill = "", connectNow = false): void {
     ],
     defaultResponse: "connect",
     closeResponse: "cancel",
+    // Escape and Cancel close it while it connects; the connection still goes ahead.
+    busy: { liveWhileBusy: ["cancel"], status: message },
     onResponse: (id) => {
       if (id !== "connect") return;
       void attempt(false);
@@ -1501,7 +1338,7 @@ function itemHtml(i: number): string {
     const detail = location === NETWORK ? networkDetail(e) : "";
     const shared = detail ? `<div class="shared-by">${escapeHtml(detail)}</div>`
       : inThisFolderSection(i) ? `<div class="shared-by where"></div>`
-      : searchQuery !== null ? `<div class="shared-by where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</div>` : "";
+      : search.isOpen ? `<div class="shared-by where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</div>` : "";
     return `<div class="grid-item item${cls}" data-index="${i}" role="option" aria-selected="${sel}" title="${escapeHtml(e.name)}" ${pos}>` +
       `<div class="icon">${iconHtml(e)}</div>` +
       `<div class="name">${escapeHtml(e.name)}</div>${shared}</div>`;
@@ -1537,7 +1374,7 @@ function starButton(e: Entry): string {
 function whereText(path: string): string {
   const dir = parentOf(path);
   if (dir === home) return "Home";
-  if (home && dir.startsWith(home + "/")) return dir.slice(home.length + 1);
+  if (home && isWithin(dir, home)) return dir.slice(home.length + 1);
   return dir;
 }
 
@@ -1570,7 +1407,7 @@ function thumbKeyFor(e: Entry, size = thumbSize()): string {
 function iconHtml(e: Entry): string {
   return itemIcon(e, iconBase(e), {
     link: e.is_symlink,
-    versions: versionedFolders.has(e.path),
+    versions: summaries.versioned(e.path),
     shared: location === NETWORK || sharedFolders.some((share) => share.path === e.path),
   });
 }
@@ -1734,7 +1571,7 @@ function computeLayout(): void {
     const itemW = Math.floor((inner - sizes.gridGap * (cols - 1)) / cols);
     // icon + gap + two lines of label + padding. Network adds one line for
     // "Shared by …", search one for the folder each result is in.
-    const extraLine = location === NETWORK || searchQuery !== null;
+    const extraLine = location === NETWORK || search.isOpen;
     const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9 + (extraLine ? lineH : 0));
     layout = { cols, itemW, itemH, gap: sizes.gridGap, padX: sizes.gridPad, padY: sizes.gridPad, bodyTop: 0, ...viewSections() };
   } else {
@@ -1797,7 +1634,7 @@ function renderWindow(force = false): void {
   // version badge that comes with them. Only rendered folders are asked.
   const dirs: string[] = [];
   for (let i = start; i <= end; i++) if (shown[i].is_dir) dirs.push(shown[i].path);
-  requestCounts(dirs, false);
+  void requestCounts(dirs, false);
 }
 
 /** Scroll just enough to show item `i`, then render it. */
@@ -1967,39 +1804,11 @@ function updateViewButtons(): void {
   toggle.title = target === "list" ? `List View (${MOD}1)` : `Grid View (${MOD}2)`;
 }
 
-/** Fetch "N items" for `paths`, then patch the visible cells. */
-const countsInFlight = new Set<string>();
+/** Fetch "N items" for `paths`; `summaries` patches the visible cells as they land.
+ *  Sorting by size sorts again once every folder is counted. */
 async function requestCounts(paths: string[], resortWhenDone: boolean): Promise<void> {
-  const loc = location;
-  // Remote items have no local item count; Drive returns null, Network has no size cell.
-  const pending = paths.filter((p) => !isRemotePath(p) && !counts.has(p) && !countsInFlight.has(p));
-  if (pending.length === 0) return;
-  pending.forEach((p) => countsInFlight.add(p));
-  for (let i = 0; i < pending.length; i += 400) {
-    const batch = pending.slice(i, i + 400);
-    let result: (FolderSummary | null)[] = [];
-    try {
-      result = await itemCounts(batch, prefs.showHidden);
-    } catch {
-      /* leave those cells blank */
-    }
-    batch.forEach((p) => countsInFlight.delete(p));
-    if (loc !== location) return;
-    batch.forEach((p, j) => rememberSummary(p, result[j] ?? null));
-    patchCounts();
-  }
-  if (resortWhenDone && prefs.sortKey === "size") renderViewKeepingScroll();
-}
-
-/** Store a folder's count, and redraw its icon if its version badge changed. */
-function rememberSummary(path: string, summary: FolderSummary | null): void {
-  counts.set(path, summary?.count ?? null);
-  countsVersion++;
-  const versioned = !!summary?.versioned;
-  if (versioned === versionedFolders.has(path)) return;
-  if (versioned) versionedFolders.add(path);
-  else versionedFolders.delete(path);
-  patchIcon(path);
+  const landed = await summaries.request(paths, prefs.showHidden);
+  if (landed && resortWhenDone && prefs.sortKey === "size") renderViewKeepingScroll();
 }
 
 function patchCounts(): void {
@@ -2078,7 +1887,7 @@ function updateFloatingBar(): void {
     if (isAppBundle(e)) {
       text = `“${e.name}” selected`;
     } else if (e.is_dir) {
-      const n = counts.get(e.path);
+      const n = summaries.count(e.path);
       if (n === undefined) fetchCount(e.path);
       text = `“${e.name}” selected` + (n === undefined || n === null ? "" : ` (containing ${n === 1 ? "1 item" : `${n.toLocaleString()} items`})`);
     } else {
@@ -2099,14 +1908,10 @@ function updateFloatingBar(): void {
   floatingBar.hidden = false;
 }
 
+/** The selected folder's count, for the floating bar, which `summaries` updates when it lands. */
 function fetchCount(path: string): void {
-  counts.set(path, null);
-  countsVersion++;
   if (isMac && !isRemotePath(path)) void recheckNativeIcons([path], nativeIconPx(), refreshItemIcons);
-  itemCounts([path], prefs.showHidden).then(([summary]) => {
-    rememberSummary(path, summary);
-    updateFloatingBar();
-  }).catch(() => {});
+  summaries.one(path, prefs.showHidden);
 }
 
 // ---------------------------------------------------------------------------
@@ -2319,7 +2124,7 @@ function networkItemMenu(single: Entry | null): MenuItem[] {
       { label: "Disconnect", action: () => void disconnectServer(server) },
     ];
   }
-  const id = single && isSharePath(single.path) ? shareIdOf(single.path) : "";
+  const id = single && isSharePath(single.path) ? shareId(single.path) : "";
   return [
     { label: "Open", action: activateSelection },
     { label: "Copy Location", disabled: !single, action: copyLocation },
@@ -2543,21 +2348,21 @@ function showCompressDialog(sel: Entry[]): void {
     ],
     defaultResponse: "compress",
     closeResponse: "cancel",
-    onResponse: (id) => {
+    // Escape and Cancel close it while it works; the archive still appears.
+    busy: { liveWhileBusy: ["cancel"] },
+    onResponse: async (id) => {
       if (id !== "compress") return;
       const name = validate();
       if (!name) return false;
       const format = formatInput.value as "zip" | "tar.gz" | "tar.xz";
-      void (async () => {
-        try {
-          await compressArchive(sel.map((entry) => entry.path), joinPath(dir, name), format);
-          dialog.close();
-          await reload([joinPath(dir, name)]);
-          showToast(`Created “${name}”`);
-        } catch (err) {
-          message.textContent = cleanError(err);
-        }
-      })();
+      try {
+        await compressArchive(sel.map((entry) => entry.path), joinPath(dir, name), format);
+        dialog.close();
+        await reload([joinPath(dir, name)]);
+        showToast(`Created “${name}”`);
+      } catch (err) {
+        message.textContent = cleanError(err);
+      }
       return false;
     },
   });
@@ -3116,7 +2921,7 @@ function followMoves(moves: { from: string; to: string }[]): void {
   for (const { from, to } of moves) {
     const next = new Set<string>();
     for (const p of starred) {
-      if (p === from || p.startsWith(from + "/")) {
+      if (isWithin(p, from)) {
         next.add(to + p.slice(from.length));
         changed = true;
       } else {
@@ -3331,7 +3136,7 @@ function showLanded(destDir: string): void {
   landedReload = setTimeout(() => {
     landedReload = undefined;
     lastLandedReload = Date.now();
-    const open = [...landedIn].some((dir) => location === dir || location.startsWith(`${dir.replace(/\/+$/, "")}/`));
+    const open = [...landedIn].some((dir) => isUnder(location, dir));
     landedIn.clear();
     if (open) void reload();
   }, wait);
@@ -3635,7 +3440,7 @@ function dropTargetAt(x: number, y: number, sources: string[]): DropTarget | nul
 /** The volume a path is on, for a quick guess before device ids arrive. */
 function volumeRoot(path: string): string {
   return mountedVolumes
-    .filter((v) => path === v.path || path.startsWith(v.path + "/"))
+    .filter((v) => isWithin(path, v.path))
     .sort((a, b) => b.path.length - a.path.length)[0]?.path ?? "/";
 }
 
@@ -3644,7 +3449,7 @@ function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; 
   const dir = target.dir;
   if (isReadOnlyLocation(dir) || sources.some(isReadOnlyLocation)) return null;
   // Into itself or its own subfolder: refused.
-  if (sources.some((src) => dir === src || dir.startsWith(src + "/"))) return null;
+  if (sources.some((src) => isWithin(dir, src))) return null;
   // Drive items go to Drive's Trash with Move to Trash, not the app's Trash.
   if (dir === trashPath) return inTrash() || sources.some(isCloud) ? null : "trash";
   // Only Move to Trash puts items in the Trash: a folder inside it takes nothing.
@@ -4207,23 +4012,22 @@ function showBatchRename(sel: Entry[]): void {
     ],
     defaultResponse: "rename",
     closeResponse: "cancel",
-    onResponse: (id) => {
+    busy: { liveWhileBusy: ["cancel"] },
+    onResponse: async (id) => {
       if (id !== "rename") return;
       const changed = validate();
       if (!changed) return false;
-      void (async () => {
-        try {
-          const items = changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) }));
-          await renameMany(items);
-          // The backend renames all of them or, undoing what it did, none.
-          followMoves(items);
-          dialog.close();
-          showToast(`Renamed ${changed.length} ${changed.length === 1 ? "item" : "items"}`);
-          await reload();
-        } catch (err) {
-          message.textContent = cleanError(err);
-        }
-      })();
+      try {
+        const items = changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) }));
+        await renameMany(items);
+        // The backend renames all of them or, undoing what it did, none.
+        followMoves(items);
+        dialog.close();
+        showToast(`Renamed ${changed.length} ${changed.length === 1 ? "item" : "items"}`);
+        await reload();
+      } catch (err) {
+        message.textContent = cleanError(err);
+      }
       return false;
     },
   });
@@ -4332,6 +4136,7 @@ function promptNewFolder(): void {
       { id: "create", label: "Create", style: "suggested" },
     ],
     defaultResponse: "create",
+    busy: { liveWhileBusy: ["cancel"] },
     onResponse: async (id) => {
       if (id !== "create") return;
       if (!validate()) return false;
@@ -4453,11 +4258,11 @@ async function previewThumbnailEntry(entry: Entry, seq: number): Promise<void> {
 // ---- Preview actions (#48) -------------------------------------------------
 
 function previewPlace(entry: Entry): PreviewPlace {
-  const trashed = !!trashPath && entry.path.startsWith(trashPath + "/");
+  const trashed = isInTrash(entry.path, trashPath) && entry.path !== trashPath;
   return {
     local: isLocalLocation(entry.path),
     inTrash: trashed || inTrash(),
-    elsewhere: searchQuery !== null || parentOf(entry.path) !== location,
+    elsewhere: search.isOpen || parentOf(entry.path) !== location,
     inFolder: !isPseudo(location),
   };
 }
@@ -4530,6 +4335,7 @@ function showPreviewRename(entry: Entry): void {
       { id: "rename", label: "Rename", style: "suggested" },
     ],
     defaultResponse: "rename",
+    busy: { liveWhileBusy: ["cancel"] },
     onResponse: async (id) => {
       if (id !== "rename") return;
       if (!validate()) return false;
@@ -4710,7 +4516,7 @@ const VIEW_KEYS: Record<string, (k: ViewKey) => boolean> = {
   },
   Escape: () => {
     if (!previewLayer?.hidden) closePreview();
-    else if (searchQuery !== null) closeSearch();
+    else if (search.isOpen) closeSearch();
     else if (!cancelCut()) clearSelection();
     return true;
   },
@@ -4993,13 +4799,6 @@ async function showShareDialog(entry: Entry): Promise<void> {
   render();
 
   let dialog: ReturnType<typeof openDialog>;
-  let busy = false;
-  const setBusy = (value: boolean) => {
-    busy = value;
-    protection.element.disabled = value;
-    for (const id of ["anyone", "person", "stop", "close"]) dialog.setResponseEnabled(id, !value);
-    accessList.querySelectorAll<HTMLButtonElement>("button").forEach((button) => { button.disabled = value; });
-  };
   const copyToClipboard = async (link: string) => {
     try {
       await navigator.clipboard.writeText(link);
@@ -5011,20 +4810,19 @@ async function showShareDialog(entry: Entry): Promise<void> {
   const createLink = async (kind: "anyone" | "person") => {
     const passphrase = protection.read();
     if (passphrase === null) return;
-    setBusy(true);
-    try {
-      const person = kind === "person" ? await promptPersonName() : undefined;
-      if (person === null) return;
-      const made = await createShareLink(info.id, kind, person, passphrase);
-      if (!info.access.some((entry) => entry.id === made.entry.id)) info.access.push(made.entry);
-      protection.clear();
-      render();
-      await copyToClipboard(made.link);
-    } catch (err) {
-      showToast(`Could not create the link: ${cleanError(err)}`);
-    } finally {
-      setBusy(false);
-    }
+    await dialog.run(async () => {
+      try {
+        const person = kind === "person" ? await promptPersonName() : undefined;
+        if (person === null) return;
+        const made = await createShareLink(info.id, kind, person, passphrase);
+        if (!info.access.some((entry) => entry.id === made.entry.id)) info.access.push(made.entry);
+        protection.clear();
+        render();
+        await copyToClipboard(made.link);
+      } catch (err) {
+        showToast(`Could not create the link: ${cleanError(err)}`);
+      }
+    });
   };
 
   const confirmStop = () => {
@@ -5053,7 +4851,7 @@ async function showShareDialog(entry: Entry): Promise<void> {
   };
 
   accessList.addEventListener("click", (event) => {
-    if (busy) return;
+    if (dialog.busy) return;
     const copy = (event.target as HTMLElement).closest<HTMLElement>("[data-copy]");
     if (copy?.dataset.copy) {
       shareLinkFor(info.id, copy.dataset.copy)
@@ -5090,11 +4888,11 @@ async function showShareDialog(entry: Entry): Promise<void> {
     ],
     defaultResponse: "close",
     closeResponse: "close",
-    onResponse: async (id) => {
-      if (busy) return false;
+    // Nothing else responds while a link is made, Escape included.
+    busy: {},
+    onResponse: (id) => {
       if (id === "anyone" || id === "person") {
-        await createLink(id);
-        void refreshShares().then(() => renderWindow(true));
+        void createLink(id).then(() => refreshShares().then(() => renderWindow(true)));
         return false;
       }
       if (id === "stop") {
@@ -5182,33 +4980,23 @@ function openClientSetup(): void {
   file.hidden = true;
   const error = document.createElement("p");
   error.className = "dialog-text dialog-error";
-  extra.append(
-    dialogLinks([
-      { label: "Open Guide", action: () => void openExternal(DRIVE_GUIDE_URL) },
-      { label: "Choose File…", action: () => file.click() },
-    ]),
-    json,
-    file,
-    error,
-  );
+  const links = dialogLinks([
+    { label: "Open Guide", action: () => void openExternal(DRIVE_GUIDE_URL) },
+    { label: "Choose File…", action: () => file.click() },
+  ]);
+  extra.append(links, json, file, error);
 
-  const submit = async (): Promise<boolean> => {
-    try {
-      await driveClientSet(json.value);
-      dialog.close();
-      openConnectDialog();
-      return true;
-    } catch (err) {
-      error.textContent = cleanError(err);
-      return false;
-    }
+  const submit = async () => {
+    await driveClientSet(json.value);
+    dialog.close();
+    openConnectDialog();
   };
   file.addEventListener("change", async () => {
     const chosen = file.files?.[0];
     if (!chosen) return;
     json.value = await chosen.text();
     file.value = "";
-    await submit();
+    await dialog.run(submit);
   });
 
   // No default response: Enter must stay a newline in the paste box.
@@ -5221,9 +5009,12 @@ function openClientSetup(): void {
       { id: "add", label: "Add Client", style: "suggested" },
     ],
     closeResponse: "cancel",
+    // Cancel and the guide stay live while the client is checked; a failure
+    // is shown, cleaned, under the paste box.
+    busy: { liveWhileBusy: ["cancel", links.querySelector("button")!], status: error },
     onResponse: async (id) => {
       if (id !== "add") return;
-      if (!(await submit())) return false;
+      await submit();
     },
   });
   json.focus();
@@ -5231,31 +5022,28 @@ function openClientSetup(): void {
 
 function openConnectDialog(): void {
   let flowId: string | null = null;
-  let busy = false;
   const extra = document.createElement("div");
   const status = document.createElement("p");
   status.className = "dialog-text";
   status.textContent =
     "File Browser asks Google for access to see, edit, create and delete your Drive files. The token is kept in your system keychain. " +
     "Google warns that your client is unverified: choose Advanced, then continue.";
-  extra.append(
-    status,
-    dialogLinks([
-      { label: "Open Guide", action: () => void openExternal(DRIVE_GUIDE_URL) },
-      {
-        label: "Change Client…",
-        action: () => {
-          if (busy) return;
-          driveClientClear()
-            .then(() => {
-              dialog.close();
-              openClientSetup();
-            })
-            .catch((err) => showToast(cleanError(err)));
-        },
+  const links = dialogLinks([
+    { label: "Open Guide", action: () => void openExternal(DRIVE_GUIDE_URL) },
+    {
+      label: "Change Client…",
+      action: () => {
+        if (dialog.busy) return;
+        driveClientClear()
+          .then(() => {
+            dialog.close();
+            openClientSetup();
+          })
+          .catch((err) => showToast(cleanError(err)));
       },
-    ]),
-  );
+    },
+  ]);
+  extra.append(status, links);
   const dialog = openDialog({
     heading: "Connect to Google Drive",
     body: "Google opens in your browser. This app never sees your password.",
@@ -5266,14 +5054,13 @@ function openConnectDialog(): void {
     ],
     defaultResponse: "cancel",
     closeResponse: "cancel",
+    // Cancel stays live while Google waits: it cancels the sign-in.
+    busy: { liveWhileBusy: ["cancel", links.querySelector("button")!] },
     onResponse: async (id) => {
       if (id === "cancel") {
         if (flowId) await driveConnectCancel(flowId).catch(() => {});
         return;
       }
-      if (busy) return false;
-      busy = true;
-      dialog.setResponseEnabled("connect", false);
       try {
         const start = await driveConnectStart();
         flowId = start.flow_id;
@@ -5287,15 +5074,15 @@ function openConnectDialog(): void {
         await navigate(account.root_path);
       } catch (err) {
         const message = cleanError(err);
-        if (!/cancelled/i.test(message)) {
+        if (/cancelled/i.test(message)) {
+          // As before, a cancelled sign-in leaves Open Browser off.
+          dialog.setResponseEnabled("connect", false);
+        } else {
           status.textContent = message;
-          dialog.setResponseEnabled("connect", true);
           showToast(message);
         }
-        busy = false;
         return false;
       }
-      busy = false;
     },
   });
 }
@@ -5508,7 +5295,7 @@ async function init(): Promise<void> {
   // Headerbar
   $("#btn-back").addEventListener("click", goBack);
   $("#btn-forward").addEventListener("click", goForward);
-  $("#btn-search").addEventListener("click", () => (searchQuery === null ? openSearch() : closeSearch()));
+  $("#btn-search").addEventListener("click", () => (search.isOpen ? closeSearch() : openSearch()));
   $("#btn-main-menu").addEventListener("click", (e) => openMainMenu(e.currentTarget as HTMLElement));
   $("#btn-location-menu").addEventListener("click", (e) => openLocationMenu(e.currentTarget as HTMLElement));
   $("#btn-new-folder").addEventListener("click", promptNewFolder);
@@ -5598,7 +5385,7 @@ async function init(): Promise<void> {
   // Files saved or created in other apps meanwhile show up when the window
   // comes back. Recent also changes while it is open, so refresh it too.
   window.addEventListener("focus", () => {
-    if (hasOpenOverlay() || searchQuery !== null) return;
+    if (hasOpenOverlay() || search.isOpen) return;
     if (location === RECENT) void reload();
     else if (!isPseudo(location) && location !== trashPath) void reload();
   });
@@ -5616,10 +5403,7 @@ async function init(): Promise<void> {
   trashPath = await trashDir().catch(() => (home ? joinPath(home, ".Trash") : ""));
   await buildSidebar();
   const requested = new URLSearchParams(window.location.search).get("path");
-  const initial =
-    requested && (requested.startsWith("/") || isPseudo(requested) || isCloud(requested) || isSharePath(requested))
-      ? requested
-      : home || "/";
+  const initial = requested && isKnownPath(requested) ? requested : home || "/";
   // Checking received shares waits on every sharer, a connect timeout for
   // each offline one, so only a share needs it before the first view. The
   // emblems on shared folders appear once it is done.

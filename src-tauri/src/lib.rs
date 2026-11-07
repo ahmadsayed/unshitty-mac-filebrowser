@@ -2135,6 +2135,27 @@ mod properties_tests {
     }
 }
 
+/// The frontend folds names too (`src/search.ts`), to filter the folder
+/// before the recursive search answers. Both run these cases, so the two
+/// copies can't drift. Kept out of `fs_ops.rs` so that file still builds on
+/// its own in a scratch crate.
+#[cfg(test)]
+mod fold_tests {
+    use crate::fs_ops::fold;
+
+    #[test]
+    fn fold_agrees_with_the_frontend() {
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../tests/fold-cases.json")).unwrap();
+        assert!(cases.len() >= 10);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let why = case["why"].as_str().unwrap();
+            assert_eq!(fold(name), case["folded"].as_str().unwrap(), "{why}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod update_tests {
     use super::*;

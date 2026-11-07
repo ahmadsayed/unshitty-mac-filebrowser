@@ -22,6 +22,7 @@ import {
   type VersionInfo,
 } from "./api";
 import { formatDate, formatDateDetailed, formatSize } from "./format";
+import { isUnder } from "./paths";
 import { sym } from "./icons";
 import { openDialog, showToast } from "./ui";
 
@@ -69,10 +70,6 @@ function openDeletedCopy(file: DeletedFile): void {
     .then((path) => openFile(path))
     .then(() => showToast("Opened a read-only copy. Use Restore to keep it."))
     .catch((err) => showToast(`Could not open the copy: ${clean(err)}`));
-}
-
-function isInside(path: string, root: string): boolean {
-  return path === root || path.startsWith(root.replace(/\/+$/, "") + "/");
 }
 
 function versionLabel(row: VersionInfo): string {
@@ -375,7 +372,7 @@ export async function addVersionRows(
     else list.appendChild(actions);
     return info;
   }
-  if (!entry.is_dir && isInside(entry.path, root)) {
+  if (!entry.is_dir && isUnder(entry.path, root)) {
     try {
       const count = await versionCount(entry.path);
       if (count > 0) addRow(list, "Versions", count.toLocaleString());
@@ -476,7 +473,7 @@ function confirmStop(
 
 /** For tests/preview: whether a path is inside a root, with a boundary. */
 export function insideVersionedRoot(path: string, root: string | null): boolean {
-  return !!root && isInside(path, root);
+  return !!root && isUnder(path, root);
 }
 
 /** Re-exported so main.ts has one place to ask. */

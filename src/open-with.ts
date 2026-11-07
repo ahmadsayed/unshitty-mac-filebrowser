@@ -1,6 +1,7 @@
 // "Open With…": the installed applications, searchable by name, opened by a
 // click, or by the arrow keys and Enter (GNOME Files 51's searchable chooser).
 import { listApps, openWith, type AppChoice, type Entry } from "./api";
+import { fold } from "./search";
 import { openDialog, type DialogHandle } from "./ui";
 
 /** What the dialog needs from the rest of the app. */
@@ -11,11 +12,6 @@ export interface OpenWithHooks {
   errorText(err: unknown): string;
   /** The file was handed to an application. */
   opened(entry: Entry): void;
-}
-
-/** Text as search compares it: lower case, without accents. */
-export function foldText(text: string): string {
-  return text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 }
 
 /** The applications in order, each id once. */
@@ -73,7 +69,6 @@ class Chooser {
   dialog!: DialogHandle;
   rows: Row[] = [];
   selected: Row | null = null;
-  launching = false;
 
   constructor(readonly entry: Entry, readonly hooks: OpenWithHooks) {
     this.body.className = "open-with-body";
@@ -108,7 +103,7 @@ class Chooser {
     const unique = uniqueApps(apps);
     if (unique.length === 0) return this.fail("No applications found.");
     const shared = sharedNames(unique);
-    this.rows = unique.map((app) => ({ app, button: rowButton(app, shared.has(app.name), this.hooks), key: foldText(app.name) }));
+    this.rows = unique.map((app) => ({ app, button: rowButton(app, shared.has(app.name), this.hooks), key: fold(app.name) }));
     for (const row of this.rows) {
       row.button.addEventListener("click", () => {
         this.select(row);
@@ -128,7 +123,7 @@ class Chooser {
   filter(): void {
     if (this.rows.length === 0) return;
     const query = this.search.value.trim();
-    const folded = foldText(query);
+    const folded = fold(query);
     for (const row of this.rows) row.button.hidden = !row.key.includes(folded);
     const shown = this.visible();
     if (!this.selected || this.selected.button.hidden) this.select(shown[0] ?? null);
@@ -168,30 +163,24 @@ class Chooser {
   }
 
   updateOpen(): void {
-    this.dialog?.setResponseEnabled("open", !!this.selected && !this.launching);
+    this.dialog?.setResponseEnabled("open", !!this.selected);
   }
 
   /** Open the file with the selected application; a failure keeps the dialog for a retry. */
   launch(): void {
     const row = this.selected;
-    if (!row || this.launching) return;
-    this.launching = true;
-    row.button.disabled = true;
+    if (!row || this.dialog.busy) return;
     this.message.textContent = "";
-    this.updateOpen();
-    openWith(this.entry.path, row.app.id)
-      .then(() => {
-        this.dialog.close();
-        this.hooks.opened(this.entry);
-      })
-      .catch((err) => {
-        this.message.textContent = this.hooks.errorText(err);
-      })
-      .finally(() => {
-        this.launching = false;
-        row.button.disabled = false;
-        this.updateOpen();
-      });
+    void this.dialog.run(() =>
+      openWith(this.entry.path, row.app.id)
+        .then(() => {
+          this.dialog.close();
+          this.hooks.opened(this.entry);
+        })
+        .catch((err) => {
+          this.message.textContent = this.hooks.errorText(err);
+        })
+    );
   }
 }
 
@@ -208,6 +197,8 @@ export function showOpenWith(entry: Entry, hooks: OpenWithHooks): void {
     ],
     defaultResponse: "open",
     closeResponse: "cancel",
+    // Escape and Cancel close it while an application starts.
+    busy: { liveWhileBusy: ["cancel"] },
     onResponse: (id) => {
       if (id !== "open") return;
       chooser.launch();

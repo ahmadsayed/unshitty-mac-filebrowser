@@ -24,7 +24,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | Path | What it holds |
 | --- | --- |
 | `src/main.ts` | App state, navigation, path bar, search, virtualized grid/list views, selection, menus, clipboard + paste, drag and drop, bookmarks, keyboard shortcuts, sidebar, init |
-| `src/ui.ts` | libadwaita-style widgets: popovers, popover menus, dialogs, toasts |
+| `src/ui.ts` | libadwaita-style widgets: popovers, popover menus, dialogs, toasts; a dialog's busy mode (one action in flight, what stays live, the status line, failures in words, the buttons put back) and `cleanError` |
 | `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), drawn for the theme; file-kind detection; `itemIcon`, every item icon's markup: its picture (drawing, OS icon, thumbnail, glyph) and which emblems (link, versions, shared) go on it, in what order |
 | `src/icons-macos.ts` | The macOS theme's drawings under the same symbol ids: folders, file pages, line icons |
 | `src/thumbnails.ts` | Thumbnail request queue (4 concurrent) and bounded blob-URL cache |
@@ -37,7 +37,11 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/qr-share.ts` | Send with QR Code…: the menu item and the dialog (code, link, progress, downloads) |
 | `src/preview-actions.ts` | Which actions the Space preview offers (Open, Rename…, Move to Trash, Open Item Location) for where the item is |
 | `src/selection.ts` | The view's selection, cursor and anchor, and the user's intent counter a paste checks before selecting what it made (#50) |
+| `src/search.ts` | The search without the DOM: `SearchSession` (open or not, the text, the walk after a 160 ms pause, at most 1000 results, late answers dropped, what a tab saves), `arrangeSearch` / `searchSections` (what the view shows and its "In This Folder" / "In Subfolders" headers), and `fold`, tested against the backend's `fs_ops::fold` with `tests/fold-cases.json` |
 | `src/locations.ts` | What each kind of location allows (Recent/Starred/Network, Drive, shares, SSH servers, the Trash): read only, local, recursive search, versions, new items |
+| `src/paths.ts` | Each kind of path's layout (`gdrive://`, `share://`, `sftp://`, local) as one row: its kind (`placeOf`), name, parent, child join (encoded as the backend decodes it) and crumbs; containment (`isUnder`), which paths a window may open, share links, what the path bar resolves typed text to |
+| `src/folder-summaries.ts` | Folder item counts and version badges for the view: batches of 400, skips remote, known and in-flight folders, drops late answers, forgets counts on a new location or Show Hidden setting |
+| `src/listing-failure.ts` | What a folder that couldn't be listed turns into, one table row per kind and phase (first view, navigate, reload, path entry): share status page, Connect to Server, go to the parent, toast with Grant Access, error page |
 | `src/open-with.ts` | Open With…: the searchable application chooser (filter, keyboard selection, launch and retry) |
 | `src/updates.ts` | Check for Updates dialogs: offer, download progress, restart, failures |
 | `src/drag-out.ts` | Dragging files out of the window: when the pointer has left it, and the system drag (our GTK command on Linux, the drag plugin on macOS) |
@@ -251,7 +255,11 @@ GPL-3.0-or-later).
 - Use GNOME's wording for labels, menus and messages ("Folder is Empty",
   "Move to Trash", "A folder with that name already exists.").
 - Widgets: reuse `openMenu`, `openPopover`, `openDialog`, `showToast` from
-  `ui.ts` rather than new ad-hoc overlays.
+  `ui.ts` rather than new ad-hoc overlays. A dialog whose response waits on
+  the backend uses `openDialog`'s `busy` option (return the promise from
+  `onResponse`, or `dialog.run()` for work started elsewhere) rather than
+  its own busy flag: it ignores a second Enter, disables the rest except
+  `liveWhileBusy`, and puts back what validation wants.
 - Shortcuts accept ⌘ on macOS and Ctrl elsewhere (`isMac ? metaKey : ctrlKey`).
 
 **Security.** Escape every file name or path inserted with `innerHTML` via
@@ -268,6 +276,12 @@ GPL-3.0-or-later).
   than combining `isCloud`, `isSharePath`, `isSftpPath` and the Trash checks
   at the call site; a new kind of location or rule is a row in
   `tests/locations.test.ts`.
+- Ask `src/paths.ts` how a path breaks up (`pathName`, `parentPath`,
+  `childPath`, `pathSegments`, `isUnder`) rather than slicing a scheme's
+  prefix or writing `p === dir || p.startsWith(dir + "/")` at the call site;
+  a new scheme is a row in its `SCHEMES` table and in `tests/paths.test.ts`.
+  Never rewrite a path the backend produced: stars, pins and history store
+  them as they are.
 - Commit messages: conventional style (`feat:`, `fix:`, `docs:`, `chore:`),
   imperative subject, a body explaining what and why.
 - Keep the README's feature list and "Not supported yet" section in sync with
