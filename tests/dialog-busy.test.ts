@@ -241,3 +241,23 @@ test("focus that moved on to a prompt the work opened stays there", async () => 
   });
   expect(document.activeElement).toBe(prompt);
 });
+
+test("work started from a nested prompt gives focus back to the field that had it before the prompt", async () => {
+  const { dialog, name } = open(() => false);
+  name.focus();
+  openDialog({
+    heading: "Prompt",
+    responses: [{ id: "cancel", label: "Cancel" }, { id: "go", label: "Go" }],
+    onResponse: (id) => {
+      if (id === "go") void dialog.run(async () => { await settle(); throw "Failed: Connection refused"; });
+    },
+  });
+  expect(name.contains(document.activeElement)).toBe(false);
+  // The prompt closes onto the field, which the work has just disabled.
+  button("Go").click();
+  expect(name.disabled).toBe(true);
+  await settle();
+  await settle();
+  expect(name.disabled).toBe(false);
+  expect(document.activeElement).toBe(name);
+});

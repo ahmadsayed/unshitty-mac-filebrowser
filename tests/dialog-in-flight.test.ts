@@ -15,7 +15,7 @@ type MockCalls = {
   failNext(cmd: string, error: string): void; reset(): void;
 };
 const calls = () => (globalThis as unknown as { __mockCalls: MockCalls }).__mockCalls;
-const sftp = () => (globalThis as unknown as { __mockSftp: { reset(): void; requirePassword(): void } }).__mockSftp;
+const sftp = () => (globalThis as unknown as { __mockSftp: { reset(): void; requirePassword(): void; unknownHost(): void } }).__mockSftp;
 
 const button = (label: string) =>
   $$(".dialog-layer .dialog-responses button").find((b) => b.textContent?.trim() === label) as HTMLButtonElement;
@@ -289,6 +289,23 @@ test("Connect to Server: a refused key moves to the password field", async () =>
   expect(message()).toBe("No SSH key was accepted. Enter your password.");
   expect(document.activeElement).toBe($("#sftp-password"));
   expect(button("Connect").disabled).toBe(false);
+});
+
+test("Connect to Server: a failure after Trust gives focus back to the Server field", async () => {
+  const server = await openConnect();
+  sftp().unknownHost();
+  server.focus();
+  await key("Enter", { target: server });
+  await settle(20);
+  expect(dialogHeading()).toBe("Trust This Server?");
+  calls().failNext("sftp_connect", "Failed to connect: Connection refused (os error 111)");
+  await respond("Trust");
+  await settle(20);
+  expect(dialogHeading()).toBe("Connect to Server");
+  expect(message()).toBe("Connection refused");
+  expect(server.disabled).toBe(false);
+  expect(document.activeElement).toBe(server);
+  await key("Escape", { target: server });
 });
 
 // ----- Share -----

@@ -296,12 +296,18 @@ class InFlight {
   /** The controls this action disabled, to enable again. */
   private paused: Control[] = [];
   private focused: HTMLElement | null = null;
+  /** The last element in the dialog that had focus, for work started from a nested prompt. */
+  private lastFocused: HTMLElement | null = null;
 
   constructor(
     private readonly dialog: HTMLElement,
     private readonly buttons: Map<string, HTMLButtonElement>,
     private readonly opts: DialogBusy
-  ) {}
+  ) {
+    dialog.addEventListener("focusin", (e) => {
+      if (e.target instanceof HTMLElement) this.lastFocused = e.target;
+    });
+  }
 
   live(target: string | Element): boolean {
     const live = this.opts.liveWhileBusy ?? [];
@@ -349,8 +355,10 @@ class InFlight {
 
   private begin(): void {
     this.running = true;
+    // Work started from a nested prompt (Trust This Server?) begins while
+    // focus is in the prompt, which then closes onto a disabled control.
     const active = document.activeElement;
-    this.focused = active instanceof HTMLElement && this.dialog.contains(active) ? active : null;
+    this.focused = active instanceof HTMLElement && this.dialog.contains(active) ? active : this.lastFocused;
     const responses = new Set<Element>(this.buttons.values());
     this.paused = [...this.dialog.querySelectorAll<Control>("input, select, textarea, button")].filter(
       (c) => !c.disabled && !responses.has(c) && !this.live(c)
