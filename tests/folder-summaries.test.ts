@@ -200,3 +200,91 @@ test("a folder asked for with one() is reported as recounted once, and not after
   await calls[3].answer();
   expect(changes.at(-1)!.recounted).toEqual([]);
 });
+
+test("after a reload the counts stay shown, and each is asked for again only when the view asks", async () => {
+  const { summaries, calls, changes } = setup();
+  void summaries.request(["/home/a", "/home/b"], false);
+  await calls[0].answer([{ count: 2, versioned: true }, { count: 5, versioned: false }]);
+  const before = summaries.version;
+  summaries.reloaded();
+  // Nothing flashes empty, and nothing is asked for on its own.
+  expect(summaries.count("/home/a")).toBe(2);
+  expect(summaries.versioned("/home/a")).toBe(true);
+  expect(summaries.version).toBe(before);
+  expect(calls).toHaveLength(1);
+
+  const again = summaries.request(["/home/a", "gdrive://root/x"], false);
+  void summaries.request(["/home/a"], false);
+  expect(calls.map((c) => c.paths)).toEqual([["/home/a", "/home/b"], ["/home/a"]]);
+  await calls[1].answer([{ count: 3, versioned: false }]);
+  expect(await again).toBe(true);
+  expect(summaries.count("/home/a")).toBe(3);
+  expect(summaries.versioned("/home/a")).toBe(false);
+  expect(changes.at(-1)).toEqual({ counts: ["/home/a"], badges: ["/home/a"], recounted: [] });
+  // Counted again: known until the next reload.
+  expect(await summaries.request(["/home/a"], false)).toBe(false);
+  // Not asked for: still shown as it was.
+  expect(summaries.count("/home/b")).toBe(5);
+  expect(calls).toHaveLength(2);
+});
+
+test("a reload drops the answers asked for before it, so they are asked for again", async () => {
+  const { summaries, calls, changes } = setup();
+  const old = summaries.request(["/home/a"], false);
+  summaries.one("/home/b", false);
+  summaries.reloaded();
+  // Counted before the reload, maybe before a paste into them.
+  await calls[0].answer([{ count: 1, versioned: false }]);
+  await calls[1].answer([{ count: 1, versioned: false }]);
+  expect(await old).toBe(false);
+  expect(summaries.count("/home/a")).toBeUndefined();
+  expect(changes).toEqual([]);
+
+  void summaries.request(["/home/a", "/home/b"], false);
+  expect(calls.at(-1)!.paths).toEqual(["/home/a", "/home/b"]);
+  await calls[2].answer([{ count: 2, versioned: false }, { count: 4, versioned: false }]);
+  expect(summaries.count("/home/a")).toBe(2);
+  expect(summaries.count("/home/b")).toBe(4);
+  // The one asked for with one() is still reported as such.
+  expect(changes.at(-1)!.recounted).toEqual(["/home/b"]);
+});
+
+test("one() asks again for a count a reload may have changed, showing the old one until then", async () => {
+  const { summaries, calls, changes } = setup();
+  summaries.one("/home/a", false);
+  await calls[0].answer([{ count: 2, versioned: false }]);
+  summaries.one("/home/a", false);
+  expect(calls).toHaveLength(1);
+
+  summaries.reloaded();
+  const before = summaries.version;
+  summaries.one("/home/a", false);
+  summaries.one("/home/a", false);
+  expect(calls).toHaveLength(2);
+  expect(summaries.count("/home/a")).toBe(2);
+  expect(summaries.version).toBe(before);
+  await calls[1].answer([{ count: 3, versioned: false }]);
+  expect(summaries.count("/home/a")).toBe(3);
+  expect(changes.at(-1)).toEqual({ counts: ["/home/a"], badges: [], recounted: ["/home/a"] });
+  summaries.one("/home/a", false);
+  expect(calls).toHaveLength(2);
+});
+
+test("a new location or Show Hidden setting after a reload forgets the old counts as before", async () => {
+  const { summaries, calls } = setup();
+  void summaries.request(["/home/a"], false);
+  await calls[0].answer([{ count: 2, versioned: false }]);
+  summaries.reloaded();
+  void summaries.request(["/home/a"], true);
+  expect(summaries.count("/home/a")).toBeUndefined();
+  await calls[1].answer([{ count: 6, versioned: false }]);
+  expect(summaries.count("/home/a")).toBe(6);
+
+  summaries.reloaded();
+  summaries.reset();
+  expect(summaries.count("/home/a")).toBeUndefined();
+  void summaries.request(["/home/a"], true);
+  await calls[2].answer([{ count: 7, versioned: false }]);
+  expect(await summaries.request(["/home/a"], true)).toBe(false);
+  expect(calls).toHaveLength(3);
+});

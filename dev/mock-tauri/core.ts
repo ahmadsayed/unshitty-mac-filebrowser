@@ -219,12 +219,16 @@ let mockSftpServers: SftpServer[] = [];
 let mockSftpNeedsAuth = false;
 let mockSftpUnknownHost = false;
 
+/** A server's files by `user@host:<path>`. A connection starts in the user's
+ *  home (`/home/<user>`), below the root, as `sftp.rs` starts it. */
 const SFTP_FILES: Record<string, Array<{ name: string; isDir: boolean; size: number }>> = {
-  "user@host:/": [
+  "user@host:/": [{ name: "home", isDir: true, size: 0 }],
+  "user@host:/home": [{ name: "user", isDir: true, size: 0 }],
+  "user@host:/home/user": [
     { name: "Documents", isDir: true, size: 0 },
     { name: "notes.txt", isDir: false, size: 42 },
   ],
-  "user@host:/Documents": [{ name: "hello.txt", isDir: false, size: 12 }],
+  "user@host:/home/user/Documents": [{ name: "hello.txt", isDir: false, size: 12 }],
 };
 
 function sftpParts(path: string): { id: string; rest: string } | null {
@@ -1924,15 +1928,21 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     if (!user || !host) throw "Enter the SSH user, for example user@host.";
     const id = `${user}@${host}:${port}`;
     const label = port === 22 ? `${user}@${host}` : `${user}@${host}:${port}`;
-    const server = { id, label, url: `sftp://${user}@${host}${port === 22 ? "" : `:${port}`}/`, host, port, user };
+    const root = `sftp://${user}@${host}${port === 22 ? "" : `:${port}`}/`;
+    const server = { id, label, url: root, host, port, user };
     if (mockSftpUnknownHost && !a.trustHost) {
       return { kind: "host-key-unknown", server, fingerprint: "SHA256:mock-fingerprint" };
     }
     if (mockSftpNeedsAuth && a.password !== "secret") {
       return { kind: "auth-needed", server };
     }
-    if (!mockSftpServers.some((item) => item.id === id)) mockSftpServers.push(server);
-    return { kind: "connected", server };
+    // Connected, the server's URL is where it starts, as in sftp.rs: the
+    // path typed, or the user's home on the server. Never the root alone.
+    const start = { ...server, url: `${root.slice(0, -1)}${url.pathname.length > 1 ? url.pathname : `/home/${user}`}` };
+    // A second connection to the server replaces the first, as in sftp.rs.
+    const known = mockSftpServers.some((item) => item.id === id);
+    mockSftpServers = known ? mockSftpServers.map((item) => (item.id === id ? start : item)) : [...mockSftpServers, start];
+    return { kind: "connected", server: start };
   },
   sftp_servers: () => mockSftpServers,
   sftp_disconnect: (a) => {

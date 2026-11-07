@@ -1139,6 +1139,26 @@ test("local-only commands refuse relative paths", async () => {
   await expect(invoke("file_properties", { path: "main.rs" })).rejects.toBe("“main.rs” is not a local file.");
 });
 
+test("an SSH connection starts in the user's home or the path typed, never at the root alone", async () => {
+  type Server = { id: string; url: string };
+  const sftp = (globalThis as unknown as { __mockSftp: { reset(): void; unknownHost(): void } }).__mockSftp;
+  sftp.reset();
+  sftp.unknownHost();
+  // Before it connects, the server is named by its root, as in sftp.rs.
+  expect(await invoke("sftp_connect", { url: "user@host" })).toMatchObject({ kind: "host-key-unknown", server: { url: "sftp://user@host/" } });
+  sftp.reset();
+  const home = await invoke<{ kind: string; server: Server }>("sftp_connect", { url: "user@host" });
+  expect(home).toMatchObject({ kind: "connected", server: { id: "user@host:22", url: "sftp://user@host/home/user" } });
+  expect(await namesIn(home.server.url)).toEqual(["Documents", "notes.txt"]);
+  expect(await namesIn("sftp://user@host/")).toEqual(["home"]);
+  const typed = await invoke<{ server: Server }>("sftp_connect", { url: "sftp://user@host:2222/srv" });
+  expect(typed.server.url).toBe("sftp://user@host:2222/srv");
+  // Connecting again replaces the server's start, in place.
+  await invoke("sftp_connect", { url: "user@host/home" });
+  expect((await invoke<Server[]>("sftp_servers", {})).map((server) => server.url)).toEqual(["sftp://user@host/home", "sftp://user@host:2222/srv"]);
+  sftp.reset();
+});
+
 test("writes into shares and SSH servers are refused in the backend's words", async () => {
   const share = await receivedShare();
   const sftp = "sftp://user@host/Documents";

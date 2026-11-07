@@ -3,8 +3,10 @@
 // are fetched only for the folders the view asks about, in batches, never
 // for remote folders (Drive, shares and SSH servers have no local count),
 // and an answer that arrives after the view moved on is dropped. Counts
-// depend on Show Hidden, so asking with the other setting forgets them. No
-// DOM here: the app patches the view from `onChange`.
+// depend on Show Hidden, so asking with the other setting forgets them. A
+// reload may have changed any of them (a paste into a subfolder): they stay
+// shown, but each is asked for again the next time the view asks. No DOM
+// here: the app patches the view from `onChange`.
 
 import type { FolderSummary } from "./api";
 import { isRemotePath } from "./paths";
@@ -34,6 +36,8 @@ export class FolderSummaries {
   private readonly inFlight = new Set<string>();
   /** Folders asked for with one() whose answer hasn't come yet. */
   private readonly recount = new Set<string>();
+  /** Known folders a reload may have changed: shown until asked for and answered again. */
+  private readonly stale = new Set<string>();
   private generation = 0;
   private changes = 0;
   /** The Show Hidden setting the counts were asked with; null before the first ask. */
@@ -71,7 +75,7 @@ export class FolderSummaries {
    */
   async request(paths: string[], showHidden: boolean): Promise<boolean> {
     this.useSetting(showHidden);
-    const pending = paths.filter((p) => !isRemotePath(p) && !this.counts.has(p) && !this.inFlight.has(p));
+    const pending = paths.filter((p) => !isRemotePath(p) && !this.fresh(p) && !this.inFlight.has(p));
     if (pending.length === 0) return false;
     pending.forEach((p) => this.inFlight.add(p));
     const ask = this.ask();
@@ -89,9 +93,11 @@ export class FolderSummaries {
    */
   one(path: string, showHidden: boolean): void {
     this.useSetting(showHidden);
-    if (isRemotePath(path) || this.counts.has(path)) return;
-    this.counts.set(path, null);
-    this.changes++;
+    if (isRemotePath(path) || this.fresh(path)) return;
+    if (!this.counts.has(path)) {
+      this.counts.set(path, null);
+      this.changes++;
+    }
     this.recount.add(path);
     if (this.inFlight.has(path)) return;
     this.inFlight.add(path);
@@ -101,11 +107,29 @@ export class FolderSummaries {
   /** Forget everything: a new location. Answers still on their way are dropped. */
   reset(): void {
     this.counts.clear();
+    this.stale.clear();
     this.inFlight.clear();
     this.recount.clear();
     this.badges.clear();
     this.generation++;
     this.changes++;
+  }
+
+  /**
+   * The location was listed again, and any folder in it may have changed:
+   * every count and badge stays shown until a fresh answer replaces it, but
+   * is asked for again the next time the view (or one()) asks. Answers on
+   * their way were asked for before and are dropped.
+   */
+  reloaded(): void {
+    this.counts.forEach((_, path) => this.stale.add(path));
+    this.inFlight.clear();
+    this.generation++;
+  }
+
+  /** Known, and not since a reload. */
+  private fresh(path: string): boolean {
+    return this.counts.has(path) && !this.stale.has(path);
   }
 
   /** A new Show Hidden setting forgets the counts and drops the answers on their way.
@@ -116,6 +140,7 @@ export class FolderSummaries {
     this.showHidden = showHidden;
     if (!changed) return;
     this.counts.clear();
+    this.stale.clear();
     this.inFlight.clear();
     this.recount.clear();
     this.generation++;
@@ -144,6 +169,7 @@ export class FolderSummaries {
   /** Store a folder's summary; true when its version badge changed. */
   private remember(path: string, summary: FolderSummary | null): boolean {
     this.counts.set(path, summary?.count ?? null);
+    this.stale.delete(path);
     this.changes++;
     const versioned = !!summary?.versioned;
     if (versioned === this.badges.has(path)) return false;
