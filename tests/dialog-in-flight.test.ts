@@ -405,3 +405,65 @@ test("Connect to Google Drive: a failure is shown in the dialog and as a toast, 
   expect(button("Cancel").disabled).toBe(false);
   expect(link("Change Client…").disabled).toBe(false);
 });
+
+// ----- A double Enter runs the work once -----
+
+test("Compress: a double Enter compresses once", async () => {
+  await folder("compress-twice");
+  await openCompress("a.txt");
+  calls().hold("compress_archive");
+  await key("Enter", { target: $("#compress-name") });
+  await key("Enter", { target: $("#compress-name") });
+  expect(button("Compress").disabled).toBe(true);
+  calls().release("compress_archive");
+  await settle(30);
+  expect(calls().count("compress_archive")).toBe(1);
+  expect(dialogHeading()).toBeUndefined();
+  expect(toasts().join(" ")).toContain("Created “a.txt.zip”");
+});
+
+test("Batch Rename: a double Enter renames once", async () => {
+  await folder("batch-twice");
+  await openBatchRename();
+  calls().hold("rename_many");
+  await key("Enter", { target: $("#batch-prefix") });
+  await key("Enter", { target: $("#batch-prefix") });
+  expect(button("Rename").disabled).toBe(true);
+  calls().release("rename_many");
+  await settle(30);
+  expect(calls().count("rename_many")).toBe(1);
+  expect(dialogHeading()).toBeUndefined();
+  expect(toasts().join(" ")).toContain("Renamed 2 items");
+  expect(names()).toEqual(expect.arrayContaining(["x-a.txt", "x-b.txt"]));
+});
+
+test("New Folder: a double Enter creates once, without an error toast", async () => {
+  await folder("new-twice", []);
+  const input = await openNewFolder("Made");
+  calls().reset();
+  calls().hold("make_dir");
+  await key("Enter", { target: input });
+  await key("Enter", { target: input });
+  expect(button("Create").disabled).toBe(true);
+  calls().release("make_dir");
+  await settle(30);
+  expect(calls().count("make_dir")).toBe(1);
+  expect(dialogHeading()).toBeUndefined();
+  expect(toasts().join(" ")).not.toContain("already exists");
+  expect(names()).toEqual(["Made"]);
+});
+
+test("Rename from the preview: a double Enter renames once", async () => {
+  const dir = await folder("preview-twice");
+  const input = await openPreviewRename("a.txt");
+  await type(input, "c.txt");
+  calls().hold("rename_entry");
+  await key("Enter", { target: input });
+  await key("Enter", { target: input });
+  expect(button("Rename").disabled).toBe(true);
+  calls().release("rename_entry");
+  await settle(30);
+  expect(calls().count("rename_entry")).toBe(1);
+  expect(dialogHeading()).toBeUndefined();
+  expect(await invoke("path_exists", { path: `${dir}/c.txt` })).toBe(true);
+});

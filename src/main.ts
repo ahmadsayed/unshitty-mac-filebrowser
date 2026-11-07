@@ -2444,21 +2444,21 @@ function showCompressDialog(sel: Entry[]): void {
     ],
     defaultResponse: "compress",
     closeResponse: "cancel",
-    onResponse: (id) => {
+    // Escape and Cancel close it while it works; the archive still appears.
+    busy: { liveWhileBusy: ["cancel"] },
+    onResponse: async (id) => {
       if (id !== "compress") return;
       const name = validate();
       if (!name) return false;
       const format = formatInput.value as "zip" | "tar.gz" | "tar.xz";
-      void (async () => {
-        try {
-          await compressArchive(sel.map((entry) => entry.path), joinPath(dir, name), format);
-          dialog.close();
-          await reload([joinPath(dir, name)]);
-          showToast(`Created “${name}”`);
-        } catch (err) {
-          message.textContent = cleanError(err);
-        }
-      })();
+      try {
+        await compressArchive(sel.map((entry) => entry.path), joinPath(dir, name), format);
+        dialog.close();
+        await reload([joinPath(dir, name)]);
+        showToast(`Created “${name}”`);
+      } catch (err) {
+        message.textContent = cleanError(err);
+      }
       return false;
     },
   });
@@ -4108,23 +4108,22 @@ function showBatchRename(sel: Entry[]): void {
     ],
     defaultResponse: "rename",
     closeResponse: "cancel",
-    onResponse: (id) => {
+    busy: { liveWhileBusy: ["cancel"] },
+    onResponse: async (id) => {
       if (id !== "rename") return;
       const changed = validate();
       if (!changed) return false;
-      void (async () => {
-        try {
-          const items = changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) }));
-          await renameMany(items);
-          // The backend renames all of them or, undoing what it did, none.
-          followMoves(items);
-          dialog.close();
-          showToast(`Renamed ${changed.length} ${changed.length === 1 ? "item" : "items"}`);
-          await reload();
-        } catch (err) {
-          message.textContent = cleanError(err);
-        }
-      })();
+      try {
+        const items = changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) }));
+        await renameMany(items);
+        // The backend renames all of them or, undoing what it did, none.
+        followMoves(items);
+        dialog.close();
+        showToast(`Renamed ${changed.length} ${changed.length === 1 ? "item" : "items"}`);
+        await reload();
+      } catch (err) {
+        message.textContent = cleanError(err);
+      }
       return false;
     },
   });
@@ -4233,6 +4232,7 @@ function promptNewFolder(): void {
       { id: "create", label: "Create", style: "suggested" },
     ],
     defaultResponse: "create",
+    busy: { liveWhileBusy: ["cancel"] },
     onResponse: async (id) => {
       if (id !== "create") return;
       if (!validate()) return false;
@@ -4431,6 +4431,7 @@ function showPreviewRename(entry: Entry): void {
       { id: "rename", label: "Rename", style: "suggested" },
     ],
     defaultResponse: "rename",
+    busy: { liveWhileBusy: ["cancel"] },
     onResponse: async (id) => {
       if (id !== "rename") return;
       if (!validate()) return false;
