@@ -726,6 +726,7 @@ async function relist(moved: () => boolean): Promise<boolean> {
     listingError = null;
     sharePage = null;
     itemIcons.listingReloaded();
+    summaries.reloaded();
     return true;
   } catch (err) {
     return !moved() && !(await listingFailed(err));
@@ -1828,7 +1829,7 @@ function updateFloatingBar(): void {
       text = `“${e.name}” selected`;
     } else if (e.is_dir) {
       const n = summaries.count(e.path);
-      if (n === undefined) fetchCount(e.path);
+      fetchCount(e.path);
       text = `“${e.name}” selected` + (n === undefined || n === null ? "" : ` (containing ${n === 1 ? "1 item" : `${n.toLocaleString()} items`})`);
     } else {
       text = `“${e.name}” selected (${formatSize(e.size)})`;
@@ -1849,7 +1850,8 @@ function updateFloatingBar(): void {
 }
 
 /** The selected folder's count, for the floating bar, which `summaries` updates when it lands
- *  (on macOS its icon is asked for again then: see `itemIcons.recounted`). */
+ *  (on macOS its icon is asked for again then: see `itemIcons.recounted`). It asks only for a
+ *  count it doesn't know, or one a reload may have changed. */
 function fetchCount(path: string): void {
   summaries.one(path, prefs.showHidden);
 }

@@ -3,7 +3,7 @@
 // floating bar. The rules themselves are tested in folder-summaries.test.ts.
 import { afterEach, beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, chooseMenu, click, goTo, item, key, prefs, settle, type } from "./app";
+import { $, $$, boot, chooseMenu, click, goTo, item, key, mouse, prefs, settle, type } from "./app";
 
 const HOME = "/Users/me";
 type MockCounts = { log: { asked: string[][] }; hold(hold: boolean): void; held(): number; reset(): void };
@@ -121,6 +121,34 @@ test("a count asked for before Show Hidden changed is dropped when it lands", as
   expect(item("me").querySelector(".size")?.textContent).toBe(`${answer} items`);
   await key("h", { ctrl: true });
   await settle(20);
+  await showAs("grid");
+});
+
+test("a reload counts the folders on screen again: a paste into one shows in its count", async () => {
+  const dir = `${HOME}/CountsAfterPaste`;
+  await invoke("make_dir", { path: dir });
+  await invoke("make_dir", { path: `${dir}/Inbox` });
+  await invoke("create_file", { path: `${dir}/a.txt` });
+  await showAs("list");
+  await goTo(dir);
+  await settle(10);
+  const sizeOf = (name: string) => item(name).querySelector(".size")?.textContent;
+  expect(sizeOf("Inbox")).toBe("Empty");
+
+  await click(item("a.txt").querySelector(".icon")!);
+  await key("c", { mod: true });
+  await mouse(item("Inbox").querySelector(".icon")!, "mousedown", { button: 2 });
+  await mouse(item("Inbox").querySelector(".icon")!, "contextmenu", { button: 2 });
+  counts().reset();
+  await chooseMenu("Paste Into Folder");
+  await settle(30);
+  expect(sizeOf("Inbox")).toBe("1 item");
+  // Asked again for the folder on screen, no more.
+  expect(asked()).toEqual([`${dir}/Inbox`]);
+  // The selected folder's count in the floating bar too.
+  await click(item("Inbox").querySelector(".icon")!);
+  await settle(10);
+  expect($("#floating-bar").textContent).toBe("“Inbox” selected (containing 1 item)");
   await showAs("grid");
 });
 
