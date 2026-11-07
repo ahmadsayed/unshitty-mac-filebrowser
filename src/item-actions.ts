@@ -9,7 +9,7 @@
 // A few cells keep a difference between surfaces exactly as it was; each is
 // marked "Kept:" and waits for a decision rather than being changed here.
 
-import { copyOutRefusalOf, isPseudoKind, isTrashKind, type LocationKind } from "./locations";
+import { copyOutRefusalOf, isPseudoKind, isReadOnlyKind, isTrashKind, kindAcceptsNewItems, type LocationKind } from "./locations";
 
 export type SharedAction =
   | "cut"
@@ -40,14 +40,10 @@ const OK: Verdict = null;
 const QUIET: Verdict = "";
 const READ_ONLY: Verdict = "Shared folders are read only.";
 
-/** Paste, by the kind of folder it pastes into. */
-const PASTE: Record<LocationKind, Verdict> = {
-  folder: OK, drive: OK,
-  share: READ_ONLY, sftp: READ_ONLY,
-  // Only Move to Trash puts items in the Trash: pasted ones would have no record.
-  trash: QUIET, "in-trash": QUIET,
-  recent: QUIET, starred: QUIET, network: QUIET,
-};
+/** Paste, by the kind of folder it pastes into: wherever New Folder can add
+ *  (`kindAcceptsNewItems`, which keeps the Trash out); shares and servers say why not. */
+const paste = (here: Here): Verdict =>
+  kindAcceptsNewItems(here.kind) ? OK : isReadOnlyKind(here.kind) ? READ_ONLY : QUIET;
 
 /** Move to Trash, by the location on screen. In the Trash, Delete deletes permanently instead. */
 const TRASH: Record<LocationKind, Verdict> = {
@@ -72,12 +68,12 @@ const STAR: Record<LocationKind, Verdict> = {
   trash: QUIET, "in-trash": QUIET, network: QUIET,
 };
 
-/** ⌘D, by the folder it bookmarks: anything but Recent, Starred and Network. */
+/** Add to Bookmarks, by the folder it bookmarks: anything but Recent, Starred and Network. */
 const BOOKMARK: Record<LocationKind, Verdict> = {
-  folder: OK, drive: OK,
-  // Kept: ⌘D bookmarks a share, an SSH folder or a folder in the Trash, though
-  // their location menus have no Add to Bookmarks.
-  share: OK, sftp: OK, trash: OK, "in-trash": OK,
+  folder: OK,
+  // Kept: ⌘D bookmarks a Drive folder, a share, an SSH folder or a folder in
+  // the Trash, though their location menus have no Add to Bookmarks.
+  drive: OK, share: OK, sftp: OK, trash: OK, "in-trash": OK,
   recent: QUIET, starred: QUIET, network: QUIET,
 };
 
@@ -105,7 +101,7 @@ const copyOut = (here: Here): Verdict => copyOutRefusalOf(here.items);
 const RULES: Record<SharedAction, (here: Here) => Verdict> = {
   cut: copyOut,
   copy: copyOut,
-  paste: (here) => PASTE[here.kind],
+  paste,
   // Recent and Starred mix folders, so the name-clash check wouldn't work there.
   rename: (here) => (isPseudoKind(here.kind) ? QUIET : firstItemVerdict(RENAME_ITEM, here)),
   trash: (here) => TRASH[here.kind],

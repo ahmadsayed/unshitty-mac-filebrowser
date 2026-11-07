@@ -26,7 +26,8 @@ export const PREVIEW_ACTION_LABELS: Record<PreviewAction, string> = {
  * What the preview offers for the one item in `here`. Kept as they were:
  * only items on this computer get Rename… and Move to Trash, so a Drive
  * item's preview lacks the two its menu offers; and the Trash folder itself
- * (shown with hidden files) gets Rename…, which F2 and the menus refuse.
+ * (shown with hidden files) gets Rename…, which F2 refuses and the item
+ * menu's Rename… quietly ignores.
  */
 export function previewPlace(here: Here): PreviewPlace {
   const item = here.items[0];

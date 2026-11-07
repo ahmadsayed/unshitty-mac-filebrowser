@@ -2653,6 +2653,7 @@ function showPermissionsDialog(path: string, mode: number, onSaved: () => void):
  * dialog is already usable.
  */
 async function showProperties(entry: Entry): Promise<void> {
+  if (refuse("properties", hereFor([entry.path]))) return;
   let info;
   try {
     info = await fileProperties(entry.path, prefs.showHidden);
@@ -3646,8 +3647,10 @@ function bookmarkMenuItem(path: string): MenuItem {
   return { label: "Add to Bookmarks", disabled: fixedSidebarPaths.has(path), action: () => setBookmarked(path, true) };
 }
 
+/** Add or remove a bookmark. Adding asks the rule (src/item-actions.ts); removing always works. */
 async function setBookmarked(path: string, on: boolean): Promise<void> {
   if (on === pins.includes(path) || (on && fixedSidebarPaths.has(path))) return;
+  if (on && refuse("bookmark", { kind: locationKind(path, trashPath), items: [] })) return;
   const next = on ? [...pins, path] : pins.filter((p) => p !== path);
   try {
     await savePins(next);
@@ -3775,7 +3778,12 @@ function showValidation(v: Validation, entry: HTMLElement, message: HTMLElement)
 // Rename (popover anchored to the item, as in GNOME Files)
 // ---------------------------------------------------------------------------
 
-/** Rename several items in one folder with find/replace, prefix and suffix. */
+/**
+ * Rename several items in one folder with find/replace, prefix and suffix.
+ * Kept: it doesn't ask the rename rule, as before. Only a folder's item menu
+ * reaches it, where the rule refuses nothing but the Trash folder itself
+ * (shown with hidden files), so a batch can still rename that one.
+ */
 function showBatchRename(sel: Entry[]): void {
   if (sel.length < 2) {
     if (sel[0]) startRename(sel[0]);
@@ -4181,6 +4189,8 @@ function renderPreviewActions(entry: Entry): void {
 /**
  * Rename from the preview: a dialog, since the preview covers the item the
  * rename popover points at. The preview stays open on the renamed item.
+ * It doesn't ask the rename rule: `previewPlace` already decided to offer
+ * it, keeping the Trash folder's exception (src/preview-actions.ts).
  */
 function showPreviewRename(entry: Entry): void {
   const noun = entry.is_dir ? "Folder" : "File";
@@ -4452,7 +4462,7 @@ const ANYWHERE_SHORTCUTS: Shortcut[] = [
   [(k) => k.ctrl && k.raw === "PageDown", () => cycleTab(1)],
   [(k) => k.ctrl && k.raw === "PageUp", () => cycleTab(-1)],
   [(k) => k.mod && k.shift && k.key === "n", promptNewFolder],
-  [(k) => plainMod(k, "d") && allows("bookmark", { kind: hereKind(), items: [] }), () => setBookmarked(location, !pins.includes(location))],
+  [(k) => plainMod(k, "d"), () => setBookmarked(location, !pins.includes(location))],
   [(k) => (k.mod && k.shift && (k.raw === "." || k.raw === ">")) || (k.ctrl && !k.shift && k.key === "h"), toggleHidden],
   [(k) => plainMod(k, "r") || k.raw === "F5", () => reload()],
   [(k) => k.mod && (k.raw === "?" || (k.shift && k.raw === "/")), showShortcuts],
@@ -4482,7 +4492,7 @@ const VIEW_SHORTCUTS: Shortcut[] = [
 
 function showSelectedProperties(): void {
   const entry = selectedEntries()[0];
-  if (entry && !refuse("properties", hereFor([entry.path]))) showProperties(entry);
+  if (entry) void showProperties(entry);
 }
 
 function onGlobalKeyDown(e: KeyboardEvent): void {

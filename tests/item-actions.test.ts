@@ -23,7 +23,7 @@ const BY_PLACE: Partial<Record<SharedAction, string[]>> = {
   deletePermanently: [N,    N,      N,      Y,    Y,       N,    N,   N,    N],
   // Kept: share, sftp and drive ✓, for the list row's star.
   star:              [Y,    Y,      N,      N,    N,       Y,    Y,   Y,    Y],
-  // Kept: trash, in-trash, share and sftp ✓, through ⌘D.
+  // Kept: drive, trash, in-trash, share and sftp ✓, through ⌘D; their location menus have no Add to Bookmarks.
   bookmark:          [N,    N,      N,      Y,    Y,       Y,    Y,   Y,    Y],
 };
 

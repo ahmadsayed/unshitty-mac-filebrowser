@@ -52,8 +52,13 @@ export function isTrashKind(kind: LocationKind): boolean {
 }
 
 /** Shared folders and SSH servers are read only: no New Folder, Paste, Rename, Trash or drops. */
+export function isReadOnlyKind(kind: LocationKind): boolean {
+  return kind === "share" || kind === "sftp";
+}
+
+/** `isReadOnlyKind` for `path`. */
 export function isReadOnlyLocation(path: string): boolean {
-  return kindIn(path, "", ["share", "sftp"]);
+  return isReadOnlyKind(locationKind(path, ""));
 }
 
 /** A path on this machine or a mounted volume, not a place or a remote. */
@@ -63,7 +68,7 @@ export function isLocalLocation(path: string): boolean {
 
 /** The Trash or a folder inside it; nothing until the Trash's path is known. */
 export function isInTrash(path: string, trashPath: string): boolean {
-  return kindIn(path, trashPath, ["trash", "in-trash"]);
+  return isTrashKind(locationKind(path, trashPath));
 }
 
 /** Recursive name search is for local folders; the others filter in place. */
@@ -77,22 +82,18 @@ export function mayHaveVersions(path: string, trashPath: string): boolean {
 }
 
 /**
- * Whether New Folder, New Document and Paste can add to `path`. Never the
- * Trash or a folder in it: an item put there has no record of where it came
- * from, so it couldn't be restored and Empty Trash would delete it for good.
+ * Whether New Folder, New Document and Paste can add to a place of this
+ * kind: a folder or Drive. Never the Trash or a folder in it: an item put
+ * there has no record of where it came from, so it couldn't be restored and
+ * Empty Trash would delete it for good.
  */
+export function kindAcceptsNewItems(kind: LocationKind): boolean {
+  return kind === "folder" || kind === "drive";
+}
+
+/** `kindAcceptsNewItems` for `path`. */
 export function acceptsNewItems(path: string, trashPath: string): boolean {
-  return kindIn(path, trashPath, ["folder", "drive"]);
-}
-
-/** Whether an item at `path` can be renamed: not on a read-only remote, and not in the Trash, where its record names it. */
-export function canRename(path: string, trashPath: string): boolean {
-  return !kindIn(path, trashPath, ["share", "sftp", "trash", "in-trash"]);
-}
-
-/** Whether Properties can describe an item at `path`: the backend can't read shared folders or SSH servers yet. */
-export function hasProperties(path: string): boolean {
-  return kindIn(path, "", ["folder", "drive"]);
+  return kindAcceptsNewItems(locationKind(path, trashPath));
 }
 
 /**
@@ -101,7 +102,7 @@ export function hasProperties(path: string): boolean {
  * none of them is on one; the first item's kind picks the wording.
  */
 export function copyOutRefusalOf(kinds: readonly LocationKind[]): string | null {
-  if (!kinds.some((kind) => kind === "share" || kind === "sftp")) return null;
+  if (!kinds.some(isReadOnlyKind)) return null;
   return kinds[0] === "sftp" ? "Copying from SSH servers comes next." : "Copying out of a shared folder comes next.";
 }
 
@@ -117,10 +118,10 @@ interface ItemFacts {
   is_symlink: boolean;
 }
 
-/** A file (or a link to one) on this computer or a mounted volume, whose
- *  path the backend gives as absolute: not a folder, Drive, a share or SSH. */
+/** A file (or a link to one) on this computer or a mounted volume: not a
+ *  folder, and not on Drive, a share or an SSH server. */
 export function isLocalFile(e: Omit<ItemFacts, "is_symlink">): boolean {
-  return !e.is_dir && e.path.startsWith("/");
+  return !e.is_dir && placeOf(e.path) === "local";
 }
 
 /** `isLocalFile`, and not a link: what Install Application… and Run in Terminal… take. */

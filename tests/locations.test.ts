@@ -4,9 +4,7 @@
 import { expect, test } from "vitest";
 import {
   acceptsNewItems,
-  canRename,
   copyOutRefusal,
-  hasProperties,
   isInTrash,
   isLocalFile,
   isLocalLocation,
@@ -35,8 +33,6 @@ type Row = {
   searches: boolean;
   versions: boolean;
   newItems: boolean;
-  rename: boolean;
-  properties: boolean;
 };
 
 const F = false;
@@ -44,22 +40,22 @@ const T = true;
 
 // prettier-ignore
 const ROWS: Record<string, Row> = {
-  "a local folder":          { path: "/Users/me/Documents",              kind: "folder", pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T, rename: T, properties: T },
-  "the root":                { path: "/",                                kind: "folder", pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T, rename: T, properties: T },
-  // Nothing is pasted, made or renamed in the Trash: its items' records would be wrong.
-  "the Trash":               { path: TRASH,                              kind: "trash", pseudo: F, readOnly: F, local: T, inTrash: T, searches: F, versions: F, newItems: F, rename: F, properties: T },
+  "a local folder":          { path: "/Users/me/Documents",              kind: "folder", pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T },
+  "the root":                { path: "/",                                kind: "folder", pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T },
+  // Nothing is pasted or made in the Trash: its items' records would be wrong.
+  "the Trash":               { path: TRASH,                              kind: "trash", pseudo: F, readOnly: F, local: T, inTrash: T, searches: F, versions: F, newItems: F },
   // Only the Trash itself is left out of the versions lookup.
-  "a folder in the Trash":   { path: `${TRASH}/old`,                     kind: "in-trash", pseudo: F, readOnly: F, local: T, inTrash: T, searches: F, versions: T, newItems: F, rename: F, properties: T },
-  "the Linux Trash":         { path: LINUX_TRASH, trash: LINUX_TRASH,    kind: "trash", pseudo: F, readOnly: F, local: T, inTrash: T, searches: F, versions: F, newItems: F, rename: F, properties: T },
-  "a folder in the Linux Trash": { path: `${LINUX_TRASH}/old/sub`, trash: LINUX_TRASH, kind: "in-trash", pseudo: F, readOnly: F, local: T, inTrash: T, searches: F, versions: T, newItems: F, rename: F, properties: T },
+  "a folder in the Trash":   { path: `${TRASH}/old`,                     kind: "in-trash", pseudo: F, readOnly: F, local: T, inTrash: T, searches: F, versions: T, newItems: F },
+  "the Linux Trash":         { path: LINUX_TRASH, trash: LINUX_TRASH,    kind: "trash", pseudo: F, readOnly: F, local: T, inTrash: T, searches: F, versions: F, newItems: F },
+  "a folder in the Linux Trash": { path: `${LINUX_TRASH}/old/sub`, trash: LINUX_TRASH, kind: "in-trash", pseudo: F, readOnly: F, local: T, inTrash: T, searches: F, versions: T, newItems: F },
   // The rest of the Linux Trash (info/) isn't the Trash folder the app shows.
-  "the Linux Trash's records": { path: "/home/me/.local/share/Trash/info", trash: LINUX_TRASH, kind: "folder", pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T, rename: T, properties: T },
-  "a name that starts like the Trash": { path: `${TRASH}can`,            kind: "folder", pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T, rename: T, properties: T },
-  "Recent":                  { path: "pseudo:recent",                    kind: "recent", pseudo: T, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: F, rename: T, properties: F },
-  "Network":                 { path: "pseudo:network",                   kind: "network", pseudo: T, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: F, rename: T, properties: F },
-  "a Google Drive folder":   { path: "gdrive://acct/root~My%20Drive",    kind: "drive", pseudo: F, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: T, rename: T, properties: T },
-  "a received share":        { path: "share://r1/sub",                   kind: "share", pseudo: F, readOnly: T, local: F, inTrash: F, searches: F, versions: F, newItems: F, rename: F, properties: F },
-  "an SSH server":           { path: "sftp://me@host/home",              kind: "sftp", pseudo: F, readOnly: T, local: F, inTrash: F, searches: F, versions: F, newItems: F, rename: F, properties: F },
+  "the Linux Trash's records": { path: "/home/me/.local/share/Trash/info", trash: LINUX_TRASH, kind: "folder", pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T },
+  "a name that starts like the Trash": { path: `${TRASH}can`,            kind: "folder", pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T },
+  "Recent":                  { path: "pseudo:recent",                    kind: "recent", pseudo: T, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: F },
+  "Network":                 { path: "pseudo:network",                   kind: "network", pseudo: T, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: F },
+  "a Google Drive folder":   { path: "gdrive://acct/root~My%20Drive",    kind: "drive", pseudo: F, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: T },
+  "a received share":        { path: "share://r1/sub",                   kind: "share", pseudo: F, readOnly: T, local: F, inTrash: F, searches: F, versions: F, newItems: F },
+  "an SSH server":           { path: "sftp://me@host/home",              kind: "sftp", pseudo: F, readOnly: T, local: F, inTrash: F, searches: F, versions: F, newItems: F },
 };
 
 for (const [name, row] of Object.entries(ROWS)) {
@@ -74,8 +70,6 @@ for (const [name, row] of Object.entries(ROWS)) {
       searches: searchesRecursively(row.path, trash),
       versions: mayHaveVersions(row.path, trash),
       newItems: acceptsNewItems(row.path, trash),
-      rename: canRename(row.path, trash),
-      properties: hasProperties(row.path),
     }).toEqual({
       kind: row.kind,
       pseudo: row.pseudo,
@@ -85,8 +79,6 @@ for (const [name, row] of Object.entries(ROWS)) {
       searches: row.searches,
       versions: row.versions,
       newItems: row.newItems,
-      rename: row.rename,
-      properties: row.properties,
     });
   });
 }
@@ -97,7 +89,6 @@ test("nothing is in the Trash before its path is known", () => {
   expect(searchesRecursively(TRASH, "")).toBe(true);
   expect(mayHaveVersions(TRASH, "")).toBe(true);
   expect(acceptsNewItems(TRASH, "")).toBe(true);
-  expect(canRename(`${TRASH}/old.txt`, "")).toBe(true);
 });
 
 test("the kind of each place, in one precedence", () => {

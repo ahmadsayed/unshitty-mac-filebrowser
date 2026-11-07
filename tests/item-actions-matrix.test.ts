@@ -5,7 +5,7 @@
 // rules (src/item-actions.ts) existed, and passing on it, so the refactor
 // could show it changed nothing. "Kept:" marks a difference between surfaces
 // that the shared rules preserve on purpose: each is a decision for later.
-import { beforeAll, beforeEach, expect, test } from "vitest";
+import { beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
 import { $, $$, boot, click, closeOverlays, dialogHeading, goTo, hit, item, key, mouse, names, open, settle } from "./app";
 
@@ -63,17 +63,22 @@ async function armClipboard(): Promise<void> {
   await key("c", { mod: true });
 }
 
-/** What `act` did: the watched commands it called, a rename popover, a
- *  drag (`act` returns true), a dialog, a toast (other than the failures the
- *  matrix caused). */
+/** Paths written to the system clipboard so far: a copy or cut writes them. */
+const clipboardWrites = () => vi.mocked(navigator.clipboard.writeText).mock.calls.length;
+
+/** What `act` did: the watched commands it called, a write to the
+ *  clipboard, a rename popover, a drag (`act` returns true), a dialog, a
+ *  toast (other than the failures the matrix caused). */
 async function effect(act: () => Promise<unknown>): Promise<string> {
   calls().reset();
   for (const cmd of WATCHED) calls().failNext(cmd, HELD);
   $$(".toast").forEach((t) => t.remove());
+  const writes = clipboardWrites();
   const dragged = await act();
   await settle(10);
   const seen = [
     ...WATCHED.filter((cmd) => calls().count(cmd) > 0),
+    ...(clipboardWrites() > writes ? ["clipboard"] : []),
     ...(document.querySelector(".rename-popover") ? ["rename popover"] : []),
     ...(dragged === true ? ["drag"] : []),
     ...(dialogHeading() ? [`dialog “${dialogHeading()}”`] : []),
@@ -163,7 +168,7 @@ const fromNetwork = (name: string) => async () => {
 };
 
 const FOLDER_KEYS = {
-  copy: "nothing",
+  copy: "clipboard",
   paste: "copy_entry",
   properties: "file_properties",
   bookmark: "save_pins",
@@ -173,7 +178,7 @@ const FOLDER_KEYS = {
 const FOLDER_BACKGROUND = ["New Folder…", "New Document…", "Open With…", "Share This Folder…", "Paste", "Select All"];
 const FOLDER_LOCATION = ["New Folder…", "New Document…", "Open With…", "Add to Bookmarks", "Share This Folder…", "Copy Location", "Paste", "Select All"];
 const PSEUDO_LOCATION = ["New Folder… (off)", "Copy Location (off)", "Paste (off)", "Select All"];
-const PSEUDO_KEYS = { copy: "nothing", paste: "nothing", properties: "file_properties", bookmark: "nothing", trash: "trash_entries", rename: "nothing" };
+const PSEUDO_KEYS = { copy: "clipboard", paste: "nothing", properties: "file_properties", bookmark: "nothing", trash: "trash_entries", rename: "nothing" };
 const SHARE_COPY = "toast “Copying out of a shared folder comes next.”";
 const SSH_COPY = "toast “Copying from SSH servers comes next.”";
 const READ_ONLY_PASTE = "toast “Shared folders are read only.”";
@@ -241,7 +246,7 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     background: ["Empty Trash…", "Select All"],
     location: ["Empty Trash…", "Select All"],
     // ⌘D does nothing: the Trash has its own sidebar row.
-    keys: { copy: "nothing", paste: "nothing", properties: "file_properties", bookmark: "nothing", trash: "dialog “Are you sure you want to permanently delete “Old”?”", rename: "nothing" },
+    keys: { copy: "clipboard", paste: "nothing", properties: "file_properties", bookmark: "nothing", trash: "dialog “Are you sure you want to permanently delete “Old”?”", rename: "nothing" },
     drag: "drag",
     preview: ["Open"],
     star: false,
@@ -251,7 +256,7 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     background: ["Open With…", "Select All"],
     location: ["Open With…", "Copy Location", "Select All"],
     // Kept: ⌘D bookmarks it, though its location menu has no Add to Bookmarks.
-    keys: { copy: "nothing", paste: "nothing", properties: "file_properties", bookmark: "save_pins", trash: "dialog “Are you sure you want to permanently delete “Inner”?”", rename: "nothing" },
+    keys: { copy: "clipboard", paste: "nothing", properties: "file_properties", bookmark: "save_pins", trash: "dialog “Are you sure you want to permanently delete “Inner”?”", rename: "nothing" },
     drag: "drag",
     preview: ["Open"],
     star: false,
@@ -286,7 +291,7 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     background: ["New Folder…", "Paste", "Reload", "Select All"],
     location: ["New Folder…", "Copy Location", "Paste", "Select All"],
     // ⌘D does nothing: My Drive has its own sidebar row.
-    keys: { copy: "nothing", paste: "copy_entry", properties: "file_properties", bookmark: "nothing", trash: "trash_entries", rename: "rename popover" },
+    keys: { copy: "clipboard", paste: "copy_entry", properties: "file_properties", bookmark: "nothing", trash: "trash_entries", rename: "rename popover" },
     drag: "drag",
     // Kept: no Rename… or Move to Trash, which the menu and the keys offer.
     preview: ["Open"],
