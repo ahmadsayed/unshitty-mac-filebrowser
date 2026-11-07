@@ -20,12 +20,19 @@
 //!
 //! Permanent deletion is the one place this app removes files for good, and
 //! only for items inside a Trash folder.
+//!
+//! lib.rs keeps one `Trash`, which owns the log (its file and lock), the
+//! order origins are looked up in, Restore, Delete Permanently, Empty Trash
+//! and what counts as inside the Trash. Trashing goes through the free
+//! functions `trash_many`, `trash_routed` and `trash_and_locate`, whose
+//! moves are then handed to `Trash::record`.
 
 use crate::progress::Progress;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
@@ -57,7 +64,7 @@ pub struct TrashInfo {
     pub trashed: i64,
 }
 
-pub fn read_log(path: &Path) -> TrashLog {
+fn read_log(path: &Path) -> TrashLog {
     fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -66,7 +73,7 @@ pub fn read_log(path: &Path) -> TrashLog {
 
 /// Remember where each `(trashed, origin)` item now lives, forgetting items
 /// that have since left the Trash.
-pub fn record(log: &mut TrashLog, moves: &[(PathBuf, PathBuf)], now: i64) {
+fn record(log: &mut TrashLog, moves: &[(PathBuf, PathBuf)], now: i64) {
     log.items.retain(|p, _| fs::symlink_metadata(p).is_ok());
     for (trashed, origin) in moves {
         log.items.insert(
@@ -110,20 +117,21 @@ fn mount_root(path: &Path) -> PathBuf {
 }
 
 /// The Trash folder an item at `path` goes to when trashed.
-pub fn trash_dir_for(path: &Path, home: &Path) -> PathBuf {
-    let same_disk = dev_of(path.parent().unwrap_or(path)) == dev_of(home);
+fn trash_dir_for(path: &Path, home: &Path) -> PathBuf {
+    trash_dir_from(path, home, &home_trash(home))
+}
+
+/// `trash_dir_for` with the home Trash's root given (see `home_trash`).
+fn trash_dir_from(path: &Path, home: &Path, home_root: &Path) -> PathBuf {
+    if dev_of(path.parent().unwrap_or(path)) == dev_of(home) {
+        return items_in(home_root);
+    }
     if cfg!(target_os = "macos") {
-        if same_disk {
-            return home.join(".Trash");
-        }
         return mount_root(path)
             .join(".Trashes")
             .join(uid(home).to_string());
     }
     // freedesktop.org layout (Linux), for development and tests.
-    if same_disk {
-        return home_trash(home).join("files");
-    }
     mount_root(path)
         .join(format!(".Trash-{}", uid(home)))
         .join("files")
@@ -143,7 +151,7 @@ fn uid(_: &Path) -> u32 {
 /// The Trash that items on the home filesystem go to, as the *root*: on macOS
 /// the folder holding the items, on Linux the folder holding `files/` and
 /// `info/`.
-pub fn home_trash(home: &Path) -> PathBuf {
+fn home_trash(home: &Path) -> PathBuf {
     if cfg!(target_os = "macos") {
         home.join(".Trash")
     } else {
@@ -151,26 +159,27 @@ pub fn home_trash(home: &Path) -> PathBuf {
     }
 }
 
-/// The folder whose *contents* are the Trash listing: the home Trash itself on
-/// macOS, its `files/` subfolder on Linux. This is the path the UI opens.
-pub fn items_root(home: &Path) -> PathBuf {
+/// The folder whose *contents* are the listing of the Trash whose root is
+/// `root`: the root itself on macOS, its `files/` subfolder on Linux. For the
+/// home Trash this is the path the UI opens.
+fn items_in(root: &Path) -> PathBuf {
     if cfg!(target_os = "macos") {
-        home.join(".Trash")
+        root.to_path_buf()
     } else {
-        home_trash(home).join("files")
+        root.join("files")
     }
 }
 
-/// `items_root`, created first on Linux: a fresh account has no
-/// `Trash/files` until something is trashed, and the Trash view must show
-/// "Trash is Empty" rather than an error. Creating `files/` and `info/` is
-/// what any freedesktop implementation does on first use. `~/.Trash` is left
-/// to macOS.
-pub fn ensure_items_root(home: &Path) -> PathBuf {
+/// `items_in`, created first on Linux: a fresh account has no `Trash/files`
+/// until something is trashed, and the Trash view must show "Trash is
+/// Empty" rather than an error. Creating `files/` and `info/` is what any
+/// freedesktop implementation does on first use. `~/.Trash` is left to
+/// macOS.
+fn ensure_items_in(root: &Path) -> PathBuf {
     if !cfg!(target_os = "macos") {
-        create_freedesktop_trash(&home_trash(home));
+        create_freedesktop_trash(root);
     }
-    items_root(home)
+    items_in(root)
 }
 
 /// Create `files/` and `info/` under a freedesktop Trash root if missing.
@@ -239,7 +248,7 @@ fn parse_trashinfo(text: &str) -> Option<PathBuf> {
 }
 
 /// Where a trashed item came from, according to its `.trashinfo` sidecar.
-pub fn sidecar_origin(trashed: &Path, trash_dir: &Path) -> Option<PathBuf> {
+fn sidecar_origin(trashed: &Path, trash_dir: &Path) -> Option<PathBuf> {
     let text = fs::read_to_string(sidecar_of(trashed, trash_dir)?).ok()?;
     parse_trashinfo(&text)
 }
@@ -558,7 +567,7 @@ fn delete_counted(
 /// a log entry can outlive its item (restored by another app) and then
 /// describe a later one that reused the name.
 /// `trash_dir` is the Trash folder `trashed` sits in (see `trash_dir_for`).
-pub fn origin_of(
+fn origin_of(
     trashed: &Path,
     trash_dir: &Path,
     log: &TrashLog,
@@ -574,10 +583,11 @@ pub fn origin_of(
     put_back.get(&*name).cloned()
 }
 
-/// Origin and trash date for each path in the Trash.
-pub fn info(
+/// Origin and trash date for each path in the Trash, which `dir_for` gives
+/// the Trash folder of.
+fn info_with(
     paths: &[String],
-    home: &Path,
+    dir_for: impl Fn(&Path) -> PathBuf,
     log: &TrashLog,
     put_back: &HashMap<String, PathBuf>,
 ) -> Vec<TrashInfo> {
@@ -585,7 +595,7 @@ pub fn info(
         .iter()
         .map(|p| {
             let path = Path::new(p);
-            let trash_dir = trash_dir_for(path, home);
+            let trash_dir = dir_for(path);
             // Like the origin, the log's date only counts without a sidecar.
             let logged = match sidecar_origin(path, &trash_dir) {
                 Some(_) => None,
@@ -616,7 +626,7 @@ fn changed_time(_: &Path) -> i64 {
 /// Move `trashed`, which sits in `trash_dir`, back to `origin`, recreating
 /// missing parent folders. Never overwrites: an existing item at `origin` is
 /// an error.
-pub fn restore(trashed: &Path, origin: &Path, trash_dir: &Path) -> Result<(), String> {
+fn restore(trashed: &Path, origin: &Path, trash_dir: &Path) -> Result<(), String> {
     if fs::symlink_metadata(trashed).is_err() {
         return Err(format!("“{}” is no longer in the Trash", trashed.display()));
     }
@@ -654,7 +664,7 @@ fn remove_tree(path: &Path) -> std::io::Result<()> {
 }
 
 /// Delete `path` for good. Refused unless it lies inside `trash_dir`.
-pub fn delete_permanently(path: &Path, trash_dir: &Path) -> Result<(), String> {
+fn delete_permanently(path: &Path, trash_dir: &Path) -> Result<(), String> {
     if fs::symlink_metadata(path).is_err() {
         return Err(format!("“{}” no longer exists", path.display()));
     }
@@ -673,7 +683,7 @@ pub fn delete_permanently(path: &Path, trash_dir: &Path) -> Result<(), String> {
 /// returns, so on Linux both `files/` and `info/` are emptied.
 /// Returns the error for the first item that couldn't be deleted, after
 /// trying all of them.
-pub fn empty(trash_root: &Path, progress: &Progress) -> Result<(), String> {
+fn empty(trash_root: &Path, progress: &Progress) -> Result<(), String> {
     let files = trash_root.join("files");
     // The layout is the one on disk: a Trash without `files/` keeps its
     // items directly inside, as macOS does.
@@ -707,6 +717,137 @@ pub fn empty(trash_root: &Path, progress: &Progress) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// The home Trash and this app's log
+//
+// `Trash` owns what the commands used to assemble in lib.rs: where
+// `trash_log.json` lives and the lock every reader and writer of it takes,
+// the order a trashed item's origin is looked up in (sidecar, log, Put
+// Back), Restore (never overwriting, then forgetting the entry) and what
+// counts as inside the Trash. It is plain, so it is tested without Tauri;
+// lib.rs keeps one in its state. Trashing itself (`trash_many`,
+// `trash_routed`, `trash_and_locate`) stays in the free functions above.
+// ---------------------------------------------------------------------------
+
+/// Why Restore fails when the app's config folder, and so the log, is
+/// unknown.
+const NO_LOG: &str = "Cannot restore: the app's settings folder is unknown";
+
+/// The user's home Trash and this app's log of what it sent to a Trash.
+pub struct Trash {
+    home: PathBuf,
+    /// The home Trash's root (`home_trash`).
+    root: PathBuf,
+    /// Where `trash_log.json` lives; None when the config folder is unknown.
+    /// Then `record` logs nothing, `info` answers without the log and
+    /// `restore` fails.
+    log: Option<PathBuf>,
+    /// Taken by every reader and writer of the log.
+    lock: Mutex<()>,
+}
+
+impl Trash {
+    pub fn new(home: PathBuf, log: Option<PathBuf>) -> Self {
+        let root = home_trash(&home);
+        Self::with_root(home, root, log)
+    }
+
+    /// A Trash whose root is given rather than found from `home`.
+    fn with_root(home: PathBuf, root: PathBuf, log: Option<PathBuf>) -> Self {
+        Trash { home, root, log, lock: Mutex::new(()) }
+    }
+
+    /// The folder the Trash view lists (`items_in` the root). On Linux its `files/`
+    /// and `info/` are created if missing, so a fresh account shows "Trash
+    /// is Empty"; this is the only lookup that creates anything.
+    pub fn listing_root(&self) -> PathBuf {
+        ensure_items_in(&self.root)
+    }
+
+    /// Whether `path` is inside the home Trash. Only compares paths.
+    pub fn contains(&self, path: &Path) -> bool {
+        path.starts_with(&self.root) || path.starts_with(items_in(&self.root))
+    }
+
+    /// Remember where trashed items went (`(trashed, origin)` pairs), for
+    /// Undo and Restore. Without a config folder there is nowhere to keep
+    /// them, and nothing happens.
+    pub fn record(&self, moves: &[(PathBuf, PathBuf)]) {
+        let Some(log_path) = &self.log else {
+            return;
+        };
+        if moves.is_empty() {
+            return;
+        }
+        let _guard = self.lock();
+        let mut log = read_log(log_path);
+        record(&mut log, moves, crate::recent::now());
+        let _ = crate::config_store::write_json(log_path, &log);
+    }
+
+    /// Origin and trash date for each path in the Trash.
+    pub fn info(&self, paths: &[String]) -> Vec<TrashInfo> {
+        let log = match &self.log {
+            Some(log_path) => {
+                let _guard = self.lock();
+                read_log(log_path)
+            }
+            None => TrashLog::default(),
+        };
+        info_with(paths, |path| self.dir_for(path), &log, &self.put_back())
+    }
+
+    /// Move `trashed` back where it came from and forget its log entry.
+    /// Never overwrites: an existing item there is an error. Fails without a
+    /// config folder, even when the item's own records know its origin.
+    /// Returns the restored path.
+    pub fn restore(&self, trashed: &Path) -> Result<PathBuf, String> {
+        let log_path = self.log.as_ref().ok_or(NO_LOG)?;
+        let _guard = self.lock();
+        let mut log = read_log(log_path);
+        let trash_dir = self.dir_for(trashed);
+        let origin = origin_of(trashed, &trash_dir, &log, &self.put_back())
+            .ok_or("The original location is unknown")?;
+        restore(trashed, &origin, &trash_dir)?;
+        log.items.remove(&*trashed.to_string_lossy());
+        let _ = crate::config_store::write_json(log_path, &log);
+        Ok(origin)
+    }
+
+    /// Delete an item in a Trash for good; refused anywhere else.
+    pub fn delete_permanently(&self, path: &Path) -> Result<(), String> {
+        delete_permanently(path, &self.dir_for(path))
+    }
+
+    /// Delete everything in the home Trash.
+    pub fn empty(&self, progress: &Progress) -> Result<(), String> {
+        empty(&self.root, progress)
+    }
+
+    /// The Trash folder an item at `path` sits in (`trash_dir_for`).
+    fn dir_for(&self, path: &Path) -> PathBuf {
+        trash_dir_from(path, &self.home, &self.root)
+    }
+
+    /// Finder's Put Back records, which only macOS keeps.
+    fn put_back(&self) -> HashMap<String, PathBuf> {
+        if cfg!(target_os = "macos") {
+            return home_put_back(&self.home);
+        }
+        HashMap::new()
+    }
+
+    fn lock(&self) -> MutexGuard<'_, ()> {
+        self.lock.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// The Put Back records of the home Trash: `~/.Trash/.DS_Store`, on the
+/// volume mounted at `/`.
+fn home_put_back(home: &Path) -> HashMap<String, PathBuf> {
+    read_put_back(&home.join(".Trash/.DS_Store"), Path::new("/"))
+}
+
+// ---------------------------------------------------------------------------
 // Finder's "Put Back" records
 //
 // A Trash's .DS_Store holds, for each item Finder trashed, `ptbL` (the
@@ -716,7 +857,7 @@ pub fn empty(trash_root: &Path, progress: &Progress) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 /// Name in the Trash → original path, from `ds_store` on a volume mounted at `volume_root`.
-pub fn read_put_back(ds_store: &Path, volume_root: &Path) -> HashMap<String, PathBuf> {
+fn read_put_back(ds_store: &Path, volume_root: &Path) -> HashMap<String, PathBuf> {
     let Ok(data) = fs::read(ds_store) else {
         return HashMap::new();
     };
@@ -1007,9 +1148,9 @@ mod tests {
         record(&mut log, &[(a.clone(), "/Users/me/a".into())], 102);
         assert_eq!(log.items.len(), 1, "the missing item is dropped");
 
-        let info = info(
+        let info = info_with(
             &[a.to_string_lossy().to_string()],
-            dir.path(),
+            |p| trash_dir_for(p, dir.path()),
             &log,
             &HashMap::new(),
         );
@@ -1696,5 +1837,329 @@ mod tests {
         progress.cancel();
         assert_eq!(empty(&root, &progress), Err("Cancelled.".to_string()));
         assert_eq!(fs::read_dir(&root).unwrap().count(), 3);
+    }
+
+    // --- Trash: the log, Put Back and "is in a Trash" ---------------------
+
+    /// A Trash for a temp home, with its root where this platform keeps the
+    /// home Trash whatever `XDG_DATA_HOME` says, and its log in a temp
+    /// config folder. Returns the Trash, the home and the items folder.
+    fn temp_trash(dir: &Path) -> (Trash, PathBuf, PathBuf) {
+        let home = dir.join("home");
+        let root = if cfg!(target_os = "macos") {
+            home.join(".Trash")
+        } else {
+            home.join(".local/share/Trash")
+        };
+        let items = items_dir(&root);
+        fs::create_dir_all(&items).unwrap();
+        let log = Some(dir.join("config/trash_log.json"));
+        (Trash::with_root(home.clone(), root, log), home, items)
+    }
+
+    fn text(path: &Path) -> String {
+        path.to_string_lossy().to_string()
+    }
+
+    /// `name` in the Trash, holding its own name.
+    fn put_in(items: &Path, name: &str) -> PathBuf {
+        let path = items.join(name);
+        fs::write(&path, name).unwrap();
+        path
+    }
+
+    fn logged(trash: &Trash) -> TrashLog {
+        read_log(trash.log.as_ref().unwrap())
+    }
+
+    /// Finder's Put Back record in `home`'s `.Trash/.DS_Store`: `name` came
+    /// from `folder`, given as an absolute path.
+    fn put_back_record(home: &Path, name: &str, folder: &Path) {
+        let folder = format!("{}/", folder.to_string_lossy().trim_start_matches('/'));
+        let leaf = node(0, &[(None, ustr_record(name, b"ptbL", &folder))]);
+        fs::create_dir_all(home.join(".Trash")).unwrap();
+        fs::write(home.join(".Trash/.DS_Store"), ds_store(&[leaf], 1)).unwrap();
+    }
+
+    #[test]
+    fn a_recorded_item_is_restored_and_then_forgotten() {
+        let dir = tempdir().unwrap();
+        let (trash, home, items) = temp_trash(dir.path());
+        let item = put_in(&items, "a.txt");
+        let origin = home.join("Documents/a.txt");
+
+        trash.record(&[(item.clone(), origin.clone())]);
+        let entry = logged(&trash).items[&text(&item)].clone();
+        assert_eq!(entry.origin, text(&origin));
+        let info = trash.info(&[text(&item)]);
+        assert_eq!(
+            info,
+            vec![TrashInfo { origin: Some(text(&origin)), trashed: entry.time }],
+            "the log's date, not the file's"
+        );
+
+        assert_eq!(trash.restore(&item), Ok(origin.clone()));
+        assert_eq!(fs::read_to_string(&origin).unwrap(), "a.txt");
+        assert!(logged(&trash).items.is_empty(), "forgotten after the restore");
+        assert_eq!(trash.restore(&item), Err("The original location is unknown".into()));
+    }
+
+    #[test]
+    fn a_trash_restore_never_overwrites_and_keeps_the_entry() {
+        let dir = tempdir().unwrap();
+        let (trash, home, items) = temp_trash(dir.path());
+        let item = put_in(&items, "a.txt");
+        let origin = home.join("a.txt");
+        fs::write(&origin, "keep me").unwrap();
+        trash.record(&[(item.clone(), origin.clone())]);
+
+        let error = trash.restore(&item).unwrap_err();
+        assert!(error.contains("already exists"), "{error}");
+        assert_eq!(fs::read_to_string(&origin).unwrap(), "keep me");
+        assert_eq!(fs::read_to_string(&item).unwrap(), "a.txt");
+        assert!(logged(&trash).items.contains_key(&text(&item)));
+    }
+
+    #[test]
+    fn an_unrecorded_item_stays_in_the_trash() {
+        let dir = tempdir().unwrap();
+        let (trash, _, items) = temp_trash(dir.path());
+        let item = put_in(&items, "stray.txt");
+
+        assert_eq!(trash.restore(&item), Err("The original location is unknown".into()));
+        assert!(item.exists());
+        let info = trash.info(&[text(&item)]);
+        assert_eq!(info[0].origin, None);
+        assert!(info[0].trashed > 0, "the item's own change time");
+    }
+
+    #[test]
+    fn without_a_log_nothing_is_recorded_and_restore_fails() {
+        let dir = tempdir().unwrap();
+        let (with_log, home, items) = temp_trash(dir.path());
+        let trash = Trash::with_root(home.clone(), with_log.root.clone(), None);
+        let item = put_in(&items, "a.txt");
+        let origin = home.join("a.txt");
+        if !cfg!(target_os = "macos") {
+            fs::write(
+                with_log.root.join("info/a.txt.trashinfo"),
+                format!("[Trash Info]\nPath={}\n", origin.display()),
+            )
+            .unwrap();
+        }
+
+        // Recording returns quietly: there is nowhere to write.
+        trash.record(&[(item.clone(), origin.clone())]);
+        assert!(!dir.path().join("config").exists());
+        // Restore refuses, even when the sidecar knows the origin.
+        assert_eq!(trash.restore(&item), Err(NO_LOG.into()));
+        assert!(item.exists() && !origin.exists());
+        // Info still answers from what the Trash itself records.
+        let info = trash.info(&[text(&item)]);
+        let expected = (!cfg!(target_os = "macos")).then(|| text(&origin));
+        assert_eq!(info[0].origin, expected);
+        assert!(info[0].trashed > 0);
+    }
+
+    #[test]
+    fn concurrent_records_and_restores_lose_no_entry() {
+        let dir = tempdir().unwrap();
+        let (trash, home, items) = temp_trash(dir.path());
+        let moves: Vec<(PathBuf, PathBuf)> = (0..8)
+            .map(|i| {
+                let name = format!("{i}.txt");
+                (put_in(&items, &name), home.join("back").join(name))
+            })
+            .collect();
+
+        std::thread::scope(|s| {
+            for one in moves.chunks(1) {
+                let trash = &trash;
+                s.spawn(move || trash.record(one));
+            }
+        });
+        assert_eq!(logged(&trash).items.len(), 8, "every writer's entry kept");
+
+        std::thread::scope(|s| {
+            for (item, _) in &moves {
+                let trash = &trash;
+                s.spawn(move || {
+                    trash.info(&[text(item)]);
+                    trash.restore(item).unwrap()
+                });
+            }
+        });
+        assert!(moves.iter().all(|(_, origin)| origin.exists()));
+        assert!(logged(&trash).items.is_empty(), "every restore forgotten");
+    }
+
+    #[test]
+    fn put_back_comes_from_the_home_trash_on_the_root_volume() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("home");
+        put_back_record(&home, "p.txt", &dir.path().join("Pictures"));
+        let records = home_put_back(&home);
+        assert_eq!(records.get("p.txt"), Some(&dir.path().join("Pictures/p.txt")));
+        assert_eq!(records.len(), 1);
+        assert!(home_put_back(&dir.path().join("elsewhere")).is_empty());
+    }
+
+    #[test]
+    fn put_back_answers_on_macos_only_and_after_the_log() {
+        let dir = tempdir().unwrap();
+        let (trash, home, items) = temp_trash(dir.path());
+        let item = put_in(&items, "p.txt");
+        let found = dir.path().join("Pictures/p.txt");
+        put_back_record(&home, "p.txt", &dir.path().join("Pictures"));
+
+        let info = trash.info(&[text(&item)]);
+        if cfg!(target_os = "macos") {
+            assert_eq!(info[0].origin, Some(text(&found)));
+        } else {
+            assert_eq!(info[0].origin, None, "no .DS_Store is read outside macOS");
+        }
+        // The log answers before Put Back.
+        let logged_origin = home.join("Documents/p.txt");
+        trash.record(&[(item.clone(), logged_origin.clone())]);
+        assert_eq!(trash.info(&[text(&item)])[0].origin, Some(text(&logged_origin)));
+        // And restores there.
+        assert_eq!(trash.restore(&item), Ok(logged_origin));
+    }
+
+    #[test]
+    fn put_back_restores_an_item_finder_trashed_on_macos() {
+        let dir = tempdir().unwrap();
+        let (trash, home, items) = temp_trash(dir.path());
+        let item = put_in(&items, "p.txt");
+        put_back_record(&home, "p.txt", &dir.path().join("Pictures"));
+        let found = dir.path().join("Pictures/p.txt");
+
+        let restored = trash.restore(&item);
+        if cfg!(target_os = "macos") {
+            assert_eq!(restored, Ok(found.clone()));
+            assert!(found.exists() && !item.exists());
+        } else {
+            assert_eq!(restored, Err("The original location is unknown".into()));
+            assert!(item.exists() && !found.exists());
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_sidecar_answers_before_the_log_and_goes_with_the_restore() {
+        let dir = tempdir().unwrap();
+        let (trash, home, items) = temp_trash(dir.path());
+        let item = put_in(&items, "a.txt");
+        let sidecar = trash.root.join("info/a.txt.trashinfo");
+        let origin = home.join("a.txt");
+        fs::write(&sidecar, format!("[Trash Info]\nPath={}\n", origin.display())).unwrap();
+        // A stale entry for an earlier `a.txt` another app restored.
+        let mut stale = TrashLog::default();
+        let entry = LoggedItem { origin: text(&home.join("stale/a.txt")), time: 5 };
+        stale.items.insert(text(&item), entry);
+        crate::config_store::write_json(trash.log.as_ref().unwrap(), &stale).unwrap();
+
+        let info = trash.info(&[text(&item)]);
+        assert_eq!(info[0].origin, Some(text(&origin)));
+        assert_ne!(info[0].trashed, 5, "nor its date");
+        assert_eq!(trash.restore(&item), Ok(origin.clone()));
+        assert!(origin.exists() && !sidecar.exists());
+        assert!(logged(&trash).items.is_empty());
+    }
+
+    #[test]
+    fn a_new_trash_is_the_home_trash() {
+        let home = Path::new("/home/me");
+        let trash = Trash::new(home.into(), None);
+        assert_eq!(trash.root, home_trash(home));
+        let item = items_in(&home_trash(home)).join("a.txt");
+        assert_eq!(trash.dir_for(&item), trash_dir_for(&item, home));
+    }
+
+    #[test]
+    fn contains_only_compares_paths() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("home");
+        let root = if cfg!(target_os = "macos") {
+            home.join(".Trash")
+        } else {
+            home.join(".local/share/Trash")
+        };
+        let trash = Trash::with_root(home.clone(), root.clone(), None);
+        let items = items_in(&root);
+
+        assert!(trash.contains(&items.join("a.txt")));
+        assert!(trash.contains(&root));
+        assert!(trash.contains(&root.join("info/a.txt.trashinfo")));
+        assert!(!trash.contains(&home.join("Documents/a.txt")));
+        assert!(!trash.contains(&home.join(".Trash-like/a.txt")));
+        assert!(!items.exists() && !home.exists(), "nothing was created");
+    }
+
+    #[test]
+    fn listing_root_creates_the_freedesktop_folders_only() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("home");
+        let root = home.join("Trash");
+        let trash = Trash::with_root(home.clone(), root.clone(), None);
+
+        let listed = trash.listing_root();
+        if cfg!(target_os = "macos") {
+            assert_eq!(listed, root);
+            assert!(!root.exists(), "~/.Trash is left to macOS");
+        } else {
+            assert_eq!(listed, root.join("files"));
+            assert!(root.join("files").is_dir() && root.join("info").is_dir());
+        }
+        assert!(trash.contains(&listed));
+    }
+
+    #[test]
+    fn trash_deletes_permanently_only_inside_itself() {
+        let dir = tempdir().unwrap();
+        let (trash, home, items) = temp_trash(dir.path());
+        let item = put_in(&items, "a.txt");
+        fs::create_dir_all(&home).unwrap();
+        let outside = put_in(&home, "precious.txt");
+        if !cfg!(target_os = "macos") {
+            fs::write(trash.root.join("info/a.txt.trashinfo"), "x").unwrap();
+        }
+
+        assert!(trash.delete_permanently(&outside).is_err());
+        assert!(outside.exists());
+        assert!(trash.delete_permanently(&items).is_err(), "the Trash itself");
+        trash.delete_permanently(&item).unwrap();
+        assert!(!item.exists());
+        assert!(!trash.root.join("info/a.txt.trashinfo").exists());
+    }
+
+    #[test]
+    fn trash_empties_its_root_in_this_platforms_layout() {
+        let dir = tempdir().unwrap();
+        let (trash, home, items) = temp_trash(dir.path());
+        put_in(&items, "a.txt");
+        fs::create_dir_all(items.join("folder/sub")).unwrap();
+        let outside = put_in(&home, "keep.txt");
+
+        let progress = Progress::default();
+        trash.empty(&progress).unwrap();
+        assert_eq!(progress.snapshot().items, 2);
+        assert_eq!(fs::read_dir(&items).unwrap().count(), 0);
+        assert!(outside.exists());
+    }
+
+    #[test]
+    fn a_finder_layout_trash_empties_on_every_host() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("home");
+        let root = home.join(".Trash");
+        macos_with_three(&root);
+        let trash = Trash::with_root(home, root.clone(), None);
+
+        let progress = Progress::default();
+        trash.empty(&progress).unwrap();
+        assert_eq!(progress.snapshot().items, 3);
+        assert!(root.is_dir());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
     }
 }
