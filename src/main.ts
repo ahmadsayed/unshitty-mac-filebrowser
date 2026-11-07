@@ -51,7 +51,7 @@ import { PathRefs, type Clip } from "./path-refs";
 import { LatestSave } from "./latest-save";
 import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
-import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
+import { childPath, cloudAccountKey, homeFolder, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -5434,7 +5434,9 @@ async function init(): Promise<void> {
   window.addEventListener("blur", closePopover);
   $(".sidebar").addEventListener("contextmenu", onSidebarContextMenu);
 
-  home = await homeDir().catch(() => "");
+  // Tauri keeps $HOME as written: HOME=/Users/me/ would hold none of its
+  // folders (isWithin), so trim the slash once, here (#170).
+  home = homeFolder(await homeDir().catch(() => ""));
   // Only the backend knows the platform's Trash folder (~/.Trash on a Mac,
   // ~/.local/share/Trash/files on Linux). Without its answer there is no
   // Trash place, rather than a guess.

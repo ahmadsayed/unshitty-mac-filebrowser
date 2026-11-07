@@ -5,7 +5,8 @@
 // directly (tests/paths.test.ts).
 //
 // The strings are the backend's: stars, pins and history store them, so
-// nothing here rewrites a path Rust produced.
+// nothing here rewrites a path Rust produced, except Home's trailing slash
+// (`homeFolder`, once at start-up).
 
 /** Every pseudo location (Recent, Starred, Network) starts with this. */
 export const PSEUDO_PREFIX = "pseudo:";
@@ -375,10 +376,17 @@ export function isUnder(path: string, dir: string): boolean {
  *  must keep its own crumb and the Location column slices after `dir + "/"`.
  *
  *  It differs from `isUnder` only when `dir` is "/" or ends in a slash, so
- *  normalising Home's slash wouldn't let one go: HOME=/ still needs this
- *  "/", and a transfer into "/" still needs `isUnder`'s (#149). */
+ *  normalising Home's slash (`homeFolder`) doesn't let one go: HOME=/ still
+ *  needs this "/", and a transfer into "/" still needs `isUnder`'s (#149). */
 export function isWithin(path: string, dir: string): boolean {
   return path === dir || path.startsWith(dir + "/");
+}
+
+/** Home as the app keeps it: `$HOME` as Tauri's `homeDir` gives it, without
+ *  its trailing slashes, so "/Users/me/" is "/Users/me" and holds its folders
+ *  (`isWithin`). "/" (HOME=/, or "//") stays "/" (#170). */
+export function homeFolder(home: string): string {
+  return home.replace(/(.)\/+$/, "$1");
 }
 
 /** Whether a window may open `path` from its `?path=` (New Window): a local

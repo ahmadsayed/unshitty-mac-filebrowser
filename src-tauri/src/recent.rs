@@ -87,19 +87,24 @@ pub fn forget(store: &mut RecentStore, paths: &[String], now: i64) {
     store.removed.retain(|_, t| *t >= cutoff);
 }
 
+/// What `path` holds below `dir`, or `None` unless it is strictly inside.
+/// Compared by component, so a `dir` written with a trailing slash (as
+/// `$HOME` may be, #170) still holds its items.
+fn inside<'a>(path: &'a str, dir: &Path) -> Option<&'a str> {
+    let rest = Path::new(path).strip_prefix(dir).ok()?.to_str()?;
+    (!rest.is_empty()).then_some(rest)
+}
+
 /// Things that shouldn't appear in Recent even if they were opened: hidden
 /// files (unless shown), app data in ~/Library, and the insides of bundles.
 fn excluded(path: &str, home: &Path, show_hidden: bool) -> bool {
     if path.split('/').any(|p| p == crate::versions::VERSIONS_DIR) {
         return true;
     }
-    let library = format!("{}/Library/", home.display());
-    if path.starts_with(&library) {
+    if inside(path, &home.join("Library")).is_some() {
         return true;
     }
-    let below_home = path
-        .strip_prefix(&format!("{}/", home.display()))
-        .unwrap_or(path);
+    let below_home = inside(path, home).unwrap_or(path);
     let parts: Vec<&str> = below_home.split('/').filter(|p| !p.is_empty()).collect();
     let Some((last, parents)) = parts.split_last() else {
         return true;
@@ -599,12 +604,42 @@ echo "not a result line""#,
             names(&collect(&store, spotlight.clone(), home, false, NOW)),
             ["new.txt"]
         );
+        // The same with $HOME written with a trailing slash (#170). The
+        // tempdir's own name starts with a dot, so only what is below Home
+        // may be checked for hidden parts.
+        let slashed = std::path::PathBuf::from(format!("{}/", home.display()));
+        assert_eq!(
+            names(&collect(&store, spotlight.clone(), &slashed, false, NOW)),
+            ["new.txt"]
+        );
         let mut with_hidden = names(&collect(&store, spotlight, home, true, NOW))
             .into_iter()
             .map(String::from)
             .collect::<Vec<_>>();
         with_hidden.sort();
         assert_eq!(with_hidden, [".zshrc", "new.txt", "x.json"]);
+    }
+
+    #[test]
+    fn home_is_compared_by_component_even_with_a_trailing_slash() {
+        // Tauri's home_dir keeps $HOME as written (#170).
+        for home in ["/Users/me", "/Users/me/", "/Users/me//"] {
+            let home = Path::new(home);
+            assert!(excluded("/Users/me/Library/Caches/x.db", home, false), "{home:?}");
+            assert!(!excluded("/Users/me/Library", home, false), "{home:?}");
+            assert!(!excluded("/Users/me/Notes.txt", home, false), "{home:?}");
+            assert!(excluded("/Users/me/Tool.app/Contents/Info.plist", home, false), "{home:?}");
+        }
+        // Only the part below Home is checked for hidden parts and bundles.
+        for home in ["/srv/.users/me", "/srv/.users/me/"] {
+            let home = Path::new(home);
+            assert!(!excluded("/srv/.users/me/Notes.txt", home, false), "{home:?}");
+            assert!(excluded("/srv/.users/me/.zshrc", home, false), "{home:?}");
+            assert!(excluded("/srv/.users/other/Notes.txt", home, false), "{home:?}");
+        }
+        for home in ["/Users/Me.app", "/Users/Me.app/"] {
+            assert!(!excluded("/Users/Me.app/Notes.txt", Path::new(home), false), "{home:?}");
+        }
     }
 
     #[test]
