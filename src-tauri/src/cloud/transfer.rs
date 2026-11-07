@@ -44,8 +44,9 @@ pub fn download(
     to: &Path,
     overwrite: bool,
     progress: &Progress,
+    trash: TrashFn,
 ) -> Result<String, String> {
-    write::live_with(state, progress, |c| download_in(c, from, to, overwrite))
+    write::live_with(state, progress, |c| download_in(c, from, to, overwrite, trash))
 }
 
 /// Total size and item count of Drive items, for an operation's progress.
@@ -82,7 +83,8 @@ fn measure_file(client: &DriveClient, file: &DriveFile, total: &mut Measure) -> 
 }
 
 /// Copy or move between any two locations where at least one is in Drive.
-/// `trash_local` sends a local source to the Trash after a move.
+/// `trash_local` is the local Trash: for a local source after a move, a
+/// partial folder a download leaves and the local item a download replaces.
 pub fn dispatch(
     state: &CloudState,
     from: &str,
@@ -90,7 +92,7 @@ pub fn dispatch(
     overwrite: bool,
     moving: bool,
     progress: &Progress,
-    trash_local: impl Fn(&Path) -> Result<(), String>,
+    trash_local: TrashFn,
 ) -> Result<String, String> {
     write::live_with(state, progress, |c| {
         dispatch_in(c, from, to, overwrite, moving, trash_local)
@@ -103,18 +105,26 @@ pub(crate) fn dispatch_in(
     to: &str,
     overwrite: bool,
     moving: bool,
-    trash_local: impl Fn(&Path) -> Result<(), String>,
+    trash_local: TrashFn,
 ) -> Result<String, String> {
     let (from_cloud, to_cloud) = (crate::cloud::is_cloud(from), crate::cloud::is_cloud(to));
     match (from_cloud, to_cloud, moving) {
         (true, true, true) => write::move_in(c, from, to, overwrite),
         (true, true, false) => write::copy_in(c, from, to, overwrite),
-        (false, true, true) => move_up_in(c, Path::new(from), to, overwrite, trash_local),
+        (false, true, true) => move_up_in(c, Path::new(from), to, overwrite, discard_to(trash_local)),
         (false, true, false) => upload_in(c, Path::new(from), to, overwrite),
-        (true, false, true) => move_down_in(c, from, Path::new(to), overwrite, &trash_local),
-        (true, false, false) => download_into(c, from, Path::new(to), overwrite, &trash_local),
+        (true, false, true) => move_down_in(c, from, Path::new(to), overwrite, trash_local),
+        (true, false, false) => {
+            download_into(c, from, Path::new(to), overwrite, &discard_to(trash_local), trash_local)
+        }
         (false, false, _) => Err("Neither location is in Google Drive.".into()),
     }
+}
+
+/// `trash` for an item that needn't come back: a moved source, a partial
+/// folder.
+fn discard_to<'a>(trash: TrashFn<'a>) -> impl Fn(&Path) -> Result<(), String> + 'a {
+    move |path| trash.send(path).map(|_| ())
 }
 
 pub(crate) fn upload_in(c: &Ctx, from: &Path, to: &str, overwrite: bool) -> Result<String, String> {
@@ -246,32 +256,25 @@ fn not_downloadable(file: &DriveFile) -> String {
     }
 }
 
-/// `download_into` that removes a partial folder instead of trashing it.
+/// `download_into` that removes a partial folder instead of trashing it; an
+/// item it replaces still goes to `trash`.
 pub(crate) fn download_in(
     c: &Ctx,
     from: &str,
     to: &Path,
     overwrite: bool,
+    trash: TrashFn,
 ) -> Result<String, String> {
-    download_into(c, from, to, overwrite, &placement::remove)
+    download_into(c, from, to, overwrite, &placement::remove, trash)
 }
 
 /// Download a Drive item to `to`. A new folder downloads straight under its
 /// name, so it fills as you watch; if that fails, the partial folder goes to
 /// `discard` (the Trash). Files and replacements stage under a hidden name
-/// and appear only when complete.
+/// and appear only when complete; the item a Replace sends away goes to
+/// `trash` (the app's logged Trash, so Restore knows where it was), which
+/// takes it back if the Replace fails.
 pub(crate) fn download_into(
-    c: &Ctx,
-    from: &str,
-    to: &Path,
-    overwrite: bool,
-    discard: DiscardFn,
-) -> Result<String, String> {
-    download_into_with(c, from, to, overwrite, discard, &placement::to_trash)
-}
-
-/// `download_into` with the Trash a Replace uses, so tests can see it.
-fn download_into_with(
     c: &Ctx,
     from: &str,
     to: &Path,
@@ -401,18 +404,19 @@ pub(crate) fn move_up_in(
     Ok(uploaded)
 }
 
-/// Download, then move the Drive item to Drive's Trash.
+/// Download, then move the Drive item to Drive's Trash. A partial folder
+/// and a replaced local item go to `trash`.
 pub(crate) fn move_down_in(
     c: &Ctx,
     from: &str,
     to: &Path,
     overwrite: bool,
-    discard: &dyn Fn(&Path) -> Result<(), String>,
+    trash: TrashFn,
 ) -> Result<String, String> {
     // Checked first: a read-only connection must not leave a copy behind
     // and then fail to remove the original.
     let (location, account) = service::writable(c.state, from)?;
-    let downloaded = download_into(c, from, to, overwrite, discard)?;
+    let downloaded = download_into(c, from, to, overwrite, &discard_to(trash), trash)?;
     let id = location.file_id().unwrap_or_default().to_string();
     write::client(c, &account.id)?
         .update(&id, &FileChange::trash(true))
@@ -445,7 +449,7 @@ mod tests {
         let (result, _) = run_with(
             vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")],
             &cancelled(),
-            |c| download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false),
+            |c| download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash),
         );
         assert_eq!(result.unwrap_err(), "Cancelled.");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -507,7 +511,7 @@ mod tests {
     #[test]
     fn dispatch_refuses_two_local_paths() {
         let (result, log) = run(vec![], |c| {
-            dispatch_in(c, "/a", "/b", false, false, |_| Ok(()))
+            dispatch_in(c, "/a", "/b", false, false, &no_trash)
         });
         assert!(result.is_err());
         assert!(heads(&log).is_empty());
@@ -521,7 +525,7 @@ mod tests {
         // local → Drive copy: an upload
         let (result, _) = run(
             vec![found(&[]), session(), ok(sized("u1", "a.txt", 5))],
-            |c| dispatch_in(c, &src, &format!("{ROOT}/~a.txt"), false, false, |_| Ok(())),
+            |c| dispatch_in(c, &src, &format!("{ROOT}/~a.txt"), false, false, &no_trash),
         );
         assert_eq!(result.unwrap(), format!("{ROOT}/u1~a.txt"));
         // Drive → Drive move: one PATCH after the checks
@@ -534,7 +538,7 @@ mod tests {
                     &format!("{ROOT}/p2~Other/~a.txt"),
                     false,
                     true,
-                    |_| Ok(()),
+                    &no_trash,
                 )
             },
         );
@@ -549,7 +553,7 @@ mod tests {
                 &target.to_string_lossy(),
                 false,
                 false,
-                |_| Ok(()),
+                &no_trash,
             )
         });
         assert_eq!(result.unwrap(), target.to_string_lossy());
@@ -637,7 +641,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("a.txt");
         let (result, _) = run(vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")], |c| {
-            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false)
+            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash)
         });
         assert_eq!(result.unwrap(), target.to_string_lossy());
         assert_eq!(std::fs::read(&target).unwrap(), b"hello");
@@ -649,7 +653,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("a.txt");
         let (result, _) = run(vec![ok(sized("f1", "a.txt", 5)), bytes(b"hel")], |c| {
-            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false)
+            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash)
         });
         assert_eq!(
             result.unwrap_err(),
@@ -676,7 +680,7 @@ mod tests {
                 bytes(b"hi"),
                 bytes(b"yy"),
             ],
-            |c| download_into(c, &format!("{ROOT}/d1~Docs"), &target, false, &discard),
+            |c| download_into(c, &format!("{ROOT}/d1~Docs"), &target, false, &discard, &no_trash),
         );
         assert_eq!(
             result.unwrap_err(),
@@ -700,7 +704,7 @@ mod tests {
                 found(&[sized("y1", "y.txt", 5)]),
                 bytes(b"yy"),
             ],
-            |c| download_into(c, &format!("{ROOT}/d1~Docs"), &target, true, &discard),
+            |c| download_into(c, &format!("{ROOT}/d1~Docs"), &target, true, &discard, &no_trash),
         );
         assert!(result.is_err());
         assert_eq!(std::fs::read(target.join("old.txt")).unwrap(), b"old");
@@ -719,7 +723,7 @@ mod tests {
                 found(&[sized("y1", "y.txt", 1)]),
                 bytes(b"y"),
             ],
-            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false),
+            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false, &no_trash),
         );
         result.unwrap();
         assert_eq!(std::fs::read(target.join("x.txt")).unwrap(), b"hi");
@@ -733,7 +737,7 @@ mod tests {
         let target = dir.path().join("Plan");
         let doc = format!(r#"{{"id":"g1","name":"Plan","mimeType":"{DOC}"}}"#);
         let (result, _) = run(vec![ok(doc)], |c| {
-            download_in(c, &format!("{ROOT}/g1~Plan"), &target, false)
+            download_in(c, &format!("{ROOT}/g1~Plan"), &target, false, &no_trash)
         });
         assert_eq!(
             result.unwrap_err(),
@@ -753,7 +757,7 @@ mod tests {
                 found(&[doc, sized("x1", "x.txt", 2)]),
                 bytes(b"hi"),
             ],
-            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false),
+            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false, &no_trash),
         );
         assert!(result.unwrap_err().contains("“Plan” is a Google Docs file"));
         assert_eq!(std::fs::read(target.join("x.txt")).unwrap(), b"hi");
@@ -771,7 +775,7 @@ mod tests {
                 found(&[shortcut.to_string(), sized("x1", "x.txt", 2)]),
                 bytes(b"hi"),
             ],
-            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false),
+            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false, &no_trash),
         );
         assert_eq!(
             result.unwrap_err(),
@@ -792,7 +796,7 @@ mod tests {
                 bytes(b"1"),
                 bytes(b"2"),
             ],
-            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false),
+            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false, &no_trash),
         );
         result.unwrap();
         let mut names: Vec<String> = std::fs::read_dir(&target)
@@ -815,7 +819,7 @@ mod tests {
                 bytes(b"1"),
                 bytes(b"2"),
             ],
-            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false),
+            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false, &no_trash),
         );
         result.unwrap();
         assert_eq!(std::fs::read(target.join("a.txt")).unwrap(), b"1");
@@ -840,6 +844,7 @@ mod tests {
                 &format!("{ROOT}/f1~a.txt"),
                 &target,
                 true,
+                &no_trash,
             );
             assert!(result.is_err(), "{}", target.display());
             assert!(heads(&log).is_empty(), "{} reached Drive", target.display());
@@ -852,7 +857,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = local(&dir, "a.txt", b"mine");
         let (result, log) = run(vec![], |c| {
-            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false)
+            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash)
         });
         assert!(result.unwrap_err().starts_with("Target already exists"));
         assert_eq!(std::fs::read(&target).unwrap(), b"mine");
@@ -870,6 +875,10 @@ mod tests {
 
     fn no_discard(_: &Path) -> Result<(), String> {
         panic!("nothing to discard")
+    }
+
+    fn no_trash(_: &Path) -> Result<Option<PathBuf>, String> {
+        panic!("nothing is replaced")
     }
 
     /// Replace downloads under a hidden name next to the old item, sends the
@@ -897,7 +906,7 @@ mod tests {
                 Ok(Some(bin.join("old")))
             };
             let (result, _) = run(replies, |c| {
-                download_into_with(c, &from, &target, true, &no_discard, &trash)
+                download_into(c, &from, &target, true, &no_discard, &trash)
             });
             assert_eq!(result.unwrap(), target.to_string_lossy());
             let seen = seen.into_inner();
@@ -927,7 +936,7 @@ mod tests {
         let target = local(&dir, "a.txt", b"old");
         let refuse = |_: &Path| Err("no Trash on this volume".to_string());
         let (result, _) = run(vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")], |c| {
-            download_into_with(c, &format!("{ROOT}/f1~a.txt"), &target, true, &no_discard, &refuse)
+            download_into(c, &format!("{ROOT}/f1~a.txt"), &target, true, &no_discard, &refuse)
         });
         assert_eq!(
             result.unwrap_err(),
@@ -951,7 +960,7 @@ mod tests {
         ];
         for (to, want) in cases {
             let (result, log) = run(vec![], |c| {
-                download_in(c, &format!("{ROOT}/f1~a.txt"), &to, false)
+                download_in(c, &format!("{ROOT}/f1~a.txt"), &to, false, &no_trash)
             });
             assert_eq!(result.unwrap_err(), want);
             assert!(heads(&log).is_empty());
@@ -964,7 +973,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("a.txt");
         let (result, _) = run(vec![Reply::json(404, "{}")], |c| {
-            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false)
+            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash)
         });
         assert_eq!(result.unwrap_err(), "“a.txt” no longer exists");
         assert_eq!(names_in(dir.path()), Vec::<String>::new());
@@ -1060,7 +1069,7 @@ mod tests {
                 bytes(b"hello"),
                 ok(file("f1", "a.txt")),
             ],
-            |c| move_down_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &|_| Ok(())),
+            |c| move_down_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash),
         );
         result.unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"hello");

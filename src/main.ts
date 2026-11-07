@@ -2549,9 +2549,9 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
 }
 
 // The background and location menus of each kind of place. In the Trash and
-// the folders inside it, nothing adds to them, since only Move to Trash
-// records where an item came from; a folder inside the Trash keeps Open
-// With…, as trashed items do.
+// the folders inside it, nothing adds to them, since only an item sent to the
+// Trash knows where it came from (a pasted or new one wouldn't); a folder
+// inside the Trash keeps Open With…, as trashed items do.
 
 const emptyTrashMenu = (): MenuItem[] => [
   { label: "Empty Trash…", disabled: entries.length === 0, action: confirmEmptyTrash },
@@ -5416,9 +5416,10 @@ async function init(): Promise<void> {
   $(".sidebar").addEventListener("contextmenu", onSidebarContextMenu);
 
   home = await homeDir().catch(() => "");
-  // The backend knows the platform's Trash folder; the fallback only matters
-  // if the command fails.
-  trashPath = await trashDir().catch(() => (home ? joinPath(home, ".Trash") : ""));
+  // Only the backend knows the platform's Trash folder (~/.Trash on a Mac,
+  // ~/.local/share/Trash/files on Linux). Without its answer there is no
+  // Trash place, rather than a guess.
+  trashPath = await trashDir().catch(() => "");
   await buildSidebar();
   const requested = new URLSearchParams(window.location.search).get("path");
   const initial = requested && isKnownPath(requested) ? requested : home || "/";

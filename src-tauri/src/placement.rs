@@ -145,23 +145,35 @@ fn rename_new_by(
 
 // ---- Placing -----------------------------------------------------------------
 
-/// Sends the item a Replace replaces to the Trash and says where it went
-/// there, when that can be told, so a Replace that fails afterwards can put
-/// it back. Placing takes it as a parameter so tests can make it fail or
-/// record it.
-pub(crate) type TrashFn<'a> = &'a dyn Fn(&Path) -> Result<Option<PathBuf>, String>;
+/// Where a Replace sends the item it replaces, and how it takes it back out
+/// when the Replace fails a moment later. The app passes its logged Trash
+/// (`trash_ops::Trash`, through `lib.rs`): Restore knows where the old item
+/// came from, and an item taken back is forgotten. A closure that sends an
+/// item away is one too, taking an item back with `trash_ops::untrash`;
+/// tests use it to make the Trash fail or record it.
+pub(crate) trait ReplaceTrash {
+    /// Send `path` to the Trash and say where it went there, when that can
+    /// be told, so a Replace that fails afterwards can put it back.
+    fn send(&self, path: &Path) -> Result<Option<PathBuf>, String>;
+
+    /// Put `trashed`, just sent to the Trash from `origin`, straight back,
+    /// never over an item that took its place.
+    fn take_back(&self, trashed: &Path, origin: &Path) -> Result<(), String> {
+        crate::trash_ops::untrash(trashed, origin)
+    }
+}
+
+impl<F: Fn(&Path) -> Result<Option<PathBuf>, String>> ReplaceTrash for F {
+    fn send(&self, path: &Path) -> Result<Option<PathBuf>, String> {
+        self(path)
+    }
+}
+
+/// Replace's Trash, as placing takes it (`ReplaceTrash`).
+pub(crate) type TrashFn<'a> = &'a dyn ReplaceTrash;
 
 /// Discards a partial copy filled in place: for good, or to the Trash.
 pub(crate) type DiscardFn<'a> = &'a dyn Fn(&Path) -> Result<(), String>;
-
-/// The system Trash, as Replace uses it.
-pub(crate) fn to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
-    let delete = || trash::delete(path).map_err(|e| e.to_string());
-    match std::env::var_os("HOME") {
-        Some(home) => crate::trash_ops::trash_located_by(path, Path::new(&home), delete),
-        None => delete().map(|()| None),
-    }
-}
 
 /// Removes a file, a link or a whole folder for good. Only for what the app
 /// made itself (a partial or staged copy) and for a moved source whose copy
@@ -333,25 +345,25 @@ fn staging_name(name: &str, n: u32) -> String {
 /// back where it came from; if the old item is in the Trash by then, it comes
 /// back out too.
 fn replace_with_staged(staged: &Path, to: &Path, kind: Staged, trash: TrashFn) -> Result<(), String> {
-    let failed = match trash(to) {
+    let failed = match trash.send(to) {
         Err(e) => format!("Could not move the existing item to the Trash: {}", e),
         Ok(trashed) => match rename_new(staged, to) {
             Ok(()) => return Ok(()),
-            Err(e) => take_back(trashed.as_deref(), to, format!("Failed to replace: {}", e)),
+            Err(e) => take_back(trash, trashed.as_deref(), to, format!("Failed to replace: {}", e)),
         },
     };
     undo(staged, kind, failed)
 }
 
 /// After a Replace failed with `failed` once the old item was in the Trash,
-/// put that item back at `to`, as Drive untrashes it. If it can't go back
-/// (another item took its place, or where the Trash put it is unknown), it
-/// stays in the Trash and the error says where.
-fn take_back(trashed: Option<&Path>, to: &Path, failed: String) -> String {
+/// put that item back at `to` through `trash`, as Drive untrashes it. If it
+/// can't go back (another item took its place, or where the Trash put it is
+/// unknown), it stays in the Trash and the error says where.
+fn take_back(trash: TrashFn, trashed: Option<&Path>, to: &Path, failed: String) -> String {
     let Some(trashed) = trashed else {
         return format!("{failed}. The replaced item is in the Trash");
     };
-    match crate::trash_ops::untrash(trashed, to) {
+    match trash.take_back(trashed, to) {
         Ok(()) => failed,
         Err(e) => format!(
             "{failed}. The replaced item is in the Trash at “{}” and could not be put back: {e}",

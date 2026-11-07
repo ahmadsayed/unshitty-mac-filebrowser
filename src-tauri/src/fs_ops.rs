@@ -8,7 +8,7 @@ use unicode_normalization::char::is_combining_mark;
 
 #[cfg(target_os = "linux")]
 use crate::progress::copy_counted;
-use crate::placement::{self, Stage, Staged, Target, TrashFn, Unfilled, remove, remove_any, to_trash};
+use crate::placement::{self, Stage, Staged, Target, TrashFn, Unfilled, remove, remove_any};
 use crate::progress::{CANCELLED, Progress, cancelled_io, is_cancel};
 
 pub fn make_dir(path: String) -> Result<(), String> {
@@ -697,17 +697,9 @@ fn is_cross_device(e: &std::io::Error) -> bool {
     e.kind() == std::io::ErrorKind::CrossesDevices || e.raw_os_error() == Some(18) // EXDEV
 }
 
-/// Copy `from` to `to` (recursively for folders).
-pub fn copy_entry(
-    from: String,
-    to: String,
-    overwrite: bool,
-    progress: &Progress,
-) -> Result<(), String> {
-    copy_entry_with(from, to, overwrite, progress, &to_trash)
-}
-
-fn copy_entry_with(
+/// Copy `from` to `to` (recursively for folders). An item it replaces goes
+/// to `trash`: the app's logged Trash, so Restore knows where it was.
+pub fn copy_entry_with(
     from: String,
     to: String,
     overwrite: bool,
@@ -727,17 +719,9 @@ fn copy_to(target: &Target, from: &Path, progress: &Progress, trash: TrashFn) ->
     Ok(())
 }
 
-/// Move `from` to `to`: a rename on the same volume, copy-then-delete across volumes.
-pub fn move_entry(
-    from: String,
-    to: String,
-    overwrite: bool,
-    progress: &Progress,
-) -> Result<(), String> {
-    move_entry_with(from, to, overwrite, progress, &to_trash)
-}
-
-fn move_entry_with(
+/// Move `from` to `to`: a rename on the same volume, copy-then-delete across
+/// volumes. An item it replaces goes to `trash`, as for `copy_entry_with`.
+pub fn move_entry_with(
     from: String,
     to: String,
     overwrite: bool,
@@ -1405,6 +1389,23 @@ mod tests {
 
     fn s(p: &Path) -> String {
         p.to_string_lossy().to_string()
+    }
+
+    /// `copy_entry_with` for tests that don't look at where a replaced item
+    /// goes: it is discarded, never sent to the user's own Trash.
+    fn copy_entry(from: String, to: String, overwrite: bool, progress: &Progress) -> Result<(), String> {
+        copy_entry_with(from, to, overwrite, progress, &discard_replaced)
+    }
+
+    /// `move_entry_with` as `copy_entry` above.
+    fn move_entry(from: String, to: String, overwrite: bool, progress: &Progress) -> Result<(), String> {
+        move_entry_with(from, to, overwrite, progress, &discard_replaced)
+    }
+
+    /// The Trash of `copy_entry` and `move_entry`: removes what they replace
+    /// and says it is nowhere.
+    fn discard_replaced(old: &Path) -> Result<Option<PathBuf>, String> {
+        remove(old).map(|()| None)
     }
 
     #[test]

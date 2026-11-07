@@ -1,4 +1,4 @@
-import { encodeCloudName, placeOf, type Place } from "../../src/paths";
+import { encodeCloudName, isUnder, placeOf, type Place } from "../../src/paths";
 import { fold } from "../../src/search";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
@@ -620,7 +620,7 @@ function driveDownload(from: string, to: string, overwrite: boolean, move: boole
   if (!toParent?.dir) throw "Failed to copy: No such file or directory";
   if (toParent.children[toName]) {
     if (!overwrite) throw `Target already exists: ${to}`;
-    trash(toParent, toName);
+    trash(toParent, toName, to);
   }
   // Like the backend: Google Docs are left out and named in an error after
   // the rest is copied, and a move then keeps its source.
@@ -791,8 +791,9 @@ const trashLog = new Map<string, { origin: string; time: number }>([
   [`${TRASH}/old.txt`, { origin: "/Users/me/Documents/old.txt", time: now - 9 * day }],
 ]);
 
-/** Move `name` out of `parent` into the Trash; returns its path there. */
-function trash(parent: Node & { dir: true }, name: string, origin?: string): string {
+/** Move `name` out of `parent` into the Trash and log where it came from
+ *  (`origin`), as the backend logs everything it trashes; returns its path there. */
+function trash(parent: Node & { dir: true }, name: string, origin: string): string {
   const bin = lookup(TRASH);
   if (!bin?.dir) throw "no trash";
   let target = name;
@@ -800,7 +801,7 @@ function trash(parent: Node & { dir: true }, name: string, origin?: string): str
   bin.children[target] = parent.children[name];
   delete parent.children[name];
   const trashed = `${TRASH}/${target}`;
-  if (origin) trashLog.set(trashed, { origin, time: Math.floor(Date.now() / 1000) });
+  trashLog.set(trashed, { origin, time: Math.floor(Date.now() / 1000) });
   return trashed;
 }
 
@@ -1305,7 +1306,7 @@ function checkTransfer(from: string, to: string, overwrite: boolean): { node: No
 function transfer(args: Args, move: boolean): void {
   const from = str(args, "from"), to = str(args, "to");
   const { node, fromParent, toParent, toName } = checkTransfer(from, to, Boolean(args.overwrite));
-  if (toParent.children[toName]) trash(toParent, toName);
+  if (toParent.children[toName]) trash(toParent, toName, to);
   toParent.children[toName] = move ? node : structuredClone(node);
   if (move) delete fromParent.children[from.slice(from.lastIndexOf("/") + 1)];
 }
@@ -1369,6 +1370,7 @@ function deletePermanently(path: string): void {
   const [parent, name] = parentAndName(path);
   if (!parent?.dir || !parent.children[name]) throw `“${path}” no longer exists`;
   delete parent.children[name];
+  for (const logged of trashLog.keys()) if (isUnder(logged, path)) trashLog.delete(logged);
 }
 
 function emptyTrash(): void {

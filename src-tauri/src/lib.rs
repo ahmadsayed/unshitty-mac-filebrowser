@@ -29,7 +29,7 @@ use cloud::CloudState;
 use cloud::service::OpenTarget;
 use place::{Kind, Route};
 use versions::history::History;
-use versions::state::{Transfer, VersionsState};
+use versions::state::{Transfer, VersionedTrash, VersionsState};
 use versions::{VersionDiff, VersionInfo, restore};
 
 fn config_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
@@ -750,13 +750,8 @@ async fn drive_transfer(
     progress: progress::Progress,
 ) -> Result<String, String> {
     blocking(move || {
-        let home = home_dir(&app)?;
         let versions = app.state::<VersionsState>();
-        let trash_local = |source: &Path| {
-            versions
-                .trash(source, || trash_ops::trash_and_locate(source, &home))
-                .map(|_| ())
-        };
+        let trash_local = VersionedTrash::new(&versions, AppTrash { app: &app });
         let state = app.state::<CloudState>();
         cloud::transfer::dispatch(
             &state,
@@ -765,7 +760,7 @@ async fn drive_transfer(
             overwrite,
             moving,
             &progress,
-            trash_local,
+            &trash_local,
         )
     })
     .await?
@@ -808,7 +803,8 @@ async fn copy_entry(
             let state = app.state::<VersionsState>();
             let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
             state.transfer(&from_path, &to_path, Transfer::Copy, || {
-                fs_ops::copy_entry(from, to.clone(), overwrite, &progress)
+                let trash = AppTrash { app: &app };
+                fs_ops::copy_entry_with(from, to.clone(), overwrite, &progress, &trash)
             })?;
             Ok(to_path.to_string_lossy().to_string())
         })
@@ -839,7 +835,8 @@ async fn move_entry(
             let state = app.state::<VersionsState>();
             let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
             state.transfer(&from_path, &to_path, Transfer::Move, || {
-                fs_ops::move_entry(from, to.clone(), overwrite, &progress)
+                let trash = AppTrash { app: &app };
+                fs_ops::move_entry_with(from, to.clone(), overwrite, &progress, &trash)
             })?;
             Ok(to_path.to_string_lossy().to_string())
         })
@@ -873,6 +870,33 @@ async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result
 fn trash_of(app: &tauri::AppHandle) -> Result<tauri::State<'_, trash_ops::Trash>, String> {
     app.try_state::<trash_ops::Trash>()
         .ok_or_else(|| "The home folder is unknown".to_string())
+}
+
+/// Send `path` to the Trash through the app's log (`Trash::send`), so
+/// Restore From Trash knows where it came from.
+fn send_to_trash(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
+    trash_of(app)?.send(path).map(|_| ())
+}
+
+/// The app's logged Trash as a copy, a move or a Drive transfer uses it
+/// (`placement::ReplaceTrash`): Restore knows where each item came from,
+/// and the old item a failed Replace takes back is forgotten. Looked up only
+/// when something goes to the Trash. A local copy or move closes the
+/// histories inside an item with `VersionsState::transfer`; a Drive
+/// transfer wraps this in `VersionedTrash`, which closes them before an
+/// item goes and reopens them if a failed Replace takes it back.
+struct AppTrash<'a> {
+    app: &'a tauri::AppHandle,
+}
+
+impl placement::ReplaceTrash for AppTrash<'_> {
+    fn send(&self, path: &Path) -> Result<Option<PathBuf>, String> {
+        trash_of(self.app)?.send(path)
+    }
+
+    fn take_back(&self, trashed: &Path, origin: &Path) -> Result<(), String> {
+        trash_of(self.app)?.untrash(trashed, origin)
+    }
 }
 
 fn home_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -1012,8 +1036,9 @@ fn trash_dir(app: tauri::AppHandle) -> String {
         .unwrap_or_default()
 }
 
-/// True when `path` is inside the user's home Trash; versioned_root, shared
-/// folders and the program and disk-image actions refuse it.
+/// True when `path` is inside the user's home Trash or its volume's Trash
+/// (`Trash::contains`); versioned_root, shared folders and the program and
+/// disk-image actions refuse it.
 fn in_trash(app: &tauri::AppHandle, path: &Path) -> bool {
     trash_of(app).is_ok_and(|trash| trash.contains(path))
 }
@@ -1073,7 +1098,7 @@ async fn install_dmg(app: tauri::AppHandle, path: String, fingerprint: String, a
         let request = platform::DmgInstallRequest { image, fingerprint, application, directory, mode };
         let versions = app.state::<VersionsState>();
         platform::install_dmg_application(&request, &cache, &|old| {
-            versions.trash(old, || trash::delete(old).map_err(|e| e.to_string()))
+            versions.trash(old, || send_to_trash(&app, old))
         })
     }).await?
 }
@@ -1244,7 +1269,8 @@ async fn replace_with_version(
     blocking(move || {
         let (history, rel) = history_and_rel(&app, &path)?;
         let rel = versions::path_bytes(&rel);
-        restore::replace_with_version(&history, &rel, version).map_err(|e| e.to_string())
+        restore::replace_with_version(&history, &rel, version, |old| send_to_trash(&app, old))
+            .map_err(|e| e.to_string())
     })
     .await?
 }
@@ -1312,7 +1338,10 @@ fn history_info_in(state: &VersionsState, root: &str) -> Result<versions::Histor
 
 #[tauri::command]
 async fn clear_history(app: tauri::AppHandle, root: String) -> Result<(), String> {
-    blocking(move || clear_history_in(&app.state::<VersionsState>(), &root, trash_history_dir)).await?
+    blocking(move || {
+        clear_history_in(&app.state::<VersionsState>(), &root, |dir| trash_history_dir(&app, dir))
+    })
+    .await?
 }
 
 /// `clear_history` with `state`, sending the old `.versions/` away with `trash_dir`.
@@ -1326,7 +1355,10 @@ fn clear_history_in(
 
 #[tauri::command]
 async fn stop_keeping_versions(app: tauri::AppHandle, root: String) -> Result<(), String> {
-    blocking(move || stop_keeping_in(&app.state::<VersionsState>(), &root, trash_history_dir)).await?
+    blocking(move || {
+        stop_keeping_in(&app.state::<VersionsState>(), &root, |dir| trash_history_dir(&app, dir))
+    })
+    .await?
 }
 
 /// `stop_keeping_versions` with `state`, sending `.versions/` away with `trash_dir`.
@@ -1338,9 +1370,11 @@ fn stop_keeping_in(
     state.stop_keeping(place::local(root)?, trash_dir)
 }
 
-/// Clear History and Stop Keeping Versions move `.versions/` to the Trash (D7).
-fn trash_history_dir(dir: &Path) -> Result<(), String> {
-    trash::delete(dir).map_err(|e| format!("Could not move the version history to the Trash: {e}"))
+/// Clear History and Stop Keeping Versions move `.versions/` to the Trash
+/// (D7), logged like any other item so Restore can put it back.
+fn trash_history_dir(app: &tauri::AppHandle, dir: &Path) -> Result<(), String> {
+    send_to_trash(app, dir)
+        .map_err(|e| format!("Could not move the version history to the Trash: {e}"))
 }
 
 #[tauri::command]
@@ -2057,8 +2091,10 @@ pub fn run() {
                 .iter()
                 .map(|dir| cache_dir.join(dir))
                 .collect();
+            let pruning = app.handle().clone();
             std::thread::spawn(move || {
-                let trash = |path: &std::path::Path| trash::delete(path).map_err(|e| e.to_string());
+                // Edited copies go to the Trash logged, like any other item.
+                let trash = |path: &std::path::Path| send_to_trash(&pruning, path);
                 for dir in &download_dirs {
                     downloads::prune(dir, std::time::SystemTime::now(), downloads::MAX_AGE, &trash);
                 }

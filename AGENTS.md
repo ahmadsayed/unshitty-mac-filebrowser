@@ -51,7 +51,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/drag-out.ts` | Dragging files out of the window: when the pointer has left it, and the system drag (our GTK command on Linux, the drag plugin on macOS) |
 | `src-tauri/src/fs_ops.rs` | Listing, item counts, mkdir, rename, copy/move/trash, path info |
 | `src-tauri/src/place.rs` | The backend twin of `placeOf`: a path's kind (`Local`/`Drive`/`Share`/`Sftp`), a local path or why it isn't one (remote, malformed or relative), the read-only refusals (`writable`), where a copy, move or rename runs (`transfer`), and answering a batch for its local paths only (`local_only`) |
-| `src-tauri/src/placement.rs` | How a copy, move or Drive download reaches its local path: the refusals and their wording (`Refusal`), the `.`/`..` guard, staging names, Replace (stage, trash the old item, rename in), the rename that never replaces (`rename_new`) and what a failure undoes (`Target::place`) |
+| `src-tauri/src/placement.rs` | How a copy, move or Drive download reaches its local path: the refusals and their wording (`Refusal`), the `.`/`..` guard, staging names, Replace (stage, trash the old item through `ReplaceTrash`, rename in, or take it back out if that fails), the rename that never replaces (`rename_new`) and what a failure undoes (`Target::place`) |
 | `src-tauri/src/sftp.rs` | Read-only SSH/SFTP connections for Network: agent/key/password auth, known-host checks, listing and downloads |
 | `src-tauri/src/share/file_share.rs`, `file_link.rs` | Send with QR Code: hashing, the separate iroh endpoint and serving (`file_share`); the ticket, file list and `filebrowser/file/2` wire format (the page still reads version 1 links), compiled into the phone page too (`file_link`) |
 | `web/file-get/` | The page a phone opens from the QR code: Rust → WebAssembly (iroh in the browser), `build.sh`, `serve.sh` (test from this computer), published by `.github/workflows/file-page.yml`; `static/get/preview.js` (file types and sizes, the image preview, the rows for several files) is tested in `tests/file-page.test.ts` |
@@ -59,7 +59,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src-tauri/src/platform.rs` | Platform differences: volume roots per OS, `%XX` decoding, `file://` URIs, XDG data dir, the rename that refuses a taken name (`rename_exclusive`: `renameat2` on Linux, `renamex_np` on macOS) |
 | `src-tauri/src/thumbnails.rs` | Quick Look (`qlmanage`) thumbnails on macOS with an `image`-crate fallback everywhere, disk cache |
 | `src-tauri/src/file_icons.rs` | File and folder icons from the OS: Finder's (NSWorkspace) on macOS, the desktop's icon theme (GIO + freedesktop lookup) on Linux |
-| `src-tauri/src/trash_ops.rs` | `Trash` (one in `lib.rs`'s state): `trash_log.json` and its lock, where an item came from (sidecar, log, Put Back), restore, delete permanently, empty, what is inside the Trash; trash + locate (for Undo) and untrash (for a Replace that failed after trashing the old item) as free functions; macOS `~/.Trash` + Finder "Put Back" in `.DS_Store`, Linux `Trash/{files,info}` + `.trashinfo` |
+| `src-tauri/src/trash_ops.rs` | `Trash` (one in `lib.rs`'s state): `trash_log.json` and its lock, where an item came from (sidecar, log, Put Back), send (trash one item and log it), untrash (for a Replace that failed after trashing the old item, forgetting its entry), restore, delete permanently, empty, what is inside the Trash; Move to Trash's batches (`trash_many`, `trash_routed`) as free functions; macOS `~/.Trash` and `<volume>/.Trashes/<uid>` + Finder "Put Back" in each one's own `.DS_Store`, Linux `Trash/{files,info}` and `<volume>/.Trash-<uid>` + `.trashinfo`; the layout is a value (`Layout`), so tests lay out either on any host |
 | `src-tauri/src/updates.rs` | Check for Updates: how this copy was installed (only the AppImage and the Mac app replace themselves), failure kinds, one install at a time; `lib.rs` wraps `tauri-plugin-updater` |
 | `src-tauri/src/downloads.rs` | Copies of opened SFTP/Drive/share files in the app cache: marks them as downloaded, prunes them after a week (edited copies go to the Trash) |
 | `src-tauri/src/recent.rs` | Recent: Spotlight (`mdfind`) on macOS, `recently-used.xbel` on Linux, merged with `recent.json` |
@@ -215,9 +215,15 @@ GPL-3.0-or-later).
   never rewritten.
 - Anything that touches the Trash must work for both layouts (macOS `~/.Trash`
   and freedesktop `Trash/{files,info}`); a change there needs a test on each.
-  Commands ask `trash_ops::Trash` (`record`, `info`, `restore`,
-  `delete_permanently`, `empty`, `listing_root`, `contains`) rather than
-  reading `trash_log.json` or building Trash paths in `lib.rs`.
+  Commands ask `trash_ops::Trash` (`send`, `untrash`, `record`, `info`,
+  `restore`, `delete_permanently`, `empty`, `listing_root`, `contains`)
+  rather than reading `trash_log.json` or building Trash paths in `lib.rs`.
+  Anything the app trashes outside Move to Trash (Replace's old item, a
+  Drive move's source, a DMG install's old app, `.versions/`, an edited
+  download, a replaced version) goes through `Trash::send` (`send_to_trash`
+  or `AppTrash` in `lib.rs`; modules take it as a parameter), which logs
+  where it came from. Only `trash_ops.rs` calls the `trash` crate; a test
+  fails on any other caller.
 - Replacing an existing item stages the new one under a temporary name, sends
   the old one to the Trash, then renames into place. Local copy, move and
   Drive downloads do this only through `placement.rs` (`Target::place`);
@@ -233,9 +239,12 @@ GPL-3.0-or-later).
   name, where a crash would leave it hidden. Only its copy across volumes
   is staged, like any copy.
 - If Replace's last rename fails once the old item is in the Trash, the old
-  item comes back out (`trash_ops::untrash`, as Drive untrashes) unless
-  something took its place; then it stays in the Trash and the error says
-  where.
+  item comes back out (`placement::ReplaceTrash::take_back`; the app's is
+  `Trash::untrash`, which also forgets its log entry; as Drive untrashes)
+  unless something took its place; then it stays in the Trash, logged, and
+  the error says where. Histories the Trash step closed come back with it:
+  a Drive download's Replace goes through `versions::state::VersionedTrash`,
+  which reopens and registers them again.
 - A cross-volume move deletes the source only after the copy fully succeeded.
 - Copy/move refuse: vanished source, same path, destination inside the source,
   existing target without `overwrite`, replacing a folder with its own child,

@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::placement::ReplaceTrash;
 use crate::versions::{
     Error, HistoryInfo, Result, capture,
     history::{self, History},
@@ -363,10 +364,21 @@ impl VersionsState {
         path: &Path,
         op: impl FnOnce() -> std::result::Result<T, String>,
     ) -> std::result::Result<T, String> {
-        let mut results = self.trash_many(&[path.to_path_buf()], |ready| {
+        self.trash_closing(path, op).map(|(value, _)| value)
+    }
+
+    /// `trash`, also returning the histories it closed and unregistered, so
+    /// `untrashed` can reopen them if the item comes back where it was.
+    pub fn trash_closing<T>(
+        &self,
+        path: &Path,
+        op: impl FnOnce() -> std::result::Result<T, String>,
+    ) -> std::result::Result<(T, Vec<PathBuf>), String> {
+        let mut results = self.trash_batch(&[path.to_path_buf()], |ready| {
             if ready.is_empty() { Vec::new() } else { vec![op()] }
         });
-        results.pop().unwrap_or_else(|| Err("Nothing was trashed".into()))
+        let (result, roots) = results.pop().unwrap_or_else(nothing_trashed);
+        result.map(|value| (value, roots))
     }
 
     /// `trash` for a batch, in one `op` call. `op` gets the paths whose
@@ -377,14 +389,23 @@ impl VersionsState {
         paths: &[PathBuf],
         op: impl FnOnce(&[PathBuf]) -> Vec<std::result::Result<T, String>>,
     ) -> Vec<std::result::Result<T, String>> {
-        let mut results: Vec<Option<std::result::Result<T, String>>> =
+        self.trash_batch(paths, op).into_iter().map(|(result, _)| result).collect()
+    }
+
+    /// `trash_many`, with the histories closed for each path.
+    fn trash_batch<T>(
+        &self,
+        paths: &[PathBuf],
+        op: impl FnOnce(&[PathBuf]) -> Vec<std::result::Result<T, String>>,
+    ) -> Vec<(std::result::Result<T, String>, Vec<PathBuf>)> {
+        let mut results: Vec<Option<(std::result::Result<T, String>, Vec<PathBuf>)>> =
             paths.iter().map(|_| None).collect();
         let mut ready = Vec::new();
         let mut ready_roots = Vec::new();
         for (i, path) in paths.iter().enumerate() {
             let roots = self.roots_affected(path);
             if let Err(error) = self.suspend_all(&roots) {
-                results[i] = Some(Err(error));
+                results[i] = Some((Err(error), Vec::new()));
                 continue;
             }
             for root in &roots {
@@ -400,12 +421,20 @@ impl VersionsState {
                     let _ = self.open_registered(root);
                 }
             }
-            results[i] = Some(outcome);
+            results[i] = Some((outcome, roots));
         }
-        results
-            .into_iter()
-            .map(|r| r.unwrap_or_else(|| Err("Nothing was trashed".into())))
-            .collect()
+        results.into_iter().map(|r| r.unwrap_or_else(nothing_trashed)).collect()
+    }
+
+    /// An item `trash_closing` sent away is back where it was (a failed
+    /// Replace took it back out of the Trash): reopen and register again the
+    /// histories it closed, `roots`.
+    pub fn untrashed(&self, roots: &[PathBuf]) {
+        for root in roots {
+            if let Err(e) = self.open_registered(root) {
+                eprintln!("versions: could not reopen {}: {e}", root.display());
+            }
+        }
     }
 
     /// Clear History…: move `.versions/` to the Trash with `trash_dir`, then
@@ -583,6 +612,50 @@ impl VersionsState {
     }
 }
 
+/// A path `trash_batch` never handed back an outcome for.
+fn nothing_trashed<T>() -> (std::result::Result<T, String>, Vec<PathBuf>) {
+    (Err("Nothing was trashed".into()), Vec::new())
+}
+
+// ---- Replace's Trash -----------------------------------------------------------
+
+/// Replace's Trash (`placement::ReplaceTrash`) where the old item may hold
+/// histories that no `transfer` closes, as in a Drive download: they are
+/// closed and unregistered before `trash` sends it (`trash_closing`), and
+/// reopened and registered again if a failed Replace takes it back
+/// (`untrashed`). Until then they stay closed, as in the Trash.
+pub struct VersionedTrash<'a, T> {
+    versions: &'a VersionsState,
+    trash: T,
+    /// The histories closed for each item sent, by where it came from.
+    closed: Mutex<HashMap<PathBuf, Vec<PathBuf>>>,
+}
+
+impl<'a, T> VersionedTrash<'a, T> {
+    pub fn new(versions: &'a VersionsState, trash: T) -> Self {
+        Self { versions, trash, closed: Mutex::new(HashMap::new()) }
+    }
+
+    fn closed(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, Vec<PathBuf>>> {
+        self.closed.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl<T: ReplaceTrash> ReplaceTrash for VersionedTrash<'_, T> {
+    fn send(&self, path: &Path) -> std::result::Result<Option<PathBuf>, String> {
+        let (trashed, roots) = self.versions.trash_closing(path, || self.trash.send(path))?;
+        self.closed().insert(path.to_path_buf(), roots);
+        Ok(trashed)
+    }
+
+    fn take_back(&self, trashed: &Path, origin: &Path) -> std::result::Result<(), String> {
+        self.trash.take_back(trashed, origin)?;
+        let roots = self.closed().remove(origin).unwrap_or_default();
+        self.versions.untrashed(&roots);
+        Ok(())
+    }
+}
+
 /// Where `root` (under `from`) ends up after a transfer to `to`.
 fn transfer_dest(from: &Path, to: &Path, root: &Path) -> Option<PathBuf> {
     root.strip_prefix(from)
@@ -752,11 +825,12 @@ mod tests {
         let dest = dir.path().join("Copy");
         state
             .transfer(&root, &dest, Transfer::Copy, || {
-                crate::fs_ops::copy_entry(
+                crate::fs_ops::copy_entry_with(
                     root.to_string_lossy().to_string(),
                     dest.to_string_lossy().to_string(),
                     false,
                     &crate::progress::Progress::default(),
+                    &|_: &Path| Err("nothing is replaced".into()),
                 )
             })
             .unwrap();
@@ -872,6 +946,81 @@ mod tests {
         );
         assert!(state.is_open(&root), "a failed item's history is reopened");
         assert!(read(state.registry_path()).contains(&held));
+    }
+
+    /// `root` with a nested history at `root/Sub`, both open and registered;
+    /// returns the nested root.
+    fn with_nested(state: &VersionsState, root: &Path) -> PathBuf {
+        let nested = root.join("Sub");
+        std::fs::create_dir(&nested).unwrap();
+        drop(History::create(&nested).unwrap());
+        state.open_registered(root).unwrap();
+        state.open_registered(&nested).unwrap().root.clone()
+    }
+
+    /// Every history in `roots` is open, writable, registered and records.
+    fn assert_recording(state: &VersionsState, roots: &[&PathBuf]) {
+        let registered = read(state.registry_path());
+        for root in roots {
+            assert!(state.is_open(root), "{} is open", root.display());
+            assert!(registered.contains(root), "{} is registered", root.display());
+            let history = state.open(root).unwrap();
+            assert!(history.writable && !history.is_closed());
+            record(&history, "back.txt", b"back");
+            assert_eq!(rows(&history, "back.txt"), 1);
+        }
+    }
+
+    /// An item sent with `trash_closing` and put straight back: `untrashed`
+    /// reopens and registers again every history it closed.
+    #[test]
+    fn an_item_back_from_the_trash_records_again() {
+        let (dir, root, state) = setup();
+        let nested = with_nested(&state, &root);
+        let trashed = dir.path().join("bin").join("Projects");
+        std::fs::create_dir(trashed.parent().unwrap()).unwrap();
+
+        let ((), roots) = state
+            .trash_closing(&root, || std::fs::rename(&root, &trashed).map_err(|e| e.to_string()))
+            .unwrap();
+        assert_eq!(roots, [nested.clone(), root.clone()]);
+        assert!(!state.is_open(&root) && !state.is_open(&nested));
+        assert!(read(state.registry_path()).is_empty());
+
+        std::fs::rename(&trashed, &root).unwrap();
+        state.untrashed(&roots);
+        assert_recording(&state, &[&root, &nested]);
+    }
+
+    /// A Replace through `VersionedTrash` whose last rename fails: the old
+    /// folder comes back out of the Trash with its histories recording, and
+    /// registered for the next start.
+    #[test]
+    fn a_failed_replace_reopens_the_histories_it_takes_back() {
+        use crate::placement::{Stage, Staged, check_new};
+        let (dir, root, state) = setup();
+        let nested = with_nested(&state, &root);
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let staged = std::cell::RefCell::new(PathBuf::new());
+        let fill = |dest: &Path| {
+            std::fs::create_dir(dest).unwrap();
+            staged.replace(dest.to_path_buf());
+            Ok(Staged::Copy)
+        };
+        // The new folder vanishes once the old one is in the Trash.
+        let into_bin = |old: &Path| {
+            assert!(!state.is_open(old), "closed before it goes");
+            std::fs::rename(old, bin.join("Projects")).unwrap();
+            std::fs::remove_dir(&*staged.borrow()).unwrap();
+            Ok(Some(bin.join("Projects")))
+        };
+        let trash = VersionedTrash::new(&state, into_bin);
+
+        let err = check_new(&root, true).unwrap().place(Stage::Always, fill, &trash).unwrap_err();
+        assert!(err.starts_with("Failed to replace: ") && !err.contains("Trash"), "{err}");
+        assert!(root.join(crate::versions::VERSIONS_DIR).is_dir());
+        assert_recording(&state, &[&root, &nested]);
     }
 
     #[test]
