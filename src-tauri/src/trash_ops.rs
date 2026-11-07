@@ -803,12 +803,11 @@ impl Trash {
     /// Move `path` to the Trash and remember where it went (`record`), so
     /// Restore knows where it came from whoever sent it: a Drive move's
     /// local source, the item a Replace sends away. Returns that place, when
-    /// it could be worked out. Move to Trash itself batches through
+    /// it could be worked out; an error is the `trash` crate's own, for the
+    /// caller to put in its words. Move to Trash itself batches through
     /// `trash_many` and records once.
     pub fn send(&self, path: &Path) -> Result<Option<PathBuf>, String> {
-        self.send_with(path, &|path| {
-            trash::delete(path).map_err(|e| format!("Failed to move to Trash: {e}"))
-        })
+        self.send_with(path, &|path| trash::delete(path).map_err(|e| e.to_string()))
     }
 
     /// `send` with the trashing passed in, so tests can stand in for Finder.
@@ -2348,6 +2347,29 @@ mod tests {
         assert_eq!(trash.root, Layout::HOST.home_trash(home));
         let item = Layout::HOST.items_in(&Layout::HOST.home_trash(home)).join("a.txt");
         assert_eq!(trash.dir_for(&item), trash_dir_for(&item, home));
+    }
+
+    /// Every item the app trashes goes through this module, so the log
+    /// knows where it came from: no other module calls the `trash` crate
+    /// (`Trash::send` for single items, `send_to_trash` in lib.rs).
+    #[test]
+    fn only_this_module_calls_the_trash_crate() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut callers = Vec::new();
+        let mut folders = vec![src.clone()];
+        while let Some(folder) = folders.pop() {
+            for path in fs::read_dir(&folder).unwrap().flatten().map(|e| e.path()) {
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path != src.join("trash_ops.rs")
+                    && fs::read_to_string(&path).unwrap_or_default().contains("trash::delete")
+                {
+                    callers.push(path.strip_prefix(&src).unwrap().to_string_lossy().to_string());
+                }
+            }
+        }
+        callers.sort();
+        assert_eq!(callers, Vec::<String>::new(), "trash through trash_ops::Trash::send");
     }
 
     #[test]

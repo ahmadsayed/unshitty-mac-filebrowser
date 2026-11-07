@@ -141,11 +141,17 @@ pub fn restore_copy(history: &History, rel: &[u8], version: i64, name: &str) -> 
 }
 
 /// Replace the current file with `version`. The current state is recorded
-/// first (D8), then moved to the caller's Trash. The staged file is copied in
-/// with `create_new`, so a race cannot overwrite anything.
-pub fn replace_with_version(history: &History, rel: &[u8], version: i64) -> Result<()> {
+/// first (D8), then moved to the Trash with `trash` (the app's logged Trash,
+/// so Restore knows where it was). The staged file is copied in with
+/// `create_new`, so a race cannot overwrite anything.
+pub fn replace_with_version(
+    history: &History,
+    rel: &[u8],
+    version: i64,
+    trash: impl FnOnce(&Path) -> std::result::Result<(), String>,
+) -> Result<()> {
     replace_with(history, rel, version, |path| {
-        trash::delete(path).map_err(|e| Error::Io(format!("could not move to the Trash: {e}")))
+        trash(path).map_err(|e| Error::Io(format!("could not move to the Trash: {e}")))
     })
 }
 

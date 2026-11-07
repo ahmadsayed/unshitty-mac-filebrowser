@@ -114,13 +114,9 @@ fn not_a_name(to: &Path) -> Result<(), Refusal> {
 // ---- Placing -----------------------------------------------------------------
 
 /// Sends an item to the Trash, or discards one. Placing takes it as a
-/// parameter so tests can make it fail or record it.
+/// parameter: the app passes its logged Trash (`Trash::send`, so Restore
+/// knows where a replaced item came from), tests make it fail or record it.
 pub(crate) type TrashFn<'a> = &'a dyn Fn(&Path) -> Result<(), String>;
-
-/// The system Trash, as Replace uses it.
-pub(crate) fn to_trash(path: &Path) -> Result<(), String> {
-    trash::delete(path).map_err(|e| e.to_string())
-}
 
 /// Removes a file, a link or a whole folder for good. Only for what the app
 /// made itself (a partial or staged copy) and for a moved source whose copy

@@ -752,11 +752,12 @@ mod tests {
         let dest = dir.path().join("Copy");
         state
             .transfer(&root, &dest, Transfer::Copy, || {
-                crate::fs_ops::copy_entry(
+                crate::fs_ops::copy_entry_with(
                     root.to_string_lossy().to_string(),
                     dest.to_string_lossy().to_string(),
                     false,
                     &crate::progress::Progress::default(),
+                    &|_| Err("nothing is replaced".into()),
                 )
             })
             .unwrap();

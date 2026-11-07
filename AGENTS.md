@@ -215,8 +215,12 @@ GPL-3.0-or-later).
   Commands ask `trash_ops::Trash` (`send`, `record`, `info`, `restore`,
   `delete_permanently`, `empty`, `listing_root`, `contains`) rather than
   reading `trash_log.json` or building Trash paths in `lib.rs`. Anything the
-  app trashes outside Move to Trash goes through `Trash::send`
-  (`send_to_trash` in `lib.rs`), which logs where it came from.
+  app trashes outside Move to Trash (Replace's old item, a Drive move's
+  source, a DMG install's old app, `.versions/`, an edited download, a
+  replaced version) goes through `Trash::send` (`send_to_trash` in
+  `lib.rs`; modules take it as a parameter), which logs where it came from.
+  Only `trash_ops.rs` calls the `trash` crate; a test fails on any other
+  caller.
 - Replacing an existing item stages the new one under a temporary name, sends
   the old one to the Trash, then renames into place. Local copy, move and
   Drive downloads do this only through `placement.rs` (`Target::place`);

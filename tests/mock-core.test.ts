@@ -538,6 +538,27 @@ test("copying between local folders and Drive", async () => {
   expect(await names(`${HOME}/FromDrive`)).toContain("todo.txt");
 });
 
+/** Where each item in the Trash whose name starts with `name` came from. */
+async function trashedOrigins(name: string): Promise<(string | null)[]> {
+  const paths = (await namesIn(`${HOME}/.Trash`, true)).filter((n) => n.startsWith(name)).map((n) => `${HOME}/.Trash/${n}`);
+  return (await invoke<{ origin: string | null }[]>("trash_info", { paths })).map((info) => info.origin);
+}
+
+// As the backend's Trash::send: a Replace sends the old item to the Trash with
+// its origin logged, for a local copy or move and for a Drive download.
+test("a replaced item is in the Trash with its origin", async () => {
+  await invoke("make_dir", { path: `${HOME}/Replaced` });
+  for (const name of ["local.txt", "moved.txt", "hello.txt", "source.txt"]) {
+    await invoke("create_file", { path: `${HOME}/Replaced/${name}` });
+  }
+  await invoke("copy_entry", { from: `${HOME}/Replaced/source.txt`, to: `${HOME}/Replaced/local.txt`, overwrite: true });
+  await invoke("move_entry", { from: `${HOME}/Replaced/source.txt`, to: `${HOME}/Replaced/moved.txt`, overwrite: true });
+  await invoke("copy_entry", { from: DRIVE_HELLO, to: `${HOME}/Replaced/hello.txt`, overwrite: true });
+  for (const name of ["local.txt", "moved.txt", "hello.txt"]) {
+    expect(await trashedOrigins(name), name).toContain(`${HOME}/Replaced/${name}`);
+  }
+});
+
 // As the backend's Trash::send: the local source of a move into Drive goes to
 // the Trash with its origin logged, so Restore knows where it came from.
 test("a local item moved into Drive is in the Trash with its origin", async () => {

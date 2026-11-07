@@ -742,7 +742,9 @@ async fn copy_entry(
             let state = app.state::<VersionsState>();
             let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
             state.transfer(&from_path, &to_path, Transfer::Copy, || {
-                fs_ops::copy_entry(from, to.clone(), overwrite, &progress)
+                fs_ops::copy_entry_with(from, to.clone(), overwrite, &progress, &|old| {
+                    send_to_trash(&app, old)
+                })
             })?;
             Ok(to_path.to_string_lossy().to_string())
         })
@@ -773,7 +775,9 @@ async fn move_entry(
             let state = app.state::<VersionsState>();
             let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
             state.transfer(&from_path, &to_path, Transfer::Move, || {
-                fs_ops::move_entry(from, to.clone(), overwrite, &progress)
+                fs_ops::move_entry_with(from, to.clone(), overwrite, &progress, &|old| {
+                    send_to_trash(&app, old)
+                })
             })?;
             Ok(to_path.to_string_lossy().to_string())
         })
@@ -1008,7 +1012,7 @@ async fn install_dmg(app: tauri::AppHandle, path: String, fingerprint: String, a
         let request = platform::DmgInstallRequest { image, fingerprint, application, directory, mode };
         let versions = app.state::<VersionsState>();
         platform::install_dmg_application(&request, &cache, &|old| {
-            versions.trash(old, || trash::delete(old).map_err(|e| e.to_string()))
+            versions.trash(old, || send_to_trash(&app, old))
         })
     }).await?
 }
@@ -1169,7 +1173,8 @@ async fn replace_with_version(
     blocking(move || {
         let (history, rel) = history_and_rel(&app, &path)?;
         let rel = versions::path_bytes(&rel);
-        restore::replace_with_version(&history, &rel, version).map_err(|e| e.to_string())
+        restore::replace_with_version(&history, &rel, version, |old| send_to_trash(&app, old))
+            .map_err(|e| e.to_string())
     })
     .await?
 }
@@ -1239,7 +1244,7 @@ async fn history_info(
 async fn clear_history(app: tauri::AppHandle, root: String) -> Result<(), String> {
     blocking(move || {
         app.state::<VersionsState>()
-            .clear(Path::new(&root), trash_history_dir)
+            .clear(Path::new(&root), |dir| trash_history_dir(&app, dir))
     })
     .await?
 }
@@ -1248,14 +1253,16 @@ async fn clear_history(app: tauri::AppHandle, root: String) -> Result<(), String
 async fn stop_keeping_versions(app: tauri::AppHandle, root: String) -> Result<(), String> {
     blocking(move || {
         app.state::<VersionsState>()
-            .stop_keeping(Path::new(&root), trash_history_dir)
+            .stop_keeping(Path::new(&root), |dir| trash_history_dir(&app, dir))
     })
     .await?
 }
 
-/// Clear History and Stop Keeping Versions move `.versions/` to the Trash (D7).
-fn trash_history_dir(dir: &Path) -> Result<(), String> {
-    trash::delete(dir).map_err(|e| format!("Could not move the version history to the Trash: {e}"))
+/// Clear History and Stop Keeping Versions move `.versions/` to the Trash
+/// (D7), logged like any other item so Restore can put it back.
+fn trash_history_dir(app: &tauri::AppHandle, dir: &Path) -> Result<(), String> {
+    send_to_trash(app, dir)
+        .map_err(|e| format!("Could not move the version history to the Trash: {e}"))
 }
 
 #[tauri::command]
@@ -2001,8 +2008,10 @@ pub fn run() {
                 .iter()
                 .map(|dir| cache_dir.join(dir))
                 .collect();
+            let pruning = app.handle().clone();
             std::thread::spawn(move || {
-                let trash = |path: &std::path::Path| trash::delete(path).map_err(|e| e.to_string());
+                // Edited copies go to the Trash logged, like any other item.
+                let trash = |path: &std::path::Path| send_to_trash(&pruning, path);
                 for dir in &download_dirs {
                     downloads::prune(dir, std::time::SystemTime::now(), downloads::MAX_AGE, &trash);
                 }
