@@ -740,13 +740,20 @@ fn give_back(staged: &Path, kind: Staged) -> Result<(), String> {
             let _ = remove_any(staged);
             Ok(())
         }
-        Staged::Original(from) => std::fs::rename(staged, from).map_err(|e| {
-            format!(
-                "The item was kept at “{}” and could not be put back: {}",
-                staged.display(),
-                e
-            )
-        }),
+        Staged::Original(from) => {
+            let back = if std::fs::symlink_metadata(from).is_ok() {
+                Err("another item is there now".to_string())
+            } else {
+                std::fs::rename(staged, from).map_err(|e| e.to_string())
+            };
+            back.map_err(|e| {
+                format!(
+                    "The item was kept at “{}” and could not be put back: {}",
+                    staged.display(),
+                    e
+                )
+            })
+        }
     }
 }
 
@@ -1664,6 +1671,32 @@ mod tests {
         fs::write(&staged, "mine").unwrap();
 
         let err = replace_with_staged(&staged, &to, Staged::Original(&from), &failing_trash).unwrap_err();
+        assert_eq!(fs::read_to_string(&staged).unwrap(), "mine");
+        assert!(err.contains(&staged.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn a_staged_original_never_overwrites_what_took_its_old_place() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        fs::write(&src, "mine").unwrap();
+        fs::write(&dst, "old").unwrap();
+        // Something new appears at the original's old path, then the Trash fails.
+        let trash = |_: &Path| {
+            fs::write(&src, "newer").unwrap();
+            Err("no Trash on this volume".to_string())
+        };
+
+        let err = move_entry_with(s(&src), s(&dst), true, &Progress::default(), &trash).unwrap_err();
+        assert_eq!(fs::read_to_string(&src).unwrap(), "newer");
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "old");
+        let kept: Vec<_> = names_in(dir.path())
+            .into_iter()
+            .filter(|n| n.to_string_lossy().starts_with(".b.txt.filebrowser-"))
+            .collect();
+        assert_eq!(kept.len(), 1, "the original stays at its staging name");
+        let staged = dir.path().join(&kept[0]);
         assert_eq!(fs::read_to_string(&staged).unwrap(), "mine");
         assert!(err.contains(&staged.display().to_string()), "{err}");
     }
