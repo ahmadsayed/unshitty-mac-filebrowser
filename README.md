@@ -132,6 +132,7 @@ npm run dev:mock       # UI only, in a browser, with a fake filesystem
 npm test && (cd src-tauri && cargo test)
 ```
 
+How the app is put together: [docs/architecture.md](docs/architecture.md).
 Design notes live in `docs/superpowers/`; agent and contributor rules in
 [AGENTS.md](AGENTS.md).
 
