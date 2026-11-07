@@ -467,3 +467,20 @@ test("Rename from the preview: a double Enter renames once", async () => {
   expect(dialogHeading()).toBeUndefined();
   expect(await invoke("path_exists", { path: `${dir}/c.txt` })).toBe(true);
 });
+
+test("Add Your Google Client: a double click adds the client once and opens one Connect dialog", async () => {
+  await invoke("drive_client_clear");
+  driveRow().click();
+  await settle(10);
+  expect(dialogHeading()).toBe("Add Your Google Client");
+  $<HTMLTextAreaElement>(".client-json").value = CLIENT;
+  calls().hold("drive_client_set");
+  await respond("Add Client");
+  expect(button("Add Client").disabled).toBe(true);
+  await respond("Add Client");
+  calls().release("drive_client_set");
+  await settle(20);
+  expect(calls().count("drive_client_set")).toBe(1);
+  expect($$(".dialog-layer").length).toBe(1);
+  expect(dialogHeading()).toBe("Connect to Google Drive");
+});
