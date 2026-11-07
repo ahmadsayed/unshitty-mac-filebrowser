@@ -37,6 +37,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/qr-share.ts` | Send with QR Code…: the menu item and the dialog (code, link, progress, downloads) |
 | `src/preview-actions.ts` | Which actions the Space preview offers (Open, Rename…, Move to Trash, Open Item Location) for where the item is |
 | `src/selection.ts` | The view's selection, cursor and anchor, and the user's intent counter a paste checks before selecting what it made (#50) |
+| `src/search.ts` | The search without the DOM: `SearchSession` (open or not, the text, the walk after a 160 ms pause, at most 1000 results, late answers dropped, what a tab saves), `arrangeSearch` / `searchSections` (what the view shows and its "In This Folder" / "In Subfolders" headers), and `fold`, tested against the backend's `fs_ops::fold` with `tests/fold-cases.json` |
 | `src/locations.ts` | What each kind of location allows (Recent/Starred/Network, Drive, shares, SSH servers, the Trash): read only, local, recursive search, versions, new items |
 | `src/paths.ts` | Each kind of path's layout (`gdrive://`, `share://`, `sftp://`, local) as one row: its kind (`placeOf`), name, parent, child join (encoded as the backend decodes it) and crumbs; containment (`isUnder`), which paths a window may open, share links, what the path bar resolves typed text to |
 | `src/folder-summaries.ts` | Folder item counts and version badges for the view: batches of 400, skips remote, known and in-flight folders, drops late answers, forgets counts on a new location or Show Hidden setting |

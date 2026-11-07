@@ -1,4 +1,5 @@
 import { encodeCloudName, placeOf } from "../../src/paths";
+import { fold } from "../../src/search";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
 // It serves a fake, in-memory home folder.
@@ -698,17 +699,12 @@ function list(path: string, showHidden: boolean): Entry[] {
     }));
 }
 
-/** Recursive name search, bounded like the Rust command. */
-/** Lowercase without accents, like the backend's `fold`. */
-function fold(s: string): string {
-  return s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-}
-
 /** How many items one search looks at before giving up (the backend's `MAX_SEARCH_SCANNED`). */
 const MAX_SEARCH_SCANNED = 100_000;
 /** The mock sends matches in batches of this many, so the app sees results stream in. */
 const SEARCH_BATCH = 50;
 
+/** Recursive name search, bounded like the Rust command. */
 function search(path: string, query: string, showHidden: boolean, limit: number, channel?: Channel<Entry[]>) {
   const node = lookup(path);
   if (!node || !node.dir) throw `Failed to read directory: No such file or directory (os error 2)`;
@@ -736,6 +732,44 @@ function search(path: string, query: string, showHidden: boolean, limit: number,
   }
   for (let i = 0; i < out.length; i += SEARCH_BATCH) channel?.onmessage(out.slice(i, i + SEARCH_BATCH));
   return { stopped, scanned };
+}
+
+type SearchSummaryMock = ReturnType<typeof search>;
+/** A held search, answered when the test says so. */
+interface HeldSearch {
+  path: string;
+  query: string;
+  /** Walk now: send the batches, then end with the summary (or `summary` instead). */
+  answer(summary?: Partial<SearchSummaryMock>): void;
+  /** End with an error, as a vanished folder does. */
+  fail(error: string): void;
+}
+
+/** Tests hold searches to answer them late (each waits in `held`), and count
+ *  `cancel_search` calls. */
+export const searchMock = {
+  hold: false,
+  held: [] as HeldSearch[],
+  cancels: 0,
+};
+
+function searchCommand(a: Args): unknown {
+  const run = () => search(str(a, "path"), str(a, "query"), a.showHidden as boolean, a.limit as number, a.onResults as Channel<Entry[]> | undefined);
+  if (!searchMock.hold) return run();
+  return new Promise((resolve, reject) => {
+    searchMock.held.push({
+      path: str(a, "path"),
+      query: str(a, "query"),
+      answer: (summary) => {
+        try {
+          resolve({ ...run(), ...summary });
+        } catch (err) {
+          reject(err);
+        }
+      },
+      fail: reject,
+    });
+  });
 }
 
 function parentAndName(path: string): [Node | undefined, string] {
@@ -1791,15 +1825,10 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     if (path.startsWith("share://")) return listShare(path);
     return path.startsWith("gdrive://") ? listDrive(path) : list(path, a.showHidden as boolean);
   },
-  search_dir: (a) =>
-    search(
-      str(a, "path"),
-      str(a, "query"),
-      a.showHidden as boolean,
-      a.limit as number,
-      a.onResults as Channel<Entry[]> | undefined,
-    ),
-  cancel_search: () => {},
+  search_dir: searchCommand,
+  cancel_search: () => {
+    searchMock.cancels += 1;
+  },
   item_counts: (a) => itemCounts(a.paths as string[], a.showHidden as boolean),
   file_properties: (a) => {
     const path = str(a, "path");

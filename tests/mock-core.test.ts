@@ -1,7 +1,7 @@
 // Characterization tests for the in-memory backend in dev/mock-tauri/core.ts:
 // every command it serves, including its errors.
 import { expect, test, vi } from "vitest";
-import { Channel, fileShareMock, invoke, nativeIconMock } from "../dev/mock-tauri/core";
+import { Channel, fileShareMock, invoke, nativeIconMock, searchMock } from "../dev/mock-tauri/core";
 import { installFakeCanvas } from "./app";
 
 const HOME = "/Users/me";
@@ -619,6 +619,39 @@ test("search_dir sends nearer matches first, like the backend's level-by-level w
   const depth = (path: string) => path.slice(root.length + 1).split("/").length;
   const { found } = await searchAll(root, "lvl");
   expect(found.map((entry) => depth(entry.path))).toEqual([1, 2, 2, 3, 3]);
+});
+
+test("held searches answer, end early or fail when the test says, and cancels are counted", async () => {
+  searchMock.hold = true;
+  try {
+    const batches: Found[][] = [];
+    const onResults = new Channel<Found[]>();
+    onResults.onmessage = (batch) => batches.push(batch);
+    const args = { path: HOME, query: "README", showHidden: false, limit: 20, onResults };
+    const answered = invoke<{ stopped: string | null }>("search_dir", args);
+    const stopped = invoke<{ stopped: string | null }>("search_dir", args);
+    const failed = invoke("search_dir", args);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(searchMock.held.map((h) => [h.path, h.query])).toEqual([[HOME, "README"], [HOME, "README"], [HOME, "README"]]);
+    expect(batches).toHaveLength(0);
+    const [first, second, third] = searchMock.held.splice(0);
+    first.answer();
+    await expect(answered).resolves.toMatchObject({ stopped: null });
+    expect(batches.flat().map((e) => e.name)).toContain("README.md");
+    second.answer({ stopped: "results" });
+    await expect(stopped).resolves.toMatchObject({ stopped: "results" });
+    third.fail("gone");
+    await expect(failed).rejects.toBe("gone");
+    const missing = invoke("search_dir", { ...args, path: "/nowhere" });
+    await new Promise((r) => setTimeout(r, 10));
+    searchMock.held.splice(0)[0].answer();
+    await expect(missing).rejects.toMatch(/No such file/);
+  } finally {
+    searchMock.hold = false;
+  }
+  const before = searchMock.cancels;
+  await invoke("cancel_search");
+  expect(searchMock.cancels).toBe(before + 1);
 });
 
 test("sharing commands create links, receive, go offline and clean up", async () => {  const mock = (globalThis as unknown as { __mockShare: { setOnline(v: boolean): void; reset(): void } }).__mockShare;

@@ -285,7 +285,8 @@ fn same_file(_a: &Path, _b: &Path) -> bool {
 }
 
 /// Lowercase with accents removed, so "cafe" finds "Café". Matches the
-/// frontend's `fold`, which filters the folder before these results arrive.
+/// frontend's `fold` (`src/search.ts`), which filters the folder before these
+/// results arrive; both are tested against `tests/fold-cases.json`.
 pub fn fold(s: &str) -> String {
     s.nfd()
         .filter(|c| !is_combining_mark(*c))
