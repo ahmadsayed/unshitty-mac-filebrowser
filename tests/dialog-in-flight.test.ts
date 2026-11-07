@@ -501,3 +501,45 @@ test("Add Your Google Client: a double click adds the client once and opens one 
   expect($$(".dialog-layer").length).toBe(1);
   expect(dialogHeading()).toBe("Connect to Google Drive");
 });
+
+test("What name should people see?: a double Enter saves the name once and opens one Share dialog", async () => {
+  (globalThis as unknown as { __mockShare: { reset(): void } }).__mockShare.reset();
+  const dir = await folder("share-name", []);
+  await invoke("make_dir", { path: `${dir}/Named` });
+  await key("F5");
+  await rightClick(item("Named"));
+  await chooseMenu("Share Folder…");
+  await settle(10);
+  expect(dialogHeading()).toBe("What name should people see?");
+  const input = $<HTMLInputElement>("#share-name");
+  calls().hold("set_share_name");
+  await key("Enter", { target: input });
+  await key("Enter", { target: input });
+  expect(button("Continue").disabled).toBe(true);
+  expect(button("Cancel").disabled).toBe(true);
+  expect(input.disabled).toBe(true);
+  await key("Escape", { target: input });
+  expect(dialogHeading()).toBe("What name should people see?");
+  calls().release("set_share_name");
+  await settle(30);
+  expect(calls().count("set_share_name")).toBe(1);
+  expect($$(".dialog-layer").length).toBe(1);
+  expect(dialogHeading()).toBe("Share “Named”");
+});
+
+test("What name should people see?: a failure stays in the dialog, cleaned, with everything enabled", async () => {
+  (globalThis as unknown as { __mockShare: { reset(): void } }).__mockShare.reset();
+  const dir = await folder("share-name-fail", []);
+  await invoke("make_dir", { path: `${dir}/Named` });
+  await key("F5");
+  await rightClick(item("Named"));
+  await chooseMenu("Share Folder…");
+  await settle(10);
+  calls().failNext("set_share_name", "Failed to save: Read-only file system (os error 30)");
+  await respond("Continue");
+  expect(dialogHeading()).toBe("What name should people see?");
+  expect(message()).toBe("Read-only file system");
+  expect(button("Continue").disabled).toBe(false);
+  expect(button("Cancel").disabled).toBe(false);
+  expect($<HTMLInputElement>("#share-name").disabled).toBe(false);
+});

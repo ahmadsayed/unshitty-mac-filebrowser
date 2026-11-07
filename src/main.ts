@@ -4577,21 +4577,6 @@ async function ensureShareName(): Promise<boolean> {
     input.value = account;
     let dialog: ReturnType<typeof openDialog>;
 
-    const save = async () => {
-      const name = input.value.trim();
-      if (!name) {
-        message.textContent = "Enter a name.";
-        return;
-      }
-      try {
-        await setShareName(name);
-        resolve(true);
-        dialog.close();
-      } catch (err) {
-        message.textContent = cleanError(err);
-      }
-    };
-
     input.addEventListener("input", () => dialog.setResponseEnabled("save", !!input.value.trim()));
     dialog = openDialog({
       heading: "What name should people see?",
@@ -4603,12 +4588,22 @@ async function ensureShareName(): Promise<boolean> {
       ],
       defaultResponse: "save",
       closeResponse: "cancel",
-      onResponse: (id) => {
+      // Nothing else responds while the name is saved; a failure stays in the dialog.
+      busy: { status: message },
+      onResponse: async (id) => {
         if (id !== "save") {
           resolve(false);
           return;
         }
-        void save();
+        const name = input.value.trim();
+        if (!name) {
+          message.textContent = "Enter a name.";
+          return false;
+        }
+        await setShareName(name);
+        // Closed before the Share dialog opens on top.
+        dialog.close();
+        resolve(true);
         return false;
       },
     });
