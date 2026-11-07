@@ -249,18 +249,26 @@ fn cancel_operation(registry: tauri::State<progress::Registry>, op: String) {
 #[tauri::command]
 async fn measure(app: tauri::AppHandle, paths: Vec<String>) -> Result<fs_ops::Measure, String> {
     blocking(move || {
-        let (drive, local): (Vec<String>, Vec<String>) =
-            paths.into_iter().partition(|path| cloud::is_cloud(path));
-        let local: Vec<PathBuf> = local.into_iter().map(PathBuf::from).collect();
-        let mut total = fs_ops::measure(&local);
-        if !drive.is_empty() {
-            let remote = cloud::transfer::measure(&app.state::<CloudState>(), &drive)?;
-            total.bytes += remote.bytes;
-            total.items += remote.items;
-        }
-        Ok(total)
+        measure_paths(paths, |drive| cloud::transfer::measure(&app.state::<CloudState>(), drive))
     })
     .await?
+}
+
+/// The total of `paths`: Drive paths through `drive`, the others on disk.
+fn measure_paths(
+    paths: Vec<String>,
+    drive: impl FnOnce(&[String]) -> Result<fs_ops::Measure, String>,
+) -> Result<fs_ops::Measure, String> {
+    let (drive_paths, local): (Vec<String>, Vec<String>) =
+        paths.into_iter().partition(|path| cloud::is_cloud(path));
+    let local: Vec<PathBuf> = local.into_iter().map(PathBuf::from).collect();
+    let mut total = fs_ops::measure(&local);
+    if !drive_paths.is_empty() {
+        let remote = drive(&drive_paths)?;
+        total.bytes += remote.bytes;
+        total.items += remote.items;
+    }
+    Ok(total)
 }
 
 #[tauri::command]
@@ -533,25 +541,27 @@ async fn item_counts(
     paths: Vec<String>,
     show_hidden: bool,
 ) -> Result<Vec<Option<fs_ops::FolderSummary>>, String> {
-    blocking(move || {
-        let mut out: Vec<Option<fs_ops::FolderSummary>> = (0..paths.len()).map(|_| None).collect();
-        let mut local = Vec::new();
-        let mut positions = Vec::new();
-        for (index, path) in paths.iter().enumerate() {
-            if !cloud::is_cloud(path) && !share::location::is_share(path) && !sftp::is_sftp(path) {
-                local.push(path.clone());
-                positions.push(index);
-            }
+    blocking(move || Ok(folder_summaries(&paths, show_hidden))).await?
+}
+
+/// `item_counts` for a batch: remote paths have no summary.
+fn folder_summaries(paths: &[String], show_hidden: bool) -> Vec<Option<fs_ops::FolderSummary>> {
+    let mut out: Vec<Option<fs_ops::FolderSummary>> = (0..paths.len()).map(|_| None).collect();
+    let mut local = Vec::new();
+    let mut positions = Vec::new();
+    for (index, path) in paths.iter().enumerate() {
+        if !cloud::is_cloud(path) && !share::location::is_share(path) && !sftp::is_sftp(path) {
+            local.push(path.clone());
+            positions.push(index);
         }
-        for (position, summary) in positions
-            .into_iter()
-            .zip(fs_ops::item_counts(local, show_hidden))
-        {
-            out[position] = summary;
-        }
-        Ok(out)
-    })
-    .await?
+    }
+    for (position, summary) in positions
+        .into_iter()
+        .zip(fs_ops::item_counts(local, show_hidden))
+    {
+        out[position] = summary;
+    }
+    out
 }
 
 #[tauri::command]
@@ -561,24 +571,33 @@ async fn path_info(
 ) -> Result<Vec<Option<fs_ops::PathInfo>>, String> {
     blocking(move || {
         let state = app.state::<CloudState>();
-        let mut out = Vec::with_capacity(paths.len());
-        for path in &paths {
-            if share::location::is_share(path) || sftp::is_sftp(path) {
-                out.push(None);
-            } else if cloud::is_cloud(path) {
-                out.push(cloud::service::path_info(&state, path).ok());
-            } else {
-                out.push(
-                    fs_ops::path_info(vec![path.clone()])
-                        .into_iter()
-                        .next()
-                        .flatten(),
-                );
-            }
-        }
-        Ok(out)
+        Ok(path_infos(&paths, |path| cloud::service::path_info(&state, path).ok()))
     })
     .await?
+}
+
+/// `path_info` for a batch: Drive paths through `drive`, shares and SSH
+/// servers have none.
+fn path_infos(
+    paths: &[String],
+    drive: impl Fn(&str) -> Option<fs_ops::PathInfo>,
+) -> Vec<Option<fs_ops::PathInfo>> {
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        if share::location::is_share(path) || sftp::is_sftp(path) {
+            out.push(None);
+        } else if cloud::is_cloud(path) {
+            out.push(drive(path));
+        } else {
+            out.push(
+                fs_ops::path_info(vec![path.clone()])
+                    .into_iter()
+                    .next()
+                    .flatten(),
+            );
+        }
+    }
+    out
 }
 
 /// Why the Properties dialog can't describe `path` yet, if it can't.
@@ -686,14 +705,19 @@ async fn drive_transfer(
 #[tauri::command]
 async fn path_exists(app: tauri::AppHandle, path: String) -> bool {
     blocking(move || {
-        if cloud::is_cloud(&path) {
-            cloud::service::path_exists(&app.state::<CloudState>(), &path)
-        } else {
-            fs_ops::path_exists(path)
-        }
+        exists_at(&path, |path| cloud::service::path_exists(&app.state::<CloudState>(), path))
     })
     .await
     .unwrap_or(false)
+}
+
+/// `path_exists`: Drive paths through `drive`, the others on disk.
+fn exists_at(path: &str, drive: impl FnOnce(&str) -> bool) -> bool {
+    if cloud::is_cloud(path) {
+        drive(path)
+    } else {
+        fs_ops::path_exists(path.to_string())
+    }
 }
 
 #[tauri::command]
@@ -1355,11 +1379,15 @@ async fn file_share_prepare(
     shares: tauri::State<'_, share::file_share::FileShares>,
     paths: Vec<String>,
 ) -> Result<String, String> {
+    shares.prepare(&qr_sources(&paths)?, window.label())
+}
+
+/// What Send with QR Code serves: files on this computer only.
+fn qr_sources(paths: &[String]) -> Result<Vec<PathBuf>, String> {
     if paths.iter().any(|path| cloud::is_cloud(path) || share::location::is_share(path) || sftp::is_sftp(path)) {
         return Err("Only files on this computer can be sent with a QR code.".into());
     }
-    let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
-    shares.prepare(&paths, window.label())
+    Ok(paths.iter().map(PathBuf::from).collect())
 }
 
 /// Progress, link and downloads of a QR share; None once it was stopped.
@@ -1383,16 +1411,21 @@ fn file_share_stop(shares: tauri::State<'_, share::file_share::FileShares>, id: 
 async fn icon_ids(app: tauri::AppHandle, paths: Vec<String>) -> Vec<Option<String>> {
     blocking(move || {
         let icons = app.state::<file_icons::Icons>();
-        paths
-            .iter()
-            .map(|path| {
-                let remote = cloud::is_cloud(path) || share::location::is_share(path) || sftp::is_sftp(path);
-                if remote { None } else { icons.id(Path::new(path)) }
-            })
-            .collect()
+        os_icon_ids(&paths, |path| icons.id(path))
     })
     .await
     .unwrap_or_default()
+}
+
+/// `icon_ids` for a batch: `id` is asked about local paths only.
+fn os_icon_ids(paths: &[String], id: impl Fn(&Path) -> Option<String>) -> Vec<Option<String>> {
+    paths
+        .iter()
+        .map(|path| {
+            let remote = cloud::is_cloud(path) || share::location::is_share(path) || sftp::is_sftp(path);
+            if remote { None } else { id(Path::new(path)) }
+        })
+        .collect()
 }
 
 /// The icon id for each app Open With offers (`list_apps` ids), or None.
@@ -2172,6 +2205,165 @@ mod properties_tests {
         );
         assert_eq!(properties_unavailable("/home/me/a.txt"), None);
         assert_eq!(properties_unavailable("gdrive://acct/root~My%20Drive"), None);
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    //! What the commands that tell local paths from remote ones answer for
+    //! each kind of path, malformed remote paths included.
+    use super::*;
+    use std::cell::RefCell;
+
+    const DRIVE: &str = "gdrive://acct/root~My%20Drive";
+    const BAD_DRIVE: &str = "gdrive://";
+    const SHARE: &str = "share://r1/Photos";
+    const BAD_SHARE: &str = "share://";
+    const SFTP: &str = "sftp://me@host/home";
+    const BAD_SFTP: &str = "sftp://";
+    /// A folder relative to the tests' working directory (the crate root).
+    const RELATIVE: &str = "src";
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        folder: String,
+        file: String,
+    }
+
+    /// `folder` holds one 3-byte file; `file` is 5 bytes.
+    fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("a.txt"), "abc").unwrap();
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, "hello").unwrap();
+        let text = |p: PathBuf| p.to_string_lossy().to_string();
+        Fixture { folder: text(folder), file: text(file), _dir: dir }
+    }
+
+    fn remote() -> Vec<String> {
+        [DRIVE, BAD_DRIVE, SHARE, BAD_SHARE, SFTP, BAD_SFTP].map(String::from).to_vec()
+    }
+
+    fn strings(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+
+    #[test]
+    fn item_counts_summarises_local_folders_only() {
+        let f = fixture();
+        let mut paths = vec![f.folder.clone(), f.file.clone()];
+        paths.extend(remote());
+        let out = folder_summaries(&paths, false);
+        assert_eq!(out.len(), paths.len());
+        assert_eq!(out[0], Some(fs_ops::FolderSummary { count: 1, versioned: false }));
+        assert!(out[1..].iter().all(Option::is_none), "{out:?}");
+        assert!(folder_summaries(&strings(&[RELATIVE]), false)[0].is_some());
+    }
+
+    #[test]
+    fn path_info_asks_drive_and_has_nothing_for_shares_and_ssh() {
+        let f = fixture();
+        let mut paths = vec![f.folder.clone(), f.file.clone()];
+        paths.extend(remote());
+        let asked = RefCell::new(Vec::new());
+        let out = path_infos(&paths, |path| {
+            asked.borrow_mut().push(path.to_string());
+            Some(fs_ops::PathInfo { is_dir: true, device: 7 })
+        });
+        assert_eq!(asked.into_inner(), strings(&[DRIVE, BAD_DRIVE]));
+        let kinds: Vec<Option<(bool, bool)>> =
+            out.iter().map(|o| o.as_ref().map(|i| (i.is_dir, i.device == 7))).collect();
+        assert_eq!(
+            kinds,
+            vec![Some((true, false)), Some((false, false)), Some((true, true)), Some((true, true)), None, None, None, None]
+        );
+        assert!(path_infos(&strings(&[RELATIVE]), |_| None)[0].is_some());
+    }
+
+    #[test]
+    fn path_exists_asks_drive_and_looks_on_disk_for_the_rest() {
+        let f = fixture();
+        assert!(exists_at(&f.file, |_| panic!("not Drive")));
+        assert!(!exists_at(&format!("{}/gone", f.folder), |_| panic!("not Drive")));
+        assert!(exists_at(DRIVE, |path| path == DRIVE));
+        assert!(!exists_at(BAD_DRIVE, |_| false));
+        for path in [SHARE, BAD_SHARE, SFTP, BAD_SFTP] {
+            assert!(!exists_at(path, |_| panic!("not Drive")), "{path}");
+        }
+        assert!(exists_at(RELATIVE, |_| panic!("not Drive")));
+    }
+
+    #[test]
+    fn qr_share_refuses_every_remote_path() {
+        let f = fixture();
+        assert_eq!(qr_sources(&[f.file.clone()]).unwrap(), vec![PathBuf::from(&f.file)]);
+        for path in remote() {
+            assert_eq!(
+                qr_sources(&[f.file.clone(), path.clone()]).unwrap_err(),
+                "Only files on this computer can be sent with a QR code.",
+                "{path}"
+            );
+        }
+        assert!(qr_sources(&strings(&[RELATIVE])).is_ok());
+    }
+
+    #[test]
+    fn icon_ids_asks_the_os_about_local_paths_only() {
+        let f = fixture();
+        let mut paths = vec![f.file.clone()];
+        paths.extend(remote());
+        let asked = RefCell::new(Vec::new());
+        let out = os_icon_ids(&paths, |path| {
+            asked.borrow_mut().push(path.to_path_buf());
+            Some("id".into())
+        });
+        assert_eq!(asked.into_inner(), vec![PathBuf::from(&f.file)]);
+        assert_eq!(out[0].as_deref(), Some("id"));
+        assert!(out[1..].iter().all(Option::is_none));
+        assert!(os_icon_ids(&strings(&[RELATIVE]), |_| Some("id".into()))[0].is_some());
+    }
+
+    #[test]
+    fn measure_sends_drive_paths_to_drive_and_counts_the_rest_on_disk() {
+        let f = fixture();
+        let on_disk = fs_ops::measure(&[PathBuf::from(&f.file), PathBuf::from(&f.folder)]);
+        let mut paths = vec![f.file.clone(), f.folder.clone()];
+        paths.extend(remote());
+        let asked = RefCell::new(Vec::new());
+        let total = measure_paths(paths, |drive| {
+            asked.borrow_mut().extend_from_slice(drive);
+            Ok(fs_ops::Measure { bytes: 100, items: 1 })
+        })
+        .unwrap();
+        assert_eq!(asked.into_inner(), strings(&[DRIVE, BAD_DRIVE]));
+        assert_eq!(total, fs_ops::Measure { bytes: on_disk.bytes + 100, items: on_disk.items + 1 });
+        let failed = measure_paths(strings(&[DRIVE]), |_| Err("offline".into()));
+        assert_eq!(failed.unwrap_err(), "offline");
+        let relative = measure_paths(strings(&[RELATIVE]), |_| panic!("not Drive")).unwrap();
+        assert!(relative.items > 0);
+    }
+
+    #[test]
+    fn shares_and_ssh_servers_are_read_only() {
+        let f = fixture();
+        let shared = Some("Shared folders are read only.");
+        let ssh = Some("SSH servers are read only for now.");
+        for (path, refusal) in [
+            (f.file.as_str(), None),
+            (DRIVE, None),
+            (BAD_DRIVE, None),
+            (SHARE, shared),
+            (BAD_SHARE, shared),
+            (SFTP, ssh),
+            (BAD_SFTP, ssh),
+        ] {
+            assert_eq!(read_only_one(path), refusal, "{path}");
+            assert_eq!(read_only_write(path, &f.file), refusal, "{path}");
+            assert_eq!(read_only_write(&f.file, path), refusal, "{path}");
+        }
+        assert_eq!(read_only_write(SFTP, SHARE), ssh);
     }
 }
 
