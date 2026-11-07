@@ -1,7 +1,11 @@
 // Characterization tests for the path-bar rules, including the Drive cases
 // that must not fall back to a local path.
 import { expect, test } from "vitest";
-import { joinCloudPath, joinSharePath, joinSftpPath, isCloudPath, isRemotePath, isShareLink, shareTicket, isSharePath, isSftpPath, resolveTypedPath } from "../src/paths";
+import {
+  childPath, cloudSegmentName, decodeSegment, isCloudRoot, isKnownPath, isUnder, joinCloudPath, joinSharePath, joinSftpPath,
+  isCloudPath, isRemotePath, isShareLink, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket,
+  isSharePath, isSftpPath, resolveTypedPath,
+} from "../src/paths";
 
 const HOME = "/Users/me";
 const CLOUD = "gdrive://acct/root~My%20Drive";
@@ -103,4 +107,190 @@ test("Drive child paths encode the name like the backend", () => {
   );
   expect(joinCloudPath("gdrive://a/root~My%20Drive/", "é")).toBe("gdrive://a/root~My%20Drive/~%C3%A9");
   expect(joinCloudPath("gdrive://a/root~My%20Drive", "a-b_c.d")).toBe("gdrive://a/root~My%20Drive/~a-b_c.d");
+});
+
+// ---- Each scheme's layout ---------------------------------------------------
+// One row per kind of path. Rows marked "today's behaviour" pin a known
+// mistake that a follow-up fixes; until then nothing may change it by accident.
+
+const DRIVE_ROOT = "gdrive://acct/root~My%20Drive";
+const NETWORK = null; // what parentPath returns above a share or server root
+
+test.each([
+  ["gdrive://acct/root~My%20Drive", "drive"],
+  ["share://r1/Photos", "share"],
+  ["sftp://me@host/", "sftp"],
+  ["/Users/me", "local"],
+  ["pseudo:recent", "local"],
+  ["", "local"],
+])("placeOf(%j) is %j", (path, place) => {
+  expect(placeOf(path)).toBe(place);
+});
+
+// prettier-ignore
+test.each([
+  // Drive: the name after the id's `~`, decoded; the account root has no `~`.
+  [DRIVE_ROOT,                               "My Drive"],
+  [`${DRIVE_ROOT}/f1~Q3%20report/`,          "Q3 report"],
+  [`${DRIVE_ROOT}/~pending%20name`,          "pending name"],
+  [`${DRIVE_ROOT}/f1~bad%E0`,                "bad%E0"],
+  ["gdrive://acct",                          "acct"],
+  // Shares: the last segment decoded, the id at the root.
+  ["share://r1",                             "r1"],
+  ["share://r1/Photos/a%20b",                "a b"],
+  ["share://r1/%zz",                         "%zz"],
+  ["share://",                               ""],
+  // SSH: the authority at the root, then the last segment decoded.
+  ["sftp://me@host/",                        "me@host"],
+  ["sftp://me%40work@host:2222",             "me@work@host:2222"],
+  ["sftp://me@host/docs/a%20b",              "a b"],
+  ["sftp://me@host/docs/%zz",                "%zz"],
+  ["sftp://",                                ""],
+  // Local: the last segment as it is, none at the root.
+  ["/Users/me/Documents/",                   "Documents"],
+  ["/Users/me/a%20b",                        "a%20b"],
+  ["/",                                      ""],
+])("pathName(%j) is %j", (path, name) => {
+  expect(pathName(path)).toBe(name);
+});
+
+test("pathName throws on a malformed SSH authority", () => {
+  // today's behaviour, fixed in a follow-up: the authority is decoded without a guard.
+  expect(() => pathName("sftp://%E0%A4%A/")).toThrow(URIError);
+});
+
+// prettier-ignore
+test.each([
+  // A Drive account's first folder is its own parent.
+  [DRIVE_ROOT,                               "gdrive://acct"],
+  [`${DRIVE_ROOT}/f1~Docs/`,                 DRIVE_ROOT],
+  ["gdrive://acct",                          "gdrive://acct"],
+  ["share://r1/Photos/2024",                 "share://r1/Photos"],
+  ["share://r1/Photos",                      "share://r1"],
+  ["share://r1",                             NETWORK],
+  ["sftp://me@host/",                        NETWORK],
+  // today's behaviour, fixed in a follow-up: the server's root is "sftp://me@host/".
+  ["sftp://me@host/docs",                    "sftp://me@host"],
+  ["sftp://me@host/docs/sub/",               "sftp://me@host/docs"],
+  ["/Users/me/Documents/",                   "/Users/me"],
+  ["/Users",                                 "/"],
+  ["/",                                      "/"],
+  ["pseudo:recent",                          "pseudo:recent"],
+])("parentPath(%j) is %j", (path, parent) => {
+  expect(parentPath(path)).toBe(parent);
+});
+
+// prettier-ignore
+test.each([
+  [DRIVE_ROOT,                 "a b",     `${DRIVE_ROOT}/~a%20b`],
+  ["sftp://me@host/",          "a b",     "sftp://me@host/a%20b"],
+  ["sftp://me@host/docs",      "~x",      "sftp://me@host/docs/%7Ex"],
+  // today's behaviour, fixed in a follow-up: a share child isn't encoded (joinSharePath would).
+  ["share://r1",               "a b",     "share://r1/a b"],
+  // Local joins are byte-identical to what every copy, move and rename used.
+  ["/Users/me",                "a b",     "/Users/me/a b"],
+  ["/Users/me//",              "x",       "/Users/me/x"],
+  ["/",                        "x",       "/x"],
+  ["",                         "x",       "/x"],
+  ["/Users/me",                "",        "/Users/me/"],
+  ["/Users/me",                "a/b",     "/Users/me/a/b"],
+])("childPath(%j, %j) is %j", (dir, name, path) => {
+  expect(childPath(dir, name)).toBe(path);
+});
+
+test("pathSegments breaks a Drive path into the account and its folders", () => {
+  expect(pathSegments(`${DRIVE_ROOT}/f1~Q3%20report`)).toEqual({
+    root: { kind: "drive", key: "acct", path: "gdrive://acct", name: "acct" },
+    segments: [
+      { name: "My Drive", path: DRIVE_ROOT },
+      { name: "Q3 report", path: `${DRIVE_ROOT}/f1~Q3%20report` },
+    ],
+  });
+  expect(pathSegments("gdrive://acct").segments).toEqual([]);
+});
+
+test("pathSegments breaks a share path into the share and its folders", () => {
+  expect(pathSegments("share://r1/Photos/a%20b/%zz/")).toEqual({
+    root: { kind: "share", key: "r1", path: "share://r1", name: "r1" },
+    segments: [
+      { name: "Photos", path: "share://r1/Photos" },
+      { name: "a b", path: "share://r1/Photos/a%20b" },
+      { name: "%zz", path: "share://r1/Photos/a%20b/%zz" },
+    ],
+  });
+  expect(pathSegments("share://").root.key).toBe("");
+});
+
+test("pathSegments breaks an SSH path into the server and its folders", () => {
+  expect(pathSegments("sftp://me@host/docs/a%20b")).toEqual({
+    root: { kind: "sftp", key: "me@host", path: "sftp://me@host/", name: "me@host" },
+    segments: [
+      { name: "docs", path: "sftp://me@host/docs" },
+      { name: "a b", path: "sftp://me@host/docs/a%20b" },
+    ],
+  });
+  expect(pathSegments("sftp://me%40work@host/").root.name).toBe("me@work@host");
+  // today's behaviour, fixed in a follow-up: the authority is decoded without a guard.
+  expect(() => pathSegments("sftp://%E0%A4%A/")).toThrow(URIError);
+});
+
+test("pathSegments and localSegments break a local path into its folders", () => {
+  expect(pathSegments("/Users/me/")).toEqual({
+    root: { kind: "local", key: "", path: "/", name: "" },
+    segments: [
+      { name: "Users", path: "/Users" },
+      { name: "me", path: "/Users/me" },
+    ],
+  });
+  expect(pathSegments("/").segments).toEqual([]);
+  expect(localSegments("/Users/me", "/Users/me/a%20b//c")).toEqual([
+    { name: "a%20b", path: "/Users/me/a%20b" },
+    { name: "c", path: "/Users/me/a%20b/c" },
+  ]);
+  expect(localSegments("/Users/me", "/Users/me")).toEqual([]);
+});
+
+// prettier-ignore
+test.each([
+  ["/Users/me",              "/Users/me",      true],
+  ["/Users/me/a/b",          "/Users/me",      true],
+  ["/Users/me/a",            "/Users/me/",     true],
+  ["/Users/meg",             "/Users/me",      false],
+  ["/Users",                 "/Users/me",      false],
+  ["/anything",              "/",              true],
+  ["share://r1/Photos",      "share://r1",     true],
+  ["sftp://me@host/docs",    "sftp://me@host/", true],
+  ["sftp://me@host",         "sftp://me@host/", false],
+])("isUnder(%j, %j) is %j", (path, dir, under) => {
+  expect(isUnder(path, dir)).toBe(under);
+});
+
+// prettier-ignore
+test.each([
+  ["/Users/me",                  true],
+  ["pseudo:recent",              true],
+  // today's behaviour, fixed in a follow-up: any pseudo: name is let through,
+  // and one the app doesn't know breaks the path bar.
+  ["pseudo:bogus",               true],
+  [DRIVE_ROOT,                   true],
+  ["share://r1/Photos",          true],
+  // today's behaviour, fixed in a follow-up: New Window from an SSH folder opens Home.
+  ["sftp://me@host/",            false],
+  ["Documents",                  false],
+  ["https://example.com",        false],
+  ["",                           false],
+])("isKnownPath(%j) is %j", (path, known) => {
+  expect(isKnownPath(path)).toBe(known);
+});
+
+test("segment helpers decode without throwing and find a scheme's key", () => {
+  expect(decodeSegment("a%20b")).toBe("a b");
+  expect(decodeSegment("%E0%A4%A")).toBe("%E0%A4%A");
+  expect(cloudSegmentName("f1~a%20b")).toBe("a b");
+  expect(cloudSegmentName("root")).toBe("root");
+  expect(shareId("share://r1/Photos")).toBe("r1");
+  expect(shareId("share://")).toBe("");
+  expect(isCloudRoot("gdrive://acct")).toBe(true);
+  expect(isCloudRoot(DRIVE_ROOT)).toBe(false);
+  expect(isCloudRoot("/Users/me")).toBe(false);
 });

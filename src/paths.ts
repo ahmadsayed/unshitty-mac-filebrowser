@@ -1,5 +1,14 @@
-// Pure path rules shared by navigation and the path bar. Kept free of DOM and
-// app state so every branch can be tested directly.
+// Pure path rules shared by navigation and the path bar: the layout of each
+// kind of path (Google Drive, received shares, SSH servers, local), their
+// names, parents, children and crumbs, containment, and which paths a window
+// may open. Kept free of DOM and app state so every branch can be tested
+// directly (tests/paths.test.ts).
+//
+// The strings are the backend's: stars, pins and history store them, so
+// nothing here rewrites a path Rust produced.
+
+/** Every pseudo location (Recent, Starred, Network) starts with this. */
+export const PSEUDO_PREFIX = "pseudo:";
 
 /** Every Google Drive location starts with this. */
 export const CLOUD_PREFIX = "gdrive://";
@@ -132,13 +141,13 @@ export function resolveTypedPath(
     isCloudPath(location) &&
     !isCloudPath(typed) &&
     !typed.startsWith("/") &&
-    !location.startsWith("pseudo:")
+    !location.startsWith(PSEUDO_PREFIX)
   ) {
     // A bare name inside Drive has no id, so it cannot be resolved safely.
     return { error: "Enter a Google Drive location or a full path." };
   } else if (
     !typed.startsWith("/") &&
-    !location.startsWith("pseudo:") &&
+    !location.startsWith(PSEUDO_PREFIX) &&
     !isCloudPath(location) &&
     !isCloudPath(typed) &&
     !isSftpPath(typed)
@@ -147,4 +156,196 @@ export function resolveTypedPath(
   }
 
   return { path: typed.length > 1 ? typed.replace(/\/+$/, "") : typed };
+}
+
+// ---------------------------------------------------------------------------
+// Each scheme's layout: names, parents, children and crumbs
+// ---------------------------------------------------------------------------
+//
+//   gdrive://<account>/<id>~<encoded name>/…   (a pending child is `~<name>`)
+//   share://<share id>/<encoded name>/…
+//   sftp://<authority>/<encoded name>/…        (the server's root is `sftp://<authority>/`)
+//   /local/path
+
+/** Which kind of path this is. Anything that isn't Drive, a share or SSH is
+ *  "local", pseudo locations included: ask `isPseudo` first where it matters. */
+export type Place = "drive" | "share" | "sftp" | "local";
+
+export function placeOf(path: string): Place {
+  if (isCloudPath(path)) return "drive";
+  if (isSharePath(path)) return "share";
+  if (isSftpPath(path)) return "sftp";
+  return "local";
+}
+
+/** A path broken into its scheme's root and the folders below it. */
+export interface PathSegments {
+  /** `key` is the account, share id or authority ("" when local); `name` is
+   *  the root's decoded key. */
+  root: { kind: Place; key: string; path: string; name: string };
+  segments: { name: string; path: string }[];
+}
+
+/** `segment` with its `%XX` escapes decoded, or as it is when they are malformed. */
+export function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/** The display name inside a Drive `<file-id>~<encoded name>` segment. */
+export function cloudSegmentName(segment: string): string {
+  const tilde = segment.indexOf("~");
+  return decodeSegment(tilde >= 0 ? segment.slice(tilde + 1) : segment);
+}
+
+/** The share id in `share://<id>/…`. */
+export function shareId(path: string): string {
+  return path.slice(SHARE_PREFIX.length).split("/")[0] ?? "";
+}
+
+/** The first folder of an account, whose parent is the account itself. */
+export function isCloudRoot(path: string): boolean {
+  return isCloudPath(path) && path.slice(CLOUD_PREFIX.length).split("/").filter(Boolean).length <= 1;
+}
+
+/** The non-empty segments after `prefix`. */
+function afterPrefix(path: string, prefix: string): string[] {
+  return path.slice(prefix.length).split("/").filter(Boolean);
+}
+
+/** A local child: the exact join every local copy, move, rename and new item uses. */
+function localChild(dir: string, name: string): string {
+  return dir.replace(/\/+$/, "") + "/" + name;
+}
+
+/** The local folders from `base` (left out) down to `path`, each with its path. */
+export function localSegments(base: string, path: string): { name: string; path: string }[] {
+  const names = path.slice(base.length).split("/").filter(Boolean);
+  return names.map((name, i) => ({ name, path: localChild(base, names.slice(0, i + 1).join("/")) }));
+}
+
+/** How a remote scheme names its root and its segments. */
+interface RemoteShape {
+  root: (key: string) => string;
+  rootName: (key: string) => string;
+  segment: (segment: string) => string;
+}
+
+/** A remote path's root (account, share or server) and the segments below it. */
+function remoteSegments(path: string, kind: Exclude<Place, "local">, prefix: string, shape: RemoteShape): PathSegments {
+  const parts = afterPrefix(path, prefix);
+  const key = parts.shift() ?? "";
+  let at = `${prefix}${key}`;
+  const segments = parts.map((segment) => ({ name: shape.segment(segment), path: (at += `/${segment}`) }));
+  return { root: { kind, key, path: shape.root(key), name: shape.rootName(key) }, segments };
+}
+
+/** Up from a share or server path: null above its root. */
+function remoteParent(path: string, prefix: string): string | null {
+  const parts = afterPrefix(path, prefix);
+  parts.pop();
+  // today's behaviour, fixed in a follow-up: an SSH subfolder's parent is
+  // `sftp://<authority>`, without the trailing slash of the server's root.
+  return parts.length ? `${prefix}${parts.join("/")}` : null;
+}
+
+/** What each scheme decides about its paths. */
+interface Scheme {
+  name(path: string): string;
+  parent(path: string): string | null;
+  child(dir: string, name: string): string;
+  segments(path: string): PathSegments;
+}
+
+const SCHEMES: Record<Place, Scheme> = {
+  drive: {
+    name: (path) => cloudSegmentName(path.replace(/\/+$/, "").split("/").pop() ?? ""),
+    // An account's first folder is its own parent.
+    parent: (path) => {
+      const trimmed = path.replace(/\/+$/, "");
+      const slash = trimmed.lastIndexOf("/");
+      return slash > CLOUD_PREFIX.length ? trimmed.slice(0, slash) : trimmed;
+    },
+    child: joinCloudPath,
+    segments: (path) =>
+      remoteSegments(path, "drive", CLOUD_PREFIX, {
+        root: (key) => `${CLOUD_PREFIX}${key}`,
+        rootName: (key) => key,
+        segment: cloudSegmentName,
+      }),
+  },
+  share: {
+    name: (path) => decodeSegment(afterPrefix(path, SHARE_PREFIX).pop() ?? ""),
+    parent: (path) => remoteParent(path, SHARE_PREFIX),
+    // today's behaviour, fixed in a follow-up: a share child is joined like a
+    // local one, unencoded (joinSharePath would encode it).
+    child: localChild,
+    segments: (path) =>
+      remoteSegments(path, "share", SHARE_PREFIX, {
+        root: (key) => `${SHARE_PREFIX}${key}`,
+        rootName: (key) => key,
+        segment: decodeSegment,
+      }),
+  },
+  sftp: {
+    name: (path) => {
+      const parts = afterPrefix(path, SFTP_PREFIX);
+      // today's behaviour, fixed in a follow-up: a malformed authority throws URIError.
+      if (parts.length <= 1) return parts[0] ? decodeURIComponent(parts[0]) : "";
+      return decodeSegment(parts.pop()!);
+    },
+    parent: (path) => remoteParent(path, SFTP_PREFIX),
+    child: joinSftpPath,
+    segments: (path) =>
+      remoteSegments(path, "sftp", SFTP_PREFIX, {
+        root: (key) => `${SFTP_PREFIX}${key}/`,
+        // today's behaviour, fixed in a follow-up: a malformed authority throws URIError.
+        rootName: (key) => decodeURIComponent(key),
+        segment: decodeSegment,
+      }),
+  },
+  local: {
+    name: (path) => path.replace(/\/+$/, "").split("/").pop() ?? "",
+    // The root is its own parent.
+    parent: (path) => path.replace(/\/+$/, "").replace(/\/[^/]*$/, "") || "/",
+    child: localChild,
+    segments: (path) => ({ root: { kind: "local", key: "", path: "/", name: "" }, segments: localSegments("/", path) }),
+  },
+};
+
+/** The decoded last segment of `path`; "" when there is none (the local root). */
+export function pathName(path: string): string {
+  return SCHEMES[placeOf(path)].name(path);
+}
+
+/** The folder holding `path`; null above a share's or a server's root. A
+ *  Drive account's first folder and the local root are their own parents. */
+export function parentPath(path: string): string | null {
+  return SCHEMES[placeOf(path)].parent(path);
+}
+
+/** The path of a child named `name` inside `dir`, encoded as the backend
+ *  decodes it: a pending `~name` in Drive, `%XX` names on SSH servers. */
+export function childPath(dir: string, name: string): string {
+  return SCHEMES[placeOf(dir)].child(dir, name);
+}
+
+/** `path` broken into its root and the folders below it, for the crumbs. */
+export function pathSegments(path: string): PathSegments {
+  return SCHEMES[placeOf(path)].segments(path);
+}
+
+/** Whether `path` is `dir` itself or inside it; a trailing slash on `dir` doesn't matter. */
+export function isUnder(path: string, dir: string): boolean {
+  return path === dir || path.startsWith(dir.replace(/\/+$/, "") + "/");
+}
+
+/** Whether a window may open `path` from its `?path=` (New Window). */
+export function isKnownPath(path: string): boolean {
+  // today's behaviour, fixed in a follow-up: sftp:// isn't listed, so New
+  // Window from an SSH folder opens Home.
+  return path.startsWith("/") || path.startsWith(PSEUDO_PREFIX) || isCloudPath(path) || isSharePath(path);
 }
