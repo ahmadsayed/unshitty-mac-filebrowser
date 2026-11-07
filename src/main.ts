@@ -661,6 +661,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   countsInFlight.clear();
   versionedFolders.clear();
   selection.reset(opts.select);
+  if (search.isOpen) moveSearchHere();
 
   document.title = locationName(loc);
   if (activeTab >= 0 && tabs[activeTab]) tabs[activeTab].location = loc;
@@ -1024,6 +1025,13 @@ function showSearchBar(): void {
   searchbarEl.hidden = false;
   $("#btn-search").classList.add("open");
   searchEntry.placeholder = `Search ${locationName(location)}`;
+}
+
+/** A key typed while a navigation waited opened the search on the folder
+ *  being left; once the view has moved, the search goes with it. */
+function moveSearchHere(): void {
+  searchEntry.placeholder = `Search ${locationName(location)}`;
+  search.moveTo(location, canSearchRecursively());
 }
 
 function closeSearch(rerender = true): void {

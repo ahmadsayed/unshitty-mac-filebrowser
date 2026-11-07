@@ -96,10 +96,13 @@ export type SearchChange = "restarted" | "grew" | "ended" | "failed";
  *
  * Every restart forgets the old results and stop, and only the latest
  * restart's answers count: a batch or end that arrives after the text
- * changed, the search closed or the view left the folder (which closes it)
- * is dropped. A walk waits for a pause in typing, and the backend stops a
- * running walk when the next one starts; the session cancels it itself when
- * it closes or when the text no longer walks.
+ * changed, the search closed or the view moved to another place is dropped.
+ * The search's place is the view's: navigating closes the search, but a key
+ * typed while a navigation still waits opens it on the folder being left,
+ * so the view calls `moveTo` once it has moved. A walk waits for a pause in
+ * typing, and the backend stops a running walk when the next one starts;
+ * the session cancels it itself when it closes or when the text no longer
+ * walks.
  */
 export class SearchSession {
   private openText: string | null = null;
@@ -156,6 +159,16 @@ export class SearchSession {
     this.openText = "";
     this.at = at;
     this.recursive = recursive;
+  }
+
+  /** The view moved to `at` with the search open: search there instead.
+   *  Answers for the old place are dropped, and a text runs again here (a
+   *  place that doesn't walk cancels the old place's walk). */
+  moveTo(at: string, recursive: boolean): void {
+    if (this.openText === null) return;
+    this.at = at;
+    this.recursive = recursive;
+    if (this.openText) this.restart();
   }
 
   /** The user typed: restart with `text`. */

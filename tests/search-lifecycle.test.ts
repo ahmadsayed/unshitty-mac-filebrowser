@@ -2,8 +2,8 @@
 // dropped, closing stops the walk, and a reload runs the search again. The
 // mock holds searches (`searchMock`) so a test can answer them late.
 import { afterEach, beforeAll, expect, test } from "vitest";
-import { invoke, searchMock } from "../dev/mock-tauri/core";
-import { $, $$, boot, click, goTo, key, names, settle, toasts, type } from "./app";
+import { invoke, nativeIconMock, searchMock } from "../dev/mock-tauri/core";
+import { $, $$, boot, click, goTo, hit, key, names, settle, title, toasts, type } from "./app";
 
 const ROOT = "/Users/me/Lifecycle";
 const pause = (ms = 260) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,6 +20,8 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+  nativeIconMock.enabled = false;
+  nativeIconMock.delay = 0;
   searchMock.hold = false;
   for (const held of searchMock.held.splice(0)) held.answer();
   if (!$("#searchbar").hidden) await key("Escape", { target: entry() });
@@ -120,6 +122,52 @@ test("navigating away closes the search; its answer then shows nothing", async (
   expect(names()).toEqual(["b-notes.zip"]);
   expect(headers()).toEqual([]);
   expect($("#search-banner").hidden).toBe(true);
+});
+
+// A key typed while a navigation still waits for its listing or icons opens
+// the search before the view has moved: the search then goes with the view.
+const press = (k: string) =>
+  $("#view").dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+
+test("a search opened while a folder is opening searches that folder", async () => {
+  await goTo(ROOT);
+  hit("Work").dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, button: 0 }));
+  await Promise.resolve();
+  press("n");
+  await settle(15);
+  expect(title()).toBe("Work");
+  expect(entry().placeholder).toBe("Search Work");
+  await type(entry(), "notes");
+  await pause();
+  await settle(10);
+  expect(headers()).toEqual(["In This Folder", "In Subfolders"]);
+  expect(names()).toEqual(["notes-old.txt", "notes-2023.txt"]);
+});
+
+test("a walk that started before the view moved is dropped, and the new folder is walked", async () => {
+  // A folder no other test opens, so its icons aren't known yet and the
+  // navigation waits for them.
+  await invoke("make_dir", { path: `${ROOT}/Late` });
+  await invoke("create_file", { path: `${ROOT}/Late/zeta.txt` });
+  await goTo(ROOT);
+  searchMock.hold = true;
+  nativeIconMock.enabled = true;
+  nativeIconMock.delay = 1000;
+  await key("l", { mod: true });
+  await type($<HTMLInputElement>("#path-entry"), `${ROOT}/Late`);
+  $("#path-entry").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  press("z"); // in the folder being left, "z" finds Archive/b-notes.zip
+  await pause(600);
+  await settle(10);
+  expect(title()).toBe("Late");
+  expect(entry().placeholder).toBe("Search Late");
+  expect(searchMock.held.at(-1)?.path).toBe(`${ROOT}/Late`);
+  for (const held of searchMock.held.splice(0)) held.answer();
+  await settle(10);
+  expect(names()).toEqual(["zeta.txt"]);
+  expect(headers()).toEqual(["In This Folder"]);
+  expect($("#searchbar").classList.contains("busy")).toBe(false);
 });
 
 test("closing a running search cancels its walk", async () => {

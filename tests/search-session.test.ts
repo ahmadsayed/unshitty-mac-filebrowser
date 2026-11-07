@@ -235,6 +235,57 @@ test("opening again closes first: the old walk is cancelled and its answers drop
   expect(walks.map((w) => w.at)).toEqual(["/home/me", "/home/me/Work"]);
 });
 
+test("moving to another place drops the old place's answers and walks the new one", async () => {
+  session.open("/home/me", true);
+  session.setText("notes");
+  vi.advanceTimersByTime(SEARCH_DELAY_MS);
+  const [old] = walks;
+  old.send([entry("/home/me/a/notes.txt")]);
+  session.moveTo("/home/me/Work", true);
+  expect(session.text).toBe("notes");
+  expect(session.results).toBeNull();
+  expect(session.busy).toBe(true);
+  old.send([entry("/home/me/b/notes.md")]);
+  await old.end();
+  expect(session.results).toBeNull();
+  vi.advanceTimersByTime(SEARCH_DELAY_MS);
+  expect(walks.map((w) => w.at)).toEqual(["/home/me", "/home/me/Work"]);
+  expect(kinds()).toEqual(["restarted", "grew", "restarted"]);
+  // The text changing afterwards walks the new place too.
+  session.setText("notes-old");
+  vi.advanceTimersByTime(SEARCH_DELAY_MS);
+  expect(walks.at(-1)?.at).toBe("/home/me/Work");
+});
+
+test("moving to a place that doesn't walk cancels the walk; moving back walks again", () => {
+  session.open("/home/me", true);
+  session.setText("notes");
+  vi.advanceTimersByTime(SEARCH_DELAY_MS);
+  walks[0].send([entry("/home/me/a/notes.txt")]);
+  session.moveTo("pseudo:recent", false);
+  expect(cancels).toBe(1);
+  expect(session.busy).toBe(false);
+  expect(session.results).toBeNull();
+  walks[0].send([entry("/home/me/b/notes.md")]);
+  expect(session.results).toBeNull();
+  session.setText("note");
+  expect(session.busy).toBe(false);
+  session.moveTo("/home/me/Work", true);
+  vi.advanceTimersByTime(SEARCH_DELAY_MS);
+  expect(walks.map((w) => [w.at, w.query])).toEqual([["/home/me", "notes"], ["/home/me/Work", "note"]]);
+});
+
+test("moving with no text, or while closed, reports nothing", () => {
+  session.moveTo("/home/me/Work", true);
+  expect(session.isOpen).toBe(false);
+  session.open("pseudo:recent", false);
+  session.moveTo("/home/me/Work", true);
+  expect(changes).toEqual([]);
+  session.setText("notes");
+  vi.advanceTimersByTime(SEARCH_DELAY_MS);
+  expect(walks.map((w) => w.at)).toEqual(["/home/me/Work"]);
+});
+
 test("a failing cancel is ignored", async () => {
   const quiet = new SearchSession(
     () => new Promise<SearchSummary>(() => {}),
