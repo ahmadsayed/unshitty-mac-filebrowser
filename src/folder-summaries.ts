@@ -12,10 +12,12 @@ import { isRemotePath } from "./paths";
 /** Folders per backend call: big enough for few calls, small enough that the first counts show soon. */
 export const COUNT_BATCH = 400;
 
-/** The folders whose count, and whose version badge, an answer changed. */
+/** The folders whose count, and whose version badge, an answer changed;
+ *  `recounted` are those among them asked for with one(). */
 export interface SummaryChange {
   counts: string[];
   badges: string[];
+  recounted: string[];
 }
 
 type Fetch = (paths: string[], showHidden: boolean) => Promise<(FolderSummary | null)[]>;
@@ -30,6 +32,8 @@ export class FolderSummaries {
   private readonly counts = new Map<string, number | null>();
   private readonly badges = new Set<string>();
   private readonly inFlight = new Set<string>();
+  /** Folders asked for with one() whose answer hasn't come yet. */
+  private readonly recount = new Set<string>();
   private generation = 0;
   private changes = 0;
   /** The Show Hidden setting the counts were asked with; null before the first ask. */
@@ -80,13 +84,15 @@ export class FolderSummaries {
   /**
    * Count one folder (the selected one, for the floating bar) by the same
    * rules as request(). It is marked as asked for at once, so asking again
-   * before the answer doesn't fetch it twice.
+   * before the answer doesn't fetch it twice. Its answer, or that of the
+   * batch already asking for it, lists it as `recounted`.
    */
   one(path: string, showHidden: boolean): void {
     this.useSetting(showHidden);
     if (isRemotePath(path) || this.counts.has(path)) return;
     this.counts.set(path, null);
     this.changes++;
+    this.recount.add(path);
     if (this.inFlight.has(path)) return;
     this.inFlight.add(path);
     void this.answer([path], showHidden, this.ask());
@@ -96,6 +102,7 @@ export class FolderSummaries {
   reset(): void {
     this.counts.clear();
     this.inFlight.clear();
+    this.recount.clear();
     this.badges.clear();
     this.generation++;
     this.changes++;
@@ -110,6 +117,7 @@ export class FolderSummaries {
     if (!changed) return;
     this.counts.clear();
     this.inFlight.clear();
+    this.recount.clear();
     this.generation++;
     this.changes++;
   }
@@ -128,7 +136,8 @@ export class FolderSummaries {
     if (!this.stillCurrent(ask)) return false;
     batch.forEach((p) => this.inFlight.delete(p));
     const badges = batch.filter((p, i) => this.remember(p, result[i] ?? null));
-    this.onChange({ counts: batch, badges });
+    const recounted = batch.filter((p) => this.recount.delete(p));
+    this.onChange({ counts: batch, badges, recounted });
     return true;
   }
 

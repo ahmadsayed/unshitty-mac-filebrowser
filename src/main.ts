@@ -28,9 +28,9 @@ import {
   type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
-import { entryIcon, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind, type IconBase } from "./icons";
-import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
-import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl, preloadNativeIcons, recheckNativeIcons } from "./native-icons";
+import { entryIcon, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
+import { appIconKey } from "./native-icons";
+import { GRID_SIZES, ItemIcons, LIST_SIZES, THUMB_KINDS } from "./item-icons";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
@@ -55,9 +55,6 @@ import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnow
 
 type ViewMode = "grid" | "list";
 type SortKey = "name" | "size" | "modified" | "type";
-
-const GRID_SIZES = [48, 64, 96, 128, 192, 256];
-const LIST_SIZES = [16, 32, 48];
 
 const prefs = {
   view: "grid" as ViewMode,
@@ -132,9 +129,10 @@ let sectionStart = -1;
 const SEARCH_LIMIT = 1000;
 
 /** Folder item counts and version badges for the view (src/folder-summaries.ts). */
-const summaries = new FolderSummaries(itemCounts, () => location, ({ badges }) => {
+const summaries = new FolderSummaries(itemCounts, () => location, ({ badges, recounted }) => {
   badges.forEach(patchIcon);
   patchCounts();
+  itemIcons.recounted(recounted);
 });
 let backStack: string[] = [];
 let forwardStack: string[] = [];
@@ -189,6 +187,16 @@ const folderKinds = new Map<string, FolderKind>();
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
 const currentTheme: Theme = platformTheme(isMac);
 const MOD = isMac ? "⌘" : "Ctrl+";
+
+/** Which picture each item shows, and when it's asked for (src/item-icons.ts). */
+const itemIcons = new ItemIcons({
+  followsContents: isMac,
+  location: () => location,
+  view: () => prefs,
+  folderKind,
+  compare: compareEntries,
+  redraw: patchIcon,
+});
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -629,8 +637,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
     }
   }
 
-  folderIconsChecked.clear();
-  await nativeIconsBeforeShowing(loc, next);
+  await itemIcons.listingStarted(loc, next);
 
   if (opts.history !== "none" && location && loc !== location) {
     backStack.push(location);
@@ -675,7 +682,7 @@ async function reload(select?: string[]): Promise<void> {
     entries = await listLocation(location);
     listingError = null;
     sharePage = null;
-    folderIconsChecked.clear();
+    itemIcons.listingReloaded();
   } catch (err) {
     if (await listingFailed(err)) return;
   }
@@ -1436,154 +1443,16 @@ function whereText(path: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Thumbnails (images, video, PDF and documents, via Quick Look on macOS)
+// Item icons: src/item-icons.ts picks the picture, this draws it
 // ---------------------------------------------------------------------------
-
-const THUMB_KINDS = new Set<FileKind>(["image", "video", "pdf", "document", "spreadsheet", "presentation"]);
-
-function wantsThumb(e: Entry): boolean {
-  return prefs.showThumbnails && !e.is_dir && THUMB_KINDS.has(fileKind(e.name));
-}
-
-/** The size items' icons are shown at, in CSS pixels, in this view and zoom. */
-function shownIconPx(): number {
-  return prefs.view === "grid" ? GRID_SIZES[prefs.gridZoom] : LIST_SIZES[prefs.listZoom];
-}
-
-/** Pixel size to request: the displayed icon size at screen resolution, in a few steps. */
-function thumbSize(): number {
-  const px = shownIconPx() * devicePixelRatio;
-  return px <= 128 ? 128 : px <= 256 ? 256 : 512;
-}
-
-function thumbKeyFor(e: Entry, size = thumbSize()): string {
-  return thumbKey(e.path, e.modified, e.size, size);
-}
 
 /** An item's icon, with the emblems icons.ts puts on it. */
 function iconHtml(e: Entry): string {
-  return itemIcon(e, iconBase(e), {
+  return itemIcon(e, itemIcons.base(e), {
     link: e.is_symlink,
     versions: summaries.versioned(e.path),
     shared: location === NETWORK || sharedFolders.some((share) => share.path === e.path),
   });
-}
-
-/** The thumbnail if it's loaded, an SSH server's glyph in Network, the OS
- *  icon if it's loaded, otherwise the app's drawing. */
-function iconBase(e: Entry): IconBase {
-  const thumb = wantsThumb(e) ? cachedThumb(thumbKeyFor(e)) : null;
-  if (thumb) return { thumb };
-  if (location === NETWORK && isSftpPath(e.path)) return { glyph: "network-server" };
-  const native = wantsNativeIcon(e) ? nativeIconUrl(e.path, nativeIconPx()) : null;
-  return native ? { native } : { drawn: folderKind(e) };
-}
-
-// ---------------------------------------------------------------------------
-// Icons from the operating system (src/native-icons.ts), drawn in place of
-// the app's own once loaded
-// ---------------------------------------------------------------------------
-
-function wantsNativeIcon(e: Entry): boolean {
-  return location !== NETWORK && !isRemotePath(e.path);
-}
-
-function nativeIconPx(): number {
-  return nativeIconSize(shownIconPx());
-}
-
-/** Draw `entry` in a dialog's icon, then swap in the OS icon for `key` (its
- *  path, or an `appIconKey`) once it loads; the app's drawing stays meanwhile,
- *  and wherever the OS has none. The link emblem shows on both. */
-function dialogIcon(icon: HTMLElement, entry: Entry, shownAt: number, key = entry.path): void {
-  const emblems = { link: entry.is_symlink, versions: false, shared: false };
-  icon.innerHTML = itemIcon(entry, { drawn: folderKind(entry) }, emblems);
-  if (isRemotePath(key)) return;
-  void nativeIcon(key, nativeIconSize(shownAt)).then((url) => {
-    if (url) icon.innerHTML = itemIcon(entry, { native: url }, emblems);
-  });
-}
-
-/** The OS icons usually arrive a few milliseconds after the listing. Wait
- *  for those of the first items, briefly, so a folder appears with them
- *  instead of with the app's drawings swapped for them a moment later. */
-const ICON_WAIT_MS = 100;
-/** About a screenful: the items sorted first are the ones shown. */
-const ICON_WAIT_ITEMS = 200;
-/** Past this, sorting a copy just to find the first screenful costs more than it saves. */
-const ICON_WAIT_SORT_MAX = 5000;
-
-function nativeIconsBeforeShowing(loc: string, next: Entry[]): Promise<void> {
-  if (loc === NETWORK || next.length > ICON_WAIT_SORT_MAX) return Promise.resolve();
-  const first = next.length <= ICON_WAIT_ITEMS ? next : [...next].sort(compareEntries).slice(0, ICON_WAIT_ITEMS);
-  const local = first.filter((e) => !isRemotePath(e.path));
-  if (!local.length) return Promise.resolve();
-  const px = nativeIconPx();
-  // The folders' icons cached on an earlier visit are asked for again in the
-  // same wait, so going back shows them as they are now, not swapped later.
-  const folders = isMac ? local.filter((e) => e.is_dir).map((e) => e.path) : [];
-  for (const path of folders) folderIconsChecked.add(path);
-  const recheck = recheckNativeIcons(folders, px, refreshItemIcons);
-  return Promise.all([
-    preloadNativeIcons(local.map((e) => e.path), px, ICON_WAIT_MS),
-    Promise.race([recheck, new Promise<void>((resolve) => setTimeout(resolve, ICON_WAIT_MS))]),
-  ]).then(() => {});
-}
-
-/** Redraw items whose OS icon changed, loading it at the current size too:
- *  a zoom may have come while it was asked for. */
-function refreshItemIcons(paths: string[]): void {
-  paths.forEach(patchIcon);
-  loadNativeIcons(paths, nativeIconPx(), (ready) => ready.forEach(patchIcon));
-}
-
-/** Ask for the OS icons of the rendered items. */
-function loadItemIcons(start: number, end: number): void {
-  const paths: string[] = [];
-  for (let i = start; i <= end; i++) if (wantsNativeIcon(shown[i])) paths.push(shown[i].path);
-  if (paths.length) loadNativeIcons(paths, nativeIconPx(), (ready) => ready.forEach(patchIcon));
-  recheckFolderIcons(start, end);
-}
-
-/** Rendered folders whose OS icon was asked for again since the listing loaded. */
-const folderIconsChecked = new Set<string>();
-
-/** On macOS a folder's icon shows whether it holds anything (Finder's full
- *  folder), so an icon cached on an earlier visit is asked for again, once
- *  per listing, for the folders rendered. */
-function recheckFolderIcons(start: number, end: number): void {
-  if (!isMac) return;
-  const folders: string[] = [];
-  for (let i = start; i <= end; i++) {
-    const e = shown[i];
-    if (e?.is_dir && wantsNativeIcon(e) && !folderIconsChecked.has(e.path)) {
-      folderIconsChecked.add(e.path);
-      folders.push(e.path);
-    }
-  }
-  if (folders.length) void recheckNativeIcons(folders, nativeIconPx(), refreshItemIcons);
-}
-
-/** Request thumbnails for the rendered items; queued ones scrolled away are dropped. */
-function loadThumbs(start: number, end: number, visible: { start: number; end: number }): void {
-  if (!prefs.showThumbnails) return;
-  const size = thumbSize();
-  const keys = new Set<string>();
-  // Visible rows first, then the overscan around them: the order is the
-  // queue's priority (see keepOnly).
-  const order: number[] = [];
-  for (let i = visible.start; i <= visible.end; i++) order.push(i);
-  for (let i = start; i <= end; i++) if (i < visible.start || i > visible.end) order.push(i);
-  for (const i of order) {
-    const e = shown[i];
-    if (!wantsThumb(e)) continue;
-    const key = thumbKeyFor(e, size);
-    keys.add(key);
-    if (cachedThumb(key) === undefined) {
-      requestThumb(key, e.path, size, (url) => url && patchIcon(e.path));
-    }
-  }
-  keepOnly(keys);
 }
 
 function patchIcon(path: string): void {
@@ -1685,8 +1554,7 @@ function renderWindow(force = false): void {
   const html = searchSections().map(sectionHeaderHtml);
   for (let i = start; i <= end; i++) html.push(itemHtml(i));
   itemsLayer.innerHTML = html.join("");
-  loadItemIcons(start, end);
-  loadThumbs(start, end, visible);
+  itemIcons.rendered(shown.slice(start, end + 1), { start: visible.start - start, end: visible.end - start });
   // Both views: list view shows the counts, and either view shows the
   // version badge that comes with them. Only rendered folders are asked.
   const dirs: string[] = [];
@@ -1965,9 +1833,9 @@ function updateFloatingBar(): void {
   floatingBar.hidden = false;
 }
 
-/** The selected folder's count, for the floating bar, which `summaries` updates when it lands. */
+/** The selected folder's count, for the floating bar, which `summaries` updates when it lands
+ *  (on macOS its icon is asked for again then: see `itemIcons.recounted`). */
 function fetchCount(path: string): void {
-  if (isMac && !isRemotePath(path)) void recheckNativeIcons([path], nativeIconPx(), refreshItemIcons);
   summaries.one(path, prefs.showHidden);
 }
 
@@ -2851,7 +2719,7 @@ async function showProperties(entry: Entry): Promise<void> {
   header.className = "properties-header";
   const icon = document.createElement("div");
   icon.className = "properties-icon";
-  dialogIcon(icon, entry, 64);
+  itemIcons.dialogIcon(icon, entry, 64);
   const name = document.createElement("div");
   name.className = "properties-name";
   name.textContent = info.name;
@@ -4243,7 +4111,7 @@ function previewEmpty(entry: Entry, text: string): void {
   box.className = "preview-empty";
   const icon = document.createElement("div");
   icon.className = "preview-empty-icon";
-  dialogIcon(icon, entry, 192);
+  itemIcons.dialogIcon(icon, entry, 192);
   const label = document.createElement("p");
   label.textContent = text;
   box.append(icon, label);
@@ -4436,7 +4304,7 @@ function showOpenWith(entry: Entry): void {
   showOpenWithDialog(entry, {
     icon(span, app) {
       const bundle = { name: `${app.name}.app`, path: "", is_dir: true, size: 0, modified: 0, is_hidden: false, is_symlink: false };
-      dialogIcon(span, bundle, 28, appIconKey(app.id));
+      itemIcons.dialogIcon(span, bundle, 28, appIconKey(app.id));
     },
     errorText: cleanError,
     opened(file) {

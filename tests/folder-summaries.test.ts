@@ -45,7 +45,7 @@ test("counts what it's asked for and reports each kept batch", async () => {
   expect(summaries.versioned("/home/a")).toBe(true);
   expect(summaries.versioned("/home/b")).toBe(false);
   expect(summaries.version).not.toBe(before);
-  expect(changes).toEqual([{ counts: ["/home/a", "/home/b"], badges: ["/home/a"] }]);
+  expect(changes).toEqual([{ counts: ["/home/a", "/home/b"], badges: ["/home/a"], recounted: [] }]);
 });
 
 test("skips remote, known and in-flight folders", async () => {
@@ -126,7 +126,7 @@ test("one() counts a single folder by the same rules", async () => {
   expect(calls.map((c) => [c.paths, c.showHidden])).toEqual([[["/home/a"], true]]);
   await calls[0].answer([{ count: 7, versioned: true }]);
   expect(summaries.count("/home/a")).toBe(7);
-  expect(changes).toEqual([{ counts: ["/home/a"], badges: ["/home/a"] }]);
+  expect(changes).toEqual([{ counts: ["/home/a"], badges: ["/home/a"], recounted: ["/home/a"] }]);
 
   // A folder a request is already counting isn't fetched again.
   void summaries.request(["/home/b"], false);
@@ -134,6 +134,8 @@ test("one() counts a single folder by the same rules", async () => {
   expect(calls).toHaveLength(2);
   await calls[1].answer([{ count: 1, versioned: false }]);
   expect(summaries.count("/home/b")).toBe(1);
+  // That request's answer says it was asked for on its own too.
+  expect(changes.at(-1)!.recounted).toEqual(["/home/b"]);
 
   // A late answer is dropped.
   summaries.one("/home/c", false);
@@ -168,7 +170,7 @@ test("asking with a new Show Hidden setting forgets the counts but keeps the bad
   expect(summaries.count("/home/a")).toBe(5);
   expect(summaries.count("/home/b")).toBe(3);
   // The badge didn't change, so no icon needs redrawing.
-  expect(changes.at(-1)).toEqual({ counts: ["/home/a", "/home/b"], badges: [] });
+  expect(changes.at(-1)).toEqual({ counts: ["/home/a", "/home/b"], badges: [], recounted: [] });
 
   // one() follows the setting too.
   summaries.one("/home/a", false);
@@ -177,5 +179,24 @@ test("asking with a new Show Hidden setting forgets the counts but keeps the bad
   await calls.at(-1)!.answer([{ count: 2, versioned: false }]);
   expect(summaries.count("/home/b")).toBeUndefined();
   expect(summaries.versioned("/home/a")).toBe(false);
-  expect(changes.at(-1)).toEqual({ counts: ["/home/a"], badges: ["/home/a"] });
+  expect(changes.at(-1)).toEqual({ counts: ["/home/a"], badges: ["/home/a"], recounted: ["/home/a"] });
+});
+
+test("a folder asked for with one() is reported as recounted once, and not after a reset", async () => {
+  const { summaries, calls, changes } = setup();
+  summaries.one("/home/a", false);
+  summaries.reset();
+  void summaries.request(["/home/a", "/home/b"], false);
+  await calls[1].answer();
+  expect(changes.at(-1)!.recounted).toEqual([]);
+
+  summaries.reset();
+  void summaries.request(["/home/a"], false);
+  summaries.one("/home/a", false);
+  await calls[2].answer();
+  expect(changes.at(-1)!.recounted).toEqual(["/home/a"]);
+  summaries.reset();
+  void summaries.request(["/home/a"], false);
+  await calls[3].answer();
+  expect(changes.at(-1)!.recounted).toEqual([]);
 });

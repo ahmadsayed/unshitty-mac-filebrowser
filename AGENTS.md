@@ -28,7 +28,8 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), drawn for the theme; file-kind detection; `itemIcon`, every item icon's markup: its picture (drawing, OS icon, thumbnail, glyph) and which emblems (link, versions, shared) go on it, in what order |
 | `src/icons-macos.ts` | The macOS theme's drawings under the same symbol ids: folders, file pages, line icons |
 | `src/thumbnails.ts` | Thumbnail request queue (4 concurrent) and bounded blob-URL cache |
-| `src/native-icons.ts` | Icons from the OS: ids in one batch per render, one image per type and size; single icons for Open With, Properties and the preview |
+| `src/item-icons.ts` | Which picture an item shows (thumbnail, SSH server glyph in Network, OS icon, drawing), the shown size, which places have OS icons, the first-screenful wait before a folder shows, the macOS folder icons asked again per listing and when recounted; the dialogs' icons |
+| `src/native-icons.ts` | The OS icons' cache: ids in one batch, one image per type and size, rechecking cached ids; `item-icons.ts` decides what to ask for and when |
 | `src/format.ts` | GNOME-style size and date strings |
 | `src/api.ts` | Typed wrappers for every Tauri command |
 | `src/styles.css` | All styling: layout, views and widgets, reading every look-related value from theme tokens |
@@ -39,7 +40,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/selection.ts` | The view's selection, cursor and anchor, and the user's intent counter a paste checks before selecting what it made (#50) |
 | `src/locations.ts` | What each kind of location allows (Recent/Starred/Network, Drive, shares, SSH servers, the Trash): read only, local, recursive search, versions, new items |
 | `src/paths.ts` | Each kind of path's layout (`gdrive://`, `share://`, `sftp://`, local) as one row: its kind (`placeOf`), name, parent, child join (encoded as the backend decodes it) and crumbs; containment (`isUnder`), which paths a window may open, share links, what the path bar resolves typed text to |
-| `src/folder-summaries.ts` | Folder item counts and version badges for the view: batches of 400, skips remote, known and in-flight folders, drops late answers, forgets counts on a new location or Show Hidden setting |
+| `src/folder-summaries.ts` | Folder item counts and version badges for the view: batches of 400, skips remote, known and in-flight folders, drops late answers, forgets counts on a new location or Show Hidden setting; says which answers were asked for one by one (`recounted`) |
 | `src/listing-failure.ts` | What a folder that couldn't be listed turns into, one table row per kind and phase (first view, navigate, reload, path entry): share status page, Connect to Server, go to the parent, toast with Grant Access, error page |
 | `src/open-with.ts` | Open With…: the searchable application chooser (filter, keyboard selection, launch and retry) |
 | `src/updates.ts` | Check for Updates dialogs: offer, download progress, restart, failures |
