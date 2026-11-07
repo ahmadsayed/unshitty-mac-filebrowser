@@ -26,6 +26,7 @@ use tauri::ipc::Channel;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 use cloud::CloudState;
+use cloud::service::OpenTarget;
 use place::{Kind, Route};
 use versions::history::History;
 use versions::state::{Transfer, VersionsState};
@@ -320,21 +321,6 @@ fn sftp_disconnect(app: tauri::AppHandle, id: String) {
     app.state::<sftp::SftpState>().disconnect(&id);
 }
 
-#[tauri::command]
-async fn sftp_open(
-    app: tauri::AppHandle,
-    path: String,
-    op: String,
-    on_progress: Channel<ProgressUpdate>,
-) -> Result<String, String> {
-    let tracking = Tracking::start(&app, &op, on_progress);
-    let progress = tracking.progress.clone();
-    let state = app.clone();
-    let result = blocking(move || state.state::<sftp::SftpState>().open(&path, &progress)).await;
-    tracking.finish(&app);
-    result?
-}
-
 /// The search running in each window: starting another, or `cancel_search`,
 /// stops it, so typing doesn't leave old searches walking the disk.
 #[derive(Default)]
@@ -497,6 +483,81 @@ async fn new_window(app: tauri::AppHandle, path: Option<String>) -> Result<(), S
 #[tauri::command]
 async fn list_apps() -> Result<Vec<platform::AppChoice>, String> {
     blocking(platform::applications).await
+}
+
+/// What opening `path` opens: the file itself on this computer; for Drive,
+/// a share or an SSH server, a copy downloaded into the app cache, or a
+/// Google Docs file's web page. A download is operation `op`: it reports
+/// through `on_progress` and `cancel_operation` stops it.
+#[tauri::command]
+async fn open_target(
+    app: tauri::AppHandle,
+    path: String,
+    op: String,
+    on_progress: Channel<ProgressUpdate>,
+) -> Result<OpenTarget, String> {
+    if place::kind(&path) == Kind::Local {
+        return open_local_target(path);
+    }
+    let tracking = Tracking::start(&app, &op, on_progress);
+    let result = download_to_open(&app, path, &tracking.progress).await;
+    tracking.finish(&app);
+    result
+}
+
+/// `open_target` for a path on this computer: the file itself.
+fn open_local_target(path: String) -> Result<OpenTarget, String> {
+    place::local(&path)?;
+    Ok(OpenTarget::File { path })
+}
+
+/// A remote file's copy to open, downloaded by its kind's handler (each
+/// parses its own scheme and refuses a malformed path).
+async fn download_to_open(
+    app: &tauri::AppHandle,
+    path: String,
+    progress: &progress::Progress,
+) -> Result<OpenTarget, String> {
+    match place::kind(&path) {
+        Kind::Drive => drive_target(app.clone(), path, progress.clone()).await,
+        Kind::Share => share_target(app, &path, progress).await,
+        Kind::Sftp => sftp_target(app.clone(), path, progress.clone()).await,
+        Kind::Local => open_local_target(path),
+    }
+}
+
+/// A Drive file's snapshot in the app cache, or a Google Docs file's page.
+async fn drive_target(
+    app: tauri::AppHandle,
+    path: String,
+    progress: progress::Progress,
+) -> Result<OpenTarget, String> {
+    blocking(move || {
+        let cache = app.path().app_cache_dir().map_err(|error| error.to_string())?;
+        cloud::service::open(&app.state::<CloudState>(), &path, &cache, &progress)
+    })
+    .await?
+}
+
+/// A received share's file, fetched into the app cache.
+async fn share_target(
+    app: &tauri::AppHandle,
+    path: &str,
+    progress: &progress::Progress,
+) -> Result<OpenTarget, String> {
+    let state = app.state::<share::state::ShareState>();
+    let path = state.open(path, share_versions_hint(app), progress).await?;
+    Ok(OpenTarget::File { path })
+}
+
+/// An SSH server's file, downloaded into the app cache.
+async fn sftp_target(
+    app: tauri::AppHandle,
+    path: String,
+    progress: progress::Progress,
+) -> Result<OpenTarget, String> {
+    let path = blocking(move || app.state::<sftp::SftpState>().open(&path, &progress)).await??;
+    Ok(OpenTarget::File { path })
 }
 
 #[tauri::command]
@@ -1564,29 +1625,6 @@ fn drive_connect_cancel(state: tauri::State<CloudState>, flow_id: String) -> Res
 }
 
 #[tauri::command]
-async fn drive_open(
-    app: tauri::AppHandle,
-    path: String,
-    op: String,
-    on_progress: Channel<ProgressUpdate>,
-) -> Result<cloud::service::OpenTarget, String> {
-    let tracking = Tracking::start(&app, &op, on_progress);
-    let progress = tracking.progress.clone();
-    let handle = app.clone();
-    let result = blocking(move || {
-        let state = handle.state::<CloudState>();
-        let cache = handle
-            .path()
-            .app_cache_dir()
-            .map_err(|error| error.to_string())?;
-        cloud::service::open(&state, &path, &cache, &progress)
-    })
-    .await;
-    tracking.finish(&app);
-    result?
-}
-
-#[tauri::command]
 fn share_identity(
     state: tauri::State<share::state::ShareState>,
 ) -> Result<share::state::ShareIdentity, String> {
@@ -1712,22 +1750,6 @@ fn remove_received(
     id: String,
 ) -> Result<(), String> {
     state.remove_received(&id)
-}
-
-#[tauri::command]
-async fn share_open(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, share::state::ShareState>,
-    path: String,
-    op: String,
-    on_progress: Channel<ProgressUpdate>,
-) -> Result<String, String> {
-    let tracking = Tracking::start(&app, &op, on_progress);
-    let result = state
-        .open(&path, share_versions_hint(&app), &tracking.progress)
-        .await;
-    tracking.finish(&app);
-    result
 }
 
 // ---------------------------------------------------------------------------
@@ -2039,7 +2061,7 @@ pub fn run() {
             sftp_connect,
             sftp_servers,
             sftp_disconnect,
-            sftp_open,
+            open_target,
             extract_archive,
             compress_archive,
             new_window,
@@ -2107,7 +2129,6 @@ pub fn run() {
             drive_connect_start,
             drive_connect_finish,
             drive_connect_cancel,
-            drive_open,
             share_identity,
             set_share_name,
             share_folder,
@@ -2121,7 +2142,6 @@ pub fn run() {
             add_received,
             list_received,
             remove_received,
-            share_open,
             make_versioned_dir,
             versioned_root,
             list_versions,
@@ -2588,6 +2608,17 @@ mod read_gate_tests {
         let root = dir.path().to_string_lossy().to_string();
         search_local(&root, "notes", false, 10, &mut |batch| found.extend(batch), &|| false).unwrap();
         assert_eq!(found.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["notes.txt"]);
+    }
+
+    #[test]
+    fn open_target_answers_a_local_path_with_itself() {
+        // Remote kinds download through their own handler instead (`open_target`).
+        let target = open_local_target("/Users/me/a b.txt".into()).unwrap();
+        assert_eq!(
+            serde_json::to_value(target).unwrap(),
+            serde_json::json!({ "kind": "file", "path": "/Users/me/a b.txt" })
+        );
+        assert_eq!(open_local_target("a.txt".into()).unwrap_err(), "“a.txt” is not a local file.");
     }
 
     #[test]

@@ -158,6 +158,39 @@ test("open_file accepts local and downloaded files and reports missing handlers"
   await expect(invoke("open_file", { path: `${HOME}/nope.png` })).rejects.toMatch(/No such file/);
 });
 
+test("open_target: a local file is itself; Drive, share and SSH files download first, as an operation", async () => {
+  const target = (path: string, op = "", onProgress?: Channel<unknown>) => invoke("open_target", { path, op, onProgress });
+  const DRIVE = "gdrive://mock/mock-root~My%20Drive";
+  expect(await target(`${HOME}/song.mp3`)).toEqual({ kind: "file", path: `${HOME}/song.mp3` });
+  await expect(target("song.mp3")).rejects.toBe("“song.mp3” is not a local file.");
+  expect(await target(`${DRIVE}/file-1~hello.txt`)).toEqual({ kind: "file", path: "/tmp/opencode/mock-drive/hello.txt" });
+  expect(await target(`${DRIVE}/file-3~Plan`)).toEqual({ kind: "url", url: "https://docs.google.com/document/d/mock" });
+  expect(await target("share://mockreceived/My%20Notes.txt")).toEqual({ kind: "file", path: "/tmp/opencode/mock-share/My Notes.txt" });
+  await expect(target("share://mockreceived")).rejects.toBe("Only files can be opened.");
+  expect(await target("sftp://me@host/home/me/notes%201.txt")).toEqual({ kind: "file", path: "/tmp/opencode/mock-sftp/notes 1.txt" });
+  // The one command replaces the three per-kind ones.
+  for (const old of ["drive_open", "share_open", "sftp_open"]) {
+    await expect(invoke(old, { path: `${DRIVE}/file-1~hello.txt` })).rejects.toBe(`mock: unknown command ${old}`);
+  }
+
+  // A download reports through its channel and stops on cancel_operation;
+  // a local path is no operation and answers at once.
+  mockOps().hold();
+  for (const [path, op] of [[`${DRIVE}/file-1~hello.txt`, "op-drive"], ["share://mockreceived/a.txt", "op-share"], ["sftp://me@host/a.txt", "op-sftp"]]) {
+    const seen: unknown[] = [];
+    const channel = new Channel<unknown>();
+    channel.onmessage = (update) => seen.push(update);
+    const opening = target(path, op, channel);
+    await vi.waitFor(() => expect(mockOps().held()).toBe(1));
+    expect(await target(`${HOME}/main.rs`)).toEqual({ kind: "file", path: `${HOME}/main.rs` });
+    mockOps().step(5);
+    expect(seen.at(-1)).toMatchObject({ bytes: 5, done: false });
+    await invoke("cancel_operation", { op });
+    await expect(opening).rejects.toBe("Cancelled.");
+  }
+  mockOps().reset();
+});
+
 test("open_url opens https links and the Mac settings link, nothing else", async () => {
   const log = vi.spyOn(console, "log").mockImplementation(() => {});
   expect(await invoke("open_url", { url: "https://github.com/a/b/releases" })).toBeUndefined();
@@ -702,9 +735,10 @@ test("sharing commands create links, receive, go offline and clean up", async ()
     path: `share://${received.id}`,
   });
   expect(root.map((entry) => entry.name)).toEqual(["hello.txt", "Photos"]);
-  expect(await invoke("share_open", { path: `share://${received.id}/hello.txt` })).toMatch(
-    /mock-share\/hello.txt$/,
-  );
+  expect(await invoke("open_target", { path: `share://${received.id}/hello.txt`, op: "" })).toEqual({
+    kind: "file",
+    path: "/tmp/opencode/mock-share/hello.txt",
+  });
 
   mock.setOnline(false);
   expect(await invoke<Array<{ status: string }>>("list_received")).toEqual([

@@ -312,7 +312,7 @@ Drive is rejected with "Enter a Google Drive location or a full path." A
 - `path` for a cloud entry is the URI above.
 - `isCloud(path)` guards the new branches.
 - `basename`/`parentOf` learn the URI case; `crumbsFor` gains a Drive branch.
-- `openFile` dispatches to `drive_open` for cloud paths.
+- `openFile` asks `open_target`, which downloads cloud paths (it was `drive_open`).
 - Sidebar gains a **Google Drive** row and a connect dialog.
 - `versions` commands reject cloud paths before reaching the filesystem.
 - No UI framework, no new frontend dependencies.
@@ -441,7 +441,7 @@ New commands:
 | `drive_connect_finish(flow_id)` | Wait for the callback, exchange, store the token, return the account |
 | `drive_connect_cancel(flow_id)` | Abort a pending flow |
 | `drive_disconnect(account)` | Revoke best-effort, delete the keyring entry, remove the account |
-| `drive_open(path)` | Download/open (called by `openFile` for cloud paths) |
+| `open_target(path)` | Download/open (called by `openFile` for every path; was `drive_open`) |
 | `drive_download(path)` | Explicit "Download a Copy…" later; also used by cross-boundary moves |
 | `drive_upload(local_path, dir_uri)` | Milestone 2: resumable upload |
 
@@ -477,7 +477,7 @@ first consent or with `prompt=consent`).
 → map to `Entry` → sort/filter/render as for a local folder. `item_counts` is
 not called for cloud rows.
 
-**Open.** `openEntry` → `openFile(path)` → if cloud, `drive_open` → cache
+**Open.** `openEntry` → `openFile(path)` → `open_target`, for cloud a cache
 download (or web URL) → `openPath(local)`.
 
 **Refresh.** Window focus already re-lists real folders. For cloud, debounce to

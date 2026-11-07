@@ -486,13 +486,14 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
   remove_received: (a) => {
     mockReceived = mockReceived.filter((item) => item.id !== str(a, "id"));
   },
-  share_open: (a) => {
-    const path = str(a, "path");
-    const name = path.slice(path.lastIndexOf("/") + 1);
-    if (!name || name === path) throw "Only files can be opened.";
-    return `/tmp/opencode/mock-share/${decodeURIComponent(name)}`;
-  },
 };
+
+/** open_target for a share file: where its downloaded copy lands. */
+function shareOpen(path: string): string {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  if (!name || name === path || path.indexOf("/", "share://".length) < 0) throw "Only files can be opened.";
+  return `/tmp/opencode/mock-share/${decodeURIComponent(name)}`;
+}
 
 (globalThis as Record<string, unknown>).__mockShare = {
   protect: protectMockShare,
@@ -1576,12 +1577,14 @@ const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
   drive_disconnect: () => {
     driveAccount = null;
   },
-  drive_open: (a) => {
-    const entry = driveNode(str(a, "path"));
-    if (entry?.cloud?.web_url) return { kind: "url", url: entry.cloud.web_url };
-    return { kind: "file", path: `/tmp/opencode/mock-drive/${entry?.name ?? "file"}` };
-  },
 };
+
+/** open_target for a Drive file: a Google Docs file's page, or where its copy lands. */
+function driveOpen(path: string): OpenTarget {
+  const entry = driveNode(path);
+  if (entry?.cloud?.web_url) return { kind: "url", url: entry.cloud.web_url };
+  return { kind: "file", path: `/tmp/opencode/mock-drive/${entry?.name ?? "file"}` };
+}
 
 // ----- Check for Updates: tests drive the answers through __mockUpdate -----
 
@@ -1887,11 +1890,6 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   sftp_disconnect: (a) => {
     mockSftpServers = mockSftpServers.filter((server) => server.id !== str(a, "id"));
   },
-  sftp_open: (a) => {
-    const path = str(a, "path");
-    const name = decodeURIComponent(path.split("/").pop() ?? "file");
-    return `/tmp/opencode/mock-sftp/${name}`;
-  },
   create_symlink: (a) => {
     const path = localWrite(str(a, "path"));
     const node = lookup(path);
@@ -2106,9 +2104,31 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
 };
 
 // Long commands report progress and can be held by tests (see __mockOps).
-for (const name of ["copy_entry", "move_entry", "delete_permanently", "empty_trash", "drive_open", "sftp_open", "share_open"]) {
+for (const name of ["copy_entry", "move_entry", "delete_permanently", "empty_trash"]) {
   COMMANDS[name] = gated(COMMANDS[name]);
 }
+
+// ----- Opening a file (open_target): remote files download first -----
+
+type OpenTarget = { kind: "file"; path: string } | { kind: "url"; url: string };
+
+/** A remote file's copy to open, by its kind, as the backend's handlers answer. */
+const DOWNLOAD_TO_OPEN: Record<Exclude<Place, "local">, (path: string) => OpenTarget> = {
+  drive: driveOpen,
+  share: (path) => ({ kind: "file", path: shareOpen(path) }),
+  sftp: (path) => ({ kind: "file", path: `/tmp/opencode/mock-sftp/${decodeURIComponent(path.split("/").pop() ?? "file")}` }),
+};
+
+/** Like the backend, only a download is an operation (held, cancelled, reported). */
+const downloadToOpen = gated((a) => {
+  const path = str(a, "path");
+  return DOWNLOAD_TO_OPEN[placeOf(path) as Exclude<Place, "local">](path);
+});
+
+COMMANDS.open_target = (a) => {
+  const path = str(a, "path");
+  return placeOf(path) === "local" ? { kind: "file", path: localPath(path) } : downloadToOpen(a);
+};
 
 // ----- The backend's location gate (src-tauri/src/place.rs), same wording -----
 
