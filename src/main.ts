@@ -47,6 +47,7 @@ import { Selection, type Mark } from "./selection";
 import { arrangeSearch, fold, SEARCH_LIMIT, SearchSession, searchSections as arrangedSections, type SearchChange, type SearchSection } from "./search";
 import { FolderSummaries } from "./folder-summaries";
 import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
+import { PathRefs, type Clip } from "./path-refs";
 import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
 import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
@@ -155,7 +156,7 @@ let activeTab = -1;
 let tabBusy = false;
 
 /** Files copied or cut, waiting to be pasted. */
-let clipboard: { paths: string[]; dirs: Set<string>; mode: "copy" | "cut" } | null = null;
+let clipboard: Clip | null = null;
 
 /** Starred files and folders. */
 let starred = new Set<string>();
@@ -164,6 +165,43 @@ let starred = new Set<string>();
 let pins: string[] = [];
 /** Paths the sidebar always shows (places, default bookmarks, volumes). */
 const fixedSidebarPaths = new Set<string>();
+
+/** What remembers paths (stars, bookmarks, the clipboard, tabs and their
+ *  history) follows moved, renamed and trashed items through this
+ *  (src/path-refs.ts). */
+const pathRefs = new PathRefs<TabState>({
+  stars: {
+    get: () => starred,
+    set: (next) => {
+      starred = next;
+      void persistStarred();
+    },
+  },
+  bookmarks: {
+    get: () => pins,
+    set: (next) => {
+      // The folder moved already: the sidebar shows where it is now, saved or not.
+      pins = next;
+      renderPins();
+      savePins(next).catch((err) => showToast(`Could not save bookmarks: ${cleanError(err)}`));
+    },
+  },
+  clipboard: {
+    get: () => clipboard,
+    set: (next) => {
+      clipboard = next;
+    },
+  },
+  tabs: {
+    get: () => ({ list: tabs, active: activeTab, back: backStack, forward: forwardStack }),
+    set: (next) => {
+      tabs = next.list;
+      backStack = next.back;
+      forwardStack = next.forward;
+      renderTabbar();
+    },
+  },
+});
 
 let home = "";
 let trashPath = "";
@@ -2786,29 +2824,6 @@ async function persistStarred(): Promise<void> {
   }
 }
 
-/** Keep stars on items renamed or moved from `from` to `to`, and on anything inside them. */
-function followMove(from: string, to: string): void {
-  followMoves([{ from, to }]);
-}
-
-/** `followMove` for several items at once, saving the stars once. */
-function followMoves(moves: { from: string; to: string }[]): void {
-  let changed = false;
-  for (const { from, to } of moves) {
-    const next = new Set<string>();
-    for (const p of starred) {
-      if (isWithin(p, from)) {
-        next.add(to + p.slice(from.length));
-        changed = true;
-      } else {
-        next.add(p);
-      }
-    }
-    starred = next;
-  }
-  if (changed) persistStarred();
-}
-
 /** Show the folder holding `entry`, with it selected. */
 function openItemLocation(entry: Entry): void {
   navigate(parentOf(entry.path), { select: entry.path });
@@ -2983,7 +2998,10 @@ async function transferItem(op: Operation, from: string, to: string, overwrite: 
   try {
     const result = moving ? await moveEntry(from, to, overwrite, tracked) : await copyEntry(from, to, overwrite, tracked);
     await Promise.race([last, new Promise((resolve) => setTimeout(resolve, LAST_UPDATE_MS))]);
-    if (moving) followMove(from, result);
+    // Followed as it lands, so stars and bookmarks are saved before the rest
+    // of the batch (src/path-refs.ts): the user can rename this item, or
+    // close the window, while a name clash or a long item still waits.
+    if (moving) pathRefs.moved([{ from, to: result }]);
     return result;
   } finally {
     finished = true;
@@ -3081,9 +3099,11 @@ async function transferBatch(
 async function paste(destDir: string): Promise<void> {
   if (refuse("paste", { kind: locationKind(destDir, trashPath), items: [] }) || !clipboard) return;
   const { paths, dirs, mode } = clipboard;
+  const pasting = clipboard;
   const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir);
-  // A cut is only consumed once every item has been dealt with.
-  if (mode === "cut" && complete && clipboard?.paths === paths) {
+  // A cut is only consumed once every item has been dealt with. Its paths
+  // follow the items it moved (src/path-refs.ts): it's known by its object.
+  if (mode === "cut" && complete && clipboard === pasting) {
     clipboard = null;
     refreshCutMarks();
   }
@@ -3165,11 +3185,7 @@ async function trashPaths(paths: string[]): Promise<void> {
     }
   });
   endOperation(op);
-  if (clipboard) {
-    const gone = new Set(done);
-    clipboard.paths = clipboard.paths.filter((p) => !gone.has(p));
-    if (clipboard.paths.length === 0) clipboard = null;
-  }
+  pathRefs.gone(done);
   lastTrashed = undoable;
   if (errors.length) {
     showToast(`Could not move ${errors[0]} to the Trash`);
@@ -3911,7 +3927,7 @@ function showBatchRename(sel: Entry[]): void {
         const items = changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) }));
         await renameMany(items);
         // The backend renames all of them or, undoing what it did, none.
-        followMoves(items);
+        pathRefs.moved(items);
         dialog.close();
         showToast(`Renamed ${changed.length} ${changed.length === 1 ? "item" : "items"}`);
         await reload();
@@ -3964,7 +3980,7 @@ function startRename(entry: Entry): void {
       showValidation({ valid: false, message: cleanError(err), error: true }, input, message);
       return;
     }
-    followMove(entry.path, renamed);
+    pathRefs.moved([{ from: entry.path, to: renamed }]);
     handle.close();
     await reload([renamed]);
   };
@@ -4229,7 +4245,7 @@ function showPreviewRename(entry: Entry): void {
         showValidation({ valid: false, message: cleanError(err), error: true }, row, message);
         return false;
       }
-      followMove(entry.path, renamed);
+      pathRefs.moved([{ from: entry.path, to: renamed }]);
       await reload([renamed]);
       void showPreview({ ...entry, name: basename(renamed), path: renamed });
     },
