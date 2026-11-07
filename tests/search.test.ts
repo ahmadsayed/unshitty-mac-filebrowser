@@ -2,6 +2,8 @@
 // opening a found folder. Each file boots a fresh app.
 import { beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
+import { fold } from "../src/search";
+import foldCases from "./fold-cases.json";
 import { $, $$, boot, goTo, item, key, names, settle, title, type } from "./app";
 
 const HOME = "/Users/me";
@@ -65,6 +67,12 @@ test("search ignores accents like the quick filter does", async () => {
   await pause();
   await settle(10);
   expect(names()).toContain("Café Notes");
+});
+
+// The same cases run against the backend's `fs_ops::fold` (src-tauri/src/lib.rs,
+// `fold_tests`), so the quick filter and the recursive search can't drift.
+test.each(foldCases)("fold: $why", ({ name, folded }) => {
+  expect(fold(name)).toBe(folded);
 });
 
 test("search says when it stopped at the result limit", async () => {

@@ -38,6 +38,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/qr-share.ts` | Send with QR Code…: the menu item and the dialog (code, link, progress, downloads) |
 | `src/preview-actions.ts` | Which actions the Space preview offers (Open, Rename…, Move to Trash, Open Item Location) for where the item is |
 | `src/selection.ts` | The view's selection, cursor and anchor, and the user's intent counter a paste checks before selecting what it made (#50) |
+| `src/search.ts` | The search without the DOM: `SearchSession` (open or not, the text, the walk after a 160 ms pause, at most 1000 results, late answers dropped, what a tab saves), `arrangeSearch` / `searchSections` (what the view shows and its "In This Folder" / "In Subfolders" headers), and `fold`, tested against the backend's `fs_ops::fold` with `tests/fold-cases.json` |
 | `src/locations.ts` | What each kind of location allows (Recent/Starred/Network, Drive, shares, SSH servers, the Trash): read only, local, recursive search, versions, new items |
 | `src/paths.ts` | Each kind of path's layout (`gdrive://`, `share://`, `sftp://`, local) as one row: its kind (`placeOf`), name, parent, child join (encoded as the backend decodes it) and crumbs; containment (`isUnder`), which paths a window may open, share links, what the path bar resolves typed text to |
 | `src/folder-summaries.ts` | Folder item counts and version badges for the view: batches of 400, skips remote, known and in-flight folders, drops late answers, forgets counts on a new location or Show Hidden setting; says which answers were asked for one by one (`recounted`) |
@@ -54,7 +55,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src-tauri/src/platform.rs` | Platform differences: volume roots per OS, `%XX` decoding, `file://` URIs, XDG data dir |
 | `src-tauri/src/thumbnails.rs` | Quick Look (`qlmanage`) thumbnails on macOS with an `image`-crate fallback everywhere, disk cache |
 | `src-tauri/src/file_icons.rs` | File and folder icons from the OS: Finder's (NSWorkspace) on macOS, the desktop's icon theme (GIO + freedesktop lookup) on Linux |
-| `src-tauri/src/trash_ops.rs` | Trash + locate (for Undo), restore, delete permanently, empty; macOS `~/.Trash` + Finder "Put Back" in `.DS_Store`, Linux `Trash/{files,info}` + `.trashinfo`, `trash_log.json` |
+| `src-tauri/src/trash_ops.rs` | `Trash` (one in `lib.rs`'s state): `trash_log.json` and its lock, where an item came from (sidecar, log, Put Back), restore, delete permanently, empty, what is inside the Trash; trash + locate (for Undo) as free functions; macOS `~/.Trash` + Finder "Put Back" in `.DS_Store`, Linux `Trash/{files,info}` + `.trashinfo` |
 | `src-tauri/src/updates.rs` | Check for Updates: how this copy was installed (only the AppImage and the Mac app replace themselves), failure kinds, one install at a time; `lib.rs` wraps `tauri-plugin-updater` |
 | `src-tauri/src/downloads.rs` | Copies of opened SFTP/Drive/share files in the app cache: marks them as downloaded, prunes them after a week (edited copies go to the Trash) |
 | `src-tauri/src/recent.rs` | Recent: Spotlight (`mdfind`) on macOS, `recently-used.xbel` on Linux, merged with `recent.json` |
@@ -209,6 +210,9 @@ GPL-3.0-or-later).
   never rewritten.
 - Anything that touches the Trash must work for both layouts (macOS `~/.Trash`
   and freedesktop `Trash/{files,info}`); a change there needs a test on each.
+  Commands ask `trash_ops::Trash` (`record`, `info`, `restore`,
+  `delete_permanently`, `empty`, `listing_root`, `contains`) rather than
+  reading `trash_log.json` or building Trash paths in `lib.rs`.
 - Replacing an existing item stages the new one under a temporary name, sends
   the old one to the Trash, then renames into place. Local copy, move and
   Drive downloads do this only through `placement.rs` (`Target::place`);

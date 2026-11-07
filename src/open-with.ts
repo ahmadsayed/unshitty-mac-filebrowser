@@ -1,6 +1,7 @@
 // "Open With…": the installed applications, searchable by name, opened by a
 // click, or by the arrow keys and Enter (GNOME Files 51's searchable chooser).
 import { listApps, openWith, type AppChoice, type Entry } from "./api";
+import { fold } from "./search";
 import { openDialog, type DialogHandle } from "./ui";
 
 /** What the dialog needs from the rest of the app. */
@@ -11,11 +12,6 @@ export interface OpenWithHooks {
   errorText(err: unknown): string;
   /** The file was handed to an application. */
   opened(entry: Entry): void;
-}
-
-/** Text as search compares it: lower case, without accents. */
-export function foldText(text: string): string {
-  return text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 }
 
 /** The applications in order, each id once. */
@@ -107,7 +103,7 @@ class Chooser {
     const unique = uniqueApps(apps);
     if (unique.length === 0) return this.fail("No applications found.");
     const shared = sharedNames(unique);
-    this.rows = unique.map((app) => ({ app, button: rowButton(app, shared.has(app.name), this.hooks), key: foldText(app.name) }));
+    this.rows = unique.map((app) => ({ app, button: rowButton(app, shared.has(app.name), this.hooks), key: fold(app.name) }));
     for (const row of this.rows) {
       row.button.addEventListener("click", () => {
         this.select(row);
@@ -127,7 +123,7 @@ class Chooser {
   filter(): void {
     if (this.rows.length === 0) return;
     const query = this.search.value.trim();
-    const folded = foldText(query);
+    const folded = fold(query);
     for (const row of this.rows) row.button.hidden = !row.key.includes(folded);
     const shown = this.visible();
     if (!this.selected || this.selected.button.hidden) this.select(shown[0] ?? null);
