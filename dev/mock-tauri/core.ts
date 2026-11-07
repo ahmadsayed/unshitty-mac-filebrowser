@@ -1,4 +1,4 @@
-import { encodeCloudName } from "../../src/paths";
+import { encodeCloudName, placeOf } from "../../src/paths";
 import { fold } from "../../src/search";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
@@ -294,6 +294,9 @@ let mockShareSeq = 0;
 let mockLinkSeq = 0;
 let mockSharersOnline = true;
 let mockNoAccess = false;
+// The sharer dropped after Network last asked: the status still says online,
+// but listing fails as if offline.
+let mockSharerUnreachable = false;
 
 // Simulate unlocking in memory. Real cryptography is exercised by Rust tests.
 const mockProtectedLinks = new Map<string, { ticket: string; passphrase: string }>();
@@ -329,7 +332,7 @@ function unlockMockShare(link: string, passphrase?: string): string {
 }
 
 function listShare(path: string): Entry[] {
-  if (!mockSharersOnline) throw "Ahmed is offline.";
+  if (!mockSharersOnline || mockSharerUnreachable) throw "Ahmed is offline.";
   const entries = SHARE_FILES[path];
   if (!entries) throw "The shared folder was moved or deleted.";
   return entries.map((entry) => ({
@@ -499,6 +502,9 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
   setNoAccess(value: boolean) {
     mockNoAccess = value;
   },
+  setUnreachable(value: boolean) {
+    mockSharerUnreachable = value;
+  },
   holdReceived(hold: boolean) {
     receivedHeld = hold;
     if (!hold) receivedWaiters.splice(0).forEach((resolve) => resolve());
@@ -514,6 +520,7 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     mockLinkSeq = 0;
     mockSharersOnline = true;
     mockNoAccess = false;
+    mockSharerUnreachable = false;
   },
 };
 
@@ -1096,6 +1103,31 @@ const thumbLog = { requested: [] as string[], cancelled: [] as number[] };
     thumbLog.cancelled.length = 0;
   },
 };
+
+// Folder counts can be held by tests, standing in for a slow disk, and every
+// request is logged (the folders asked for, one list per call).
+let countsHeld = false;
+const heldCounts: (() => void)[] = [];
+const countLog = { asked: [] as string[][] };
+
+(globalThis as Record<string, unknown>).__mockCounts = {
+  log: countLog,
+  hold(hold: boolean) {
+    countsHeld = hold;
+    if (!hold) heldCounts.splice(0).forEach((resolve) => resolve());
+  },
+  held: () => heldCounts.length,
+  reset() {
+    this.hold(false);
+    countLog.asked.length = 0;
+  },
+};
+
+async function itemCounts(paths: string[], showHidden: boolean): Promise<({ count: number; versioned: boolean } | null)[]> {
+  countLog.asked.push([...paths]);
+  if (countsHeld) await new Promise<void>((resolve) => heldCounts.push(resolve));
+  return paths.map((path) => (placeOf(path) !== "local" ? null : folderSummary(path, showHidden)));
+}
 
 (globalThis as Record<string, unknown>).__mockOps = {
   hold() {
@@ -1797,12 +1829,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   cancel_search: () => {
     searchMock.cancels += 1;
   },
-  item_counts: (a) =>
-    (a.paths as string[]).map((path) =>
-      path.startsWith("gdrive://") || path.startsWith("share://") || path.startsWith("sftp://")
-        ? null
-        : folderSummary(path, a.showHidden as boolean),
-    ),
+  item_counts: (a) => itemCounts(a.paths as string[], a.showHidden as boolean),
   file_properties: (a) => {
     const path = str(a, "path");
     if (path.startsWith("share://")) throw "Properties aren't available for shared folders yet.";
@@ -1987,7 +2014,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   trash_dir: () => TRASH,
   thumbnail: async (a) => {
     const path = str(a, "path");
-    if (path.startsWith("gdrive://") || path.startsWith("share://") || path.startsWith("sftp://")) return new ArrayBuffer(0);
+    if (placeOf(path) !== "local") return new ArrayBuffer(0);
     const ticket = a.ticket as number | undefined;
     thumbLog.requested.push(path);
     if (thumbsHeld && ticket !== undefined) {
@@ -2083,9 +2110,53 @@ function isDriveTransfer(a: Args): boolean {
   return str(a, "from").startsWith("gdrive://") || str(a, "to").startsWith("gdrive://");
 }
 
+// ----- Any command: tests count calls, hold one until released, or fail the next (__mockCalls) -----
+
+const calls = {
+  counts: new Map<string, number>(),
+  /** Commands held, each with the calls waiting for release(). */
+  held: new Map<string, (() => void)[]>(),
+  /** The next call of each command rejects with this, once. */
+  failures: new Map<string, string>(),
+};
+
+function releaseCalls(cmd: string): void {
+  const waiting = calls.held.get(cmd) ?? [];
+  calls.held.delete(cmd);
+  waiting.forEach((resolve) => resolve());
+}
+
+(globalThis as Record<string, unknown>).__mockCalls = {
+  count: (cmd: string) => calls.counts.get(cmd) ?? 0,
+  hold(cmd: string) {
+    if (!calls.held.has(cmd)) calls.held.set(cmd, []);
+  },
+  release: releaseCalls,
+  failNext(cmd: string, error: string) {
+    calls.failures.set(cmd, error);
+  },
+  reset() {
+    [...calls.held.keys()].forEach(releaseCalls);
+    calls.counts.clear();
+    calls.failures.clear();
+  },
+};
+
+/** Count the call, wait while the command is held, and fail it if asked. */
+async function callGate(cmd: string): Promise<void> {
+  calls.counts.set(cmd, (calls.counts.get(cmd) ?? 0) + 1);
+  const waiting = calls.held.get(cmd);
+  if (waiting) await new Promise<void>((resolve) => waiting.push(resolve));
+  const failure = calls.failures.get(cmd);
+  if (failure === undefined) return;
+  calls.failures.delete(cmd);
+  throw failure;
+}
+
 export async function invoke<T>(cmd: string, args: Args = {}): Promise<T> {
   await new Promise((r) => setTimeout(r, DELAY));
   const command = COMMANDS[cmd];
   if (!command) throw `mock: unknown command ${cmd}`;
+  await callGate(cmd);
   return (await command(args)) as T;
 }

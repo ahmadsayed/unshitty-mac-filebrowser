@@ -4,7 +4,7 @@
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
 import { DRAG_IMAGE } from "../src/drag-out";
-import { $, $$, boot, goTo, item, key, mouse, names, settle, title, hit, toasts } from "./app";
+import { $, $$, boot, goTo, item, key, mouse, names, respond, settle, title, hit, toasts } from "./app";
 
 const HOME = "/Users/me";
 let pointAt: Element | null = null;
@@ -428,4 +428,17 @@ test("the Google Drive row is not a drop target while disconnected", async () =>
   await dragTo("four.txt", driveRow);
   expect(names()).toContain("four.txt");
   expect(await invoke("path_exists", { path: "/four.txt" })).toBe(false);
+});
+
+// "/" contains only itself in the view's drop rules: a disk's root dropped
+// from another app goes on to the copy, which asks or refuses (the mock asks
+// about a clash; the backend refuses copying a folder into itself).
+test("a disk's root dropped from another app is passed on to the copy", async () => {
+  await goTo(`${HOME}/D`);
+  pointAt = item("Inbox");
+  mockDrop(["/"], 10, 10);
+  await settle(30);
+  expect($(".dialog-layer").textContent).toContain("Replace folder “/”?");
+  await respond("Skip");
+  expect(await invoke("path_exists", { path: `${HOME}/D/Inbox/Users` })).toBe(false);
 });

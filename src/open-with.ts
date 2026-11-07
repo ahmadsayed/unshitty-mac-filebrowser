@@ -69,7 +69,6 @@ class Chooser {
   dialog!: DialogHandle;
   rows: Row[] = [];
   selected: Row | null = null;
-  launching = false;
 
   constructor(readonly entry: Entry, readonly hooks: OpenWithHooks) {
     this.body.className = "open-with-body";
@@ -164,30 +163,24 @@ class Chooser {
   }
 
   updateOpen(): void {
-    this.dialog?.setResponseEnabled("open", !!this.selected && !this.launching);
+    this.dialog?.setResponseEnabled("open", !!this.selected);
   }
 
   /** Open the file with the selected application; a failure keeps the dialog for a retry. */
   launch(): void {
     const row = this.selected;
-    if (!row || this.launching) return;
-    this.launching = true;
-    row.button.disabled = true;
+    if (!row || this.dialog.busy) return;
     this.message.textContent = "";
-    this.updateOpen();
-    openWith(this.entry.path, row.app.id)
-      .then(() => {
-        this.dialog.close();
-        this.hooks.opened(this.entry);
-      })
-      .catch((err) => {
-        this.message.textContent = this.hooks.errorText(err);
-      })
-      .finally(() => {
-        this.launching = false;
-        row.button.disabled = false;
-        this.updateOpen();
-      });
+    void this.dialog.run(() =>
+      openWith(this.entry.path, row.app.id)
+        .then(() => {
+          this.dialog.close();
+          this.hooks.opened(this.entry);
+        })
+        .catch((err) => {
+          this.message.textContent = this.hooks.errorText(err);
+        })
+    );
   }
 }
 
@@ -204,6 +197,8 @@ export function showOpenWith(entry: Entry, hooks: OpenWithHooks): void {
     ],
     defaultResponse: "open",
     closeResponse: "cancel",
+    // Escape and Cancel close it while an application starts.
+    busy: { liveWhileBusy: ["cancel"] },
     onResponse: (id) => {
       if (id !== "open") return;
       chooser.launch();

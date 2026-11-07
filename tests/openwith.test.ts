@@ -181,6 +181,39 @@ test("a failed launch keeps the chooser open and can be retried", async () => {
   expect(mockApps().opened()).toEqual([{ path: NOTES, app: "/Applications/TextEdit.app" }]);
 });
 
+type MockCalls = { count(cmd: string): number; hold(cmd: string): void; release(cmd: string): void; reset(): void };
+const calls = () => (globalThis as unknown as { __mockCalls: MockCalls }).__mockCalls;
+const cancelButton = () => $$(".dialog-layer .dialog-responses button").find((b) => b.textContent === "Cancel") as HTMLButtonElement;
+
+test("a launch in progress ignores a second Enter, Open or row, and Escape still closes", async () => {
+  calls().reset();
+  await openWithDialog();
+  calls().hold("open_with");
+  await key("Enter", { target: search() });
+  expect(openButton().disabled).toBe(true);
+  expect(cancelButton().disabled).toBe(false);
+  await key("Enter", { target: search() });
+  await click(openButton());
+  await click($$(".app-choice").find((button) => button.textContent === "Preview")!);
+  expect(calls().count("open_with")).toBe(1);
+  await key("Escape", { target: search() });
+  expect(document.querySelector(".dialog-layer")).toBeNull();
+  calls().release("open_with");
+  await settle(20);
+  expect(mockApps().opened()).toEqual([{ path: NOTES, app: "/Applications/TextEdit.app" }]);
+});
+
+test("a failed launch enables Open and every application again", async () => {
+  mockApps().set({ failOpen: "The application can't be opened." });
+  await openWithDialog();
+  await key("Enter", { target: search() });
+  await settle(20);
+  expect($(".open-with-dialog .field-message").textContent).toBe("The application can't be opened.");
+  expect(openButton().disabled).toBe(false);
+  expect($$(".app-choice").map((button) => (button as HTMLButtonElement).disabled)).toEqual([false, false, false]);
+  expect(search().disabled).toBe(false);
+});
+
 // ----- Folders -----
 
 const chooseApp = async (name: string) => {

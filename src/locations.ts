@@ -4,13 +4,13 @@
 // Kept free of DOM and app state so every branch can be tested directly
 // (tests/locations.test.ts).
 
-import { isRemotePath, isSftpPath, isSharePath } from "./paths";
+import { isRemotePath, isSftpPath, isSharePath, isWithin, PSEUDO_PREFIX } from "./paths";
 
 /** The places that aren't folders: Recent, Starred and Network. */
 export type Pseudo = "recent" | "starred" | "network";
 
-/** Every pseudo location starts with this. */
-export const PSEUDO_PREFIX = "pseudo:";
+/** Every pseudo location starts with this (spelled in paths.ts, which can't import this file). */
+export { PSEUDO_PREFIX };
 
 export function isPseudo(path: string): path is `pseudo:${Pseudo}` {
   return path.startsWith(PSEUDO_PREFIX);
@@ -28,7 +28,7 @@ export function isLocalLocation(path: string): boolean {
 
 /** The Trash or a folder inside it; nothing until the Trash's path is known. */
 export function isInTrash(path: string, trashPath: string): boolean {
-  return !!trashPath && (path === trashPath || path.startsWith(trashPath + "/"));
+  return !!trashPath && isWithin(path, trashPath);
 }
 
 /** Recursive name search is for local folders; the others filter in place. */
