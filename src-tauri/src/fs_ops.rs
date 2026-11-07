@@ -767,7 +767,10 @@ fn move_entry_by(
     move_to(&target, from, progress, trash, rename)
 }
 
-/// Move `from` to a target that passed the refusals.
+/// Move `from` to a target that passed the refusals. With nothing to
+/// replace, one rename puts the user's item in place (`Target::free_path`),
+/// and only a copy across volumes is staged; a Replace stages the item,
+/// renamed or copied, before the old one goes to the Trash.
 fn move_to(
     target: &Target,
     from: &Path,
@@ -776,8 +779,14 @@ fn move_to(
     rename: RenameFn,
 ) -> Result<(), String> {
     let folder = is_folder(from);
-    let fill = |dest: &Path| move_or_copy(from, dest, folder, progress, rename);
-    let placed = target.place(Stage::by_kind(folder, &remove), fill, trash)?;
+    let stage = Stage::by_kind(folder, &remove);
+    let placed = match target.free_path() {
+        Some(to) => match rename_item(from, to, progress, rename)? {
+            Some(renamed) => renamed,
+            None => target.place(stage, |dest: &Path| copy_fill(from, dest, folder, progress, "move"), trash)?,
+        },
+        None => target.place(stage, |dest: &Path| move_or_copy(from, dest, folder, progress, rename), trash)?,
+    };
     if placed == Staged::Copy {
         // Across volumes the source goes only now, with its copy in place.
         // No progress is checked from the end of the copy on, so a cancel
@@ -796,13 +805,27 @@ fn move_or_copy<'a>(
     progress: &Progress,
     rename: RenameFn,
 ) -> Result<Staged<'a>, Unfilled> {
+    match rename_item(from, dest, progress, rename).map_err(Unfilled::Nothing)? {
+        Some(renamed) => Ok(renamed),
+        None => copy_fill(from, dest, folder, progress, "move"),
+    }
+}
+
+/// Rename the user's item `from` to `dest`; `None` when the two are on
+/// different volumes, so it has to be copied.
+fn rename_item<'a>(
+    from: &'a Path,
+    dest: &Path,
+    progress: &Progress,
+    rename: RenameFn,
+) -> Result<Option<Staged<'a>>, String> {
     match rename(from, dest) {
         Ok(()) => {
             progress.add_item();
-            Ok(Staged::Original(from))
+            Ok(Some(Staged::Original(from)))
         }
-        Err(e) if is_cross_device(&e) => copy_fill(from, dest, folder, progress, "move"),
-        Err(e) => Err(Unfilled::Nothing(fill_error("move", dest, e))),
+        Err(e) if is_cross_device(&e) => Ok(None),
+        Err(e) => Err(fill_error("move", dest, e)),
     }
 }
 
@@ -2099,30 +2122,75 @@ mod tests {
         }
     }
 
-    /// A file is copied under a staging name and appears whole; a folder
-    /// fills in place, so it can be watched filling, as in GNOME Files.
+    /// A move that replaces nothing renames straight onto the target, a file
+    /// as much as a folder: one rename is atomic and refuses a name taken
+    /// after the check, so the user's item never waits under a hidden
+    /// staging name. Across volumes it is the only rename of the user's item
+    /// tried: the copy that follows is placed like any copy (a file staged,
+    /// a folder in place).
     #[test]
-    fn files_are_staged_and_folders_fill_in_place() {
-        for folder in [false, true] {
-            let dir = tempdir().unwrap();
-            let (src, dst) = (dir.path().join("mine"), dir.path().join("dest"));
-            make_item(&src, folder, "mine");
-            let seen = std::cell::RefCell::new(Vec::new());
-            let watch = |from: &Path, to: &Path| {
-                seen.borrow_mut().push(to.to_path_buf());
-                across_volumes(from, to)
-            };
-            let target = placement::check_transfer(&src, &dst, false).unwrap();
-            move_to(&target, &src, &Progress::default(), &failing_trash, &watch).unwrap();
-            let filled = seen.into_inner();
-            if folder {
-                assert_eq!(filled, [dst.clone()]);
-            } else {
-                let staged = dir.path().join(format!(".dest.filebrowser-{}-0", std::process::id()));
-                assert_eq!(filled, [staged]);
+    fn a_move_that_replaces_nothing_renames_straight_onto_the_target() {
+        let renames: [(&str, RenameFn); 2] = [("rename", MOVE_RENAME), ("across volumes", &across_volumes)];
+        for (how, rename) in renames {
+            for folder in [false, true] {
+                let dir = tempdir().unwrap();
+                let (src, dst) = (dir.path().join("mine"), dir.path().join("dest"));
+                make_item(&src, folder, "mine");
+                let seen = std::cell::RefCell::new(Vec::new());
+                let watch = |from: &Path, to: &Path| {
+                    seen.borrow_mut().push(to.to_path_buf());
+                    rename(from, to)
+                };
+                let target = placement::check_transfer(&src, &dst, false).unwrap();
+                move_to(&target, &src, &Progress::default(), &failing_trash, &watch).unwrap();
+                let case = format!("{how}: folder → {folder}");
+                assert_eq!(seen.into_inner(), [dst.clone()], "{case}");
+                assert_eq!(item_body(&dst), "mine", "{case}");
+                assert_eq!(names_in(dir.path()), ["dest"], "{case}");
             }
-            assert_eq!(item_body(&dst), "mine");
-            assert_eq!(names_in(dir.path()), ["dest"]);
+        }
+    }
+
+    fn move_across_volumes(
+        from: String,
+        to: String,
+        overwrite: bool,
+        progress: &Progress,
+        trash: TrashFn,
+    ) -> Result<(), String> {
+        move_entry_by(from, to, overwrite, progress, trash, &across_volumes)
+    }
+
+    /// A name near the 255-byte limit most filesystems set still copies and
+    /// moves, with and without Replace: the staging name is cut to fit
+    /// (whole, it was 23 bytes longer, so the copy failed with "File name
+    /// too long").
+    #[test]
+    fn a_name_near_the_length_limit_still_copies_and_moves() {
+        let name = "é".repeat(120); // 240 bytes
+        let ops: [(&str, OpWith); 3] =
+            [("copy", copy_entry_with), ("move", move_entry_with), ("move across volumes", move_across_volumes)];
+        for (how, op) in ops {
+            for overwrite in [false, true] {
+                let dir = tempdir().unwrap();
+                let (dest, bin) = (dir.path().join("dest"), dir.path().join("bin"));
+                fs::create_dir(&dest).unwrap();
+                fs::create_dir(&bin).unwrap();
+                let (src, dst) = (dir.path().join(&name), dest.join(&name));
+                fs::write(&src, "mine").unwrap();
+                if overwrite {
+                    fs::write(&dst, "old").unwrap();
+                }
+                let trash = |p: &Path| {
+                    fs::rename(p, bin.join("old")).map_err(|e| e.to_string())?;
+                    Ok(Some(bin.join("old")))
+                };
+                let case = format!("{how}, Replace → {overwrite}");
+                assert_eq!(op(s(&src), s(&dst), overwrite, &Progress::default(), &trash), Ok(()), "{case}");
+                assert_eq!(fs::read_to_string(&dst).unwrap(), "mine", "{case}");
+                assert_eq!(names_in(&dest), [name.as_str()], "{case}");
+                assert_eq!(src.exists(), how == "copy", "{case}");
+            }
         }
     }
 }

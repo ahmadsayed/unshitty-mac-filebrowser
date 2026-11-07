@@ -117,11 +117,12 @@ fn not_a_name(to: &Path) -> Result<(), Refusal> {
 
 /// Rename `from` to `to`, failing with `AlreadyExists` when something is at
 /// `to`: `std::fs::rename` replaces a file there (and an empty folder) on
-/// Unix, so an item that took the name meanwhile would be lost. Where the
-/// filesystem can't refuse by itself (some network ones), `to` is checked
-/// just before the rename, which leaves only that moment open.
+/// Unix, so an item that took the name meanwhile would be lost. The rename
+/// that refuses by itself is the platform's (`platform::rename_exclusive`);
+/// where the filesystem has none (some network ones), `to` is checked just
+/// before the rename, which leaves only that moment open.
 pub(crate) fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
-    rename_new_by(from, to, rename_exclusive)
+    rename_new_by(from, to, crate::platform::rename_exclusive)
 }
 
 /// `rename_new` with the exclusive rename given, so tests can see the
@@ -132,70 +133,13 @@ fn rename_new_by(
     exclusive: fn(&Path, &Path) -> io::Result<()>,
 ) -> io::Result<()> {
     match exclusive(from, to) {
-        Err(e) if cannot_refuse(&e) => {
+        Err(e) if crate::platform::cannot_refuse(&e) => {
             if std::fs::symlink_metadata(to).is_ok() {
                 return Err(io::ErrorKind::AlreadyExists.into());
             }
             std::fs::rename(from, to)
         }
         done => done,
-    }
-}
-
-/// Whether a rename failed only because the system or the filesystem has no
-/// rename that refuses a taken name.
-fn cannot_refuse(e: &io::Error) -> bool {
-    e.kind() == io::ErrorKind::Unsupported
-        || e.raw_os_error().is_some_and(|code| CANNOT_REFUSE.contains(&code))
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-const CANNOT_REFUSE: [i32; 4] = [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP];
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-const CANNOT_REFUSE: [i32; 0] = [];
-
-#[cfg(target_os = "linux")]
-fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
-    let (from, to) = (c_path(from)?, c_path(to)?);
-    // SAFETY: both are NUL-terminated paths that live through the call.
-    let done = unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            from.as_ptr(),
-            libc::AT_FDCWD,
-            to.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    os_result(done)
-}
-
-#[cfg(target_os = "macos")]
-fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
-    let (from, to) = (c_path(from)?, c_path(to)?);
-    // SAFETY: both are NUL-terminated paths that live through the call.
-    let done = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
-    os_result(done)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn rename_exclusive(_: &Path, _: &Path) -> io::Result<()> {
-    Err(io::ErrorKind::Unsupported.into())
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
-    use std::os::unix::ffi::OsStrExt;
-    std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| io::ErrorKind::InvalidInput.into())
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn os_result(done: libc::c_int) -> io::Result<()> {
-    if done == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
     }
 }
 
@@ -283,6 +227,15 @@ impl<'a> Stage<'a> {
 }
 
 impl Target {
+    /// The target itself when nothing is there to replace. A move on one
+    /// volume renames straight onto it rather than through `place`: one
+    /// `rename_new` is atomic and refuses a name taken after the check, so
+    /// the user's item never waits under a staging name, where a crash
+    /// would leave it hidden.
+    pub fn free_path(&self) -> Option<&Path> {
+        (!self.replacing).then_some(self.to.as_path())
+    }
+
     /// Fill the target through `fill`, which writes at the path it is given
     /// and says whose item is there now. A staged item is renamed into place;
     /// when it replaces one, the old item goes to `trash` first.
@@ -343,6 +296,9 @@ fn clear(unfilled: Unfilled, dest: &Path, staged: bool, stage: &Stage) -> String
     }
 }
 
+/// The longest name, in bytes, that ext4, btrfs, tmpfs and APFS take.
+const NAME_MAX: usize = 255;
+
 /// A free hidden name next to `to`, used to stage an item before it takes
 /// `to`'s place.
 fn staging_path(to: &Path) -> PathBuf {
@@ -353,17 +309,23 @@ fn staging_path(to: &Path) -> PathBuf {
         .unwrap_or_default();
     let mut n = 0u32;
     loop {
-        let candidate = dir.join(format!(
-            ".{}.filebrowser-{}-{}",
-            name,
-            std::process::id(),
-            n
-        ));
+        let candidate = dir.join(staging_name(&name, n));
         if std::fs::symlink_metadata(&candidate).is_err() {
             return candidate;
         }
         n += 1;
     }
+}
+
+/// `.{name}.filebrowser-{pid}-{n}`, with `name` cut at a character where
+/// the whole would pass `NAME_MAX`, so a long name still copies.
+fn staging_name(name: &str, n: u32) -> String {
+    let tag = format!(".filebrowser-{}-{}", std::process::id(), n);
+    let mut end = name.len().min(NAME_MAX - 1 - tag.len());
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(".{}{}", &name[..end], tag)
 }
 
 /// Swap the staged item into place, sending whatever was at `to` to the Trash.
@@ -538,6 +500,22 @@ mod tests {
         assert_eq!(staging_path(&to), dir.path().join(format!(".a.txt.filebrowser-{pid}-1")));
     }
 
+    /// A staging name stays within the 255 bytes most filesystems take: a
+    /// long name is cut, at a character, to leave room for the tag.
+    #[test]
+    fn a_staging_name_fits_however_long_the_name() {
+        let dir = tempdir().unwrap();
+        let tag = format!(".filebrowser-{}-0", std::process::id());
+        let room = 255 - 1 - tag.len();
+        for long in ["é".repeat(127), "e".repeat(255)] {
+            let staged = staging_path(&dir.path().join(&long));
+            let kept = &long[..room - room % long.chars().next().unwrap().len_utf8()];
+            assert_eq!(staged, dir.path().join(format!(".{kept}{tag}")));
+            // The filesystem takes it.
+            fs::write(&staged, "x").unwrap();
+        }
+    }
+
     #[test]
     fn a_new_item_fills_in_place_unless_always_staged() {
         let dir = tempdir().unwrap();
@@ -595,8 +573,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let (from, to) = (dir.path().join("a"), dir.path().join("b"));
         fs::write(&from, "mine").unwrap();
+        // Which errors mean "no such rename here" is the platform's to say
+        // (`platform::cannot_refuse`); `Unsupported` is one everywhere.
         let unsupported: fn(&Path, &Path) -> io::Result<()> =
-            |_, _| Err(io::Error::from_raw_os_error(libc::EINVAL));
+            |_, _| Err(io::ErrorKind::Unsupported.into());
         fs::write(&to, "theirs").unwrap();
         let err = rename_new_by(&from, &to, unsupported).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
@@ -606,9 +586,9 @@ mod tests {
         assert_eq!(fs::read_to_string(&to).unwrap(), "mine");
         // Any other failure is the rename's own.
         let denied: fn(&Path, &Path) -> io::Result<()> =
-            |_, _| Err(io::Error::from_raw_os_error(libc::EACCES));
+            |_, _| Err(io::ErrorKind::PermissionDenied.into());
         let err = rename_new_by(&to, &from, denied).unwrap_err();
-        assert_eq!(err.raw_os_error(), Some(libc::EACCES));
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
         assert_eq!(names_in(dir.path()), ["b"]);
     }
 

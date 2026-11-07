@@ -1493,6 +1493,32 @@ mod tests {
         assert!(trash_and_locate(&f, &home).is_err());
     }
 
+    /// Replace's Trash (`placement::to_trash`, the real one) says where it
+    /// put the old item, so a Replace that fails afterwards can take it back
+    /// out; `untrash` then forgets its `.trashinfo` as well. Only macOS may
+    /// not say: without Full Disk Access it can't list `~/.Trash`.
+    #[test]
+    fn the_replace_trash_says_where_the_item_went_for_untrash() {
+        let dir = tempdir().unwrap();
+        let old = dir.path().join("replaced.txt");
+        fs::write(&old, "old").unwrap();
+
+        let found = crate::placement::to_trash(&old).unwrap();
+        assert!(!old.exists());
+        let Some(trashed) = found else {
+            assert!(cfg!(target_os = "macos"), "the Trash didn't say where it put the item");
+            return;
+        };
+        assert_eq!(fs::read_to_string(&trashed).unwrap(), "old");
+        let sidecar = sidecar_of(&trashed, trashed.parent().unwrap());
+        assert_eq!(sidecar.as_ref().is_some_and(|s| s.exists()), !cfg!(target_os = "macos"));
+
+        untrash(&trashed, &old).unwrap();
+        assert_eq!(fs::read_to_string(&old).unwrap(), "old");
+        assert!(!trashed.exists());
+        assert!(sidecar.is_none_or(|s| !s.exists()));
+    }
+
     // --- .DS_Store -------------------------------------------------------
 
     fn utf16(s: &str) -> Vec<u8> {
