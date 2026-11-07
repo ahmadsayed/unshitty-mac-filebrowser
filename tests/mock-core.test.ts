@@ -1111,7 +1111,7 @@ test("list_apps lists, waits, fails and can be replaced; open_with fails once on
 
 type MockCalls = {
   count(cmd: string): number; hold(cmd: string): void; release(cmd: string): void;
-  failNext(cmd: string, error: string): void; reset(): void;
+  releaseLast(cmd: string): void; failNext(cmd: string, error: string): void; reset(): void;
 };
 const mockCalls = () => (globalThis as unknown as { __mockCalls: MockCalls }).__mockCalls;
 
@@ -1144,6 +1144,25 @@ test("any command can be counted, held until released and failed once", async ()
   mockCalls().reset();
   expect(await reset).toBe(true);
   expect(mockCalls().count("path_exists")).toBe(0);
+});
+
+test("a held command's latest call can be released before the earlier ones", async () => {
+  mockCalls().reset();
+  mockCalls().hold("load_pins");
+  const landed: string[] = [];
+  const first = invoke("load_pins").then(() => landed.push("first"));
+  const second = invoke("load_pins").then(() => landed.push("second"));
+  await new Promise((r) => setTimeout(r, 20));
+  mockCalls().releaseLast("load_pins");
+  await second;
+  expect(landed).toEqual(["second"]);
+  // Still held: a later call waits too.
+  const third = invoke("load_pins").then(() => landed.push("third"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(landed).toEqual(["second"]);
+  mockCalls().release("load_pins");
+  await Promise.all([first, third]);
+  expect(landed).toEqual(["second", "first", "third"]);
 });
 
 // ----- The backend's location gate (src-tauri/src/place.rs) -----
