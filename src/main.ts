@@ -45,6 +45,7 @@ import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type Preview
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { Selection, type Mark } from "./selection";
 import { FolderSummaries } from "./folder-summaries";
+import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
 import { acceptsNewItems, canRename, hasProperties, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
 import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
 
@@ -619,14 +620,12 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
     try {
       next = await listLocation(loc);
     } catch (err) {
-      if (isSharePath(loc)) {
-        page = receivedFor(loc)?.status === "no-access" ? "no-access" : "offline";
-      } else if (location) {
-        showAccessError(basename(loc), cleanError(err));
+      const failed = listingReaction(loc, err, listingContext(loc, location ? "navigate" : "first"));
+      if (failed.kind === "sharePage") page = failed.status;
+      else if (failed.kind === "toast") {
+        showListingToast(failed);
         return false;
-      } else {
-        error = cleanError(err);
-      }
+      } else error = failed.message;
     }
   }
 
@@ -712,18 +711,20 @@ function showShareStatusPage(): boolean {
 /** Show why `reload` couldn't list the folder. True when it navigated away instead. */
 async function listingFailed(err: unknown): Promise<boolean> {
   entries = [];
-  if (isSharePath(location)) {
-    sharePage = "offline";
+  const failed = listingReaction(location, err, listingContext(location, "reload"));
+  if (failed.kind === "sharePage") {
+    sharePage = failed.status;
     return false;
   }
-  if (isLocalLocation(location) && isMissingPathError(err)) {
-    // The folder went away under us: a cancelled copy deletes the folder it
-    // was writing, and the view can still be showing it. Go to its parent
-    // rather than stranding the view on an error page.
-    if (await navigate(parentOf(location), { history: "none" })) return true;
-  }
-  listingError = cleanError(err);
+  // A folder that went away goes to its parent, or shows the error page if that fails too.
+  if (failed.kind === "goTo" && (await navigate(failed.parent, { history: "none" }))) return true;
+  listingError = failed.message;
   return false;
+}
+
+/** What listingReaction needs to know about `loc` (src/listing-failure.ts). */
+function listingContext(loc: string, phase: ListingPhase): ListingContext {
+  return { phase, isMac, share: isSharePath(loc) ? receivedFor(loc)?.status : undefined, name: basename(loc), parent: parentOf(loc) };
 }
 
 /** "Shared by Ahmed · Read only" under the path bar. */
@@ -761,18 +762,12 @@ function lookupVersionedRoot(loc: string): Promise<string | null> {
 }
 
 /** A failed folder open; macOS privacy blocks get a shortcut to the setting. */
-function showAccessError(name: string, message: string): void {
-  const blocked = isMac && /not permitted/i.test(message);
-  showToast(`Unable to access “${name}”: ${message}`, blocked ? { button: { label: "Grant Access", onClick: openSettingsSafely } } : {});
+function showListingToast(failed: { text: string; grantAccess: boolean }): void {
+  showToast(failed.text, failed.grantAccess ? { button: { label: "Grant Access", onClick: openSettingsSafely } } : {});
 }
 
 function openSettingsSafely(): void {
   openFullDiskAccessSettings().catch((err) => showToast(`Could not open System Settings: ${cleanError(err)}`));
-}
-
-/** True for ENOENT: the path was removed, not merely unreadable. */
-function isMissingPathError(err: unknown): boolean {
-  return /no such file or directory/i.test(String(err));
 }
 
 function goBack(): void {
@@ -931,14 +926,13 @@ async function submitPathEntry(): Promise<void> {
   try {
     await listDir(typed, prefs.showHidden);
   } catch (err) {
-    const message = cleanError(err);
-    if (isSftpPath(typed) && /Connect to this server first/.test(message)) {
+    const failed = listingReaction(typed, err, listingContext(typed, "entry"));
+    if (failed.kind === "connect") {
       closePathEntry();
-      showConnectServerDialog(typed);
+      showConnectServerDialog(failed.url);
       return;
     }
-    if (/not permitted/i.test(message)) showAccessError(typed, message);
-    else showToast(`Unable to find “${typed}”: ${message}`);
+    if (failed.kind === "toast") showListingToast(failed);
     pathEntry.focus();
     return;
   }
