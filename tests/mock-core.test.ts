@@ -917,6 +917,17 @@ test("a released copy finishes and sends a done update", async () => {
   mockOps().reset();
 });
 
+test("a Drive download's done update carries the bytes the measure counted, as the backend's does", async () => {
+  const seen: Array<{ bytes: number; done: boolean }> = [];
+  const channel = new Channel<{ bytes: number; done: boolean }>();
+  channel.onmessage = (update) => seen.push(update);
+  const folder = await invoke<string>("make_dir", { path: `${HOME}/Downloaded` });
+  const measured = await invoke<{ bytes: number }>("measure", { paths: [DRIVE_HELLO] });
+  await invoke("copy_entry", { from: DRIVE_HELLO, to: `${folder}/hello.txt`, overwrite: false, op: "op-d", onProgress: channel });
+  expect(measured.bytes).toBe(12);
+  expect(seen.at(-1)).toMatchObject({ bytes: 12, done: true });
+});
+
 
 test("trash_entries trashes in chunks of 100, counts items and stops between chunks on cancel", async () => {
   const big = (await ls("/big")).map((e) => e.path).slice(0, 150);

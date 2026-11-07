@@ -965,12 +965,22 @@ async function progressGate(a: Args): Promise<void> {
   await new Promise<void>((resolve, reject) => held.push({ op, channel, bytes: 0, resolve, reject }));
 }
 
+/** The bytes a long command's final update carries, as the backend's does:
+ *  every byte of a file it copies from the disk or downloads from Drive. */
+function fileBytes(a: Args): number {
+  if (typeof a.from !== "string") return 0;
+  if (placeOf(a.from) === "drive") {
+    const item = typeof a.to === "string" && placeOf(a.to) !== "drive" ? driveItemAt(a.from) : undefined;
+    return item && !item.isDir && !item.doc ? item.size : 0;
+  }
+  const source = lookup(a.from);
+  return source && !source.dir ? source.size : 0;
+}
+
 function gated(command: (a: Args) => unknown): (a: Args) => Promise<unknown> {
   return async (a) => {
     await progressGate(a);
-    // The final update carries every byte of the item, as the backend's does.
-    const source = typeof a.from === "string" ? lookup(a.from) : undefined;
-    const done = update(source && !source.dir ? source.size : 0, true);
+    const done = update(fileBytes(a), true);
     const result = await command(a);
     if (holdingAfter) {
       holding = true;

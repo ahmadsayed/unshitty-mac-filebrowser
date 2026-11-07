@@ -2752,9 +2752,11 @@ mod local_gate_tests {
 
     #[test]
     fn trash_details_come_from_this_computer_only() {
-        let home = tempfile::tempdir().unwrap();
-        let trash = trash_ops::Trash::new(home.path().to_path_buf(), None);
-        let item = trash.listing_root().join("old.txt");
+        // Not `Trash::new`: with `XDG_DATA_HOME` set, that is the user's own
+        // Trash, and on macOS `~/.Trash` isn't made for us.
+        let dir = tempfile::tempdir().unwrap();
+        let (trash, _, items) = trash_ops::temp_trash(dir.path());
+        let item = items.join("old.txt");
         std::fs::write(&item, "old").unwrap();
         let mut paths: Vec<String> = refused().into_iter().map(|(path, _)| path.to_string()).collect();
         paths.push(text(&item));
