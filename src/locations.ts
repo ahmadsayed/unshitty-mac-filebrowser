@@ -41,9 +41,18 @@ export function mayHaveVersions(path: string, trashPath: string): boolean {
   return isLocalLocation(path) && !(!!trashPath && path === trashPath);
 }
 
-/** Whether New Folder and New Document can add to `path`. */
-export function acceptsNewItems(path: string): boolean {
-  return !isPseudo(path) && !isReadOnlyLocation(path);
+/**
+ * Whether New Folder, New Document and Paste can add to `path`. Never the
+ * Trash or a folder in it: an item put there has no record of where it came
+ * from, so it couldn't be restored and Empty Trash would delete it for good.
+ */
+export function acceptsNewItems(path: string, trashPath: string): boolean {
+  return !isPseudo(path) && !isReadOnlyLocation(path) && !isInTrash(path, trashPath);
+}
+
+/** Whether an item at `path` can be renamed: not on a read-only remote, and not in the Trash, where its record names it. */
+export function canRename(path: string, trashPath: string): boolean {
+  return !isReadOnlyLocation(path) && !isInTrash(path, trashPath);
 }
 
 /** Whether Properties can describe an item at `path`: the backend can't read shared folders or SSH servers yet. */

@@ -44,7 +44,7 @@ import { qrShareItems } from "./qr-share";
 import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type PreviewPlace } from "./preview-actions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { Selection, type Mark } from "./selection";
-import { acceptsNewItems, hasProperties, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
+import { acceptsNewItems, canRename, hasProperties, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
 // ---------------------------------------------------------------------------
@@ -2416,7 +2416,7 @@ async function freeDocumentName(dir: string, name: string): Promise<string> {
 
 /** New Document: an empty text file or a copy of a file from ~/Templates. */
 async function showNewDocumentDialog(): Promise<void> {
-  if (!acceptsNewItems(location) || listingError !== null) return;
+  if (!acceptsNewItems(location, trashPath) || listingError !== null) return;
   const extra = document.createElement("div");
   extra.className = "app-list";
   const loading = document.createElement("p");
@@ -2712,6 +2712,28 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
   ];
 }
 
+/**
+ * The background and location menus in the Trash and the folders inside it:
+ * nothing that adds to them, since only Move to Trash records where an item
+ * came from. A folder inside the Trash keeps Open With…, as trashed items do;
+ * `withCopyLocation` adds Copy Location for its location menu.
+ */
+function trashFolderMenu(withCopyLocation: boolean): MenuItem[] {
+  if (location === trashPath) {
+    return [
+      { label: "Empty Trash…", disabled: entries.length === 0, action: confirmEmptyTrash },
+      { separator: true },
+      { label: "Select All", action: selectAll },
+    ];
+  }
+  return [
+    openCurrentFolderWithItem(),
+    { separator: true },
+    ...(withCopyLocation ? [{ label: "Copy Location", action: copyLocation }] : []),
+    { label: "Select All", action: selectAll },
+  ];
+}
+
 function openBackgroundMenu(at: Anchor): void {
   if (isPseudo(location)) {
     const items: MenuItem[] = [
@@ -2723,12 +2745,8 @@ function openBackgroundMenu(at: Anchor): void {
     openMenu(at, items);
     return;
   }
-  if (location === trashPath) {
-    openMenu(at, [
-      { label: "Empty Trash…", disabled: entries.length === 0, action: confirmEmptyTrash },
-      { separator: true },
-      { label: "Select All", action: selectAll },
-    ]);
+  if (inTrash()) {
+    openMenu(at, trashFolderMenu(false));
     return;
   }
   if (isReadOnlyLocation(location)) {
@@ -2774,12 +2792,8 @@ function openLocationMenu(anchor: HTMLElement): void {
     ]);
     return;
   }
-  if (location === trashPath) {
-    openMenu(anchor, [
-      { label: "Empty Trash…", disabled: entries.length === 0, action: confirmEmptyTrash },
-      { separator: true },
-      { label: "Select All", action: selectAll },
-    ]);
+  if (inTrash()) {
+    openMenu(anchor, trashFolderMenu(true));
     return;
   }
   if (isReadOnlyLocation(location)) {
@@ -3396,7 +3410,7 @@ async function paste(destDir: string): Promise<void> {
     showToast("Shared folders are read only.");
     return;
   }
-  if (!clipboard) return;
+  if (!clipboard || !acceptsNewItems(destDir, trashPath)) return;
   const { paths, dirs, mode } = clipboard;
   const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir);
   // A cut is only consumed once every item has been dealt with.
@@ -3637,6 +3651,8 @@ function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; 
   if (sources.some((src) => dir === src || dir.startsWith(src + "/"))) return null;
   // Drive items go to Drive's Trash with Move to Trash, not the app's Trash.
   if (dir === trashPath) return inTrash() || sources.some(isCloud) ? null : "trash";
+  // Only Move to Trash puts items in the Trash: a folder inside it takes nothing.
+  if (isInTrash(dir, trashPath)) return null;
   const forceCopy = isMac ? mods.altKey : mods.ctrlKey;
   const forceMove = isMac ? mods.metaKey : mods.shiftKey;
   // Moving items to the folder they are already in does nothing.
@@ -4221,7 +4237,7 @@ function showBatchRename(sel: Entry[]): void {
 
 function startRename(entry: Entry): void {
   // Recent and Starred mix folders, so the name-clash check wouldn't work there.
-  if (isPseudo(location) || isReadOnlyLocation(entry.path)) return;
+  if (isPseudo(location) || !canRename(entry.path, trashPath)) return;
   const index = shown.findIndex((e) => e.path === entry.path);
   if (index < 0) return;
   scrollToIndex(index);
@@ -4285,7 +4301,7 @@ function startRename(entry: Entry): void {
 // ---------------------------------------------------------------------------
 
 function promptNewFolder(): void {
-  if (!acceptsNewItems(location) || listingError !== null) return;
+  if (!acceptsNewItems(location, trashPath) || listingError !== null) return;
   const inside = !!versionedRootPath;
   // Keep Versions never applies to Drive (spec D9).
   const versionsRow = isCloud(location)
