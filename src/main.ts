@@ -41,10 +41,11 @@ import { macDmgItems } from "./mac-dmg";
 import { showOpenWith as showOpenWithDialog } from "./open-with";
 import { linuxProgramItems } from "./linux-programs";
 import { qrShareItems } from "./qr-share";
-import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type PreviewPlace } from "./preview-actions";
+import { PREVIEW_ACTION_LABELS, previewActions, previewPlace, type PreviewAction } from "./preview-actions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { Selection, type Mark } from "./selection";
-import { acceptsNewItems, canRename, hasProperties, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
+import { acceptsNewItems, copyOutRefusal, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
+import { allows, refusal, type Here, type SharedAction } from "./item-actions";
 import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
@@ -1393,7 +1394,7 @@ function listHeaderHtml(): string {
   return `<div class="list-header${where ? " with-where" : ""}">${col("name", "Name")}${col("size", "Size")}${where}${col("modified", trash ? "Trashed On" : "Modified")}<span></span></div>`;
 }
 
-function itemHtml(i: number): string {
+function itemHtml(i: number, stars: boolean): string {
   const e = shown[i];
   const { x, y } = itemPos(i);
   const pos = `style="left:${x}px;top:${y}px"`;
@@ -1425,12 +1426,12 @@ function itemHtml(i: number): string {
   return `<div class="list-row item${cls}${where ? " with-where" : ""}" data-index="${i}" role="option" aria-selected="${sel}" ${pos}>` +
     `<div class="name-cell"><div class="icon">${iconHtml(e)}</div><span class="name">${escapeHtml(e.name)}</span></div>` +
     `<span class="meta size">${sizeText(e)}</span>${where}` +
-    `<span class="meta" title="${escapeHtml(formatDateDetailed(date))}">${formatDate(date)}</span>${starButton(e)}</div>`;
+    `<span class="meta" title="${escapeHtml(formatDateDetailed(date))}">${formatDate(date)}</span>${starButton(e, stars)}</div>`;
 }
 
-/** The star at the end of a list row: shown on hover, or always once starred. */
-function starButton(e: Entry): string {
-  if (inTrash()) return "<span></span>";
+/** The star at the end of a list row, where `stars` allows it: shown on hover, or always once starred. */
+function starButton(e: Entry, stars: boolean): string {
+  if (!stars) return "<span></span>";
   const on = starred.has(e.path);
   return `<button class="star${on ? " starred" : ""}" tabindex="-1" title="${on ? "Unstar" : "Star"}" aria-label="${on ? "Unstar" : "Star"}">${sym(on ? "starred" : "non-starred")}</button>`;
 }
@@ -1691,7 +1692,9 @@ function renderWindow(force = false): void {
   windowRange = { start, end };
   // At most two headers, so they are always drawn.
   const html = searchSections().map(sectionHeaderHtml);
-  for (let i = start; i <= end; i++) html.push(itemHtml(i));
+  // The list row's star: decided once per render, not per row.
+  const stars = allows("star", hereFor([]));
+  for (let i = start; i <= end; i++) html.push(itemHtml(i, stars));
   itemsLayer.innerHTML = html.join("");
   loadItemIcons(start, end);
   loadThumbs(start, end, visible);
@@ -2186,19 +2189,28 @@ function onViewContextMenu(e: MouseEvent): void {
 // Menus
 // ---------------------------------------------------------------------------
 
+/** Drive items get Drive's menu; anything else there gets a folder's. */
+const driveOrFolderItemMenu = (sel: Entry[], single: Entry | null): MenuItem[] =>
+  sel.every((entry) => entry.cloud) ? cloudItemMenu(single) : folderItemMenu(sel, single);
+
+/** The item menu of each kind of place. */
+const ITEM_MENUS: Record<LocationKind, (sel: Entry[], single: Entry | null) => MenuItem[]> = {
+  recent: recentItemMenu,
+  starred: starredItemMenu,
+  network: (_sel, single) => networkItemMenu(single),
+  trash: trashItemMenu,
+  "in-trash": trashItemMenu,
+  share: (_sel, single) => shareItemMenu(single),
+  sftp: (_sel, single) => shareItemMenu(single),
+  drive: driveOrFolderItemMenu,
+  folder: driveOrFolderItemMenu,
+};
+
 function openItemMenu(at: Anchor): void {
   const sel = selectedEntries();
   if (sel.length === 0) return;
   const single = sel.length === 1 ? sel[0] : null;
-  const items =
-    location === RECENT ? recentItemMenu(sel, single)
-    : inTrash() ? trashItemMenu(sel, single)
-    : location === STARRED ? starredItemMenu(sel, single)
-    : location === NETWORK ? networkItemMenu(single)
-    : isReadOnlyLocation(location) ? shareItemMenu(single)
-    : sel.every((entry) => entry.cloud) ? cloudItemMenu(single)
-    : folderItemMenu(sel, single);
-  openMenu(at, items);
+  openMenu(at, ITEM_MENUS[hereKind()](sel, single));
 }
 
 /** Read-only actions for a received share. Copy out arrives in Task 9. */
@@ -2248,6 +2260,8 @@ function cloudItemMenu(single: Entry | null): MenuItem[] {
   return [
     { label: "Open", action: activateSelection },
     ...(web ? [{ label: "Open in Browser", action: () => openExternal(web) }] : []),
+    // Kept: offered even for an item in the folder on screen, unlike the
+    // preview's Open Item Location (allows("openLocation") wants it elsewhere).
     openLocationItem(single),
     { separator: true },
     ...cutCopyItems(),
@@ -2611,63 +2625,64 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
   ];
 }
 
-/**
- * The background and location menus in the Trash and the folders inside it:
- * nothing that adds to them, since only Move to Trash records where an item
- * came from. A folder inside the Trash keeps Open With…, as trashed items do;
- * `withCopyLocation` adds Copy Location for its location menu.
- */
-function trashFolderMenu(withCopyLocation: boolean): MenuItem[] {
-  if (location === trashPath) {
-    return [
-      { label: "Empty Trash…", disabled: entries.length === 0, action: confirmEmptyTrash },
-      { separator: true },
-      { label: "Select All", action: selectAll },
-    ];
-  }
-  return [
-    openCurrentFolderWithItem(),
-    { separator: true },
-    ...(withCopyLocation ? [{ label: "Copy Location", action: copyLocation }] : []),
-    { label: "Select All", action: selectAll },
-  ];
-}
+// The background and location menus of each kind of place. In the Trash and
+// the folders inside it, nothing adds to them, since only Move to Trash
+// records where an item came from; a folder inside the Trash keeps Open
+// With…, as trashed items do.
 
-function openBackgroundMenu(at: Anchor): void {
-  if (isPseudo(location)) {
-    const items: MenuItem[] = [
-      ...(location === NETWORK
-        ? [{ label: "Connect to Server…", action: () => showConnectServerDialog() }, { separator: true as const }]
-        : []),
-      { label: "Select All", action: selectAll },
-    ];
-    openMenu(at, items);
-    return;
-  }
-  if (inTrash()) {
-    openMenu(at, trashFolderMenu(false));
-    return;
-  }
-  if (isReadOnlyLocation(location)) {
-    openMenu(at, [
-      { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
-      { label: "Reload", action: () => void reload() },
-      { separator: true },
-      { label: "Select All", action: selectAll },
-    ]);
-    return;
-  }
-  if (isCloud(location)) {
-    openMenu(at, [
-      { label: "New Folder…", action: promptNewFolder },
-      { separator: true },
-      { label: "Paste", disabled: !clipboard, action: () => paste(location) },
-      { label: "Reload", action: () => void reload() },
-      { label: "Select All", action: selectAll },
-    ]);
-    return;
-  }
-  openMenu(at, [
+const emptyTrashMenu = (): MenuItem[] => [
+  { label: "Empty Trash…", disabled: entries.length === 0, action: confirmEmptyTrash },
+  { separator: true },
+  { label: "Select All", action: selectAll },
+];
+
+const pseudoBackgroundMenu = (): MenuItem[] => [{ label: "Select All", action: selectAll }];
+
+/** A local folder's location menu; Recent and Starred show it with everything off. */
+const folderLocationMenu = (real: boolean): MenuItem[] => [
+  { label: "New Folder…", disabled: !real, action: promptNewFolder },
+  ...(real ? [{ label: "New Document…" as const, action: () => void showNewDocumentDialog() }, openCurrentFolderWithItem()] : []),
+  ...(real ? [bookmarkMenuItem(location), { label: "Share This Folder…" as const, action: () => showShareDialogForPath(location) }] : []),
+  { separator: true },
+  { label: "Copy Location", disabled: !real, action: copyLocation },
+  { label: "Paste", disabled: !real || !clipboard, action: () => paste(location) },
+  { label: "Select All", disabled: !hasEntries(location), action: selectAll },
+];
+
+const readOnlyBackgroundMenu = (): MenuItem[] => [
+  { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
+  { label: "Reload", action: () => void reload() },
+  { separator: true },
+  { label: "Select All", action: selectAll },
+];
+
+const readOnlyLocationMenu = (): MenuItem[] => [
+  { label: "Copy Location", action: copyLocation },
+  { label: "Reload", action: () => void reload() },
+  { separator: true },
+  { label: "Select All", disabled: !hasEntries(location), action: selectAll },
+];
+
+const BACKGROUND_MENUS: Record<LocationKind, () => MenuItem[]> = {
+  recent: pseudoBackgroundMenu,
+  starred: pseudoBackgroundMenu,
+  network: () => [
+    { label: "Connect to Server…", action: () => showConnectServerDialog() },
+    { separator: true },
+    { label: "Select All", action: selectAll },
+  ],
+  trash: emptyTrashMenu,
+  "in-trash": () => [openCurrentFolderWithItem(), { separator: true }, { label: "Select All", action: selectAll }],
+  share: readOnlyBackgroundMenu,
+  sftp: readOnlyBackgroundMenu,
+  drive: () => [
+    { label: "New Folder…", action: promptNewFolder },
+    { separator: true },
+    { label: "Paste", disabled: !clipboard, action: () => paste(location) },
+    { label: "Reload", action: () => void reload() },
+    { label: "Select All", action: selectAll },
+  ],
+  folder: () => [
     { label: "New Folder…", action: promptNewFolder },
     { label: "New Document…", action: () => void showNewDocumentDialog() },
     openCurrentFolderWithItem(),
@@ -2678,51 +2693,42 @@ function openBackgroundMenu(at: Anchor): void {
       ? [{ label: "Deleted Files…" as const, action: () => showDeletedFiles(location, () => void reload()) }]
       : []),
     { label: "Select All", action: selectAll },
-  ]);
+  ],
+};
+
+const LOCATION_MENUS: Record<LocationKind, () => MenuItem[]> = {
+  recent: () => folderLocationMenu(false),
+  starred: () => folderLocationMenu(false),
+  network: () => [
+    { label: "Connect to Server…", action: () => showConnectServerDialog() },
+    { separator: true },
+    { label: "Reload", action: () => void reload() },
+  ],
+  trash: emptyTrashMenu,
+  "in-trash": () => [
+    openCurrentFolderWithItem(),
+    { separator: true },
+    { label: "Copy Location", action: copyLocation },
+    { label: "Select All", action: selectAll },
+  ],
+  share: readOnlyLocationMenu,
+  sftp: readOnlyLocationMenu,
+  drive: () => [
+    { label: "New Folder…", action: promptNewFolder },
+    { separator: true },
+    { label: "Copy Location", action: copyLocation },
+    { label: "Paste", disabled: !clipboard, action: () => paste(location) },
+    { label: "Select All", disabled: !hasEntries(location), action: selectAll },
+  ],
+  folder: () => folderLocationMenu(true),
+};
+
+function openBackgroundMenu(at: Anchor): void {
+  openMenu(at, BACKGROUND_MENUS[hereKind()]());
 }
 
 function openLocationMenu(anchor: HTMLElement): void {
-  const real = !isPseudo(location);
-  if (location === NETWORK) {
-    openMenu(anchor, [
-      { label: "Connect to Server…", action: () => showConnectServerDialog() },
-      { separator: true },
-      { label: "Reload", action: () => void reload() },
-    ]);
-    return;
-  }
-  if (inTrash()) {
-    openMenu(anchor, trashFolderMenu(true));
-    return;
-  }
-  if (isReadOnlyLocation(location)) {
-    openMenu(anchor, [
-      { label: "Copy Location", action: copyLocation },
-      { label: "Reload", action: () => void reload() },
-      { separator: true },
-      { label: "Select All", disabled: !hasEntries(location), action: selectAll },
-    ]);
-    return;
-  }
-  if (isCloud(location)) {
-    openMenu(anchor, [
-      { label: "New Folder…", action: promptNewFolder },
-      { separator: true },
-      { label: "Copy Location", action: copyLocation },
-      { label: "Paste", disabled: !clipboard, action: () => paste(location) },
-      { label: "Select All", disabled: !hasEntries(location), action: selectAll },
-    ]);
-    return;
-  }
-  openMenu(anchor, [
-    { label: "New Folder…", disabled: !real, action: promptNewFolder },
-    ...(real ? [{ label: "New Document…" as const, action: () => void showNewDocumentDialog() }, openCurrentFolderWithItem()] : []),
-    ...(real ? [bookmarkMenuItem(location), { label: "Share This Folder…" as const, action: () => showShareDialogForPath(location) }] : []),
-    { separator: true },
-    { label: "Copy Location", disabled: !real, action: copyLocation },
-    { label: "Paste", disabled: !real || !clipboard, action: () => paste(location) },
-    { label: "Select All", disabled: !hasEntries(location), action: selectAll },
-  ]);
+  openMenu(anchor, LOCATION_MENUS[hereKind()]());
 }
 
 function openViewMenu(anchor: HTMLElement): void {
@@ -2990,6 +2996,7 @@ function starMenuItem(sel: Entry[]): MenuItem {
 }
 
 async function setStarred(paths: string[], on: boolean): Promise<void> {
+  if (refuse("star", hereFor(paths))) return;
   for (const p of paths) {
     if (on) starred.add(p);
     else starred.delete(p);
@@ -3060,11 +3067,7 @@ async function copyLocation(): Promise<void> {
 
 function setClipboard(mode: "copy" | "cut"): void {
   const sel = selectedEntries();
-  if (sel.length === 0) return;
-  if (sel.some((entry) => isReadOnlyLocation(entry.path))) {
-    showToast(isSftpPath(sel[0].path) ? "Copying from SSH servers comes next." : "Copying out of a shared folder comes next.");
-    return;
-  }
+  if (sel.length === 0 || refuse(mode, hereFor(sel.map((e) => e.path)))) return;
   clipboard = { paths: sel.map((e) => e.path), dirs: new Set(sel.filter((e) => e.is_dir).map((e) => e.path)), mode };
   // Paths also go to the system clipboard as text, handy for terminals.
   navigator.clipboard?.writeText(clipboard.paths.join("\n")).catch(() => {});
@@ -3304,11 +3307,7 @@ async function transferBatch(
 }
 
 async function paste(destDir: string): Promise<void> {
-  if (isReadOnlyLocation(destDir)) {
-    showToast("Shared folders are read only.");
-    return;
-  }
-  if (!clipboard || !acceptsNewItems(destDir, trashPath)) return;
+  if (refuse("paste", { kind: locationKind(destDir, trashPath), items: [] }) || !clipboard) return;
   const { paths, dirs, mode } = clipboard;
   const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir);
   // A cut is only consumed once every item has been dealt with.
@@ -3322,9 +3321,27 @@ function inTrash(): boolean {
   return isInTrash(location, trashPath);
 }
 
+/** The kind of place on screen (src/locations.ts). */
+function hereKind(): LocationKind {
+  return locationKind(location, trashPath);
+}
+
+/** An action on `paths` from the location on screen, for src/item-actions.ts. */
+function hereFor(paths: readonly string[], elsewhere = false): Here {
+  return { kind: hereKind(), items: paths.map((path) => locationKind(path, trashPath)), elsewhere };
+}
+
+/** Whether `action` is refused `here`; says why in a toast when the rule has words for it. */
+function refuse(action: SharedAction, here: Here): boolean {
+  const why = refusal(action, here);
+  if (why) showToast(why);
+  return why !== null;
+}
+
 async function trashSelection(): Promise<void> {
-  if (inTrash() || isReadOnlyLocation(location)) return;
-  await trashPaths(selectedEntries().map((e) => e.path));
+  const paths = selectedEntries().map((e) => e.path);
+  if (refuse("trash", hereFor(paths))) return;
+  await trashPaths(paths);
 }
 
 /** Delete / ⌘⌫: to the Trash, or out of it for good when already there. */
@@ -3424,7 +3441,7 @@ async function restoreSelection(): Promise<void> {
 }
 
 function confirmDeletePermanently(sel: Entry[]): void {
-  if (sel.length === 0 || !inTrash()) return;
+  if (sel.length === 0 || refuse("deletePermanently", hereFor(sel.map((e) => e.path)))) return;
   openDialog({
     heading: sel.length === 1
       ? `Are you sure you want to permanently delete “${sel[0].name}”?`
@@ -3544,7 +3561,7 @@ function volumeRoot(path: string): string {
 /** The operation a drop would do, or null if it would do nothing useful. */
 function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, devices?: Map<string, number>): DropOp | null {
   const dir = target.dir;
-  if (isReadOnlyLocation(dir) || sources.some(isReadOnlyLocation)) return null;
+  if (isReadOnlyLocation(dir) || copyOutRefusal(sources) !== null) return null;
   // Into itself or its own subfolder: refused.
   if (sources.some((src) => isWithin(dir, src))) return null;
   // Drive items go to Drive's Trash with Move to Trash, not the app's Trash.
@@ -3639,11 +3656,8 @@ function armDrag(start: MouseEvent): void {
 
 function beginDrag(e: MouseEvent): void {
   const sel = selectedEntries();
-  if (sel.length === 0) return;
-  if (sel.some((entry) => isReadOnlyLocation(entry.path))) {
-    showToast(isSftpPath(sel[0].path) ? "Copying from SSH servers comes next." : "Copying out of a shared folder comes next.");
-    return;
-  }
+  // A drag copies or moves the items out of where they are.
+  if (sel.length === 0 || refuse("copy", hereFor(sel.map((x) => x.path)))) return;
   cancelPendingNarrow();
   const ghost = document.createElement("div");
   ghost.className = "drag-ghost";
@@ -4133,8 +4147,7 @@ function showBatchRename(sel: Entry[]): void {
 }
 
 function startRename(entry: Entry): void {
-  // Recent and Starred mix folders, so the name-clash check wouldn't work there.
-  if (isPseudo(location) || !canRename(entry.path, trashPath)) return;
+  if (refuse("rename", hereFor([entry.path]))) return;
   const index = shown.findIndex((e) => e.path === entry.path);
   if (index < 0) return;
   scrollToIndex(index);
@@ -4354,15 +4367,6 @@ async function previewThumbnailEntry(entry: Entry, seq: number): Promise<void> {
 
 // ---- Preview actions (#48) -------------------------------------------------
 
-function previewPlace(entry: Entry): PreviewPlace {
-  const trashed = isInTrash(entry.path, trashPath) && entry.path !== trashPath;
-  return {
-    local: isLocalLocation(entry.path),
-    inTrash: trashed || inTrash(),
-    elsewhere: searchQuery !== null || parentOf(entry.path) !== location,
-    inFolder: !isPseudo(location),
-  };
-}
 
 /** Close the preview and give the keyboard back to the view. */
 function leavePreview(): void {
@@ -4378,7 +4382,7 @@ const PREVIEW_RUN: Record<PreviewAction, (entry: Entry) => void> = {
   rename: (entry) => showPreviewRename(entry),
   trash: (entry) => {
     leavePreview();
-    void trashPaths([entry.path]);
+    if (!refuse("trash", hereFor([entry.path]))) void trashPaths([entry.path]);
   },
   open: (entry) => {
     leavePreview();
@@ -4387,7 +4391,8 @@ const PREVIEW_RUN: Record<PreviewAction, (entry: Entry) => void> = {
 };
 
 function renderPreviewActions(entry: Entry): void {
-  const actions = previewActions(previewPlace(entry));
+  const elsewhere = searchQuery !== null || parentOf(entry.path) !== location;
+  const actions = previewActions(previewPlace(hereFor([entry.path], elsewhere)));
   const buttons: HTMLElement[] = actions.map((action) => {
     const button = document.createElement("button");
     button.className = action === "open" ? "btn suggested" : "btn";
@@ -4676,7 +4681,7 @@ const ANYWHERE_SHORTCUTS: Shortcut[] = [
   [(k) => k.ctrl && k.raw === "PageDown", () => cycleTab(1)],
   [(k) => k.ctrl && k.raw === "PageUp", () => cycleTab(-1)],
   [(k) => k.mod && k.shift && k.key === "n", promptNewFolder],
-  [(k) => plainMod(k, "d") && !isPseudo(location), () => setBookmarked(location, !pins.includes(location))],
+  [(k) => plainMod(k, "d") && allows("bookmark", { kind: hereKind(), items: [] }), () => setBookmarked(location, !pins.includes(location))],
   [(k) => (k.mod && k.shift && (k.raw === "." || k.raw === ">")) || (k.ctrl && !k.shift && k.key === "h"), toggleHidden],
   [(k) => plainMod(k, "r") || k.raw === "F5", () => reload()],
   [(k) => k.mod && (k.raw === "?" || (k.shift && k.raw === "/")), showShortcuts],
@@ -4706,7 +4711,7 @@ const VIEW_SHORTCUTS: Shortcut[] = [
 
 function showSelectedProperties(): void {
   const entry = selectedEntries()[0];
-  if (entry && hasProperties(entry.path)) showProperties(entry);
+  if (entry && !refuse("properties", hereFor([entry.path]))) showProperties(entry);
 }
 
 function onGlobalKeyDown(e: KeyboardEvent): void {

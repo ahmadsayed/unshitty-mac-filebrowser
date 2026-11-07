@@ -2,6 +2,7 @@
 // iroh, on any network (src-tauri/src/share/file_share.rs). The share lasts
 // while the dialog is open; closing it, or the window, stops it.
 import { fileSharePrepare, fileShareStatus, fileShareStop, type Entry, type FileShareView } from "./api";
+import { isLocalFile } from "./locations";
 import { openDialog, showToast, type MenuItem } from "./ui";
 
 /** How often the dialog asks for progress and downloads. */
@@ -14,9 +15,9 @@ window.addEventListener("pagehide", () => {
 });
 
 /** "Send with QR Code…" when every selected item is a local file (not in
- * the Trash). */
+ * the Trash). Links to files count, unlike for Install Application…. */
 export function qrShareItems(entries: Entry[], enabled: boolean): MenuItem[] {
-  if (!enabled || entries.length === 0 || entries.some((e) => e.is_dir || !e.path.startsWith("/"))) return [];
+  if (!enabled || entries.length === 0 || !entries.every(isLocalFile)) return [];
   return [{ label: "Send with QR Code…", action: () => void showQrShare(entries) }];
 }
 
