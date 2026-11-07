@@ -867,6 +867,23 @@ test("measure sums files and folders like the backend", async () => {
   expect(measured).toEqual({ bytes: 312 + 2_200, items: 5 });
 });
 
+test("measure asks Drive about Drive paths and the disk about local ones only, like the backend", async () => {
+  const folder = await invoke<string>("make_dir", { path: `${DRIVE}/~Measured` });
+  await invoke("copy_entry", { from: DRIVE_HELLO, to: `${folder}/~a.txt`, overwrite: false });
+  await invoke("copy_entry", { from: `${DRIVE}/file-3~Plan`, to: `${folder}/~Plan`, overwrite: false });
+  const gone = await invoke<string>("copy_entry", { from: DRIVE_HELLO, to: `${folder}/~gone.txt`, overwrite: false });
+  await trashOne(gone);
+  // The folder, a.txt (12 bytes) and Plan, a Google Docs file: an item
+  // without bytes. A trashed child isn't listed, so it isn't counted.
+  expect(await invoke("measure", { paths: [folder] })).toEqual({ bytes: 12, items: 3 });
+  // Shares, SSH servers and relative paths count nothing.
+  const mixed = [`${HOME}/Desktop/todo.txt`, DRIVE_HELLO, "share://r1/a.txt", "sftp://me@host/a.txt", "Users/me/Desktop/todo.txt"];
+  expect(await invoke("measure", { paths: mixed })).toEqual({ bytes: 312 + 12, items: 2 });
+  // Drive's refusals fail the whole measure.
+  await expect(invoke("measure", { paths: [`${HOME}/Desktop/todo.txt`, `${DRIVE}/~New`] })).rejects.toBe("This Google Drive item has no id.");
+  await expect(invoke("measure", { paths: [`${DRIVE}/no-such-id~x.txt`] })).rejects.toBe("The Google Drive item no longer exists.");
+});
+
 test("a held copy reports through its channel, and cancel_operation stops it", async () => {
   mockOps().hold();
   const seen: Array<{ bytes: number; done: boolean }> = [];

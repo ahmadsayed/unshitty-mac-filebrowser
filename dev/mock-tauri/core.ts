@@ -996,11 +996,35 @@ function measureNode(node: Node | undefined, total: { bytes: number; items: numb
   else total.bytes += node.size;
 }
 
+/** Like the backend's `measure_paths`: Drive paths are asked of Drive, local
+ *  paths are walked, and nothing else (shares, SSH servers, relative paths)
+ *  counts. A Drive refusal fails the whole measure. */
 function measure(paths: string[]): { bytes: number; items: number } {
   if (measureFails) throw "Could not measure.";
   const total = { bytes: 0, items: 0 };
-  for (const path of paths) measureNode(lookup(path), total);
+  for (const path of paths) {
+    if (placeOf(path) === "drive") measureDriveItem(driveItemToMeasure(path), total);
+    else if (isLocal(path)) measureNode(lookup(path), total);
+  }
   return total;
+}
+
+/** The Drive item at `path`, looked up by id as `cloud::transfer::measure` does. */
+function driveItemToMeasure(path: string): DriveItem {
+  const { ids, pending } = parseDrive(path);
+  const id = ids[ids.length - 1];
+  if (pending !== undefined || !id) throw "This Google Drive item has no id.";
+  const item = driveItems.get(id);
+  if (!item) throw "The Google Drive item no longer exists.";
+  return item;
+}
+
+/** Every item counts; Google Docs files have no bytes; a folder's trashed
+ *  children aren't listed. */
+function measureDriveItem(item: DriveItem, total: { bytes: number; items: number }): void {
+  total.items += 1;
+  if (item.isDir) driveChildren(item.id).forEach((child) => measureDriveItem(child, total));
+  else total.bytes += item.doc ? 0 : item.size;
 }
 
 // QR shares: preparing at the first status call, ready from the next one.
