@@ -6,7 +6,7 @@
 //   holder       moved or renamed                   sent to the Trash
 //   stars        follow (starred.json)               kept
 //   bookmarks    follow, in their order (pins.json)  kept
-//   clipboard    kept                                dropped from it
+//   clipboard    follow (the same copy or cut)       dropped from it
 //
 // A holder is replaced at most once per report, and only when it changed,
 // so it saves once: two saves of one batch could land out of order. A new
@@ -77,11 +77,9 @@ export class PathRefs {
   moved(moves: readonly Move[]): void {
     if (moves.length === 0) return;
     const follow = (path: string) => followPath(path, moves);
-    const stars = followAll(this.holders.stars.get(), follow);
-    if (stars) this.holders.stars.set(new Set(stars));
-    const bookmarks = followAll(this.holders.bookmarks.get(), follow);
-    // Two bookmarks can end at one path (Replace): the first one stays.
-    if (bookmarks) this.holders.bookmarks.set([...new Set(bookmarks)]);
+    this.followStars(follow);
+    this.followBookmarks(follow);
+    this.followClipboard(follow);
   }
 
   /** Items that went to the Trash: the clipboard drops them, and is emptied
@@ -92,5 +90,26 @@ export class PathRefs {
     const gone = new Set(paths);
     clip.paths = clip.paths.filter((path) => !gone.has(path));
     this.holders.clipboard.set(clip.paths.length > 0 ? clip : null);
+  }
+
+  private followStars(follow: (path: string) => string): void {
+    const stars = followAll(this.holders.stars.get(), follow);
+    if (stars) this.holders.stars.set(new Set(stars));
+  }
+
+  private followBookmarks(follow: (path: string) => string): void {
+    const bookmarks = followAll(this.holders.bookmarks.get(), follow);
+    // Two bookmarks can end at one path (Replace): the first one stays.
+    if (bookmarks) this.holders.bookmarks.set([...new Set(bookmarks)]);
+  }
+
+  /** A copy or cut follows its items: a paste takes them from where they are now. */
+  private followClipboard(follow: (path: string) => string): void {
+    const clip = this.holders.clipboard.get();
+    const paths = clip && followAll(clip.paths, follow);
+    if (!clip || !paths) return;
+    clip.paths = paths;
+    clip.dirs = new Set([...clip.dirs].map(follow));
+    this.holders.clipboard.set(clip);
   }
 }

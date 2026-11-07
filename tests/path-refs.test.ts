@@ -107,6 +107,35 @@ test("bookmarks no move touches aren't saved, and a trashed folder keeps its boo
 
 // ---- The clipboard ----------------------------------------------------------------
 
+test("the clipboard follows a move, paths and folders alike, and stays the same cut", () => {
+  const cut = clip(["/d/a.txt", "/d/F", "/d/b.txt"], "cut", ["/d/F"]);
+  const { refs, clipboard } = setup({ clipboard: cut });
+  refs.moved([
+    { from: "/d/a.txt", to: "/d/a2.txt" },
+    { from: "/d/F", to: "/e/F" },
+  ]);
+  expect(clipboard.sets).toBe(1);
+  expect(clipboard.value).toBe(cut);
+  expect(cut.paths).toEqual(["/d/a2.txt", "/e/F", "/d/b.txt"]);
+  expect([...cut.dirs]).toEqual(["/e/F"]);
+  expect(cut.mode).toBe("cut");
+});
+
+test("a copied item inside a moved folder follows it", () => {
+  const copy = clip(["/d/F/x.txt"], "copy");
+  const { refs } = setup({ clipboard: copy });
+  refs.moved([{ from: "/d/F", to: "/d/G" }]);
+  expect(copy.paths).toEqual(["/d/G/x.txt"]);
+});
+
+test("a move that touches nothing on the clipboard leaves it alone", () => {
+  const copy = clip(["/d/a.txt"], "copy");
+  const { refs, clipboard } = setup({ clipboard: copy });
+  refs.moved([{ from: "/d/b.txt", to: "/d/c.txt" }]);
+  expect(clipboard.sets).toBe(0);
+  expect(copy.paths).toEqual(["/d/a.txt"]);
+});
+
 test("trashed items leave the clipboard, which stays the same cut", () => {
   const cut = clip(["/d/a.txt", "/d/b.txt"]);
   const { refs, clipboard } = setup({ clipboard: cut });

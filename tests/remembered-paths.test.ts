@@ -3,16 +3,16 @@
 // rules themselves are tested on their own in tests/path-refs.test.ts.
 import { beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, click, goTo, hit, item, key, mouse, names, respond, settle, title, toasts, type } from "./app";
+import { $, $$, boot, click, closeOverlays, goTo, hit, item, key, mouse, names, respond, settle, title, toasts, type } from "./app";
 
 const ROOT = "/Users/me/Refs";
 const DEST = `${ROOT}/Dest`;
 
 beforeAll(async () => {
-  for (const dir of ["", "/Dest", "/Other", "/A", "/Clash", "/Trashy", "/Empty", "/Marked", "/Outer", "/Outer/In"]) {
+  for (const dir of ["", "/Dest", "/Other", "/A", "/Clash", "/Trashy", "/Empty", "/Marked", "/Outer", "/Outer/In", "/Cuts", "/CutDest", "/CopySrc", "/CopyDest", "/Spare", "/Halt", "/HaltDest", "/HaltNext"]) {
     await invoke("make_dir", { path: ROOT + dir });
   }
-  for (const file of ["/note.txt", "/A/inner.txt", "/keep.txt", "/Dest/keep.txt", "/Trashy/x.txt", "/Trashy/y.txt", "/Trashy/z.txt"]) {
+  for (const file of ["/note.txt", "/A/inner.txt", "/keep.txt", "/Dest/keep.txt", "/Trashy/x.txt", "/Trashy/y.txt", "/Trashy/z.txt", "/Cuts/c.txt", "/CopySrc/f.txt", "/Halt/p.txt", "/Halt/q.txt", "/HaltDest/q.txt"]) {
     await invoke("create_file", { path: ROOT + file });
   }
   await boot();
@@ -151,6 +151,61 @@ test("a cut item sent to the Trash leaves the clipboard; the rest still pastes",
   expect(names()).toContain("y.txt");
   expect(names()).not.toContain("x.txt");
   expect(toasts().join(" ")).not.toMatch(/Could not move/);
+});
+
+test("a cut item that was renamed stays cut, and is pasted from its new name", async () => {
+  await goTo(`${ROOT}/Cuts`);
+  await select("c.txt");
+  await key("x", { mod: true });
+  await rename("c.txt", "c2.txt");
+  expect(item("c2.txt").classList.contains("cut")).toBe(true);
+
+  await goTo(`${ROOT}/CutDest`);
+  await key("v", { mod: true });
+  await settle(20);
+  expect(names()).toEqual(["c2.txt"]);
+  expect(toasts().join(" ")).not.toMatch(/Could not move/);
+  expect(await exists(`${ROOT}/Cuts/c2.txt`)).toBe(false);
+
+  // The cut was used up.
+  await goTo(`${ROOT}/Spare`);
+  await key("v", { mod: true });
+  await settle(20);
+  expect(names()).toEqual([]);
+});
+
+test("a cut whose paste stopped part-way keeps every item, each where it is now", async () => {
+  await goTo(`${ROOT}/Halt`);
+  await select("p.txt", "q.txt");
+  await key("x", { mod: true });
+  await goTo(`${ROOT}/HaltDest`);
+  await key("v", { mod: true }); // p.txt moves; q.txt clashes
+  await closeOverlays(); // closing the clash dialog cancels the rest
+  await settle(20);
+  expect(names()).toEqual(["p.txt", "q.txt"]);
+  // The cut wasn't used up: p.txt is still cut, at its new place.
+  expect(item("p.txt").classList.contains("cut")).toBe(true);
+
+  await goTo(`${ROOT}/HaltNext`);
+  await key("v", { mod: true });
+  await settle(20);
+  expect(names()).toEqual(["p.txt", "q.txt"]);
+  expect(toasts().join(" ")).not.toMatch(/Could not move/);
+});
+
+test("a copied item inside a renamed folder is pasted from the folder's new path", async () => {
+  await goTo(`${ROOT}/CopySrc`);
+  await select("f.txt");
+  await key("c", { mod: true });
+  await goTo(ROOT);
+  await rename("CopySrc", "CopySrc 2");
+
+  await goTo(`${ROOT}/CopyDest`);
+  await key("v", { mod: true });
+  await settle(20);
+  expect(names()).toEqual(["f.txt"]);
+  expect(toasts().join(" ")).not.toMatch(/Could not copy/);
+  expect(await exists(`${ROOT}/CopySrc 2/f.txt`)).toBe(true);
 });
 
 test("when every cut item went to the Trash, there is nothing to paste", async () => {

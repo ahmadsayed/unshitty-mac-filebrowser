@@ -3094,9 +3094,11 @@ async function transferBatch(
 async function paste(destDir: string): Promise<void> {
   if (refuse("paste", { kind: locationKind(destDir, trashPath), items: [] }) || !clipboard) return;
   const { paths, dirs, mode } = clipboard;
+  const pasting = clipboard;
   const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir);
-  // A cut is only consumed once every item has been dealt with.
-  if (mode === "cut" && complete && clipboard?.paths === paths) {
+  // A cut is only consumed once every item has been dealt with. Its paths
+  // follow the items it moved (src/path-refs.ts): it's known by its object.
+  if (mode === "cut" && complete && clipboard === pasting) {
     clipboard = null;
     refreshCutMarks();
   }
