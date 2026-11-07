@@ -42,6 +42,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/updates.ts` | Check for Updates dialogs: offer, download progress, restart, failures |
 | `src/drag-out.ts` | Dragging files out of the window: when the pointer has left it, and the system drag (our GTK command on Linux, the drag plugin on macOS) |
 | `src-tauri/src/fs_ops.rs` | Listing, item counts, mkdir, rename, copy/move/trash, path info |
+| `src-tauri/src/placement.rs` | How a copy, move or Drive download reaches its local path: the refusals and their wording (`Refusal`), the `.`/`..` guard, staging names, Replace (stage, trash the old item, rename in) and what a failure undoes (`Target::place`) |
 | `src-tauri/src/sftp.rs` | Read-only SSH/SFTP connections for Network: agent/key/password auth, known-host checks, listing and downloads |
 | `src-tauri/src/share/file_share.rs`, `file_link.rs` | Send with QR Code: hashing, the separate iroh endpoint and serving (`file_share`); the ticket, file list and `filebrowser/file/2` wire format (the page still reads version 1 links), compiled into the phone page too (`file_link`) |
 | `web/file-get/` | The page a phone opens from the QR code: Rust → WebAssembly (iroh in the browser), `build.sh`, `serve.sh` (test from this computer), published by `.github/workflows/file-page.yml`; `static/get/preview.js` (file types and sizes, the image preview, the rows for several files) is tested in `tests/file-page.test.ts` |
@@ -135,7 +136,7 @@ GPL-3.0-or-later).
   ```
   `npm run build` must run first, because `generate_context!` reads `../dist`.
 - **Backend modules must still be testable without Tauri.** Copy `fs_ops.rs`,
-  `config_store.rs`, `platform.rs`, `properties.rs`, `thumbnails.rs`, `recent.rs`,
+  `placement.rs`, `config_store.rs`, `platform.rs`, `properties.rs`, `thumbnails.rs`, `recent.rs`,
   `trash_ops.rs`, `downloads.rs`, `file_icons.rs` and `versions/` into a scratch crate depending on `serde`,
   `serde_json`, `trash`, `image` (same features as `src-tauri/Cargo.toml`),
   `rusqlite` (`default-features = false`, features `bundled` + `backup`), `zstd`,
@@ -205,11 +206,15 @@ GPL-3.0-or-later).
 - Anything that touches the Trash must work for both layouts (macOS `~/.Trash`
   and freedesktop `Trash/{files,info}`); a change there needs a test on each.
 - Replacing an existing item stages the new one under a temporary name, sends
-  the old one to the Trash, then renames into place.
+  the old one to the Trash, then renames into place. Local copy, move and
+  Drive downloads do this only through `placement.rs` (`Target::place`);
+  don't build the sequence again at a call site.
 - A cross-volume move deletes the source only after the copy fully succeeded.
 - Copy/move refuse: vanished source, same path, destination inside the source,
-  existing target without `overwrite`, replacing a folder with its own child.
-  Add a test for every new refusal.
+  existing target without `overwrite`, replacing a folder with its own child,
+  a target whose last component is empty, `.` or `..`. Their wording lives in
+  `placement::Refusal`, and the mock's `checkTransfer` makes the same ones in
+  the same order. Add a test for every new refusal.
 - Name clashes always ask (Replace / Skip / Keep Both); Enter picks Keep Both.
 
 **Stay fast with huge folders.**
