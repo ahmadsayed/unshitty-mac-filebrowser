@@ -266,6 +266,18 @@ pub(crate) fn download_into(
     overwrite: bool,
     discard: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<String, String> {
+    download_into_with(c, from, to, overwrite, discard, &crate::fs_ops::to_trash)
+}
+
+/// `download_into` with the Trash a Replace uses, so tests can see it.
+fn download_into_with(
+    c: &Ctx,
+    from: &str,
+    to: &Path,
+    overwrite: bool,
+    discard: &dyn Fn(&Path) -> Result<(), String>,
+    trash: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<String, String> {
     // `/dest/..` or `/dest/.` would make Replace trash `dest` itself. The
     // raw text is checked: `Path::components` quietly drops a trailing `.`.
     let raw = to.to_string_lossy();
@@ -333,7 +345,7 @@ pub(crate) fn download_into(
             &staging,
             to,
             crate::fs_ops::Staged::Copy,
-            &crate::fs_ops::to_trash,
+            trash,
         )?;
     } else if let Err(error) = std::fs::rename(&staging, to) {
         let _ = crate::fs_ops::remove_any(&staging);
@@ -876,6 +888,116 @@ mod tests {
         assert!(result.unwrap_err().starts_with("Target already exists"));
         assert_eq!(std::fs::read(&target).unwrap(), b"mine");
         assert!(heads(&log).is_empty());
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn no_discard(_: &Path) -> Result<(), String> {
+        panic!("nothing to discard")
+    }
+
+    /// Replace downloads under a hidden name next to the old item, sends the
+    /// old one to the Trash once the new one is whole, then renames it in.
+    #[test]
+    fn a_replacing_download_stages_then_trashes_then_renames_into_place() {
+        for is_folder in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let (target, replies, from) = if is_folder {
+                let target = dir.path().join("Docs");
+                std::fs::create_dir(&target).unwrap();
+                std::fs::write(target.join("old.txt"), b"old").unwrap();
+                let replies = vec![ok(folder("d1", "Docs")), found(&[sized("x1", "x.txt", 2)]), bytes(b"hi")];
+                (target, replies, format!("{ROOT}/d1~Docs"))
+            } else {
+                let target = local(&dir, "a.txt", b"old");
+                (target, vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")], format!("{ROOT}/f1~a.txt"))
+            };
+            let seen = std::cell::RefCell::new(Vec::new());
+            let trash = |p: &Path| {
+                seen.borrow_mut().push((p.to_path_buf(), names_in(dir.path())));
+                std::fs::rename(p, bin.join("old")).map_err(|e| e.to_string())
+            };
+            let (result, _) = run(replies, |c| {
+                download_into_with(c, &from, &target, true, &no_discard, &trash)
+            });
+            assert_eq!(result.unwrap(), target.to_string_lossy());
+            let seen = seen.into_inner();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].0, target);
+            let name = target.file_name().unwrap().to_string_lossy().into_owned();
+            let staged = format!(".{name}.filebrowser-{}-0", std::process::id());
+            let mut want = vec![staged, name.clone(), "bin".to_string()];
+            want.sort();
+            assert_eq!(seen[0].1, want);
+            let mut left = vec!["bin".to_string(), name];
+            left.sort();
+            assert_eq!(names_in(dir.path()), left);
+            if is_folder {
+                assert_eq!(std::fs::read(target.join("x.txt")).unwrap(), b"hi");
+                assert_eq!(std::fs::read(bin.join("old/old.txt")).unwrap(), b"old");
+            } else {
+                assert_eq!(std::fs::read(&target).unwrap(), b"hello");
+                assert_eq!(std::fs::read(bin.join("old")).unwrap(), b"old");
+            }
+        }
+    }
+
+    #[test]
+    fn a_replacing_download_whose_trash_fails_keeps_the_old_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = local(&dir, "a.txt", b"old");
+        let refuse = |_: &Path| Err("no Trash on this volume".to_string());
+        let (result, _) = run(vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")], |c| {
+            download_into_with(c, &format!("{ROOT}/f1~a.txt"), &target, true, &no_discard, &refuse)
+        });
+        assert_eq!(
+            result.unwrap_err(),
+            "Could not move the existing item to the Trash: no Trash on this volume"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        assert_eq!(names_in(dir.path()), ["a.txt"]);
+    }
+
+    /// The local refusals' words, and that the name check comes first.
+    #[test]
+    fn download_refusals_keep_their_wording_and_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = local(&dir, "a.txt", b"mine");
+        let dotdot = dir.path().join("sub/..");
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let cases = [
+            (target.clone(), format!("Target already exists: {}", target.display())),
+            // `sub/..` exists too, but isn't a name.
+            (dotdot.clone(), format!("“{}” is not a valid name for a local item.", dotdot.display())),
+        ];
+        for (to, want) in cases {
+            let (result, log) = run(vec![], |c| {
+                download_in(c, &format!("{ROOT}/f1~a.txt"), &to, false)
+            });
+            assert_eq!(result.unwrap_err(), want);
+            assert!(heads(&log).is_empty());
+        }
+        assert_eq!(std::fs::read(&target).unwrap(), b"mine");
+    }
+
+    #[test]
+    fn a_vanished_drive_source_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("a.txt");
+        let (result, _) = run(vec![Reply::json(404, "{}")], |c| {
+            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false)
+        });
+        assert_eq!(result.unwrap_err(), "“a.txt” no longer exists");
+        assert_eq!(names_in(dir.path()), Vec::<String>::new());
     }
 
     #[test]

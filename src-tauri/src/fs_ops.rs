@@ -812,6 +812,21 @@ fn move_entry_with(
     progress: &Progress,
     trash: TrashFn,
 ) -> Result<(), String> {
+    move_entry_by(from, to, overwrite, progress, trash, &|a, b| std::fs::rename(a, b))
+}
+
+/// Renames an item. A move takes it as a parameter so tests can make it fail
+/// as it does across volumes.
+type RenameFn<'a> = &'a dyn Fn(&Path, &Path) -> std::io::Result<()>;
+
+fn move_entry_by(
+    from: String,
+    to: String,
+    overwrite: bool,
+    progress: &Progress,
+    trash: TrashFn,
+    rename: RenameFn,
+) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let replacing = check_transfer(from, to, overwrite)?;
     let dest = if replacing {
@@ -819,7 +834,7 @@ fn move_entry_with(
     } else {
         to.to_path_buf()
     };
-    match std::fs::rename(from, &dest) {
+    match rename(from, &dest) {
         Ok(()) => progress.add_item(),
         Err(e) if is_cross_device(&e) => {
             if let Err(e) = copy_recursive(from, &dest, progress) {
@@ -1741,6 +1756,210 @@ mod tests {
         assert_eq!(fs::read_to_string(&dst).unwrap(), "mine");
         assert_eq!(fs::read_to_string(bin.join("b.txt")).unwrap(), "old");
         assert_eq!(names_in(dir.path()), ["b.txt", "bin"]);
+    }
+
+    // ----- what the placement refactor must keep -----
+
+    type Op = fn(String, String, bool, &Progress) -> Result<(), String>;
+    type OpWith = fn(String, String, bool, &Progress, TrashFn) -> Result<(), String>;
+
+    /// Each refusal's exact words, and which one wins when several apply.
+    #[test]
+    fn refusals_keep_their_wording_and_order() {
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a");
+        fs::create_dir_all(a.join("child")).unwrap();
+        fs::write(a.join("child/f.txt"), "x").unwrap();
+        let gone = dir.path().join("gone");
+        let cases = [
+            // A vanished source wins over the same path.
+            (gone.clone(), gone.clone(), true, format!("“{}” no longer exists", gone.display())),
+            // The same path wins over "into itself" (a path is inside itself).
+            (a.clone(), a.clone(), true, "The source and destination are the same".to_string()),
+            // "Into itself" wins over an existing target, with or without Replace.
+            (a.clone(), a.join("child"), false, "Cannot copy or move a folder into itself".to_string()),
+            (a.clone(), a.join("child"), true, "Cannot copy or move a folder into itself".to_string()),
+            // Without Replace, an existing target wins over "an item inside it".
+            (a.join("child"), a.clone(), false, format!("Target already exists: {}", a.display())),
+            (a.join("child"), a.clone(), true, "Cannot replace a folder with an item inside it".to_string()),
+        ];
+        let ops: [(&str, Op); 2] = [("copy", copy_entry), ("move", move_entry)];
+        for (name, op) in ops {
+            for (from, to, overwrite, want) in &cases {
+                let got = op(s(from), s(to), *overwrite, &Progress::default());
+                assert_eq!(got, Err(want.clone()), "{name} {} → {}", from.display(), to.display());
+            }
+        }
+        assert_eq!(fs::read_to_string(a.join("child/f.txt")).unwrap(), "x");
+        assert_eq!(names_in(dir.path()), ["a"]);
+        assert_eq!(names_in(&a), ["child"]);
+    }
+
+    /// Replace stages the new item next to the old one, sends the old one to
+    /// the Trash, then renames the new one into place: for files and folders,
+    /// copied and moved.
+    #[test]
+    fn replace_stages_then_trashes_then_renames_into_place() {
+        let ops: [(&str, OpWith); 2] = [("copy", copy_entry_with), ("move", move_entry_with)];
+        for (name, op) in ops {
+            for folder in [false, true] {
+                let dir = tempdir().unwrap();
+                let dest = dir.path().join("dest");
+                let (src, dst, bin) = (dir.path().join("new"), dest.join("old"), dir.path().join("bin"));
+                fs::create_dir_all(&dest).unwrap();
+                fs::create_dir(&bin).unwrap();
+                if folder {
+                    fs::create_dir_all(src.join("sub")).unwrap();
+                    fs::write(src.join("sub/x"), "new").unwrap();
+                    fs::create_dir(&dst).unwrap();
+                    fs::write(dst.join("y"), "old").unwrap();
+                } else {
+                    fs::write(&src, "new").unwrap();
+                    fs::write(&dst, "old").unwrap();
+                }
+                let seen = std::cell::RefCell::new(Vec::new());
+                let trash = |p: &Path| {
+                    seen.borrow_mut().push((p.to_path_buf(), names_in(&dest)));
+                    fs::rename(p, bin.join("old")).map_err(|e| e.to_string())
+                };
+                op(s(&src), s(&dst), true, &Progress::default(), &trash).unwrap();
+
+                let seen = seen.into_inner();
+                assert_eq!(seen.len(), 1, "{name}");
+                assert_eq!(seen[0].0, dst, "{name}: the old item is what goes to the Trash");
+                let staged: Vec<_> = seen[0].1.iter().map(|n| n.to_string_lossy().into_owned()).collect();
+                assert_eq!(staged.len(), 2, "{name}: {staged:?}");
+                assert_eq!(staged[0], format!(".old.filebrowser-{}-0", std::process::id()), "{name}");
+                assert_eq!(staged[1], "old");
+                assert_eq!(names_in(&dest), ["old"], "{name}");
+                let (new, old) = if folder {
+                    (dst.join("sub/x"), bin.join("old/y"))
+                } else {
+                    (dst.clone(), bin.join("old"))
+                };
+                assert_eq!(fs::read_to_string(new).unwrap(), "new", "{name}");
+                assert_eq!(fs::read_to_string(old).unwrap(), "old", "{name}");
+                assert_eq!(src.exists(), name == "copy", "{name}");
+            }
+        }
+    }
+
+    /// The error a failed Replace reports when the Trash refuses.
+    #[test]
+    fn a_refused_trash_is_reported_word_for_word() {
+        let dir = tempdir().unwrap();
+        let (src, dst) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        fs::write(&src, "mine").unwrap();
+        fs::write(&dst, "old").unwrap();
+        let want = Err("Could not move the existing item to the Trash: no Trash on this volume".to_string());
+        assert_eq!(copy_entry_with(s(&src), s(&dst), true, &Progress::default(), &failing_trash), want);
+        assert_eq!(move_entry_with(s(&src), s(&dst), true, &Progress::default(), &failing_trash), want);
+        assert_eq!(names_in(dir.path()), ["a.txt", "b.txt"]);
+    }
+
+    fn across_volumes(_: &Path, _: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::from_raw_os_error(18)) // EXDEV
+    }
+
+    #[test]
+    fn a_move_across_volumes_copies_then_removes_the_source() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("sub/x"), "data").unwrap();
+        let dst = dir.path().join("b");
+        let progress = Progress::default();
+        move_entry_by(s(&src), s(&dst), false, &progress, &failing_trash, &across_volumes).unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(dst.join("sub/x")).unwrap(), "data");
+        assert_eq!(progress.snapshot().items, 3);
+    }
+
+    /// The source goes only once its copy has replaced the old item, and a
+    /// cancel arriving after the copy can't stop the move halfway.
+    #[test]
+    fn a_replacing_move_across_volumes_removes_the_source_last() {
+        let dir = tempdir().unwrap();
+        let (src, dst, bin) = (dir.path().join("a.txt"), dir.path().join("b.txt"), dir.path().join("bin"));
+        fs::write(&src, "mine").unwrap();
+        fs::write(&dst, "old").unwrap();
+        fs::create_dir(&bin).unwrap();
+        let progress = Progress::default();
+        let source_there = std::cell::Cell::new(false);
+        let trash = |p: &Path| {
+            source_there.set(src.exists());
+            progress.cancel();
+            fs::rename(p, bin.join("b.txt")).map_err(|e| e.to_string())
+        };
+        move_entry_by(s(&src), s(&dst), true, &progress, &trash, &across_volumes).unwrap();
+        assert!(source_there.get(), "the source was still there during the Replace");
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "mine");
+        assert_eq!(fs::read_to_string(bin.join("b.txt")).unwrap(), "old");
+        assert_eq!(names_in(dir.path()), ["b.txt", "bin"]);
+    }
+
+    #[test]
+    fn a_failed_replace_across_volumes_keeps_the_source_and_the_target() {
+        let dir = tempdir().unwrap();
+        let (src, dst) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        fs::write(&src, "mine").unwrap();
+        fs::write(&dst, "old").unwrap();
+        let err = move_entry_by(s(&src), s(&dst), true, &Progress::default(), &failing_trash, &across_volumes)
+            .unwrap_err();
+        assert_eq!(err, "Could not move the existing item to the Trash: no Trash on this volume");
+        assert_eq!(fs::read_to_string(&src).unwrap(), "mine");
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "old");
+        assert_eq!(names_in(dir.path()), ["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn a_cancelled_copy_across_volumes_leaves_nothing_and_keeps_the_source() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("x"), "data").unwrap();
+        for (to, overwrite) in [(dir.path().join("b"), false), (dir.path().join("c"), true)] {
+            if overwrite {
+                fs::write(&to, "old").unwrap();
+            }
+            let progress = Progress::default();
+            progress.cancel();
+            let got = move_entry_by(s(&src), s(&to), overwrite, &progress, &failing_trash, &across_volumes);
+            assert_eq!(got, Err("Cancelled.".to_string()));
+            assert_eq!(fs::read_to_string(src.join("x")).unwrap(), "data");
+        }
+        assert!(!dir.path().join("b").exists());
+        assert_eq!(fs::read_to_string(dir.path().join("c")).unwrap(), "old");
+        assert_eq!(names_in(dir.path()), ["a", "c"]);
+    }
+
+    /// A rename that fails for another reason touches nothing, staged or not.
+    #[test]
+    fn a_failed_rename_is_reported_and_touches_nothing() {
+        let dir = tempdir().unwrap();
+        let (src, dst) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        fs::write(&src, "mine").unwrap();
+        let denied = |_: &Path, _: &Path| Err(std::io::Error::from_raw_os_error(13));
+        let want = format!("Failed to move: {}", std::io::Error::from_raw_os_error(13));
+        for overwrite in [false, true] {
+            let got = move_entry_by(s(&src), s(&dst), overwrite, &Progress::default(), &failing_trash, &denied);
+            assert_eq!(got, Err(want.clone()));
+            fs::write(&dst, "old").unwrap();
+        }
+        assert_eq!(fs::read_to_string(&src).unwrap(), "mine");
+        assert_eq!(names_in(dir.path()), ["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn a_failed_copy_reports_its_cause() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        fs::write(&src, "mine").unwrap();
+        let to = dir.path().join("missing/b.txt");
+        let err = copy_entry(s(&src), s(&to), false, &Progress::default()).unwrap_err();
+        assert!(err.starts_with("Failed to copy: "), "{err}");
+        assert_eq!(names_in(dir.path()), ["a.txt"]);
     }
 
     #[test]
