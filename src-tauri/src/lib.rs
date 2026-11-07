@@ -2217,6 +2217,18 @@ mod dispatch_tests {
     }
 
     #[test]
+    fn list_dir_lists_local_folders_and_refuses_relative_ones() {
+        // list_dir sends the remote kinds to their own handlers; the rest
+        // come here. `src` exists in the tests' working directory.
+        use tauri::async_runtime::block_on;
+        let f = fixture();
+        let listed = block_on(list_local(f.folder.clone(), false)).unwrap();
+        assert_eq!(listed.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["a.txt"]);
+        assert_eq!(block_on(list_local(RELATIVE.into(), false)).unwrap_err(), "“src” is not a local file.");
+        assert_eq!(block_on(list_local(String::new(), false)).unwrap_err(), "“” is not a local file.");
+    }
+
+    #[test]
     fn path_info_asks_drive_and_has_nothing_for_shares_and_ssh() {
         let f = fixture();
         let mut paths = vec![f.folder.clone(), f.file.clone()];
