@@ -47,6 +47,7 @@ import { Selection, type Mark } from "./selection";
 import { arrangeSearch, fold, SEARCH_LIMIT, SearchSession, searchSections as arrangedSections, type SearchChange, type SearchSection } from "./search";
 import { FolderSummaries } from "./folder-summaries";
 import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
+import { PathRefs, type Clip, type Move } from "./path-refs";
 import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
 import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
@@ -155,7 +156,7 @@ let activeTab = -1;
 let tabBusy = false;
 
 /** Files copied or cut, waiting to be pasted. */
-let clipboard: { paths: string[]; dirs: Set<string>; mode: "copy" | "cut" } | null = null;
+let clipboard: Clip | null = null;
 
 /** Starred files and folders. */
 let starred = new Set<string>();
@@ -164,6 +165,24 @@ let starred = new Set<string>();
 let pins: string[] = [];
 /** Paths the sidebar always shows (places, default bookmarks, volumes). */
 const fixedSidebarPaths = new Set<string>();
+
+/** What remembers paths (stars, the clipboard) follows moved, renamed and
+ *  trashed items through this (src/path-refs.ts). */
+const pathRefs = new PathRefs({
+  stars: {
+    get: () => starred,
+    set: (next) => {
+      starred = next;
+      void persistStarred();
+    },
+  },
+  clipboard: {
+    get: () => clipboard,
+    set: (next) => {
+      clipboard = next;
+    },
+  },
+});
 
 let home = "";
 let trashPath = "";
@@ -2786,29 +2805,6 @@ async function persistStarred(): Promise<void> {
   }
 }
 
-/** Keep stars on items renamed or moved from `from` to `to`, and on anything inside them. */
-function followMove(from: string, to: string): void {
-  followMoves([{ from, to }]);
-}
-
-/** `followMove` for several items at once, saving the stars once. */
-function followMoves(moves: { from: string; to: string }[]): void {
-  let changed = false;
-  for (const { from, to } of moves) {
-    const next = new Set<string>();
-    for (const p of starred) {
-      if (isWithin(p, from)) {
-        next.add(to + p.slice(from.length));
-        changed = true;
-      } else {
-        next.add(p);
-      }
-    }
-    starred = next;
-  }
-  if (changed) persistStarred();
-}
-
 /** Show the folder holding `entry`, with it selected. */
 function openItemLocation(entry: Entry): void {
   navigate(parentOf(entry.path), { select: entry.path });
@@ -2983,7 +2979,6 @@ async function transferItem(op: Operation, from: string, to: string, overwrite: 
   try {
     const result = moving ? await moveEntry(from, to, overwrite, tracked) : await copyEntry(from, to, overwrite, tracked);
     await Promise.race([last, new Promise((resolve) => setTimeout(resolve, LAST_UPDATE_MS))]);
-    if (moving) followMove(from, result);
     return result;
   } finally {
     finished = true;
@@ -3024,47 +3019,56 @@ async function transferBatch(
   let anyMove = false;
   let applyToAll: ConflictChoice | null = null;
 
-  for (let i = 0; i < paths.length && !batch.cancelled; i++) {
-    const from = paths[i];
-    // A Drive name can be "a/b" or "..": locally it must stay one plain name.
-    const name = isCloud(from) && !isCloud(destDir) ? safeLocalName(basename(from)) : basename(from);
-    const isDir = dirs.has(from);
-    const moving = move(from);
-    anyMove ||= moving;
-    let to = joinPath(destDir, name);
-    let overwrite = false;
+  // What moved, as the backend reported it: followed once for the batch,
+  // even when it stopped part-way (src/path-refs.ts).
+  const moves: Move[] = [];
+  try {
+    for (let i = 0; i < paths.length && !batch.cancelled; i++) {
+      const from = paths[i];
+      // A Drive name can be "a/b" or "..": locally it must stay one plain name.
+      const name = isCloud(from) && !isCloud(destDir) ? safeLocalName(basename(from)) : basename(from);
+      const isDir = dirs.has(from);
+      const moving = move(from);
+      anyMove ||= moving;
+      let to = joinPath(destDir, name);
+      let overwrite = false;
 
-    // Same folder: in Drive `from` is an id path and `to` a pending name,
-    // so compare folders, not paths.
-    if (parentOf(from) === destDir.replace(/\/+$/, "") && basename(from) === name) {
-      // A copy into its own folder makes a duplicate, as in GNOME Files;
-      // moving into the same folder does nothing.
-      if (moving) continue;
-      to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
-    } else if (await pathExists(to)) {
-      let choice: ConflictChoice | null = applyToAll;
-      if (!choice) {
-        const answer = await askConflict(name, isDir, destDir, paths.length - i - 1);
-        choice = answer.choice;
-        if (answer.all) applyToAll = choice;
+      // Same folder: in Drive `from` is an id path and `to` a pending name,
+      // so compare folders, not paths.
+      if (parentOf(from) === destDir.replace(/\/+$/, "") && basename(from) === name) {
+        // A copy into its own folder makes a duplicate, as in GNOME Files;
+        // moving into the same folder does nothing.
+        if (moving) continue;
+        to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
+      } else if (await pathExists(to)) {
+        let choice: ConflictChoice | null = applyToAll;
+        if (!choice) {
+          const answer = await askConflict(name, isDir, destDir, paths.length - i - 1);
+          choice = answer.choice;
+          if (answer.all) applyToAll = choice;
+        }
+        if (choice === "cancel") {
+          batch.cancelled = true;
+          break;
+        }
+        if (choice === "skip") continue;
+        if (choice === "keepboth") to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
+        else overwrite = true;
       }
-      if (choice === "cancel") {
-        batch.cancelled = true;
-        break;
-      }
-      if (choice === "skip") continue;
-      if (choice === "keepboth") to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
-      else overwrite = true;
-    }
 
-    try {
-      done.push(await transferItem(op, from, to, overwrite, moving));
-      showLanded(destDir);
-    } catch (err) {
-      // A cancel is not a failure: no toast, finished items stay.
-      if (cleanError(err) === CANCELLED) batch.cancelled = true;
-      else errors.push(`“${name}”: ${cleanError(err)}`);
+      try {
+        const landed = await transferItem(op, from, to, overwrite, moving);
+        done.push(landed);
+        if (moving) moves.push({ from, to: landed });
+        showLanded(destDir);
+      } catch (err) {
+        // A cancel is not a failure: no toast, finished items stay.
+        if (cleanError(err) === CANCELLED) batch.cancelled = true;
+        else errors.push(`“${name}”: ${cleanError(err)}`);
+      }
     }
+  } finally {
+    pathRefs.moved(moves);
   }
 
   const verb = anyMove ? "move" : "copy";
@@ -3165,11 +3169,7 @@ async function trashPaths(paths: string[]): Promise<void> {
     }
   });
   endOperation(op);
-  if (clipboard) {
-    const gone = new Set(done);
-    clipboard.paths = clipboard.paths.filter((p) => !gone.has(p));
-    if (clipboard.paths.length === 0) clipboard = null;
-  }
+  pathRefs.gone(done);
   lastTrashed = undoable;
   if (errors.length) {
     showToast(`Could not move ${errors[0]} to the Trash`);
@@ -3911,7 +3911,7 @@ function showBatchRename(sel: Entry[]): void {
         const items = changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) }));
         await renameMany(items);
         // The backend renames all of them or, undoing what it did, none.
-        followMoves(items);
+        pathRefs.moved(items);
         dialog.close();
         showToast(`Renamed ${changed.length} ${changed.length === 1 ? "item" : "items"}`);
         await reload();
@@ -3964,7 +3964,7 @@ function startRename(entry: Entry): void {
       showValidation({ valid: false, message: cleanError(err), error: true }, input, message);
       return;
     }
-    followMove(entry.path, renamed);
+    pathRefs.moved([{ from: entry.path, to: renamed }]);
     handle.close();
     await reload([renamed]);
   };
@@ -4229,7 +4229,7 @@ function showPreviewRename(entry: Entry): void {
         showValidation({ valid: false, message: cleanError(err), error: true }, row, message);
         return false;
       }
-      followMove(entry.path, renamed);
+      pathRefs.moved([{ from: entry.path, to: renamed }]);
       await reload([renamed]);
       void showPreview({ ...entry, name: basename(renamed), path: renamed });
     },
