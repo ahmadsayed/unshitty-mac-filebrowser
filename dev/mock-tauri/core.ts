@@ -1,4 +1,5 @@
 import { encodeCloudName, placeOf, type Place } from "../../src/paths";
+import { fold } from "../../src/search";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
 // It serves a fake, in-memory home folder.
@@ -293,6 +294,9 @@ let mockShareSeq = 0;
 let mockLinkSeq = 0;
 let mockSharersOnline = true;
 let mockNoAccess = false;
+// The sharer dropped after Network last asked: the status still says online,
+// but listing fails as if offline.
+let mockSharerUnreachable = false;
 
 // Simulate unlocking in memory. Real cryptography is exercised by Rust tests.
 const mockProtectedLinks = new Map<string, { ticket: string; passphrase: string }>();
@@ -328,7 +332,7 @@ function unlockMockShare(link: string, passphrase?: string): string {
 }
 
 function listShare(path: string): Entry[] {
-  if (!mockSharersOnline) throw "Ahmed is offline.";
+  if (!mockSharersOnline || mockSharerUnreachable) throw "Ahmed is offline.";
   const entries = SHARE_FILES[path];
   if (!entries) throw "The shared folder was moved or deleted.";
   return entries.map((entry) => ({
@@ -498,6 +502,9 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
   setNoAccess(value: boolean) {
     mockNoAccess = value;
   },
+  setUnreachable(value: boolean) {
+    mockSharerUnreachable = value;
+  },
   holdReceived(hold: boolean) {
     receivedHeld = hold;
     if (!hold) receivedWaiters.splice(0).forEach((resolve) => resolve());
@@ -513,6 +520,7 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     mockLinkSeq = 0;
     mockSharersOnline = true;
     mockNoAccess = false;
+    mockSharerUnreachable = false;
   },
 };
 
@@ -691,17 +699,12 @@ function list(path: string, showHidden: boolean): Entry[] {
     }));
 }
 
-/** Recursive name search, bounded like the Rust command. */
-/** Lowercase without accents, like the backend's `fold`. */
-function fold(s: string): string {
-  return s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-}
-
 /** How many items one search looks at before giving up (the backend's `MAX_SEARCH_SCANNED`). */
 const MAX_SEARCH_SCANNED = 100_000;
 /** The mock sends matches in batches of this many, so the app sees results stream in. */
 const SEARCH_BATCH = 50;
 
+/** Recursive name search, bounded like the Rust command. */
 function search(path: string, query: string, showHidden: boolean, limit: number, channel?: Channel<Entry[]>) {
   const node = lookup(path);
   if (!node || !node.dir) throw `Failed to read directory: No such file or directory (os error 2)`;
@@ -729,6 +732,44 @@ function search(path: string, query: string, showHidden: boolean, limit: number,
   }
   for (let i = 0; i < out.length; i += SEARCH_BATCH) channel?.onmessage(out.slice(i, i + SEARCH_BATCH));
   return { stopped, scanned };
+}
+
+type SearchSummaryMock = ReturnType<typeof search>;
+/** A held search, answered when the test says so. */
+interface HeldSearch {
+  path: string;
+  query: string;
+  /** Walk now: send the batches, then end with the summary (or `summary` instead). */
+  answer(summary?: Partial<SearchSummaryMock>): void;
+  /** End with an error, as a vanished folder does. */
+  fail(error: string): void;
+}
+
+/** Tests hold searches to answer them late (each waits in `held`), and count
+ *  `cancel_search` calls. */
+export const searchMock = {
+  hold: false,
+  held: [] as HeldSearch[],
+  cancels: 0,
+};
+
+function searchCommand(a: Args): unknown {
+  const run = () => search(str(a, "path"), str(a, "query"), a.showHidden as boolean, a.limit as number, a.onResults as Channel<Entry[]> | undefined);
+  if (!searchMock.hold) return run();
+  return new Promise((resolve, reject) => {
+    searchMock.held.push({
+      path: str(a, "path"),
+      query: str(a, "query"),
+      answer: (summary) => {
+        try {
+          resolve({ ...run(), ...summary });
+        } catch (err) {
+          reject(err);
+        }
+      },
+      fail: reject,
+    });
+  });
 }
 
 function parentAndName(path: string): [Node | undefined, string] {
@@ -1062,6 +1103,31 @@ const thumbLog = { requested: [] as string[], cancelled: [] as number[] };
     thumbLog.cancelled.length = 0;
   },
 };
+
+// Folder counts can be held by tests, standing in for a slow disk, and every
+// request is logged (the folders asked for, one list per call).
+let countsHeld = false;
+const heldCounts: (() => void)[] = [];
+const countLog = { asked: [] as string[][] };
+
+(globalThis as Record<string, unknown>).__mockCounts = {
+  log: countLog,
+  hold(hold: boolean) {
+    countsHeld = hold;
+    if (!hold) heldCounts.splice(0).forEach((resolve) => resolve());
+  },
+  held: () => heldCounts.length,
+  reset() {
+    this.hold(false);
+    countLog.asked.length = 0;
+  },
+};
+
+async function itemCounts(paths: string[], showHidden: boolean): Promise<({ count: number; versioned: boolean } | null)[]> {
+  countLog.asked.push([...paths]);
+  if (countsHeld) await new Promise<void>((resolve) => heldCounts.push(resolve));
+  return paths.map((path) => (isLocal(path) ? folderSummary(path, showHidden) : null));
+}
 
 (globalThis as Record<string, unknown>).__mockOps = {
   hold() {
@@ -1759,17 +1825,11 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     const lists = { sftp: listSftp, share: listShare, drive: listDrive, local: (p: string) => list(localPath(p), a.showHidden as boolean) };
     return lists[placeOf(path)](path);
   },
-  search_dir: (a) =>
-    search(
-      str(a, "path"),
-      str(a, "query"),
-      a.showHidden as boolean,
-      a.limit as number,
-      a.onResults as Channel<Entry[]> | undefined,
-    ),
-  cancel_search: () => {},
-  item_counts: (a) =>
-    (a.paths as string[]).map((path) => (isLocal(path) ? folderSummary(path, a.showHidden as boolean) : null)),
+  search_dir: searchCommand,
+  cancel_search: () => {
+    searchMock.cancels += 1;
+  },
+  item_counts: (a) => itemCounts(a.paths as string[], a.showHidden as boolean),
   file_properties: (a) => {
     const path = str(a, "path");
     if (placeOf(path) === "share") throw "Properties aren't available for shared folders yet.";

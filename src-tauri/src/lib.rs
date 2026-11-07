@@ -787,8 +787,12 @@ async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result
     .await?
 }
 
-/// Serializes read-modify-write of `trash_log.json`.
-static TRASH_LOG: Mutex<()> = Mutex::new(());
+/// The home Trash and this app's log of it (`trash_ops::Trash`). Missing
+/// only when the home folder is unknown, which every Trash command reports.
+fn trash_of(app: &tauri::AppHandle) -> Result<tauri::State<'_, trash_ops::Trash>, String> {
+    app.try_state::<trash_ops::Trash>()
+        .ok_or_else(|| "The home folder is unknown".to_string())
+}
 
 fn home_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path().home_dir().map_err(|e| e.to_string())
@@ -833,7 +837,9 @@ fn trash_batch(
     };
     let (results, moves) =
         trash_ops::trash_routed(paths, |path| trash_elsewhere(app, path, progress), local);
-    log_trashed(app, &moves);
+    if let Ok(trash) = trash_of(app) {
+        trash.record(&moves);
+    }
     results.into_iter().map(TrashOutcome::from).collect()
 }
 
@@ -860,20 +866,6 @@ fn trash_elsewhere(
     Some(result)
 }
 
-/// Remember where trashed items went, for Undo and Restore.
-fn log_trashed(app: &tauri::AppHandle, moves: &[(PathBuf, PathBuf)]) {
-    let Ok(log_path) = config_file(app, "trash_log.json") else {
-        return;
-    };
-    if moves.is_empty() {
-        return;
-    }
-    let _guard = TRASH_LOG.lock().unwrap_or_else(|e| e.into_inner());
-    let mut log = trash_ops::read_log(&log_path);
-    trash_ops::record(&mut log, moves, recent::now());
-    let _ = config_store::write_json(&log_path, &log);
-}
-
 impl From<Result<Option<String>, String>> for TrashOutcome {
     fn from(result: Result<Option<String>, String>) -> Self {
         match result {
@@ -883,15 +875,6 @@ impl From<Result<Option<String>, String>> for TrashOutcome {
     }
 }
 
-/// Finder's "Put Back" records for the home Trash. macOS keeps them in the
-/// Trash's `.DS_Store`; other platforms have no such file.
-fn put_back(home: &Path) -> std::collections::HashMap<String, PathBuf> {
-    if cfg!(target_os = "macos") {
-        return trash_ops::read_put_back(&home.join(".Trash/.DS_Store"), Path::new("/"));
-    }
-    std::collections::HashMap::new()
-}
-
 /// Original location and trash date of items in the Trash.
 #[tauri::command]
 async fn trash_info(
@@ -899,13 +882,9 @@ async fn trash_info(
     paths: Vec<String>,
 ) -> Result<Vec<trash_ops::TrashInfo>, String> {
     blocking(move || {
-        let log = config_file(&app, "trash_log.json")
-            .map(|p| trash_ops::read_log(&p))
-            .unwrap_or_default();
-        let Ok(home) = home_dir(&app) else {
-            return Vec::new();
-        };
-        trash_ops::info(&paths, &home, &log, &put_back(&home))
+        trash_of(&app)
+            .map(|trash| trash.info(&paths))
+            .unwrap_or_default()
     })
     .await
 }
@@ -918,17 +897,7 @@ async fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, St
         return blocking(move || cloud::write::restore(&app.state::<CloudState>(), &path)).await?;
     }
     blocking(move || {
-        let log_path = config_file(&app, "trash_log.json")?;
-        let _guard = TRASH_LOG.lock().unwrap_or_else(|e| e.into_inner());
-        let mut log = trash_ops::read_log(&log_path);
-        let home = home_dir(&app)?;
-        let trashed = PathBuf::from(&path);
-        let trash_dir = trash_ops::trash_dir_for(&trashed, &home);
-        let origin = trash_ops::origin_of(&trashed, &trash_dir, &log, &put_back(&home))
-            .ok_or_else(|| "The original location is unknown".to_string())?;
-        trash_ops::restore(&trashed, &origin, &trash_dir)?;
-        log.items.remove(&path);
-        let _ = config_store::write_json(&log_path, &log);
+        let origin = trash_of(&app)?.restore(Path::new(&path))?;
         Ok(origin.to_string_lossy().to_string())
     })
     .await?
@@ -940,35 +909,22 @@ async fn delete_permanently(app: tauri::AppHandle, path: String) -> Result<(), S
     if place::kind(&path) == Kind::Drive {
         return Err(cloud::service::unsupported());
     }
-    blocking(move || {
-        let path = PathBuf::from(path);
-        let trash_dir = trash_ops::trash_dir_for(&path, &home_dir(&app)?);
-        trash_ops::delete_permanently(&path, &trash_dir)
-    })
-    .await?
+    blocking(move || trash_of(&app)?.delete_permanently(Path::new(&path))).await?
 }
 
 /// The folder the Trash view lists. On Linux this is
 /// `~/.local/share/Trash/files`, not `~/.Trash`, and is created if missing.
 #[tauri::command]
 fn trash_dir(app: tauri::AppHandle) -> String {
-    home_dir(&app)
-        .map(|home| {
-            trash_ops::ensure_items_root(&home)
-                .to_string_lossy()
-                .to_string()
-        })
+    trash_of(&app)
+        .map(|trash| trash.listing_root().to_string_lossy().to_string())
         .unwrap_or_default()
 }
 
-/// Delete everything in the home Trash.
-/// True when `path` is inside the user's Trash; versioned_root ignores it.
+/// True when `path` is inside the user's home Trash; versioned_root, shared
+/// folders and the program and disk-image actions refuse it.
 fn in_trash(app: &tauri::AppHandle, path: &Path) -> bool {
-    let Ok(home) = app.path().home_dir() else {
-        return false;
-    };
-    path.starts_with(trash_ops::home_trash(&home))
-        || path.starts_with(trash_ops::ensure_items_root(&home))
+    trash_of(app).is_ok_and(|trash| trash.contains(path))
 }
 
 fn mac_dmg_path(app: &tauri::AppHandle, path: &str) -> Result<PathBuf, String> {
@@ -1284,8 +1240,8 @@ async fn empty_trash(
 ) -> Result<(), String> {
     let tracking = Tracking::start(&app, &op, on_progress);
     let progress = tracking.progress.clone();
-    let home = home_dir(&app);
-    let result = blocking(move || trash_ops::empty(&trash_ops::home_trash(&home?), &progress)).await;
+    let worker = app.clone();
+    let result = blocking(move || trash_of(&worker)?.empty(&progress)).await;
     tracking.finish(&app);
     result?
 }
@@ -1994,6 +1950,10 @@ pub fn run() {
                 .path()
                 .app_cache_dir()
                 .unwrap_or_else(|_| PathBuf::from("."));
+            if let Ok(home) = app.path().home_dir() {
+                let log = config_file(app.handle(), "trash_log.json").ok();
+                app.manage(trash_ops::Trash::new(home, log));
+            }
             let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("/"));
             app.manage(VersionsState::new(config_dir.join("versioned.json")));
             app.manage(progress::Registry::default());
@@ -2418,6 +2378,27 @@ mod write_guard_tests {
         block_on(compress_archive(vec![file], zip.clone(), "zip".into())).unwrap();
         let out = block_on(extract_archive(zip, local(&dir, "out"), true)).unwrap();
         assert_eq!(out.files, 1);
+    }
+}
+
+/// The frontend folds names too (`src/search.ts`), to filter the folder
+/// before the recursive search answers. Both run these cases, so the two
+/// copies can't drift. Kept out of `fs_ops.rs` so that file still builds on
+/// its own in a scratch crate.
+#[cfg(test)]
+mod fold_tests {
+    use crate::fs_ops::fold;
+
+    #[test]
+    fn fold_agrees_with_the_frontend() {
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../tests/fold-cases.json")).unwrap();
+        assert!(cases.len() >= 10);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let why = case["why"].as_str().unwrap();
+            assert_eq!(fold(name), case["folded"].as_str().unwrap(), "{why}");
+        }
     }
 }
 
