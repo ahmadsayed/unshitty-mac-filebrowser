@@ -248,31 +248,71 @@ export function isAppBundle(entry: Entry): boolean {
   return entry.is_dir && /\.app$/i.test(entry.name);
 }
 
-/** Full-colour icon for a listing entry; `folderKind` comes from the XDG folder map. */
 /** The badge for a folder that keeps versions (also used in the path bar and sidebar). */
 export function versionsBadge(className = "emblem emblem-versions"): string {
   return `<span class="${className}" title="Keeps versions">${sym("emblem-versions")}</span>`;
 }
 
-export function entryIcon(entry: Entry, folderKind: FolderKind = "plain", versioned = false): string {
+// ---------------------------------------------------------------------------
+// Item icons: a picture and the emblems on top. The one place that decides
+// which emblems show on which picture, and in what order; the views' CSS
+// targets this markup.
+// ---------------------------------------------------------------------------
+
+/** What an item's icon shows under its emblems: the app's drawing (with the
+ *  folder's XDG kind), the OS's icon, a thumbnail (both blob: URLs the app
+ *  made), or a symbolic glyph in place of a picture (an SSH server's). */
+export type IconBase =
+  | { drawn: FolderKind }
+  | { native: string }
+  | { thumb: string }
+  | { glyph: string };
+
+/** The emblems an item may carry: a symbolic link, a folder that keeps
+ *  versions, a folder this computer shares (or anything in Network). */
+export interface Emblems {
+  link: boolean;
+  versions: boolean;
+  shared: boolean;
+}
+
+const LINK_EMBLEM = `<span class="emblem">${sym("emblem-symbolic-link")}</span>`;
+const SHARED_EMBLEM = `<span class="emblem">${sym("network-workgroup")}</span>`;
+
+/** The app's full-colour drawing; a stacked folder has a darker one behind it. */
+function drawing(entry: Entry, folderKind: FolderKind, stacked: boolean): string {
   // macOS app bundles are folders, but show (and open) as applications.
-  const app = isAppBundle(entry);
-  const id = app
+  const id = isAppBundle(entry)
     ? "fc-file-executable"
     : entry.is_dir
       ? `fc-folder-${folderKind}`
       : `fc-file-${fileKind(entry.name)}`;
-  const stacked = versioned && entry.is_dir && !app;
   const back = stacked ? `<use href="#fc-folder-back" transform="translate(5 -5)"/>` : "";
   const svg = `<svg class="fc" viewBox="0 0 64 64" aria-hidden="true">${back}<use href="#${id}"/></svg>`;
-  const icon = stacked
-    ? `<span class="versioned-icon" title="Keeps versions">${svg}</span>`
-    : svg;
-  const link = entry.is_symlink
-    ? `<span class="emblem">${sym("emblem-symbolic-link")}</span>`
-    : "";
-  const versions = versioned && !stacked ? versionsBadge() : "";
-  return `${icon}${link}${versions}`;
+  return stacked ? `<span class="versioned-icon" title="Keeps versions">${svg}</span>` : svg;
+}
+
+/** An item's icon. Emblems follow the picture in this order: link, versions,
+ *  shared. A glyph carries none, a thumbnail only the link. A folder the app
+ *  draws (not an app bundle) shows that it keeps versions by being stacked;
+ *  every other picture gets the badge. */
+export function itemIcon(entry: Entry, base: IconBase, emblems: Emblems): string {
+  if ("glyph" in base) return `<span class="server-glyph">${sym(base.glyph)}</span>`;
+  const link = emblems.link ? LINK_EMBLEM : "";
+  if ("thumb" in base) return `<img class="thumb" src="${base.thumb}" alt="" draggable="false">${link}`;
+  const stacked = "drawn" in base && emblems.versions && entry.is_dir && !isAppBundle(entry);
+  const picture = "drawn" in base
+    ? drawing(entry, base.drawn, stacked)
+    : `<img class="native-icon" src="${base.native}" alt="" draggable="false">`;
+  const versions = emblems.versions && !stacked ? versionsBadge() : "";
+  const shared = emblems.shared ? SHARED_EMBLEM : "";
+  return `${picture}${link}${versions}${shared}`;
+}
+
+/** The app's drawing of an entry with its link and versions emblems;
+ *  `folderKind` comes from the XDG folder map. */
+export function entryIcon(entry: Entry, folderKind: FolderKind = "plain", versioned = false): string {
+  return itemIcon(entry, { drawn: folderKind }, { link: entry.is_symlink, versions: versioned, shared: false });
 }
 
 const FOLDER_KINDS: FolderKind[] = ["plain", "home", "desktop", "documents", "download", "music", "pictures", "videos", "publicshare", "templates"];
