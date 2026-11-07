@@ -4781,12 +4781,12 @@ const VIEW_SHORTCUTS: Shortcut[] = [
   [(k) => plainMod(k, "c") && selection.size > 0, () => setClipboard("copy")],
   [(k) => plainMod(k, "x") && selection.size > 0, () => setClipboard("cut")],
   [(k) => plainMod(k, "v") && !!clipboard && !isPseudo(location), () => paste(location)],
-  [(k) => plainMod(k, "i") && selection.size === 1 && hasProperties(selectedEntries()[0].path), showSelectedProperties],
+  [(k) => plainMod(k, "i") && selection.size === 1, showSelectedProperties],
 ];
 
 function showSelectedProperties(): void {
   const entry = selectedEntries()[0];
-  if (entry) showProperties(entry);
+  if (entry && hasProperties(entry.path)) showProperties(entry);
 }
 
 function onGlobalKeyDown(e: KeyboardEvent): void {

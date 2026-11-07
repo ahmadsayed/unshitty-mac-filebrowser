@@ -3,7 +3,7 @@
 import { beforeAll, describe, expect, test } from "vitest";
 import { LAYOUT_SIZES } from "../src/theme";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, closeOverlays, cursorName, dialogHeading, item, key, names, open, prefs, selectedNames, settle, title } from "./app";
+import { $, $$, boot, closeOverlays, cursorName, dialogHeading, item, key, names, open, prefs, selectedNames, settle, title, type } from "./app";
 
 beforeAll(async () => {
   await boot();
@@ -157,6 +157,26 @@ describe("global shortcuts", () => {
     await settle(10);
     expect(dialogHeading()).toBe("Properties");
     await closeOverlays();
+  });
+
+  test("⌘I does nothing when a search hides the selected item", async () => {
+    await home();
+    await key("Home");
+    expect(selectedNames()).toHaveLength(1);
+    await key("f", { mod: true });
+    await type($<HTMLInputElement>("#search-entry"), "matches-nothing-at-all");
+    await settle(20);
+    expect(names()).toEqual([]);
+    const errors: unknown[] = [];
+    const onError = (e: ErrorEvent) => errors.push(e.error);
+    window.addEventListener("error", onError);
+    $("#view").focus();
+    await key("i", { mod: true, target: $("#view") });
+    await settle(10);
+    window.removeEventListener("error", onError);
+    expect(errors).toEqual([]);
+    expect(dialogHeading()).toBeUndefined();
+    await key("Escape", { target: $("#search-entry") });
   });
 
   test("⌘Z undoes the last Move to Trash", async () => {
