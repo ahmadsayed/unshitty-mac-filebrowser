@@ -1578,6 +1578,7 @@ dependencies = [
  "iroh",
  "iroh-blobs",
  "keyring",
+ "libc",
  "minisign-verify",
  "n0-future",
  "notify",

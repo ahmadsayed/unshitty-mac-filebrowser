@@ -449,9 +449,9 @@ export interface TrashInfo {
   trashed: number;
 }
 
-/** Original location and trash date of items in the Trash. */
-export async function trashInfo(paths: string[]): Promise<TrashInfo[]> {
-  return invoke<TrashInfo[]>("trash_info", { paths });
+/** Original location and trash date of items in the Trash; null for a path that isn't on this computer. */
+export async function trashInfo(paths: string[]): Promise<(TrashInfo | null)[]> {
+  return invoke<(TrashInfo | null)[]>("trash_info", { paths });
 }
 
 /** Move an item in the Trash back to where it came from; resolves with that path. */
@@ -506,24 +506,17 @@ export async function starredFiles(showHidden: boolean): Promise<Entry[]> {
   return invoke<Entry[]>("starred_files", { showHidden });
 }
 
-/** Open a local file or downloaded remote file with its default application. */
+/**
+ * Open a file with its default application. The backend says what to open
+ * (`open_target`): a local file as it is; a Drive, share or SSH file as a
+ * copy it downloads first, as operation `tracked`; a Google Docs file's page.
+ */
 export async function openFile(path: string, tracked?: Tracked): Promise<void> {
-  if (path.startsWith("gdrive://")) {
-    const target = await invoke<DriveOpenTarget>("drive_open", { path, ...trackedArgs(tracked) });
-    return target.kind === "url" ? openExternal(target.url) : invoke<void>("open_file", { path: target.path });
-  }
-  if (path.startsWith("share://")) {
-    const localPath = await invoke<string>("share_open", { path, ...trackedArgs(tracked) });
-    return invoke<void>("open_file", { path: localPath });
-  }
-  if (path.startsWith("sftp://")) {
-    const localPath = await invoke<string>("sftp_open", { path, ...trackedArgs(tracked) });
-    return invoke<void>("open_file", { path: localPath });
-  }
-  return invoke<void>("open_file", { path });
+  const target = await invoke<OpenTarget>("open_target", { path, ...trackedArgs(tracked) });
+  return target.kind === "url" ? openExternal(target.url) : invoke<void>("open_file", { path: target.path });
 }
 
-export type DriveOpenTarget =
+export type OpenTarget =
   | { kind: "file"; path: string }
   | { kind: "url"; url: string };
 

@@ -47,9 +47,10 @@ import { Selection, type Mark } from "./selection";
 import { arrangeSearch, fold, SEARCH_LIMIT, SearchSession, searchSections as arrangedSections, type SearchChange, type SearchSection } from "./search";
 import { FolderSummaries } from "./folder-summaries";
 import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
+import { PathRefs, type Clip } from "./path-refs";
 import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
-import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
+import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -106,6 +107,9 @@ const NETWORK = `${PSEUDO_PREFIX}network`;
 
 /** Current location: an absolute path, or "pseudo:<name>". */
 let location = "";
+/** Goes up each time navigate() shows a location: a reload asked for before
+ *  drops what it learns after that, like the other late answers (#154). */
+let viewSeq = 0;
 /** Nearest folder that keeps versions, if the current location is in one. */
 let versionedRootPath: string | null = null;
 let entries: Entry[] = [];
@@ -153,9 +157,12 @@ let tabs: TabState[] = [];
 let activeTab = -1;
 /** Serialises tab switches so two async restores can't race. */
 let tabBusy = false;
+/** The tab being switched to while its folder is listed: a navigation that
+ *  shows before it does shows in this tab, on top of its history (#154). */
+let arrivingTab: TabState | null = null;
 
 /** Files copied or cut, waiting to be pasted. */
-let clipboard: { paths: string[]; dirs: Set<string>; mode: "copy" | "cut" } | null = null;
+let clipboard: Clip | null = null;
 
 /** Starred files and folders. */
 let starred = new Set<string>();
@@ -164,6 +171,43 @@ let starred = new Set<string>();
 let pins: string[] = [];
 /** Paths the sidebar always shows (places, default bookmarks, volumes). */
 const fixedSidebarPaths = new Set<string>();
+
+/** What remembers paths (stars, bookmarks, the clipboard, tabs and their
+ *  history) follows moved, renamed and trashed items through this
+ *  (src/path-refs.ts). */
+const pathRefs = new PathRefs<TabState>({
+  stars: {
+    get: () => starred,
+    set: (next) => {
+      starred = next;
+      void persistStarred();
+    },
+  },
+  bookmarks: {
+    get: () => pins,
+    set: (next) => {
+      // The folder moved already: the sidebar shows where it is now, saved or not.
+      pins = next;
+      renderPins();
+      savePins(next).catch((err) => showToast(`Could not save bookmarks: ${cleanError(err)}`));
+    },
+  },
+  clipboard: {
+    get: () => clipboard,
+    set: (next) => {
+      clipboard = next;
+    },
+  },
+  tabs: {
+    get: () => ({ list: tabs, active: activeTab, back: backStack, forward: forwardStack }),
+    set: (next) => {
+      tabs = next.list;
+      backStack = next.back;
+      forwardStack = next.forward;
+      renderTabbar();
+    },
+  },
+});
 
 let home = "";
 let trashPath = "";
@@ -260,6 +304,21 @@ function networkEntries(): Entry[] {
 /** The SSH server a Network entry stands for. */
 function serverFor(entry: Entry): SftpServer | undefined {
   return isSftpPath(entry.path) ? sftpServerList.find((server) => server.url === entry.path) : undefined;
+}
+
+/** The Network entry that stands for `path`: on an SSH server, the server's
+ *  entry, whose path is where the server starts (the home on it, or the
+ *  path typed), not its root. Any other path stands for itself. */
+function networkEntryFor(path: string): string {
+  if (!isSftpPath(path)) return path;
+  const authority = sftpAuthority(path);
+  return sftpServerList.find((server) => sftpAuthority(server.url) === authority)?.url ?? path;
+}
+
+/** What to select on arriving in `loc`: in Network, a server's root
+ *  selects the server (Up from its root). */
+function selectionOn(loc: string, select: string | undefined): string | undefined {
+  return loc === NETWORK && select ? networkEntryFor(select) : select;
 }
 
 /** Network's second line: who shared a folder, or what kind of server it is. */
@@ -463,12 +522,18 @@ function renderTabbar(): void {
   tabbar.replaceChildren(next);
 }
 
-/** Restore a saved tab into the live view; false when its folder can't be listed. */
+/** Restore a saved tab into the live view; false when its folder can't be listed.
+ *  Its history comes back as its folder shows (`showLocation`). */
 async function restoreTab(tab: TabState): Promise<boolean> {
-  const ok = await navigate(tab.location, { history: "none" });
-  if (!ok) return false;
-  backStack = [...tab.back];
-  forwardStack = [...tab.forward];
+  let went: Navigated;
+  try {
+    went = await navigate(tab.location, { history: "none", tab });
+  } finally {
+    if (arrivingTab === tab) arrivingTab = null;
+  }
+  if (went === "kept") return false;
+  // A later navigation showed first: it shows in this tab instead.
+  if (went === "overtaken") return true;
   if (tab.search !== null) {
     // navigate() closed the search; open it again the way the search button
     // does, so the placeholder names this folder and the recursive search runs.
@@ -565,50 +630,101 @@ function openNewWindow(): void {
 // Navigation
 // ---------------------------------------------------------------------------
 
+/** How a navigation moves along the history once it shows: a new place
+ *  ("push"), one step "back" or "forward", or not at all ("none"). */
+type HistoryMove = "push" | "back" | "forward" | "none";
+
+interface NavigateOptions {
+  history?: HistoryMove;
+  select?: string;
+  /** A tab switch's navigation: only a later navigation that shows overtakes
+   *  it, so the tab still shows when that one fails. */
+  tab?: TabState;
+}
+
+/** What became of a navigate(): "shown" it went there; "kept" the folder
+ *  couldn't be listed, so the view stayed and a toast said why; "overtaken"
+ *  a later navigation started (for a tab switch: showed) before this one
+ *  could show (#154). */
+type Navigated = "shown" | "kept" | "overtaken";
+
+/** What navigate() found at a location: its items, or the error or the
+ *  share status page to show instead. */
+interface Arrival {
+  next: Entry[];
+  error: string | null;
+  page: "offline" | "no-access" | "missing" | null;
+  /** The item to select there: in Network, the entry for the wanted path. */
+  select: string | undefined;
+}
+
+/** Goes up with each navigate(): only the latest one shows its location. */
+let navigationSeq = 0;
+
 /**
  * Go to `loc`. Listing happens before anything changes, so a folder that
  * can't be read leaves the current view intact and shows a toast instead.
+ * The latest navigation wins: one that a later one overtook while it
+ * waited changes nothing, whichever answer lands first.
  */
-async function navigate(loc: string, opts: { history?: "push" | "none"; select?: string } = {}): Promise<boolean> {
+async function navigate(loc: string, opts: NavigateOptions = {}): Promise<Navigated> {
+  const seq = ++navigationSeq;
+  const view = viewSeq;
+  const overtaken = opts.tab ? () => view !== viewSeq : () => seq !== navigationSeq;
+  if (opts.tab) arrivingTab = opts.tab;
   if (search.isOpen) closeSearch(false);
   closePreview();
 
   // Started now so it runs alongside the listing instead of after it.
   const rootLookup = lookupVersionedRoot(loc);
-  let next: Entry[] = [];
-  let error: string | null = null;
-  let page: typeof sharePage = null;
+  const arrival = await arrive(loc, overtaken, opts.select);
+  if (overtaken()) return "overtaken";
+  if (!arrival) return "kept";
+  await itemIcons.listingStarted(loc, arrival.next);
+  const root = await rootLookup;
+  if (overtaken()) return "overtaken";
+  showLocation(loc, arrival, root, opts);
+  return "shown";
+}
+
+/** List `loc` for navigate(). Null when the view keeps its place: a toast
+ *  said why, or no toast because a later navigation overtook this one. */
+async function arrive(loc: string, overtaken: () => boolean, wanted: string | undefined): Promise<Arrival | null> {
   if (loc === NETWORK) await Promise.all([refreshShares(), refreshSftpServers()]);
+  // Asked after the refresh: the server list says which entry is whose.
+  const arrival: Arrival = { next: [], error: null, page: null, select: selectionOn(loc, wanted) };
   const shared = isSharePath(loc) ? receivedFor(loc) : undefined;
   if (shared && shared.status !== "online") {
-    page = shared.status;
+    arrival.page = shared.status;
   } else if (hasEntries(loc)) {
     try {
-      next = await listLocation(loc);
+      arrival.next = await listLocation(loc);
     } catch (err) {
+      if (overtaken()) return null;
       const failed = listingReaction(loc, err, listingContext(loc, location ? "navigate" : "first"));
-      if (failed.kind === "sharePage") page = failed.status;
-      else if (failed.kind === "toast") {
+      if (failed.kind === "toast") {
         showListingToast(failed);
-        return false;
-      } else error = failed.message;
+        return null;
+      }
+      if (failed.kind === "sharePage") arrival.page = failed.status;
+      else arrival.error = failed.message;
     }
   }
+  return arrival;
+}
 
-  await itemIcons.listingStarted(loc, next);
-
-  if (opts.history !== "none" && location && loc !== location) {
-    backStack.push(location);
-    forwardStack = [];
-  }
-
+/** navigate()'s last step, with nothing left to wait for: the view shows `loc`. */
+function showLocation(loc: string, arrival: Arrival, root: string | null, opts: NavigateOptions): void {
+  const from = arrivingTab ? takeTabHistory(arrivingTab) : location;
+  moveInHistory(loc, from, opts.history ?? "push");
   location = loc;
-  sharePage = page;
-  versionedRootPath = await rootLookup;
-  entries = next;
-  listingError = error;
+  viewSeq++;
+  sharePage = arrival.page;
+  versionedRootPath = root;
+  entries = arrival.next;
+  listingError = arrival.error;
   summaries.reset();
-  selection.reset(opts.select);
+  selection.reset(arrival.select);
   if (search.isOpen) moveSearchHere();
 
   document.title = locationName(loc);
@@ -620,9 +736,33 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   updateShareSubtitle();
   renderView();
   scrollEl.scrollTop = 0;
-  if (opts.select) revealPath(opts.select);
+  if (arrival.select) revealPath(arrival.select);
   viewEl.focus({ preventScroll: true });
-  return true;
+}
+
+/** The tab being switched to shows now, or a later navigation does in its
+ *  place: the view takes the tab's history first. Returns where the tab was. */
+function takeTabHistory(tab: TabState): string {
+  backStack = [...tab.back];
+  forwardStack = [...tab.forward];
+  arrivingTab = null;
+  return tab.location;
+}
+
+/** Move along the history from `from` as a navigation to `loc` shows. Back
+ *  and Forward take their step only then: one that fails or is overtaken
+ *  leaves the history as it was. */
+function moveInHistory(loc: string, from: string, move: HistoryMove): void {
+  if (move === "back") {
+    backStack.pop();
+    forwardStack.push(from);
+  } else if (move === "forward") {
+    forwardStack.pop();
+    backStack.push(from);
+  } else if (move === "push" && from && loc !== from) {
+    backStack.push(from);
+    forwardStack = [];
+  }
 }
 
 /** Re-list the current folder, keeping the selection where possible. */
@@ -634,17 +774,13 @@ async function reload(select?: string[]): Promise<void> {
     return;
   }
   if (!hasEntries(location)) return;
+  // The view may go somewhere else while this waits: what lands after that is dropped.
+  const seq = viewSeq;
+  const moved = () => seq !== viewSeq;
   if (isSharePath(location) || location === NETWORK) await refreshShares();
   if (location === NETWORK) await refreshSftpServers();
-  if (showShareStatusPage()) return;
-  try {
-    entries = await listLocation(location);
-    listingError = null;
-    sharePage = null;
-    itemIcons.listingReloaded();
-  } catch (err) {
-    if (await listingFailed(err)) return;
-  }
+  if (moved() || showShareStatusPage()) return;
+  if (!(await relist(moved))) return;
   selection.retain(select ?? selection.paths(), entries);
   const mark = selection.mark();
   const top = scrollEl.scrollTop;
@@ -652,9 +788,28 @@ async function reload(select?: string[]): Promise<void> {
   scrollEl.scrollTop = top;
   if (select?.[0]) revealPath(select[0]);
   else followCursor(mark);
-  versionedRootPath = await lookupVersionedRoot(location);
+  const root = await lookupVersionedRoot(location);
+  if (moved()) return;
+  versionedRootPath = root;
   updateShareSubtitle();
   search.rerun();
+}
+
+/** List the location again for reload(). False when there is nothing more
+ *  for it to do: the view moved on meanwhile, or went to the parent instead. */
+async function relist(moved: () => boolean): Promise<boolean> {
+  try {
+    const listed = await listLocation(location);
+    if (moved()) return false;
+    entries = listed;
+    listingError = null;
+    sharePage = null;
+    itemIcons.listingReloaded();
+    summaries.reloaded();
+    return true;
+  } catch (err) {
+    return !moved() && !(await listingFailed(err));
+  }
 }
 
 /** After a reload, keep the cursor and anchor on the same items: new ones
@@ -683,7 +838,7 @@ async function listingFailed(err: unknown): Promise<boolean> {
     return false;
   }
   // A folder that went away goes to its parent, or shows the error page if that fails too.
-  if (failed.kind === "goTo" && (await navigate(failed.parent, { history: "none" }))) return true;
+  if (failed.kind === "goTo" && (await navigate(failed.parent, { history: "none" })) !== "kept") return true;
   listingError = failed.message;
   return false;
 }
@@ -736,26 +891,22 @@ function openSettingsSafely(): void {
   openFullDiskAccessSettings().catch((err) => showToast(`Could not open System Settings: ${cleanError(err)}`));
 }
 
+/** The history Back and Forward step along: the tab being switched to brings its own. */
+function historyNow(): { back: string[]; forward: string[]; at: string } {
+  const tab = arrivingTab;
+  return tab ? { back: tab.back, forward: tab.forward, at: tab.location } : { back: backStack, forward: forwardStack, at: location };
+}
+
 function goBack(): void {
-  const prev = backStack.pop();
-  if (!prev) return;
-  const from = location;
-  navigate(prev, { history: "none", select: childOf(prev, from) }).then((ok) => {
-    if (ok) forwardStack.push(from);
-    else backStack.push(prev);
-    updateNavButtons();
-  });
+  const { back, at } = historyNow();
+  const prev = back[back.length - 1];
+  if (prev) void navigate(prev, { history: "back", select: childOf(prev, at) });
 }
 
 function goForward(): void {
-  const next = forwardStack.pop();
-  if (!next) return;
-  const from = location;
-  navigate(next, { history: "none" }).then((ok) => {
-    if (ok) backStack.push(from);
-    else forwardStack.push(next);
-    updateNavButtons();
-  });
+  const { forward } = historyNow();
+  const next = forward[forward.length - 1];
+  if (next) void navigate(next, { history: "forward" });
 }
 
 function goUp(): void {
@@ -889,9 +1040,14 @@ async function submitPathEntry(): Promise<void> {
   }
   const typed = resolved.path;
   if (!typed) return;
+  // Going there waits for the check: a navigation started meanwhile (a click
+  // in the sidebar) is the later one, so the typed path is dropped, silently.
+  const seq = navigationSeq;
+  const overtaken = () => seq !== navigationSeq;
   try {
     await listDir(typed, prefs.showHidden);
   } catch (err) {
+    if (overtaken()) return;
     const failed = listingReaction(typed, err, listingContext(typed, "entry"));
     if (failed.kind === "connect") {
       closePathEntry();
@@ -902,6 +1058,7 @@ async function submitPathEntry(): Promise<void> {
     pathEntry.focus();
     return;
   }
+  if (overtaken()) return;
   closePathEntry();
   await navigate(typed);
 }
@@ -1759,7 +1916,7 @@ function updateFloatingBar(): void {
       text = `“${e.name}” selected`;
     } else if (e.is_dir) {
       const n = summaries.count(e.path);
-      if (n === undefined) fetchCount(e.path);
+      fetchCount(e.path);
       text = `“${e.name}” selected` + (n === undefined || n === null ? "" : ` (containing ${n === 1 ? "1 item" : `${n.toLocaleString()} items`})`);
     } else {
       text = `“${e.name}” selected (${formatSize(e.size)})`;
@@ -1780,7 +1937,8 @@ function updateFloatingBar(): void {
 }
 
 /** The selected folder's count, for the floating bar, which `summaries` updates when it lands
- *  (on macOS its icon is asked for again then: see `itemIcons.recounted`). */
+ *  (on macOS its icon is asked for again then: see `itemIcons.recounted`). It asks only for a
+ *  count it doesn't know, or one a reload may have changed. */
 function fetchCount(path: string): void {
   summaries.one(path, prefs.showHidden);
 }
@@ -2118,19 +2276,21 @@ async function showNewDocumentDialog(): Promise<void> {
     responses: [{ id: "cancel", label: "Cancel" }],
     defaultResponse: "cancel",
     closeResponse: "cancel",
+    // Nothing else responds while a document is made; a failure stays in the dialog.
+    busy: { status: message },
   });
 
-  const create = async (name: string, make: (dest: string) => Promise<void>) => {
-    const dest = joinPath(location, name);
-    try {
+  /** Make `fileName` (or "fileName 2", …) here as the dialog's one action in flight. */
+  const create = (fileName: string, make: (dest: string) => Promise<void>) =>
+    void dialog.run(async () => {
+      const dir = location;
+      const name = await freeDocumentName(dir, fileName);
+      const dest = joinPath(dir, name);
       await make(dest);
       dialog.close();
       await reload([dest]);
       showToast(`Created “${name}”`);
-    } catch (err) {
-      message.textContent = cleanError(err);
-    }
-  };
+    });
   const addChoice = (label: string, action: () => void) => {
     const button = document.createElement("button");
     button.className = "app-choice";
@@ -2148,24 +2308,16 @@ async function showNewDocumentDialog(): Promise<void> {
     extra.insertBefore(button, message);
   };
 
-  addChoice("Empty Text File", () =>
-    void (async () => {
-      const name = await freeDocumentName(location, "Untitled.txt");
-      await create(name, (dest) => createFile(dest));
-    })()
-  );
+  addChoice("Empty Text File", () => create("Untitled.txt", (dest) => createFile(dest)));
 
   try {
     const templates = (await listTemplates()).filter((entry) => !entry.is_dir);
     loading.remove();
     for (const template of templates) {
       addChoice(template.name, () =>
-        void (async () => {
-          const name = await freeDocumentName(location, template.name);
-          await create(name, async (dest) => {
-            await copyEntry(template.path, dest, false);
-          });
-        })()
+        create(template.name, async (dest) => {
+          await copyEntry(template.path, dest, false);
+        })
       );
     }
   } catch (err) {
@@ -2612,23 +2764,15 @@ function showPermissionsDialog(path: string, mode: number, onSaved: () => void):
   message.className = "field-message perm-message";
   extra.append(matrix, message);
 
-  let dialog: ReturnType<typeof openDialog>;
-  const apply = async () => {
+  const chosen = () => {
     let next = 0;
     extra.querySelectorAll<HTMLInputElement>("input[data-bit]").forEach((input) => {
       if (input.checked) next |= Number(input.dataset.bit);
     });
-    try {
-      await setPermissions(path, next);
-      dialog.close();
-      showToast("Permissions changed");
-      onSaved();
-    } catch (err) {
-      message.textContent = cleanError(err);
-    }
+    return next;
   };
 
-  dialog = openDialog({
+  const dialog = openDialog({
     heading: "Permissions",
     body: "Choose what the owner, group and others can do.",
     extra,
@@ -2639,9 +2783,15 @@ function showPermissionsDialog(path: string, mode: number, onSaved: () => void):
     ],
     defaultResponse: "change",
     closeResponse: "cancel",
-    onResponse: (id) => {
+    // Nothing else responds while they change; a failure stays in the dialog.
+    busy: { status: message },
+    onResponse: async (id) => {
       if (id !== "change") return;
-      void apply();
+      await setPermissions(path, chosen());
+      // Closed before onSaved reopens Properties.
+      dialog.close();
+      showToast("Permissions changed");
+      onSaved();
       return false;
     },
   });
@@ -2784,29 +2934,6 @@ async function persistStarred(): Promise<void> {
   } catch (err) {
     showToast(`Could not save starred files: ${cleanError(err)}`);
   }
-}
-
-/** Keep stars on items renamed or moved from `from` to `to`, and on anything inside them. */
-function followMove(from: string, to: string): void {
-  followMoves([{ from, to }]);
-}
-
-/** `followMove` for several items at once, saving the stars once. */
-function followMoves(moves: { from: string; to: string }[]): void {
-  let changed = false;
-  for (const { from, to } of moves) {
-    const next = new Set<string>();
-    for (const p of starred) {
-      if (isWithin(p, from)) {
-        next.add(to + p.slice(from.length));
-        changed = true;
-      } else {
-        next.add(p);
-      }
-    }
-    starred = next;
-  }
-  if (changed) persistStarred();
 }
 
 /** Show the folder holding `entry`, with it selected. */
@@ -2983,7 +3110,10 @@ async function transferItem(op: Operation, from: string, to: string, overwrite: 
   try {
     const result = moving ? await moveEntry(from, to, overwrite, tracked) : await copyEntry(from, to, overwrite, tracked);
     await Promise.race([last, new Promise((resolve) => setTimeout(resolve, LAST_UPDATE_MS))]);
-    if (moving) followMove(from, result);
+    // Followed as it lands, so stars and bookmarks are saved before the rest
+    // of the batch (src/path-refs.ts): the user can rename this item, or
+    // close the window, while a name clash or a long item still waits.
+    if (moving) pathRefs.moved([{ from, to: result }]);
     return result;
   } finally {
     finished = true;
@@ -3081,9 +3211,11 @@ async function transferBatch(
 async function paste(destDir: string): Promise<void> {
   if (refuse("paste", { kind: locationKind(destDir, trashPath), items: [] }) || !clipboard) return;
   const { paths, dirs, mode } = clipboard;
+  const pasting = clipboard;
   const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir);
-  // A cut is only consumed once every item has been dealt with.
-  if (mode === "cut" && complete && clipboard?.paths === paths) {
+  // A cut is only consumed once every item has been dealt with. Its paths
+  // follow the items it moved (src/path-refs.ts): it's known by its object.
+  if (mode === "cut" && complete && clipboard === pasting) {
     clipboard = null;
     refreshCutMarks();
   }
@@ -3165,11 +3297,7 @@ async function trashPaths(paths: string[]): Promise<void> {
     }
   });
   endOperation(op);
-  if (clipboard) {
-    const gone = new Set(done);
-    clipboard.paths = clipboard.paths.filter((p) => !gone.has(p));
-    if (clipboard.paths.length === 0) clipboard = null;
-  }
+  pathRefs.gone(done);
   lastTrashed = undoable;
   if (errors.length) {
     showToast(`Could not move ${errors[0]} to the Trash`);
@@ -3911,7 +4039,7 @@ function showBatchRename(sel: Entry[]): void {
         const items = changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) }));
         await renameMany(items);
         // The backend renames all of them or, undoing what it did, none.
-        followMoves(items);
+        pathRefs.moved(items);
         dialog.close();
         showToast(`Renamed ${changed.length} ${changed.length === 1 ? "item" : "items"}`);
         await reload();
@@ -3946,25 +4074,31 @@ function startRename(entry: Entry): void {
   const button = box.querySelector("button")!;
   const message = box.querySelector<HTMLElement>(".field-message")!;
   input.value = entry.name;
+  /** A rename is in flight: a second Enter or click waits for it. */
+  let renaming = false;
 
   const validate = () => {
     const v = validateName(input.value, entry.is_dir, entry.name, siblingsOf(entry));
     showValidation(v, input, message);
-    button.disabled = !v.valid;
+    button.disabled = !v.valid || renaming;
     return v.valid;
   };
 
   const submit = async () => {
-    if (!validate()) return;
+    if (renaming || !validate()) return;
+    renaming = true;
     button.disabled = true;
     let renamed: string;
     try {
       renamed = await renameInPlace(entry, input.value);
     } catch (err) {
+      renaming = false;
+      // Rename as the name wants it, so a click can try again like Enter.
+      validate();
       showValidation({ valid: false, message: cleanError(err), error: true }, input, message);
       return;
     }
-    followMove(entry.path, renamed);
+    pathRefs.moved([{ from: entry.path, to: renamed }]);
     handle.close();
     await reload([renamed]);
   };
@@ -4169,9 +4303,15 @@ const PREVIEW_RUN: Record<PreviewAction, (entry: Entry) => void> = {
   },
 };
 
+/** Whether `entry` is shown away from its folder: a search result, or an item
+ *  in Recent or Starred. Network's entries are its own, though a server's
+ *  path is where it starts on the server, so its parent isn't Network. */
+function shownElsewhere(entry: Entry): boolean {
+  return search.isOpen || (location !== NETWORK && parentOf(entry.path) !== location);
+}
+
 function renderPreviewActions(entry: Entry): void {
-  const elsewhere = search.isOpen || parentOf(entry.path) !== location;
-  const actions = previewActions(previewPlace(hereFor([entry.path], elsewhere)));
+  const actions = previewActions(previewPlace(hereFor([entry.path], shownElsewhere(entry))));
   const buttons: HTMLElement[] = actions.map((action) => {
     const button = document.createElement("button");
     button.className = action === "open" ? "btn suggested" : "btn";
@@ -4229,7 +4369,7 @@ function showPreviewRename(entry: Entry): void {
         showValidation({ valid: false, message: cleanError(err), error: true }, row, message);
         return false;
       }
-      followMove(entry.path, renamed);
+      pathRefs.moved([{ from: entry.path, to: renamed }]);
       await reload([renamed]);
       void showPreview({ ...entry, name: basename(renamed), path: renamed });
     },
@@ -4577,21 +4717,6 @@ async function ensureShareName(): Promise<boolean> {
     input.value = account;
     let dialog: ReturnType<typeof openDialog>;
 
-    const save = async () => {
-      const name = input.value.trim();
-      if (!name) {
-        message.textContent = "Enter a name.";
-        return;
-      }
-      try {
-        await setShareName(name);
-        resolve(true);
-        dialog.close();
-      } catch (err) {
-        message.textContent = cleanError(err);
-      }
-    };
-
     input.addEventListener("input", () => dialog.setResponseEnabled("save", !!input.value.trim()));
     dialog = openDialog({
       heading: "What name should people see?",
@@ -4603,12 +4728,22 @@ async function ensureShareName(): Promise<boolean> {
       ],
       defaultResponse: "save",
       closeResponse: "cancel",
-      onResponse: (id) => {
+      // Nothing else responds while the name is saved; a failure stays in the dialog.
+      busy: { status: message },
+      onResponse: async (id) => {
         if (id !== "save") {
           resolve(false);
           return;
         }
-        void save();
+        const name = input.value.trim();
+        if (!name) {
+          message.textContent = "Enter a name.";
+          return false;
+        }
+        await setShareName(name);
+        // Closed before the Share dialog opens on top.
+        dialog.close();
+        resolve(true);
         return false;
       },
     });

@@ -158,6 +158,39 @@ test("open_file accepts local and downloaded files and reports missing handlers"
   await expect(invoke("open_file", { path: `${HOME}/nope.png` })).rejects.toMatch(/No such file/);
 });
 
+test("open_target: a local file is itself; Drive, share and SSH files download first, as an operation", async () => {
+  const target = (path: string, op = "", onProgress?: Channel<unknown>) => invoke("open_target", { path, op, onProgress });
+  const DRIVE = "gdrive://mock/mock-root~My%20Drive";
+  expect(await target(`${HOME}/song.mp3`)).toEqual({ kind: "file", path: `${HOME}/song.mp3` });
+  await expect(target("song.mp3")).rejects.toBe("“song.mp3” is not a local file.");
+  expect(await target(`${DRIVE}/file-1~hello.txt`)).toEqual({ kind: "file", path: "/tmp/opencode/mock-drive/hello.txt" });
+  expect(await target(`${DRIVE}/file-3~Plan`)).toEqual({ kind: "url", url: "https://docs.google.com/document/d/mock" });
+  expect(await target("share://mockreceived/My%20Notes.txt")).toEqual({ kind: "file", path: "/tmp/opencode/mock-share/My Notes.txt" });
+  await expect(target("share://mockreceived")).rejects.toBe("Only files can be opened.");
+  expect(await target("sftp://me@host/home/me/notes%201.txt")).toEqual({ kind: "file", path: "/tmp/opencode/mock-sftp/notes 1.txt" });
+  // The one command replaces the three per-kind ones.
+  for (const old of ["drive_open", "share_open", "sftp_open"]) {
+    await expect(invoke(old, { path: `${DRIVE}/file-1~hello.txt` })).rejects.toBe(`mock: unknown command ${old}`);
+  }
+
+  // A download reports through its channel and stops on cancel_operation;
+  // a local path is no operation and answers at once.
+  mockOps().hold();
+  for (const [path, op] of [[`${DRIVE}/file-1~hello.txt`, "op-drive"], ["share://mockreceived/a.txt", "op-share"], ["sftp://me@host/a.txt", "op-sftp"]]) {
+    const seen: unknown[] = [];
+    const channel = new Channel<unknown>();
+    channel.onmessage = (update) => seen.push(update);
+    const opening = target(path, op, channel);
+    await vi.waitFor(() => expect(mockOps().held()).toBe(1));
+    expect(await target(`${HOME}/main.rs`)).toEqual({ kind: "file", path: `${HOME}/main.rs` });
+    mockOps().step(5);
+    expect(seen.at(-1)).toMatchObject({ bytes: 5, done: false });
+    await invoke("cancel_operation", { op });
+    await expect(opening).rejects.toBe("Cancelled.");
+  }
+  mockOps().reset();
+});
+
 test("open_url opens https links and the Mac settings link, nothing else", async () => {
   const log = vi.spyOn(console, "log").mockImplementation(() => {});
   expect(await invoke("open_url", { url: "https://github.com/a/b/releases" })).toBeUndefined();
@@ -397,6 +430,49 @@ test("the Keep Versions commands", async () => {
   await expect(invoke("make_versioned_dir", { path: `${HOME}/Kept` })).rejects.toMatch(/already exists/);
   await invoke("stop_keeping_versions", { root: `${HOME}/Kept` });
   expect(await invoke("versioned_root", { path: `${HOME}/Kept` })).toBeNull();
+});
+
+test("Keep Versions, sharing a folder and the Trash's details refuse paths that aren't on this computer, as the backend does", async () => {
+  const refused: Array<[string, string]> = [
+    ["share://r1/a.txt", "This action is not available for shared folders."],
+    ["sftp://me@host/a.txt", "This action is not available for SSH servers."],
+    ["gdrive://mock/mock-root~My%20Drive/file-1~hello.txt", "This action is not available for Google Drive items yet."],
+    ["Users/me/Documents/Versioned/notes.txt", "“Users/me/Documents/Versioned/notes.txt” is not a local file."],
+  ];
+  for (const [path, refusal] of refused) {
+    for (const [cmd, args] of [
+      ["list_versions", { path }],
+      ["version_count", { path }],
+      ["version_diff", { path, version: 1 }],
+      ["restore_version_copy", { path, version: 1, name: "n1.txt" }],
+      ["open_version", { path, version: 1, name: "n1.txt" }],
+      ["replace_with_version", { path, version: 1 }],
+      ["deleted_files", { dir: path }],
+      ["restore_deleted", { path, fallbackName: "" }],
+      ["open_deleted", { path, name: "a.txt" }],
+      ["history_info", { root: path }],
+      ["clear_history", { root: path }],
+      ["stop_keeping_versions", { root: path }],
+    ] as const) {
+      await expect(invoke(cmd, args), `${cmd} ${path}`).rejects.toBe(refusal);
+    }
+    await expect(invoke("share_folder", { path })).rejects.toBe("Only folders on this computer can be shared.");
+    expect(await invoke("share_info", { path })).toBeNull();
+  }
+  // New Folder with Keep versions: the read-only refusals come first.
+  for (const [path, refusal] of [
+    ["share://r1/New", "Shared folders are read only."],
+    ["sftp://me@host/New", "SSH servers are read only for now."],
+    ["gdrive://mock/mock-root~My%20Drive/~New", "This action is not available for Google Drive items yet."],
+    ["Users/me/New", "“Users/me/New” is not a local file."],
+  ]) {
+    await expect(invoke("make_versioned_dir", { path })).rejects.toBe(refusal);
+  }
+  expect(await invoke("path_exists", { path: `${HOME}/New` })).toBe(false);
+  // The Trash's details: nothing for a path that isn't on this computer.
+  const infos = await invoke<unknown[]>("trash_info", { paths: [...refused.map(([path]) => path), `${HOME}/.Trash/old.txt`] });
+  expect(infos.slice(0, 4)).toEqual([null, null, null, null]);
+  expect(infos[4]).toMatchObject({ origin: null });
 });
 
 test("Google Drive account commands connect, cancel and disconnect", async () => {
@@ -736,9 +812,10 @@ test("sharing commands create links, receive, go offline and clean up", async ()
     path: `share://${received.id}`,
   });
   expect(root.map((entry) => entry.name)).toEqual(["hello.txt", "Photos"]);
-  expect(await invoke("share_open", { path: `share://${received.id}/hello.txt` })).toMatch(
-    /mock-share\/hello.txt$/,
-  );
+  expect(await invoke("open_target", { path: `share://${received.id}/hello.txt`, op: "" })).toEqual({
+    kind: "file",
+    path: "/tmp/opencode/mock-share/hello.txt",
+  });
 
   mock.setOnline(false);
   expect(await invoke<Array<{ status: string }>>("list_received")).toEqual([
@@ -824,6 +901,23 @@ test("measure sums files and folders like the backend", async () => {
   expect(measured).toEqual({ bytes: 312 + 2_200, items: 5 });
 });
 
+test("measure asks Drive about Drive paths and the disk about local ones only, like the backend", async () => {
+  const folder = await invoke<string>("make_dir", { path: `${DRIVE}/~Measured` });
+  await invoke("copy_entry", { from: DRIVE_HELLO, to: `${folder}/~a.txt`, overwrite: false });
+  await invoke("copy_entry", { from: `${DRIVE}/file-3~Plan`, to: `${folder}/~Plan`, overwrite: false });
+  const gone = await invoke<string>("copy_entry", { from: DRIVE_HELLO, to: `${folder}/~gone.txt`, overwrite: false });
+  await trashOne(gone);
+  // The folder, a.txt (12 bytes) and Plan, a Google Docs file: an item
+  // without bytes. A trashed child isn't listed, so it isn't counted.
+  expect(await invoke("measure", { paths: [folder] })).toEqual({ bytes: 12, items: 3 });
+  // Shares, SSH servers and relative paths count nothing.
+  const mixed = [`${HOME}/Desktop/todo.txt`, DRIVE_HELLO, "share://r1/a.txt", "sftp://me@host/a.txt", "Users/me/Desktop/todo.txt"];
+  expect(await invoke("measure", { paths: mixed })).toEqual({ bytes: 312 + 12, items: 2 });
+  // Drive's refusals fail the whole measure.
+  await expect(invoke("measure", { paths: [`${HOME}/Desktop/todo.txt`, `${DRIVE}/~New`] })).rejects.toBe("This Google Drive item has no id.");
+  await expect(invoke("measure", { paths: [`${DRIVE}/no-such-id~x.txt`] })).rejects.toBe("The Google Drive item no longer exists.");
+});
+
 test("a held copy reports through its channel, and cancel_operation stops it", async () => {
   mockOps().hold();
   const seen: Array<{ bytes: number; done: boolean }> = [];
@@ -855,6 +949,17 @@ test("a released copy finishes and sends a done update", async () => {
   expect(seen.at(-1)).toMatchObject({ done: true });
   expect(await namesIn(`${HOME}/Public`)).toEqual(["todo.txt"]);
   mockOps().reset();
+});
+
+test("a Drive download's done update carries the bytes the measure counted, as the backend's does", async () => {
+  const seen: Array<{ bytes: number; done: boolean }> = [];
+  const channel = new Channel<{ bytes: number; done: boolean }>();
+  channel.onmessage = (update) => seen.push(update);
+  const folder = await invoke<string>("make_dir", { path: `${HOME}/Downloaded` });
+  const measured = await invoke<{ bytes: number }>("measure", { paths: [DRIVE_HELLO] });
+  await invoke("copy_entry", { from: DRIVE_HELLO, to: `${folder}/hello.txt`, overwrite: false, op: "op-d", onProgress: channel });
+  expect(measured.bytes).toBe(12);
+  expect(seen.at(-1)).toMatchObject({ bytes: 12, done: true });
 });
 
 
@@ -1066,6 +1171,26 @@ test("path_info and path_exists know nothing of shares, SSH servers or relative 
 test("local-only commands refuse relative paths", async () => {
   await expect(ls("Users/me")).rejects.toBe("“Users/me” is not a local file.");
   await expect(invoke("file_properties", { path: "main.rs" })).rejects.toBe("“main.rs” is not a local file.");
+});
+
+test("an SSH connection starts in the user's home or the path typed, never at the root alone", async () => {
+  type Server = { id: string; url: string };
+  const sftp = (globalThis as unknown as { __mockSftp: { reset(): void; unknownHost(): void } }).__mockSftp;
+  sftp.reset();
+  sftp.unknownHost();
+  // Before it connects, the server is named by its root, as in sftp.rs.
+  expect(await invoke("sftp_connect", { url: "user@host" })).toMatchObject({ kind: "host-key-unknown", server: { url: "sftp://user@host/" } });
+  sftp.reset();
+  const home = await invoke<{ kind: string; server: Server }>("sftp_connect", { url: "user@host" });
+  expect(home).toMatchObject({ kind: "connected", server: { id: "user@host:22", url: "sftp://user@host/home/user" } });
+  expect(await namesIn(home.server.url)).toEqual(["Documents", "notes.txt"]);
+  expect(await namesIn("sftp://user@host/")).toEqual(["home"]);
+  const typed = await invoke<{ server: Server }>("sftp_connect", { url: "sftp://user@host:2222/srv" });
+  expect(typed.server.url).toBe("sftp://user@host:2222/srv");
+  // Connecting again replaces the server's start, in place.
+  await invoke("sftp_connect", { url: "user@host/home" });
+  expect((await invoke<Server[]>("sftp_servers", {})).map((server) => server.url)).toEqual(["sftp://user@host/home", "sftp://user@host:2222/srv"]);
+  sftp.reset();
 });
 
 test("writes into shares and SSH servers are refused in the backend's words", async () => {

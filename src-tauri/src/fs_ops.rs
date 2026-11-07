@@ -8,7 +8,7 @@ use unicode_normalization::char::is_combining_mark;
 
 #[cfg(target_os = "linux")]
 use crate::progress::copy_counted;
-use crate::placement::{self, Stage, Staged, TrashFn, Unfilled, remove, remove_any};
+use crate::placement::{self, Stage, Staged, Target, TrashFn, Unfilled, remove, remove_any};
 use crate::progress::{CANCELLED, Progress, cancelled_io, is_cancel};
 
 pub fn make_dir(path: String) -> Result<(), String> {
@@ -552,16 +552,72 @@ pub fn copy_recursive(from: &Path, to: &Path, progress: &Progress) -> std::io::R
         std::fs::copy(from, to)?;
     } else if meta.is_dir() {
         std::fs::create_dir(to)?;
-        for entry in std::fs::read_dir(from)? {
-            let entry = entry?;
-            copy_recursive(&entry.path(), &to.join(entry.file_name()), progress)?;
-        }
-        std::fs::set_permissions(to, meta.permissions())?;
+        copy_children(from, to, &meta, progress)?;
     } else {
         copy_file_progress(from, to, progress)?;
     }
     progress.add_item();
     Ok(())
+}
+
+/// Copy what is in folder `from` into `to`, a folder just made for it, then
+/// give `to` the folder's permissions (last, so a read-only one still fills).
+fn copy_children(
+    from: &Path,
+    to: &Path,
+    meta: &std::fs::Metadata,
+    progress: &Progress,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        copy_recursive(&entry.path(), &to.join(entry.file_name()), progress)?;
+    }
+    std::fs::set_permissions(to, meta.permissions())
+}
+
+/// Fill `dest` with a copy of `from`, for a copy or a move across volumes.
+/// A folder fills in place (`Stage::by_kind`), so it is made first: until
+/// it is, a failure is no partial copy of ours, and whatever took the name
+/// after the check is left alone. Anything else goes to a staging name.
+fn copy_fill<'a>(
+    from: &Path,
+    dest: &Path,
+    folder: bool,
+    progress: &Progress,
+    verb: &str,
+) -> Result<Staged<'a>, Unfilled> {
+    let partial = |e| Unfilled::Partial(copy_error(verb, e));
+    if !folder {
+        return copy_recursive(from, dest, progress).map(|()| Staged::Copy).map_err(partial);
+    }
+    let meta = make_folder(from, dest, progress).map_err(|e| Unfilled::Nothing(fill_error(verb, dest, e)))?;
+    copy_children(from, dest, &meta, progress).map_err(partial)?;
+    progress.add_item();
+    Ok(Staged::Copy)
+}
+
+/// Make `dest`, the copy of folder `from`, refusing a name that is taken.
+fn make_folder(from: &Path, dest: &Path, progress: &Progress) -> std::io::Result<std::fs::Metadata> {
+    if progress.is_cancelled() {
+        return Err(cancelled_io());
+    }
+    let meta = std::fs::symlink_metadata(from)?;
+    std::fs::create_dir(dest)?;
+    Ok(meta)
+}
+
+/// The error of a fill that wrote nothing: a name taken after the check
+/// reads as the refusal the check would have made.
+fn fill_error(verb: &str, dest: &Path, error: std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::AlreadyExists {
+        return placement::Refusal::Exists(dest.display().to_string()).into();
+    }
+    copy_error(verb, error)
+}
+
+/// Whether `path` is a folder itself, not a link to one.
+fn is_folder(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
 }
 
 /// Copy one file in slices; std turns each `File` → `File` slice into
@@ -652,12 +708,14 @@ pub fn copy_entry_with(
 ) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let target = placement::check_transfer(from, to, overwrite)?;
-    let fill = |dest: &Path| {
-        copy_recursive(from, dest, progress)
-            .map(|()| Staged::Copy)
-            .map_err(|e| Unfilled::Partial(copy_error("copy", e)))
-    };
-    target.place(Stage::WhenReplacing { discard: &remove }, fill, trash)?;
+    copy_to(&target, from, progress, trash)
+}
+
+/// Copy `from` to a target that passed the refusals.
+fn copy_to(target: &Target, from: &Path, progress: &Progress, trash: TrashFn) -> Result<(), String> {
+    let folder = is_folder(from);
+    let fill = |dest: &Path| copy_fill(from, dest, folder, progress, "copy");
+    target.place(Stage::by_kind(folder, &remove), fill, trash)?;
     Ok(())
 }
 
@@ -670,12 +728,15 @@ pub fn move_entry_with(
     progress: &Progress,
     trash: TrashFn,
 ) -> Result<(), String> {
-    move_entry_by(from, to, overwrite, progress, trash, &|a, b| std::fs::rename(a, b))
+    move_entry_by(from, to, overwrite, progress, trash, MOVE_RENAME)
 }
 
 /// Renames an item. A move takes it as a parameter so tests can make it fail
 /// as it does across volumes.
 type RenameFn<'a> = &'a dyn Fn(&Path, &Path) -> std::io::Result<()>;
+
+/// How a move renames its item: never over one that took the name.
+const MOVE_RENAME: RenameFn<'static> = &placement::rename_new;
 
 fn move_entry_by(
     from: String,
@@ -687,8 +748,29 @@ fn move_entry_by(
 ) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let target = placement::check_transfer(from, to, overwrite)?;
-    let fill = |dest: &Path| move_or_copy(from, dest, progress, rename);
-    let placed = target.place(Stage::WhenReplacing { discard: &remove }, fill, trash)?;
+    move_to(&target, from, progress, trash, rename)
+}
+
+/// Move `from` to a target that passed the refusals. With nothing to
+/// replace, one rename puts the user's item in place (`Target::free_path`),
+/// and only a copy across volumes is staged; a Replace stages the item,
+/// renamed or copied, before the old one goes to the Trash.
+fn move_to(
+    target: &Target,
+    from: &Path,
+    progress: &Progress,
+    trash: TrashFn,
+    rename: RenameFn,
+) -> Result<(), String> {
+    let folder = is_folder(from);
+    let stage = Stage::by_kind(folder, &remove);
+    let placed = match target.free_path() {
+        Some(to) => match rename_item(from, to, progress, rename)? {
+            Some(renamed) => renamed,
+            None => target.place(stage, |dest: &Path| copy_fill(from, dest, folder, progress, "move"), trash)?,
+        },
+        None => target.place(stage, |dest: &Path| move_or_copy(from, dest, folder, progress, rename), trash)?,
+    };
     if placed == Staged::Copy {
         // Across volumes the source goes only now, with its copy in place.
         // No progress is checked from the end of the copy on, so a cancel
@@ -703,18 +785,31 @@ fn move_entry_by(
 fn move_or_copy<'a>(
     from: &'a Path,
     dest: &Path,
+    folder: bool,
     progress: &Progress,
     rename: RenameFn,
 ) -> Result<Staged<'a>, Unfilled> {
+    match rename_item(from, dest, progress, rename).map_err(Unfilled::Nothing)? {
+        Some(renamed) => Ok(renamed),
+        None => copy_fill(from, dest, folder, progress, "move"),
+    }
+}
+
+/// Rename the user's item `from` to `dest`; `None` when the two are on
+/// different volumes, so it has to be copied.
+fn rename_item<'a>(
+    from: &'a Path,
+    dest: &Path,
+    progress: &Progress,
+    rename: RenameFn,
+) -> Result<Option<Staged<'a>>, String> {
     match rename(from, dest) {
         Ok(()) => {
             progress.add_item();
-            Ok(Staged::Original(from))
+            Ok(Some(Staged::Original(from)))
         }
-        Err(e) if is_cross_device(&e) => copy_recursive(from, dest, progress)
-            .map(|()| Staged::Copy)
-            .map_err(|e| Unfilled::Partial(copy_error("move", e))),
-        Err(e) => Err(Unfilled::Nothing(format!("Failed to move: {}", e))),
+        Err(e) if is_cross_device(&e) => Ok(None),
+        Err(e) => Err(fill_error("move", dest, e)),
     }
 }
 
@@ -1299,12 +1394,18 @@ mod tests {
     /// `copy_entry_with` for tests that don't look at where a replaced item
     /// goes: it is discarded, never sent to the user's own Trash.
     fn copy_entry(from: String, to: String, overwrite: bool, progress: &Progress) -> Result<(), String> {
-        copy_entry_with(from, to, overwrite, progress, &remove)
+        copy_entry_with(from, to, overwrite, progress, &discard_replaced)
     }
 
     /// `move_entry_with` as `copy_entry` above.
     fn move_entry(from: String, to: String, overwrite: bool, progress: &Progress) -> Result<(), String> {
-        move_entry_with(from, to, overwrite, progress, &remove)
+        move_entry_with(from, to, overwrite, progress, &discard_replaced)
+    }
+
+    /// The Trash of `copy_entry` and `move_entry`: removes what they replace
+    /// and says it is nowhere.
+    fn discard_replaced(old: &Path) -> Result<Option<PathBuf>, String> {
+        remove(old).map(|()| None)
     }
 
     #[test]
@@ -1466,7 +1567,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&dst).unwrap(), "new");
     }
 
-    fn failing_trash(_: &Path) -> Result<(), String> {
+    fn failing_trash(_: &Path) -> Result<Option<PathBuf>, String> {
         Err("no Trash on this volume".to_string())
     }
 
@@ -1561,11 +1662,14 @@ mod tests {
         let trash = |p: &Path| {
             fs::rename(p, bin.join("b.txt")).unwrap();
             fs::create_dir(p).unwrap();
-            fs::write(p.join("x"), "other").map_err(|e| e.to_string())
+            fs::write(p.join("x"), "other").unwrap();
+            Ok(Some(bin.join("b.txt")))
         };
 
         let err = move_entry_with(s(&src), s(&dst), true, &Progress::default(), &trash).unwrap_err();
         assert!(err.contains("Failed to replace"), "{err}");
+        // The old item can't come back over the folder: the error says where it is.
+        assert!(err.contains(&format!("in the Trash at “{}”", bin.join("b.txt").display())), "{err}");
         assert_eq!(fs::read_to_string(&src).unwrap(), "mine");
         assert_eq!(fs::read_to_string(bin.join("b.txt")).unwrap(), "old");
         assert_eq!(names_in(dir.path()), ["a.txt", "b.txt", "bin"]);
@@ -1580,7 +1684,10 @@ mod tests {
         fs::write(&dst, "old").unwrap();
         let bin = dir.path().join("bin");
         fs::create_dir(&bin).unwrap();
-        let trash = |p: &Path| fs::rename(p, bin.join("b.txt")).map_err(|e| e.to_string());
+        let trash = |p: &Path| {
+            fs::rename(p, bin.join("b.txt")).map_err(|e| e.to_string())?;
+            Ok(Some(bin.join("b.txt")))
+        };
 
         move_entry_with(s(&src), s(&dst), true, &Progress::default(), &trash).unwrap();
         assert!(!src.exists());
@@ -1651,7 +1758,8 @@ mod tests {
                 let seen = std::cell::RefCell::new(Vec::new());
                 let trash = |p: &Path| {
                     seen.borrow_mut().push((p.to_path_buf(), names_in(&dest)));
-                    fs::rename(p, bin.join("old")).map_err(|e| e.to_string())
+                    fs::rename(p, bin.join("old")).map_err(|e| e.to_string())?;
+                    Ok(Some(bin.join("old")))
                 };
                 op(s(&src), s(&dst), true, &Progress::default(), &trash).unwrap();
 
@@ -1686,7 +1794,7 @@ mod tests {
         let sub = dir.path().join("sub");
         fs::create_dir(&sub).unwrap();
         fs::write(sub.join("keep.txt"), "kept").unwrap();
-        let never = |p: &Path| -> Result<(), String> { panic!("{} went to the Trash", p.display()) };
+        let never = |p: &Path| -> Result<Option<PathBuf>, String> { panic!("{} went to the Trash", p.display()) };
         let ops: [OpWith; 2] = [copy_entry_with, move_entry_with];
         for op in ops {
             for to in [sub.join(".."), sub.join(".")] {
@@ -1743,7 +1851,8 @@ mod tests {
         let trash = |p: &Path| {
             source_there.set(src.exists());
             progress.cancel();
-            fs::rename(p, bin.join("b.txt")).map_err(|e| e.to_string())
+            fs::rename(p, bin.join("b.txt")).map_err(|e| e.to_string())?;
+            Ok(Some(bin.join("b.txt")))
         };
         move_entry_by(s(&src), s(&dst), true, &progress, &trash, &across_volumes).unwrap();
         assert!(source_there.get(), "the source was still there during the Replace");
@@ -1944,5 +2053,145 @@ mod tests {
         let measured = measure(&[root.clone()]);
         fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(measured, Measure { bytes: 10, items: 3 });
+    }
+
+    // ----- what took the name after the check -----
+
+    /// A file, or a folder holding `x`, with `body` in it.
+    fn make_item(path: &Path, folder: bool, body: &str) {
+        if folder {
+            fs::create_dir(path).unwrap();
+            fs::write(path.join("x"), body).unwrap();
+        } else {
+            fs::write(path, body).unwrap();
+        }
+    }
+
+    fn item_body(path: &Path) -> String {
+        let file = if path.is_dir() { path.join("x") } else { path.to_path_buf() };
+        fs::read_to_string(file).unwrap()
+    }
+
+    /// Every pair of (source is a folder, what took the name is a folder).
+    const KINDS: [(bool, bool); 4] = [(false, false), (false, true), (true, false), (true, true)];
+
+    /// The target passes the refusals, then another app takes its name
+    /// before the copy or move begins.
+    fn checked_then_taken(src: &Path, dst: &Path, theirs_folder: bool) -> Target {
+        let target = placement::check_transfer(src, dst, false).unwrap();
+        make_item(dst, theirs_folder, "theirs");
+        target
+    }
+
+    /// A copy never writes into what took its name after the check (a file
+    /// was truncated and overwritten) nor cleans it up as its own partial
+    /// copy (a folder was removed). It fails as the check would have.
+    #[test]
+    fn a_copy_leaves_alone_what_took_its_name_after_the_check() {
+        for (mine_folder, theirs_folder) in KINDS {
+            let dir = tempdir().unwrap();
+            let (src, dst) = (dir.path().join("mine"), dir.path().join("dest"));
+            make_item(&src, mine_folder, "mine");
+            let target = checked_then_taken(&src, &dst, theirs_folder);
+            let got = copy_to(&target, &src, &Progress::default(), &failing_trash);
+            let case = format!("folder → {mine_folder}, theirs a folder → {theirs_folder}");
+            assert_eq!(got, Err(format!("Target already exists: {}", dst.display())), "{case}");
+            assert_eq!(item_body(&dst), "theirs", "{case}");
+            assert_eq!(item_body(&src), "mine", "{case}");
+            assert_eq!(names_in(dir.path()), ["dest", "mine"], "{case}");
+        }
+    }
+
+    /// The same for a move, renamed on one volume or copied across two: the
+    /// source stays where it was.
+    #[test]
+    fn a_move_leaves_alone_what_took_its_name_after_the_check() {
+        let renames: [(&str, RenameFn); 2] = [("rename", MOVE_RENAME), ("across volumes", &across_volumes)];
+        for (how, rename) in renames {
+            for (mine_folder, theirs_folder) in KINDS {
+                let dir = tempdir().unwrap();
+                let (src, dst) = (dir.path().join("mine"), dir.path().join("dest"));
+                make_item(&src, mine_folder, "mine");
+                let target = checked_then_taken(&src, &dst, theirs_folder);
+                let got = move_to(&target, &src, &Progress::default(), &failing_trash, rename);
+                let case = format!("{how}: folder → {mine_folder}, theirs a folder → {theirs_folder}");
+                assert_eq!(got, Err(format!("Target already exists: {}", dst.display())), "{case}");
+                assert_eq!(item_body(&dst), "theirs", "{case}");
+                assert_eq!(item_body(&src), "mine", "{case}");
+                assert_eq!(names_in(dir.path()), ["dest", "mine"], "{case}");
+            }
+        }
+    }
+
+    /// A move that replaces nothing renames straight onto the target, a file
+    /// as much as a folder: one rename is atomic and refuses a name taken
+    /// after the check, so the user's item never waits under a hidden
+    /// staging name. Across volumes it is the only rename of the user's item
+    /// tried: the copy that follows is placed like any copy (a file staged,
+    /// a folder in place).
+    #[test]
+    fn a_move_that_replaces_nothing_renames_straight_onto_the_target() {
+        let renames: [(&str, RenameFn); 2] = [("rename", MOVE_RENAME), ("across volumes", &across_volumes)];
+        for (how, rename) in renames {
+            for folder in [false, true] {
+                let dir = tempdir().unwrap();
+                let (src, dst) = (dir.path().join("mine"), dir.path().join("dest"));
+                make_item(&src, folder, "mine");
+                let seen = std::cell::RefCell::new(Vec::new());
+                let watch = |from: &Path, to: &Path| {
+                    seen.borrow_mut().push(to.to_path_buf());
+                    rename(from, to)
+                };
+                let target = placement::check_transfer(&src, &dst, false).unwrap();
+                move_to(&target, &src, &Progress::default(), &failing_trash, &watch).unwrap();
+                let case = format!("{how}: folder → {folder}");
+                assert_eq!(seen.into_inner(), [dst.clone()], "{case}");
+                assert_eq!(item_body(&dst), "mine", "{case}");
+                assert_eq!(names_in(dir.path()), ["dest"], "{case}");
+            }
+        }
+    }
+
+    fn move_across_volumes(
+        from: String,
+        to: String,
+        overwrite: bool,
+        progress: &Progress,
+        trash: TrashFn,
+    ) -> Result<(), String> {
+        move_entry_by(from, to, overwrite, progress, trash, &across_volumes)
+    }
+
+    /// A name near the 255-byte limit most filesystems set still copies and
+    /// moves, with and without Replace: the staging name is cut to fit
+    /// (whole, it was 23 bytes longer, so the copy failed with "File name
+    /// too long").
+    #[test]
+    fn a_name_near_the_length_limit_still_copies_and_moves() {
+        let name = "é".repeat(120); // 240 bytes
+        let ops: [(&str, OpWith); 3] =
+            [("copy", copy_entry_with), ("move", move_entry_with), ("move across volumes", move_across_volumes)];
+        for (how, op) in ops {
+            for overwrite in [false, true] {
+                let dir = tempdir().unwrap();
+                let (dest, bin) = (dir.path().join("dest"), dir.path().join("bin"));
+                fs::create_dir(&dest).unwrap();
+                fs::create_dir(&bin).unwrap();
+                let (src, dst) = (dir.path().join(&name), dest.join(&name));
+                fs::write(&src, "mine").unwrap();
+                if overwrite {
+                    fs::write(&dst, "old").unwrap();
+                }
+                let trash = |p: &Path| {
+                    fs::rename(p, bin.join("old")).map_err(|e| e.to_string())?;
+                    Ok(Some(bin.join("old")))
+                };
+                let case = format!("{how}, Replace → {overwrite}");
+                assert_eq!(op(s(&src), s(&dst), overwrite, &Progress::default(), &trash), Ok(()), "{case}");
+                assert_eq!(fs::read_to_string(&dst).unwrap(), "mine", "{case}");
+                assert_eq!(names_in(&dest), [name.as_str()], "{case}");
+                assert_eq!(src.exists(), how == "copy", "{case}");
+            }
+        }
     }
 }

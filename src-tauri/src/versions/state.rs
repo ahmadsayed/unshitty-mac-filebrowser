@@ -757,7 +757,7 @@ mod tests {
                     dest.to_string_lossy().to_string(),
                     false,
                     &crate::progress::Progress::default(),
-                    &|_| Err("nothing is replaced".into()),
+                    &|_: &Path| Err("nothing is replaced".into()),
                 )
             })
             .unwrap();

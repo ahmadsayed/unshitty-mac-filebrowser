@@ -828,6 +828,72 @@ fn data_home_from(home: Option<&Path>, data_home: Option<OsString>) -> Option<Pa
         .or_else(|| home.map(|home| home.join(".local/share")))
 }
 
+// ---- Renames that refuse a taken name -----------------------------------
+
+/// Rename `from` to `to` in one step that fails with `AlreadyExists` when
+/// something is at `to`, where plain `rename` would replace a file (or an
+/// empty folder): `renameat2(RENAME_NOREPLACE)` on Linux,
+/// `renamex_np(RENAME_EXCL)` on macOS. Where there is no such rename, it
+/// fails as `cannot_refuse` tells apart; `placement::rename_new` then checks
+/// the name itself.
+#[cfg(target_os = "linux")]
+pub fn rename_exclusive(from: &Path, to: &Path) -> std::io::Result<()> {
+    let (from, to) = (c_path(from)?, c_path(to)?);
+    // SAFETY: both are NUL-terminated paths that live through the call.
+    let done = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    os_result(done)
+}
+
+#[cfg(target_os = "macos")]
+pub fn rename_exclusive(from: &Path, to: &Path) -> std::io::Result<()> {
+    let (from, to) = (c_path(from)?, c_path(to)?);
+    // SAFETY: both are NUL-terminated paths that live through the call.
+    let done = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    os_result(done)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn rename_exclusive(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
+/// Whether `rename_exclusive` failed only because the system or the
+/// filesystem has no rename that refuses a taken name (some network and
+/// FUSE filesystems answer `EINVAL` or `ENOTSUP`).
+pub fn cannot_refuse(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::Unsupported
+        || e.raw_os_error().is_some_and(|code| CANNOT_REFUSE.contains(&code))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const CANNOT_REFUSE: [i32; 4] = [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP];
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const CANNOT_REFUSE: [i32; 0] = [];
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn c_path(path: &Path) -> std::io::Result<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::ErrorKind::InvalidInput.into())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn os_result(done: libc::c_int) -> std::io::Result<()> {
+    if done == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 // ---- macOS disk-image application installation ---------------------------
 
 #[derive(Debug, Clone, Serialize)]
@@ -1123,13 +1189,7 @@ pub fn dmg_application_directory(home: &Path, destination: &str) -> Result<PathB
 
 #[cfg(target_os = "macos")]
 fn dmg_exclusive_rename(from: &Path, to: &Path) -> std::io::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-    unsafe extern "C" { fn renamex_np(from: *const std::ffi::c_char, to: *const std::ffi::c_char, flags: u32) -> i32; }
-    let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
-    let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
-    // macOS RENAME_EXCL, verified against the platform ABI: atomic no-clobber.
-    let result = unsafe { renamex_np(from.as_ptr(), to.as_ptr(), 0x00000004) };
-    if result == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+    rename_exclusive(from, to)
 }
 #[cfg(not(target_os = "macos"))]
 fn dmg_exclusive_rename(_: &Path, _: &Path) -> std::io::Result<()> { Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "DMG installation requires macOS.")) }
@@ -2273,6 +2333,47 @@ mod tests {
         // Every one of them reads back as the same path.
         for p in ["/home/me/C# notes.txt", "/home/me/100%.txt", "/home/me/50%20off.txt", "/home/me/Café", "/tmp/a\nb"] {
             assert_eq!(file_uri_to_path(&uri(p)), Some(PathBuf::from(p)), "{p}");
+        }
+    }
+
+    // ---- renames that refuse a taken name ----
+
+    /// The answers of a system or filesystem without a rename that refuses
+    /// (`EINVAL` from some network filesystems) are told apart from a
+    /// rename that failed for itself.
+    #[test]
+    fn a_rename_that_cannot_refuse_is_told_apart() {
+        use std::io::{Error, ErrorKind};
+        for code in [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP] {
+            assert!(cannot_refuse(&Error::from_raw_os_error(code)), "{code}");
+        }
+        assert!(cannot_refuse(&ErrorKind::Unsupported.into()));
+        for code in [libc::EEXIST, libc::EACCES, libc::ENOENT, libc::EXDEV] {
+            assert!(!cannot_refuse(&Error::from_raw_os_error(code)), "{code}");
+        }
+    }
+
+    /// The real one, on this filesystem: a free name, then a taken file and
+    /// an empty folder, which `rename` would both replace. A filesystem
+    /// without it says so instead, and nothing moves.
+    #[test]
+    fn rename_exclusive_never_replaces() {
+        let dir = tempdir().unwrap();
+        let (from, to, empty) = (dir.path().join("a"), dir.path().join("b"), dir.path().join("empty"));
+        fs::write(&from, "mine").unwrap();
+        fs::write(&to, "theirs").unwrap();
+        fs::create_dir(&empty).unwrap();
+        for taken in [&to, &empty] {
+            let err = rename_exclusive(&from, taken).unwrap_err();
+            assert!(err.kind() == std::io::ErrorKind::AlreadyExists || cannot_refuse(&err), "{err}");
+        }
+        assert_eq!(fs::read_to_string(&to).unwrap(), "theirs");
+        assert_eq!(fs::read_to_string(&from).unwrap(), "mine");
+        assert!(empty.is_dir());
+        fs::remove_file(&to).unwrap();
+        match rename_exclusive(&from, &to) {
+            Ok(()) => assert_eq!(fs::read_to_string(&to).unwrap(), "mine"),
+            Err(e) => assert!(cannot_refuse(&e), "{e}"),
         }
     }
 }

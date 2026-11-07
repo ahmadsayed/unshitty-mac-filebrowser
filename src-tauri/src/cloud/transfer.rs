@@ -23,7 +23,7 @@ use crate::cloud::drive::{DriveClient, DriveError, DriveFile, FileChange};
 use crate::cloud::service;
 use crate::cloud::write::{self, Ctx, message};
 use crate::fs_ops::Measure;
-use crate::placement::{self, Refusal, Stage, Staged, TrashFn, Unfilled};
+use crate::placement::{self, DiscardFn, Refusal, Stage, Staged, TrashFn, Unfilled};
 use crate::progress::Progress;
 
 const UPLOAD_SUFFIX: &str = ".filebrowser-upload";
@@ -83,7 +83,8 @@ fn measure_file(client: &DriveClient, file: &DriveFile, total: &mut Measure) -> 
 }
 
 /// Copy or move between any two locations where at least one is in Drive.
-/// `trash_local` sends a local source to the Trash after a move.
+/// `trash_local` is the local Trash: for a local source after a move, a
+/// partial folder a download leaves and the local item a download replaces.
 pub fn dispatch(
     state: &CloudState,
     from: &str,
@@ -91,7 +92,7 @@ pub fn dispatch(
     overwrite: bool,
     moving: bool,
     progress: &Progress,
-    trash_local: impl Fn(&Path) -> Result<(), String>,
+    trash_local: TrashFn,
 ) -> Result<String, String> {
     write::live_with(state, progress, |c| {
         dispatch_in(c, from, to, overwrite, moving, trash_local)
@@ -104,20 +105,26 @@ pub(crate) fn dispatch_in(
     to: &str,
     overwrite: bool,
     moving: bool,
-    trash_local: impl Fn(&Path) -> Result<(), String>,
+    trash_local: TrashFn,
 ) -> Result<String, String> {
     let (from_cloud, to_cloud) = (crate::cloud::is_cloud(from), crate::cloud::is_cloud(to));
     match (from_cloud, to_cloud, moving) {
         (true, true, true) => write::move_in(c, from, to, overwrite),
         (true, true, false) => write::copy_in(c, from, to, overwrite),
-        (false, true, true) => move_up_in(c, Path::new(from), to, overwrite, trash_local),
+        (false, true, true) => move_up_in(c, Path::new(from), to, overwrite, discard_to(trash_local)),
         (false, true, false) => upload_in(c, Path::new(from), to, overwrite),
-        (true, false, true) => move_down_in(c, from, Path::new(to), overwrite, &trash_local),
+        (true, false, true) => move_down_in(c, from, Path::new(to), overwrite, trash_local),
         (true, false, false) => {
-            download_into(c, from, Path::new(to), overwrite, &trash_local, &trash_local)
+            download_into(c, from, Path::new(to), overwrite, &discard_to(trash_local), trash_local)
         }
         (false, false, _) => Err("Neither location is in Google Drive.".into()),
     }
+}
+
+/// `trash` for an item that needn't come back: a moved source, a partial
+/// folder.
+fn discard_to<'a>(trash: TrashFn<'a>) -> impl Fn(&Path) -> Result<(), String> + 'a {
+    move |path| trash.send(path).map(|_| ())
 }
 
 pub(crate) fn upload_in(c: &Ctx, from: &Path, to: &str, overwrite: bool) -> Result<String, String> {
@@ -265,13 +272,14 @@ pub(crate) fn download_in(
 /// name, so it fills as you watch; if that fails, the partial folder goes to
 /// `discard` (the Trash). Files and replacements stage under a hidden name
 /// and appear only when complete; the item a Replace sends away goes to
-/// `trash` (the app's logged Trash, so Restore knows where it was).
+/// `trash` (the app's logged Trash, so Restore knows where it was), which
+/// takes it back if the Replace fails.
 pub(crate) fn download_into(
     c: &Ctx,
     from: &str,
     to: &Path,
     overwrite: bool,
-    discard: TrashFn,
+    discard: DiscardFn,
     trash: TrashFn,
 ) -> Result<String, String> {
     let target = placement::check_new(to, overwrite)?;
@@ -291,14 +299,9 @@ pub(crate) fn download_into(
     if !file.is_dir() && !file.can_download() {
         return Err(not_downloadable(&file));
     }
-    let stage = if file.is_dir() {
-        Stage::WhenReplacing { discard }
-    } else {
-        Stage::Always
-    };
     let mut skipped = Vec::new();
     let fill = |dest: &Path| download_to(&client, &file, dest, &mut skipped, &c.progress);
-    target.place(stage, fill, trash)?;
+    target.place(Stage::by_kind(file.is_dir(), discard), fill, trash)?;
     match skipped.first() {
         // Everything else was copied; the error names what was left out.
         Some(reason) => Err(reason.clone()),
@@ -413,7 +416,7 @@ pub(crate) fn move_down_in(
     // Checked first: a read-only connection must not leave a copy behind
     // and then fail to remove the original.
     let (location, account) = service::writable(c.state, from)?;
-    let downloaded = download_into(c, from, to, overwrite, trash, trash)?;
+    let downloaded = download_into(c, from, to, overwrite, &discard_to(trash), trash)?;
     let id = location.file_id().unwrap_or_default().to_string();
     write::client(c, &account.id)?
         .update(&id, &FileChange::trash(true))
@@ -508,7 +511,7 @@ mod tests {
     #[test]
     fn dispatch_refuses_two_local_paths() {
         let (result, log) = run(vec![], |c| {
-            dispatch_in(c, "/a", "/b", false, false, |_| Ok(()))
+            dispatch_in(c, "/a", "/b", false, false, &no_trash)
         });
         assert!(result.is_err());
         assert!(heads(&log).is_empty());
@@ -522,7 +525,7 @@ mod tests {
         // local → Drive copy: an upload
         let (result, _) = run(
             vec![found(&[]), session(), ok(sized("u1", "a.txt", 5))],
-            |c| dispatch_in(c, &src, &format!("{ROOT}/~a.txt"), false, false, |_| Ok(())),
+            |c| dispatch_in(c, &src, &format!("{ROOT}/~a.txt"), false, false, &no_trash),
         );
         assert_eq!(result.unwrap(), format!("{ROOT}/u1~a.txt"));
         // Drive → Drive move: one PATCH after the checks
@@ -535,7 +538,7 @@ mod tests {
                     &format!("{ROOT}/p2~Other/~a.txt"),
                     false,
                     true,
-                    |_| Ok(()),
+                    &no_trash,
                 )
             },
         );
@@ -550,7 +553,7 @@ mod tests {
                 &target.to_string_lossy(),
                 false,
                 false,
-                |_| Ok(()),
+                &no_trash,
             )
         });
         assert_eq!(result.unwrap(), target.to_string_lossy());
@@ -874,7 +877,7 @@ mod tests {
         panic!("nothing to discard")
     }
 
-    fn no_trash(_: &Path) -> Result<(), String> {
+    fn no_trash(_: &Path) -> Result<Option<PathBuf>, String> {
         panic!("nothing is replaced")
     }
 
@@ -899,7 +902,8 @@ mod tests {
             let seen = std::cell::RefCell::new(Vec::new());
             let trash = |p: &Path| {
                 seen.borrow_mut().push((p.to_path_buf(), names_in(dir.path())));
-                std::fs::rename(p, bin.join("old")).map_err(|e| e.to_string())
+                std::fs::rename(p, bin.join("old")).map_err(|e| e.to_string())?;
+                Ok(Some(bin.join("old")))
             };
             let (result, _) = run(replies, |c| {
                 download_into(c, &from, &target, true, &no_discard, &trash)
@@ -1065,7 +1069,7 @@ mod tests {
                 bytes(b"hello"),
                 ok(file("f1", "a.txt")),
             ],
-            |c| move_down_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &|_| Ok(())),
+            |c| move_down_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash),
         );
         result.unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"hello");
