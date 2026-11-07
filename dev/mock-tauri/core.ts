@@ -1,4 +1,4 @@
-import { encodeCloudName } from "../../src/paths";
+import { encodeCloudName, placeOf } from "../../src/paths";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
 // It serves a fake, in-memory home folder.
@@ -1769,11 +1769,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     ),
   cancel_search: () => {},
   item_counts: (a) =>
-    (a.paths as string[]).map((path) =>
-      path.startsWith("gdrive://") || path.startsWith("share://") || path.startsWith("sftp://")
-        ? null
-        : folderSummary(path, a.showHidden as boolean),
-    ),
+    (a.paths as string[]).map((path) => (placeOf(path) !== "local" ? null : folderSummary(path, a.showHidden as boolean))),
   file_properties: (a) => {
     const path = str(a, "path");
     if (path.startsWith("share://")) throw "Properties aren't available for shared folders yet.";
@@ -1958,7 +1954,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   trash_dir: () => TRASH,
   thumbnail: async (a) => {
     const path = str(a, "path");
-    if (path.startsWith("gdrive://") || path.startsWith("share://") || path.startsWith("sftp://")) return new ArrayBuffer(0);
+    if (placeOf(path) !== "local") return new ArrayBuffer(0);
     const ticket = a.ticket as number | undefined;
     thumbLog.requested.push(path);
     if (thumbsHeld && ticket !== undefined) {

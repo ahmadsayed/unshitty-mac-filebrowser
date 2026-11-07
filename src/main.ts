@@ -45,7 +45,7 @@ import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type Preview
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { Selection, type Mark } from "./selection";
 import { acceptsNewItems, canRename, hasProperties, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
-import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
+import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -218,58 +218,20 @@ export function escapeHtml(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** What a path with no name of its own is called: a scheme's root. */
+const UNNAMED: Record<Place, string> = { drive: "My Drive", share: "Shared Folder", sftp: "SSH Server", local: "/" };
+
 function basename(path: string): string {
-  if (isCloud(path)) {
-    const segment = path.replace(/\/+$/, "").split("/").pop() ?? "";
-    return cloudSegmentName(segment) || "My Drive";
-  }
-  if (isSharePath(path)) {
-    const segment = path.slice(SHARE_PREFIX.length).split("/").filter(Boolean).pop() ?? "";
-    try {
-      return decodeURIComponent(segment) || "Shared Folder";
-    } catch {
-      return segment || "Shared Folder";
-    }
-  }
-  if (isSftpPath(path)) {
-    const rest = path.slice(SFTP_PREFIX.length).split("/").filter(Boolean);
-    if (rest.length <= 1) return rest[0] ? decodeURIComponent(rest[0]) : "SSH Server";
-    const segment = rest.pop()!;
-    try {
-      return decodeURIComponent(segment) || "SSH Server";
-    } catch {
-      return segment || "SSH Server";
-    }
-  }
-  return path.replace(/\/+$/, "").split("/").pop() || "/";
+  return pathName(path) || UNNAMED[placeOf(path)];
 }
 
+/** Above a share's or a server's root is Network. */
 function parentOf(path: string): string {
-  if (isCloud(path)) {
-    const trimmed = path.replace(/\/+$/, "");
-    const slash = trimmed.lastIndexOf("/");
-    return slash > "gdrive://".length ? trimmed.slice(0, slash) : trimmed;
-  }
-  if (isSharePath(path)) {
-    const rest = path.slice(SHARE_PREFIX.length).split("/").filter(Boolean);
-    rest.pop();
-    return rest.length ? `${SHARE_PREFIX}${rest.join("/")}` : NETWORK;
-  }
-  if (isSftpPath(path)) {
-    const rest = path.slice(SFTP_PREFIX.length).split("/").filter(Boolean);
-    rest.pop();
-    return rest.length ? `${SFTP_PREFIX}${rest.join("/")}` : NETWORK;
-  }
-  const p = path.replace(/\/+$/, "").replace(/\/[^/]*$/, "");
-  return p || "/";
-}
-
-function shareIdOf(path: string): string {
-  return path.slice(SHARE_PREFIX.length).split("/")[0] ?? "";
+  return parentPath(path) ?? NETWORK;
 }
 
 function receivedFor(path: string): ReceivedShare | undefined {
-  return networkShares.find((share) => share.id === shareIdOf(path));
+  return networkShares.find((share) => share.id === shareId(path));
 }
 
 /** What Network lists: one folder entry per received share, then one per connected server. */
@@ -316,27 +278,9 @@ function shareStatusLabel(status: Entry["shareStatus"]): string {
   }
 }
 
-/** The display name inside a `<file-id>~<encoded name>` segment. */
-function cloudSegmentName(segment: string): string {
-  const tilde = segment.indexOf("~");
-  const encoded = tilde >= 0 ? segment.slice(tilde + 1) : segment;
-  try {
-    return decodeURIComponent(encoded);
-  } catch {
-    return encoded;
-  }
-}
-
-/** The first folder of an account, whose parent is the account itself. */
-function isCloudRoot(path: string): boolean {
-  return isCloud(path) && path.slice(CLOUD_PREFIX.length).split("/").filter(Boolean).length <= 1;
-}
-
 /** The path of `name` inside `dir`. In Drive it is a pending `~name` path. */
 function joinPath(dir: string, name: string): string {
-  if (isCloud(dir)) return joinCloudPath(dir, name);
-  if (isSftpPath(dir)) return joinSftpPath(dir, name);
-  return dir.replace(/\/+$/, "") + "/" + name;
+  return childPath(dir, name);
 }
 
 /** Pseudo locations that list entries (Recent, Starred, Network). */
@@ -370,8 +314,7 @@ function locationName(loc: string): string {
   if (loc === trashPath) return "Trash";
   if (isSharePath(loc)) {
     // The root's label is the sharer's folder name (the id is opaque).
-    const parts = loc.slice(SHARE_PREFIX.length).split("/").filter(Boolean);
-    return parts.length <= 1 ? receivedFor(loc)?.folder || basename(loc) : basename(loc);
+    return pathSegments(loc).segments.length === 0 ? receivedFor(loc)?.folder || basename(loc) : basename(loc);
   }
   if (isSftpPath(loc)) return basename(loc) || "SSH Server";
   return basename(loc);
@@ -892,70 +835,17 @@ function crumbsFor(loc: string): Crumb[] {
     const p = PSEUDO[loc.slice(PSEUDO_PREFIX.length) as Pseudo];
     return [{ label: p.label, path: loc, icon: p.icon }];
   }
-  if (isCloud(loc)) {
-    const parts = loc.slice(CLOUD_PREFIX.length).split("/").filter(Boolean);
-    const account = parts.shift() ?? "";
-    if (parts.length === 0) {
-      return [{ label: "Google Drive", path: loc, icon: "network-workgroup" }];
-    }
-    let base = `${CLOUD_PREFIX}${account}`;
-    const crumbs: Crumb[] = [];
-    for (const segment of parts) {
-      base += `/${segment}`;
-      crumbs.push({ label: cloudSegmentName(segment) || "My Drive", path: base });
-    }
-    crumbs[0] = { ...crumbs[0], icon: "network-workgroup" };
-    return crumbs;
-  }
-  if (isSharePath(loc)) {
-    const parts = loc.slice(SHARE_PREFIX.length).split("/").filter(Boolean);
-    const id = parts.shift() ?? "";
-    if (!id) return [{ label: "Network", path: NETWORK, icon: "network-workgroup" }];
-    const received = receivedFor(loc);
-    const crumbs: Crumb[] = [
-      { label: received?.folder || "Shared Folder", path: `${SHARE_PREFIX}${id}`, icon: "network-workgroup" },
-    ];
-    let base = `${SHARE_PREFIX}${id}`;
-    for (const segment of parts) {
-      base += `/${segment}`;
-      let label = segment;
-      try {
-        label = decodeURIComponent(segment);
-      } catch {
-        /* keep the encoded name */
-      }
-      crumbs.push({ label, path: base });
-    }
-    return crumbs;
-  }
-  if (isSftpPath(loc)) {
-    const parts = loc.slice(SFTP_PREFIX.length).split("/").filter(Boolean);
-    const authority = parts.shift() ?? "";
-    if (!authority) return [{ label: "Network", path: NETWORK, icon: "network-workgroup" }];
-    const crumbs: Crumb[] = [
-      { label: decodeURIComponent(authority), path: `${SFTP_PREFIX}${authority}/`, icon: "network-workgroup" },
-    ];
-    let base = `${SFTP_PREFIX}${authority}`;
-    for (const segment of parts) {
-      base += `/${segment}`;
-      let label = segment;
-      try {
-        label = decodeURIComponent(segment);
-      } catch {
-        /* keep the encoded name */
-      }
-      crumbs.push({ label, path: base });
-    }
-    return crumbs;
-  }
-  if (trashPath && (loc === trashPath || loc.startsWith(trashPath + "/"))) {
+  const place = placeOf(loc);
+  if (place === "drive") return driveCrumbs(loc);
+  if (place !== "local") return remoteCrumbs(loc, place);
+  if (isInTrash(loc, trashPath)) {
     return [{ label: "Trash", path: trashPath, icon: "user-trash" }, ...segments(trashPath, loc)];
   }
-  if (home && (loc === home || loc.startsWith(home + "/"))) {
+  if (home && isWithin(loc, home)) {
     return [{ label: "Home", path: home, icon: "user-home" }, ...segments(home, loc)];
   }
   const volume = mountedVolumes
-    .filter((v) => loc === v.path || loc.startsWith(v.path + "/"))
+    .filter((v) => isWithin(loc, v.path))
     .sort((a, b) => b.path.length - a.path.length)[0];
   if (volume) {
     return [{ label: volume.name, path: volume.path, icon: "drive-harddisk" }, ...segments(volume.path, loc)];
@@ -963,9 +853,25 @@ function crumbsFor(loc: string): Crumb[] {
   return [{ label: "", path: "/", icon: "drive-harddisk" }, ...segments("/", loc)];
 }
 
+/** Drive's crumbs: one per folder from My Drive down; the account alone is "Google Drive". */
+function driveCrumbs(loc: string): Crumb[] {
+  const { segments } = pathSegments(loc);
+  if (!segments.length) return [{ label: "Google Drive", path: loc, icon: "network-workgroup" }];
+  const crumbs: Crumb[] = segments.map((s) => ({ label: s.name || "My Drive", path: s.path }));
+  crumbs[0] = { ...crumbs[0], icon: "network-workgroup" };
+  return crumbs;
+}
+
+/** A share's or a server's crumbs: its root (the sharer's folder name, or the server), then its folders. */
+function remoteCrumbs(loc: string, place: "share" | "sftp"): Crumb[] {
+  const { root, segments } = pathSegments(loc);
+  if (!root.key) return [{ label: "Network", path: NETWORK, icon: "network-workgroup" }];
+  const label = place === "share" ? receivedFor(loc)?.folder || "Shared Folder" : root.name;
+  return [{ label, path: root.path, icon: "network-workgroup" }, ...segments.map((s) => ({ label: s.name, path: s.path }))];
+}
+
 function segments(base: string, loc: string): Crumb[] {
-  const rest = loc.slice(base.length).split("/").filter(Boolean);
-  return rest.map((name, i) => ({ label: name, path: joinPath(base, rest.slice(0, i + 1).join("/")) }));
+  return localSegments(base, loc).map((s) => ({ label: s.name, path: s.path }));
 }
 
 function buildPathbar(): void {
@@ -1537,7 +1443,7 @@ function starButton(e: Entry): string {
 function whereText(path: string): string {
   const dir = parentOf(path);
   if (dir === home) return "Home";
-  if (home && dir.startsWith(home + "/")) return dir.slice(home.length + 1);
+  if (home && isWithin(dir, home)) return dir.slice(home.length + 1);
   return dir;
 }
 
@@ -2319,7 +2225,7 @@ function networkItemMenu(single: Entry | null): MenuItem[] {
       { label: "Disconnect", action: () => void disconnectServer(server) },
     ];
   }
-  const id = single && isSharePath(single.path) ? shareIdOf(single.path) : "";
+  const id = single && isSharePath(single.path) ? shareId(single.path) : "";
   return [
     { label: "Open", action: activateSelection },
     { label: "Copy Location", disabled: !single, action: copyLocation },
@@ -3116,7 +3022,7 @@ function followMoves(moves: { from: string; to: string }[]): void {
   for (const { from, to } of moves) {
     const next = new Set<string>();
     for (const p of starred) {
-      if (p === from || p.startsWith(from + "/")) {
+      if (isWithin(p, from)) {
         next.add(to + p.slice(from.length));
         changed = true;
       } else {
@@ -3331,7 +3237,7 @@ function showLanded(destDir: string): void {
   landedReload = setTimeout(() => {
     landedReload = undefined;
     lastLandedReload = Date.now();
-    const open = [...landedIn].some((dir) => location === dir || location.startsWith(`${dir.replace(/\/+$/, "")}/`));
+    const open = [...landedIn].some((dir) => isUnder(location, dir));
     landedIn.clear();
     if (open) void reload();
   }, wait);
@@ -3635,7 +3541,7 @@ function dropTargetAt(x: number, y: number, sources: string[]): DropTarget | nul
 /** The volume a path is on, for a quick guess before device ids arrive. */
 function volumeRoot(path: string): string {
   return mountedVolumes
-    .filter((v) => path === v.path || path.startsWith(v.path + "/"))
+    .filter((v) => isWithin(path, v.path))
     .sort((a, b) => b.path.length - a.path.length)[0]?.path ?? "/";
 }
 
@@ -3644,7 +3550,7 @@ function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; 
   const dir = target.dir;
   if (isReadOnlyLocation(dir) || sources.some(isReadOnlyLocation)) return null;
   // Into itself or its own subfolder: refused.
-  if (sources.some((src) => dir === src || dir.startsWith(src + "/"))) return null;
+  if (sources.some((src) => isWithin(dir, src))) return null;
   // Drive items go to Drive's Trash with Move to Trash, not the app's Trash.
   if (dir === trashPath) return inTrash() || sources.some(isCloud) ? null : "trash";
   // Only Move to Trash puts items in the Trash: a folder inside it takes nothing.
@@ -4453,7 +4359,7 @@ async function previewThumbnailEntry(entry: Entry, seq: number): Promise<void> {
 // ---- Preview actions (#48) -------------------------------------------------
 
 function previewPlace(entry: Entry): PreviewPlace {
-  const trashed = !!trashPath && entry.path.startsWith(trashPath + "/");
+  const trashed = isInTrash(entry.path, trashPath) && entry.path !== trashPath;
   return {
     local: isLocalLocation(entry.path),
     inTrash: trashed || inTrash(),
@@ -5616,10 +5522,7 @@ async function init(): Promise<void> {
   trashPath = await trashDir().catch(() => (home ? joinPath(home, ".Trash") : ""));
   await buildSidebar();
   const requested = new URLSearchParams(window.location.search).get("path");
-  const initial =
-    requested && (requested.startsWith("/") || isPseudo(requested) || isCloud(requested) || isSharePath(requested))
-      ? requested
-      : home || "/";
+  const initial = requested && isKnownPath(requested) ? requested : home || "/";
   // Checking received shares waits on every sharer, a connect timeout for
   // each offline one, so only a share needs it before the first view. The
   // emblems on shared folders appear once it is done.

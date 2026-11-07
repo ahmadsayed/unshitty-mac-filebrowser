@@ -38,6 +38,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/preview-actions.ts` | Which actions the Space preview offers (Open, Rename…, Move to Trash, Open Item Location) for where the item is |
 | `src/selection.ts` | The view's selection, cursor and anchor, and the user's intent counter a paste checks before selecting what it made (#50) |
 | `src/locations.ts` | What each kind of location allows (Recent/Starred/Network, Drive, shares, SSH servers, the Trash): read only, local, recursive search, versions, new items |
+| `src/paths.ts` | Each kind of path's layout (`gdrive://`, `share://`, `sftp://`, local) as one row: its kind (`placeOf`), name, parent, child join (encoded as the backend decodes it) and crumbs; containment (`isUnder`), which paths a window may open, share links, what the path bar resolves typed text to |
 | `src/open-with.ts` | Open With…: the searchable application chooser (filter, keyboard selection, launch and retry) |
 | `src/updates.ts` | Check for Updates dialogs: offer, download progress, restart, failures |
 | `src/drag-out.ts` | Dragging files out of the window: when the pointer has left it, and the system drag (our GTK command on Linux, the drag plugin on macOS) |
@@ -265,6 +266,12 @@ GPL-3.0-or-later).
   than combining `isCloud`, `isSharePath`, `isSftpPath` and the Trash checks
   at the call site; a new kind of location or rule is a row in
   `tests/locations.test.ts`.
+- Ask `src/paths.ts` how a path breaks up (`pathName`, `parentPath`,
+  `childPath`, `pathSegments`, `isUnder`) rather than slicing a scheme's
+  prefix or writing `p === dir || p.startsWith(dir + "/")` at the call site;
+  a new scheme is a row in its `SCHEMES` table and in `tests/paths.test.ts`.
+  Never rewrite a path the backend produced: stars, pins and history store
+  them as they are.
 - Commit messages: conventional style (`feat:`, `fix:`, `docs:`, `chore:`),
   imperative subject, a body explaining what and why.
 - Keep the README's feature list and "Not supported yet" section in sync with
