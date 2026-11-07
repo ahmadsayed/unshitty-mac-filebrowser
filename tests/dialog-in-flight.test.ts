@@ -543,3 +543,44 @@ test("What name should people see?: a failure stays in the dialog, cleaned, with
   expect(button("Cancel").disabled).toBe(false);
   expect($<HTMLInputElement>("#share-name").disabled).toBe(false);
 });
+
+async function openPermissions(): Promise<void> {
+  await folder("perm", ["p.txt"]);
+  await rightClick(item("p.txt"));
+  await chooseMenu("Properties");
+  await settle(20);
+  await respond("Permissions…");
+  await settle(10);
+  expect(dialogHeading()).toBe("Permissions");
+}
+
+test("Permissions: a double Enter changes them once and reopens one Properties dialog", async () => {
+  await openPermissions();
+  calls().hold("set_permissions");
+  await key("Enter");
+  await key("Enter");
+  expect(button("Change").disabled).toBe(true);
+  expect(button("Cancel").disabled).toBe(true);
+  expect($<HTMLInputElement>('input[data-bit="128"]').disabled).toBe(true);
+  await key("Escape");
+  expect(dialogHeading()).toBe("Permissions");
+  calls().release("set_permissions");
+  await settle(40);
+  expect(calls().count("set_permissions")).toBe(1);
+  expect($$(".dialog-layer").length).toBe(1);
+  expect(dialogHeading()).toBe("Properties");
+  await key("Escape");
+});
+
+test("Permissions: a failure stays in the dialog, cleaned, with everything enabled", async () => {
+  await openPermissions();
+  calls().failNext("set_permissions", "Failed to set permissions: Operation not permitted (os error 1)");
+  await respond("Change");
+  expect(dialogHeading()).toBe("Permissions");
+  expect(message()).toBe("Operation not permitted");
+  expect(button("Change").disabled).toBe(false);
+  expect(button("Cancel").disabled).toBe(false);
+  expect($<HTMLInputElement>('input[data-bit="128"]').disabled).toBe(false);
+  await respond("Cancel");
+  await key("Escape");
+});

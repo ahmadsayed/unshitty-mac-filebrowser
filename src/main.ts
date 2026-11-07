@@ -2612,23 +2612,15 @@ function showPermissionsDialog(path: string, mode: number, onSaved: () => void):
   message.className = "field-message perm-message";
   extra.append(matrix, message);
 
-  let dialog: ReturnType<typeof openDialog>;
-  const apply = async () => {
+  const chosen = () => {
     let next = 0;
     extra.querySelectorAll<HTMLInputElement>("input[data-bit]").forEach((input) => {
       if (input.checked) next |= Number(input.dataset.bit);
     });
-    try {
-      await setPermissions(path, next);
-      dialog.close();
-      showToast("Permissions changed");
-      onSaved();
-    } catch (err) {
-      message.textContent = cleanError(err);
-    }
+    return next;
   };
 
-  dialog = openDialog({
+  const dialog = openDialog({
     heading: "Permissions",
     body: "Choose what the owner, group and others can do.",
     extra,
@@ -2639,9 +2631,15 @@ function showPermissionsDialog(path: string, mode: number, onSaved: () => void):
     ],
     defaultResponse: "change",
     closeResponse: "cancel",
-    onResponse: (id) => {
+    // Nothing else responds while they change; a failure stays in the dialog.
+    busy: { status: message },
+    onResponse: async (id) => {
       if (id !== "change") return;
-      void apply();
+      await setPermissions(path, chosen());
+      // Closed before onSaved reopens Properties.
+      dialog.close();
+      showToast("Permissions changed");
+      onSaved();
       return false;
     },
   });
