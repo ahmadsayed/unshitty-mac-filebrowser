@@ -4,6 +4,7 @@ mod config_store;
 mod downloads;
 mod file_icons;
 mod fs_ops;
+mod place;
 mod placement;
 mod platform;
 mod progress;
@@ -25,6 +26,7 @@ use tauri::ipc::Channel;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 use cloud::CloudState;
+use place::Kind;
 use versions::history::History;
 use versions::state::{Transfer, VersionsState};
 use versions::{VersionDiff, VersionInfo, restore};
@@ -41,20 +43,6 @@ fn lock_state<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, Strin
     mutex
         .lock()
         .map_err(|_| "Google Drive state is unavailable.".to_string())
-}
-
-fn read_only_one(path: &str) -> Option<&'static str> {
-    if sftp::is_sftp(path) {
-        return Some("SSH servers are read only for now.");
-    }
-    if share::location::is_share(path) {
-        return Some("Shared folders are read only.");
-    }
-    None
-}
-
-fn read_only_write(from: &str, to: &str) -> Option<&'static str> {
-    read_only_one(from).or_else(|| read_only_one(to))
 }
 
 fn share_versions_hint(app: &tauri::AppHandle) -> share::host::VersionsHint {
@@ -259,9 +247,12 @@ fn measure_paths(
     paths: Vec<String>,
     drive: impl FnOnce(&[String]) -> Result<fs_ops::Measure, String>,
 ) -> Result<fs_ops::Measure, String> {
-    let (drive_paths, local): (Vec<String>, Vec<String>) =
-        paths.into_iter().partition(|path| cloud::is_cloud(path));
-    let local: Vec<PathBuf> = local.into_iter().map(PathBuf::from).collect();
+    let (drive_paths, others): (Vec<String>, Vec<String>) =
+        paths.into_iter().partition(|path| place::kind(path) == Kind::Drive);
+    let local: Vec<PathBuf> = others
+        .iter()
+        .filter_map(|path| place::local(path).ok().map(Path::to_path_buf))
+        .collect();
     let mut total = fs_ops::measure(&local);
     if !drive_paths.is_empty() {
         let remote = drive(&drive_paths)?;
@@ -277,22 +268,30 @@ async fn list_dir(
     path: String,
     show_hidden: bool,
 ) -> Result<Vec<fs_ops::Entry>, String> {
-    if share::location::is_share(&path) {
-        let state = app.state::<share::state::ShareState>();
-        let hint = share_versions_hint(&app);
-        return state.list_dir(&path, show_hidden, hint).await;
+    match place::kind(&path) {
+        Kind::Share => {
+            let state = app.state::<share::state::ShareState>();
+            let hint = share_versions_hint(&app);
+            state.list_dir(&path, show_hidden, hint).await
+        }
+        Kind::Sftp => {
+            let app = app.clone();
+            blocking(move || app.state::<sftp::SftpState>().list(&path, show_hidden)).await?
+        }
+        Kind::Drive => {
+            blocking(move || {
+                let state = app.state::<CloudState>();
+                cloud::service::list_dir(&state, &path, show_hidden)
+            })
+            .await?
+        }
+        Kind::Local => list_local(path, show_hidden).await,
     }
-    if sftp::is_sftp(&path) {
-        let app = app.clone();
-        return blocking(move || app.state::<sftp::SftpState>().list(&path, show_hidden)).await?;
-    }
-    if cloud::is_cloud(&path) {
-        return blocking(move || {
-            let state = app.state::<CloudState>();
-            cloud::service::list_dir(&state, &path, show_hidden)
-        })
-        .await?;
-    }
+}
+
+/// `list_dir` for a folder on this computer.
+async fn list_local(path: String, show_hidden: bool) -> Result<Vec<fs_ops::Entry>, String> {
+    place::local(&path)?;
     blocking(move || fs_ops::list_dir(path, show_hidden)).await?
 }
 
@@ -546,22 +545,7 @@ async fn item_counts(
 
 /// `item_counts` for a batch: remote paths have no summary.
 fn folder_summaries(paths: &[String], show_hidden: bool) -> Vec<Option<fs_ops::FolderSummary>> {
-    let mut out: Vec<Option<fs_ops::FolderSummary>> = (0..paths.len()).map(|_| None).collect();
-    let mut local = Vec::new();
-    let mut positions = Vec::new();
-    for (index, path) in paths.iter().enumerate() {
-        if !cloud::is_cloud(path) && !share::location::is_share(path) && !sftp::is_sftp(path) {
-            local.push(path.clone());
-            positions.push(index);
-        }
-    }
-    for (position, summary) in positions
-        .into_iter()
-        .zip(fs_ops::item_counts(local, show_hidden))
-    {
-        out[position] = summary;
-    }
-    out
+    place::local_only(paths, |local| fs_ops::item_counts(local, show_hidden))
 }
 
 #[tauri::command]
@@ -582,32 +566,22 @@ fn path_infos(
     paths: &[String],
     drive: impl Fn(&str) -> Option<fs_ops::PathInfo>,
 ) -> Vec<Option<fs_ops::PathInfo>> {
-    let mut out = Vec::with_capacity(paths.len());
-    for path in paths {
-        if share::location::is_share(path) || sftp::is_sftp(path) {
-            out.push(None);
-        } else if cloud::is_cloud(path) {
-            out.push(drive(path));
-        } else {
-            out.push(
-                fs_ops::path_info(vec![path.clone()])
-                    .into_iter()
-                    .next()
-                    .flatten(),
-            );
+    let mut out = place::local_only(paths, fs_ops::path_info);
+    for (info, path) in out.iter_mut().zip(paths) {
+        if place::kind(path) == Kind::Drive {
+            *info = drive(path);
         }
     }
     out
 }
 
 /// Why the Properties dialog can't describe `path` yet, if it can't.
-fn properties_unavailable(path: &str) -> Option<&'static str> {
-    if sftp::is_sftp(path) {
-        Some("Properties aren't available for SSH servers yet.")
-    } else if share::location::is_share(path) {
-        Some("Properties aren't available for shared folders yet.")
-    } else {
-        None
+fn properties_refusal(path: &str) -> Result<(), String> {
+    match place::kind(path) {
+        Kind::Sftp => Err("Properties aren't available for SSH servers yet.".into()),
+        Kind::Share => Err("Properties aren't available for shared folders yet.".into()),
+        Kind::Drive => Ok(()),
+        Kind::Local => place::local(path).map(|_| ()),
     }
 }
 
@@ -618,10 +592,8 @@ async fn file_properties(
     path: String,
     show_hidden: bool,
 ) -> Result<properties::FileProperties, String> {
-    if let Some(reason) = properties_unavailable(&path) {
-        return Err(reason.into());
-    }
-    if cloud::is_cloud(&path) {
+    properties_refusal(&path)?;
+    if place::kind(&path) == Kind::Drive {
         return blocking(move || {
             let state = app.state::<CloudState>();
             cloud::service::file_properties(&state, &path, show_hidden)
@@ -635,13 +607,19 @@ async fn file_properties(
 /// `walk` lets `cancel_folder_size` stop it when the dialog closes.
 #[tauri::command]
 async fn folder_size(path: String, walk: u64) -> Result<u64, String> {
-    if sftp::is_sftp(&path) {
-        return Err("Folder sizes aren't available for SSH servers yet.".into());
-    }
-    if cloud::is_cloud(&path) {
-        return Err(cloud::service::unsupported());
-    }
+    folder_size_refusal(&path)?;
     blocking(move || properties::folder_size(&path, || properties::walk_cancelled(walk))).await?
+}
+
+/// Why `folder_size` can't measure `path`, if it can't: only folders on
+/// this computer are walked.
+fn folder_size_refusal(path: &str) -> Result<(), String> {
+    match place::kind(path) {
+        Kind::Sftp => Err("Folder sizes aren't available for SSH servers yet.".into()),
+        Kind::Share => Err("Folder sizes aren't available for shared folders yet.".into()),
+        Kind::Drive => Err(cloud::service::unsupported()),
+        Kind::Local => place::local(path).map(|_| ()),
+    }
 }
 
 /// A fresh id for `folder_size`.
@@ -660,10 +638,8 @@ fn cancel_folder_size(walk: u64) {
 /// known once Drive has given the new item an id.
 #[tauri::command]
 async fn make_dir(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    if let Some(message) = read_only_one(&path) {
-        return Err(message.into());
-    }
-    if cloud::is_cloud(&path) {
+    place::writable(&path)?;
+    if place::kind(&path) == Kind::Drive {
         return blocking(move || cloud::write::make_dir(&app.state::<CloudState>(), &path)).await?;
     }
     fs_ops::make_dir(path.clone())?;
@@ -713,10 +689,9 @@ async fn path_exists(app: tauri::AppHandle, path: String) -> bool {
 
 /// `path_exists`: Drive paths through `drive`, the others on disk.
 fn exists_at(path: &str, drive: impl FnOnce(&str) -> bool) -> bool {
-    if cloud::is_cloud(path) {
-        drive(path)
-    } else {
-        fs_ops::path_exists(path.to_string())
+    match place::kind(path) {
+        Kind::Drive => drive(path),
+        _ => place::local(path).is_ok_and(|path| fs_ops::path_exists(path.to_string_lossy().into())),
     }
 }
 
@@ -729,12 +704,10 @@ async fn copy_entry(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
-    if let Some(message) = read_only_write(&from, &to) {
-        return Err(message.into());
-    }
+    place::writable_both(&from, &to)?;
     let tracking = Tracking::start(&app, &op, on_progress);
     let progress = tracking.progress.clone();
-    let result = if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
+    let result = if place::kind(&from) == Kind::Drive || place::kind(&to) == Kind::Drive {
         drive_transfer(app.clone(), from, to, overwrite, false, progress).await
     } else {
         let app = app.clone();
@@ -762,12 +735,10 @@ async fn move_entry(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
-    if let Some(message) = read_only_write(&from, &to) {
-        return Err(message.into());
-    }
+    place::writable_both(&from, &to)?;
     let tracking = Tracking::start(&app, &op, on_progress);
     let progress = tracking.progress.clone();
-    let result = if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
+    let result = if place::kind(&from) == Kind::Drive || place::kind(&to) == Kind::Drive {
         drive_transfer(app.clone(), from, to, overwrite, true, progress).await
     } else {
         let app = app.clone();
@@ -788,11 +759,9 @@ async fn move_entry(
 
 #[tauri::command]
 async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result<String, String> {
-    if let Some(message) = read_only_write(&from, &to) {
-        return Err(message.into());
-    }
+    place::writable_both(&from, &to)?;
     // write::rename refuses a local path on either side.
-    if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
+    if place::kind(&from) == Kind::Drive || place::kind(&to) == Kind::Drive {
         return blocking(move || cloud::write::rename(&app.state::<CloudState>(), &from, &to))
             .await?;
     }
@@ -865,10 +834,10 @@ fn trash_elsewhere(
     path: &str,
     progress: &progress::Progress,
 ) -> Option<Result<Option<String>, String>> {
-    if let Some(message) = read_only_one(path) {
-        return Some(Err(message.into()));
+    if let Err(message) = place::writable(path) {
+        return Some(Err(message));
     }
-    if !cloud::is_cloud(path) {
+    if place::kind(path) != Kind::Drive {
         return None;
     }
     let result = progress
@@ -934,7 +903,7 @@ async fn trash_info(
 /// Returns the restored path.
 #[tauri::command]
 async fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    if cloud::is_cloud(&path) {
+    if place::kind(&path) == Kind::Drive {
         return blocking(move || cloud::write::restore(&app.state::<CloudState>(), &path)).await?;
     }
     blocking(move || {
@@ -957,7 +926,7 @@ async fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, St
 /// Delete an item in the Trash for good.
 #[tauri::command]
 async fn delete_permanently(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    if cloud::is_cloud(&path) {
+    if place::kind(&path) == Kind::Drive {
         return Err(cloud::service::unsupported());
     }
     blocking(move || {
@@ -1081,11 +1050,8 @@ async fn make_versioned_dir(app: tauri::AppHandle, path: String) -> Result<(), S
 /// `.versions/meta.json`, not SQLite.
 #[tauri::command]
 async fn versioned_root(app: tauri::AppHandle, path: String) -> Option<String> {
-    if cloud::is_cloud(&path) || share::location::is_share(&path) {
-        return None;
-    }
+    let path = place::local(&path).ok()?.to_path_buf();
     blocking(move || {
-        let path = PathBuf::from(&path);
         if in_trash(&app, &path) || versions::is_internal_path(&path) {
             return None;
         }
@@ -1341,14 +1307,14 @@ async fn thumbnail(
     ticket: Option<u64>,
 ) -> tauri::ipc::Response {
     let size = size.clamp(32, 1024);
-    let png = if cloud::is_cloud(&path) {
+    let png = if place::kind(&path) == Kind::Drive {
         blocking(move || {
             let state = app.state::<CloudState>();
             cloud::service::thumbnail(&state, &path, size)
         })
         .await
         .unwrap_or_default()
-    } else if share::location::is_share(&path) || sftp::is_sftp(&path) {
+    } else if place::local(&path).is_err() {
         Vec::new()
     } else {
         // Registered until it finishes, so the window can cancel it.
@@ -1384,10 +1350,7 @@ async fn file_share_prepare(
 
 /// What Send with QR Code serves: files on this computer only.
 fn qr_sources(paths: &[String]) -> Result<Vec<PathBuf>, String> {
-    if paths.iter().any(|path| cloud::is_cloud(path) || share::location::is_share(path) || sftp::is_sftp(path)) {
-        return Err("Only files on this computer can be sent with a QR code.".into());
-    }
-    Ok(paths.iter().map(PathBuf::from).collect())
+    place::all_local(paths).map_err(|_| "Only files on this computer can be sent with a QR code.".into())
 }
 
 /// Progress, link and downloads of a QR share; None once it was stopped.
@@ -1419,13 +1382,7 @@ async fn icon_ids(app: tauri::AppHandle, paths: Vec<String>) -> Vec<Option<Strin
 
 /// `icon_ids` for a batch: `id` is asked about local paths only.
 fn os_icon_ids(paths: &[String], id: impl Fn(&Path) -> Option<String>) -> Vec<Option<String>> {
-    paths
-        .iter()
-        .map(|path| {
-            let remote = cloud::is_cloud(path) || share::location::is_share(path) || sftp::is_sftp(path);
-            if remote { None } else { id(Path::new(path)) }
-        })
-        .collect()
+    place::local_only(paths, |local| local.iter().map(|path| id(Path::new(path))).collect())
 }
 
 /// The icon id for each app Open With offers (`list_apps` ids), or None.
@@ -2191,20 +2148,21 @@ pub fn run() {
 
 #[cfg(test)]
 mod properties_tests {
-    use super::properties_unavailable;
+    use super::properties_refusal;
 
     #[test]
     fn properties_are_refused_for_shared_folders_and_ssh_servers() {
         assert_eq!(
-            properties_unavailable("share://r1/hello.txt"),
-            Some("Properties aren't available for shared folders yet.")
+            properties_refusal("share://r1/hello.txt").unwrap_err(),
+            "Properties aren't available for shared folders yet."
         );
         assert_eq!(
-            properties_unavailable("sftp://me@host/home"),
-            Some("Properties aren't available for SSH servers yet.")
+            properties_refusal("sftp://me@host/home").unwrap_err(),
+            "Properties aren't available for SSH servers yet."
         );
-        assert_eq!(properties_unavailable("/home/me/a.txt"), None);
-        assert_eq!(properties_unavailable("gdrive://acct/root~My%20Drive"), None);
+        assert_eq!(properties_refusal("/home/me/a.txt"), Ok(()));
+        assert_eq!(properties_refusal("gdrive://acct/root~My%20Drive"), Ok(()));
+        assert_eq!(properties_refusal("a.txt").unwrap_err(), "“a.txt” is not a local file.");
     }
 }
 
@@ -2259,7 +2217,7 @@ mod dispatch_tests {
         assert_eq!(out.len(), paths.len());
         assert_eq!(out[0], Some(fs_ops::FolderSummary { count: 1, versioned: false }));
         assert!(out[1..].iter().all(Option::is_none), "{out:?}");
-        assert!(folder_summaries(&strings(&[RELATIVE]), false)[0].is_some());
+        assert_eq!(folder_summaries(&strings(&[RELATIVE]), false), vec![None]);
     }
 
     #[test]
@@ -2279,7 +2237,7 @@ mod dispatch_tests {
             kinds,
             vec![Some((true, false)), Some((false, false)), Some((true, true)), Some((true, true)), None, None, None, None]
         );
-        assert!(path_infos(&strings(&[RELATIVE]), |_| None)[0].is_some());
+        assert_eq!(path_infos(&strings(&[RELATIVE]), |_| panic!("not Drive")), vec![None]);
     }
 
     #[test]
@@ -2292,7 +2250,7 @@ mod dispatch_tests {
         for path in [SHARE, BAD_SHARE, SFTP, BAD_SFTP] {
             assert!(!exists_at(path, |_| panic!("not Drive")), "{path}");
         }
-        assert!(exists_at(RELATIVE, |_| panic!("not Drive")));
+        assert!(!exists_at(RELATIVE, |_| panic!("not Drive")));
     }
 
     #[test]
@@ -2306,7 +2264,7 @@ mod dispatch_tests {
                 "{path}"
             );
         }
-        assert!(qr_sources(&strings(&[RELATIVE])).is_ok());
+        assert!(qr_sources(&strings(&[RELATIVE])).is_err());
     }
 
     #[test]
@@ -2322,7 +2280,7 @@ mod dispatch_tests {
         assert_eq!(asked.into_inner(), vec![PathBuf::from(&f.file)]);
         assert_eq!(out[0].as_deref(), Some("id"));
         assert!(out[1..].iter().all(Option::is_none));
-        assert!(os_icon_ids(&strings(&[RELATIVE]), |_| Some("id".into()))[0].is_some());
+        assert_eq!(os_icon_ids(&strings(&[RELATIVE]), |_| panic!("not local")), vec![None]);
     }
 
     #[test]
@@ -2342,28 +2300,24 @@ mod dispatch_tests {
         let failed = measure_paths(strings(&[DRIVE]), |_| Err("offline".into()));
         assert_eq!(failed.unwrap_err(), "offline");
         let relative = measure_paths(strings(&[RELATIVE]), |_| panic!("not Drive")).unwrap();
-        assert!(relative.items > 0);
+        assert_eq!(relative, fs_ops::Measure::default());
     }
 
     #[test]
-    fn shares_and_ssh_servers_are_read_only() {
+    fn folder_size_walks_local_folders_only() {
         let f = fixture();
-        let shared = Some("Shared folders are read only.");
-        let ssh = Some("SSH servers are read only for now.");
+        assert_eq!(folder_size_refusal(&f.folder), Ok(()));
         for (path, refusal) in [
-            (f.file.as_str(), None),
-            (DRIVE, None),
-            (BAD_DRIVE, None),
-            (SHARE, shared),
-            (BAD_SHARE, shared),
-            (SFTP, ssh),
-            (BAD_SFTP, ssh),
+            (DRIVE, "This action is not available for Google Drive items yet."),
+            (BAD_DRIVE, "This action is not available for Google Drive items yet."),
+            (SHARE, "Folder sizes aren't available for shared folders yet."),
+            (BAD_SHARE, "Folder sizes aren't available for shared folders yet."),
+            (SFTP, "Folder sizes aren't available for SSH servers yet."),
+            (BAD_SFTP, "Folder sizes aren't available for SSH servers yet."),
+            (RELATIVE, "“src” is not a local file."),
         ] {
-            assert_eq!(read_only_one(path), refusal, "{path}");
-            assert_eq!(read_only_write(path, &f.file), refusal, "{path}");
-            assert_eq!(read_only_write(&f.file, path), refusal, "{path}");
+            assert_eq!(folder_size_refusal(path).unwrap_err(), refusal, "{path}");
         }
-        assert_eq!(read_only_write(SFTP, SHARE), ssh);
     }
 }
 
