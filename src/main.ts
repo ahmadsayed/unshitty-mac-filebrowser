@@ -166,9 +166,10 @@ let pins: string[] = [];
 /** Paths the sidebar always shows (places, default bookmarks, volumes). */
 const fixedSidebarPaths = new Set<string>();
 
-/** What remembers paths (stars, bookmarks, the clipboard) follows moved,
- *  renamed and trashed items through this (src/path-refs.ts). */
-const pathRefs = new PathRefs({
+/** What remembers paths (stars, bookmarks, the clipboard, tabs and their
+ *  history) follows moved, renamed and trashed items through this
+ *  (src/path-refs.ts). */
+const pathRefs = new PathRefs<TabState>({
   stars: {
     get: () => starred,
     set: (next) => {
@@ -189,6 +190,15 @@ const pathRefs = new PathRefs({
     get: () => clipboard,
     set: (next) => {
       clipboard = next;
+    },
+  },
+  tabs: {
+    get: () => ({ list: tabs, active: activeTab, back: backStack, forward: forwardStack }),
+    set: (next) => {
+      tabs = next.list;
+      backStack = next.back;
+      forwardStack = next.forward;
+      renderTabbar();
     },
   },
 });

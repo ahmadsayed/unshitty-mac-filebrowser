@@ -1,7 +1,7 @@
 // PathRefs on its own: each holder's rule for moved and trashed items, and
 // one replacement (so one save) per holder per report.
 import { expect, test } from "vitest";
-import { followPath, PathRefs, type Clip, type Slot } from "../src/path-refs";
+import { followPath, PathRefs, type Clip, type Slot, type TabPaths, type Tabs } from "../src/path-refs";
 
 /** A holder that counts how often it was replaced. */
 function slot<T>(value: T): Slot<T> & { value: T; sets: number } {
@@ -17,12 +17,15 @@ function slot<T>(value: T): Slot<T> & { value: T; sets: number } {
   return held;
 }
 
-function setup(opts: { stars?: string[]; bookmarks?: string[]; clipboard?: Clip | null } = {}) {
+type Tab = TabPaths & { scrollTop: number };
+
+function setup(opts: { stars?: string[]; bookmarks?: string[]; clipboard?: Clip | null; tabs?: Tabs<Tab> } = {}) {
   const stars = slot(new Set(opts.stars ?? []));
   const bookmarks = slot(opts.bookmarks ?? []);
   const clipboard = slot<Clip | null>(opts.clipboard ?? null);
-  const refs = new PathRefs({ stars, bookmarks, clipboard });
-  return { refs, stars, bookmarks, clipboard };
+  const tabs = slot<Tabs<Tab>>(opts.tabs ?? { list: [], active: -1, back: [], forward: [] });
+  const refs = new PathRefs({ stars, bookmarks, clipboard, tabs });
+  return { refs, stars, bookmarks, clipboard, tabs };
 }
 
 const clip = (paths: string[], mode: Clip["mode"] = "cut", dirs: string[] = []): Clip => ({ paths, dirs: new Set(dirs), mode });
@@ -155,4 +158,50 @@ test("nothing on the clipboard: a trash leaves it empty", () => {
   refs.gone(["/d/a.txt"]);
   expect(clipboard.value).toBeNull();
   expect(clipboard.sets).toBe(0);
+});
+
+// ---- Tabs -------------------------------------------------------------------------
+
+const tab = (location: string, back: string[] = [], forward: string[] = []): Tab => ({ location, back, forward, scrollTop: 40 });
+
+test("background tabs follow: where they are, and their Back and Forward", () => {
+  const list = [tab("/d/F/sub", ["/d", "/d/F"], ["/d/F/sub/deeper"]), tab("/d"), tab("/x", [], ["/d/F"])];
+  const { refs, tabs } = setup({ tabs: { list, active: 1, back: [], forward: [] } });
+  refs.moved([{ from: "/d/F", to: "/e/F" }]);
+  expect(tabs.sets).toBe(1);
+  expect(tabs.value.list).toEqual([
+    tab("/e/F/sub", ["/d", "/e/F"], ["/e/F/sub/deeper"]),
+    tab("/d"),
+    tab("/x", [], ["/e/F"]),
+  ]);
+  // What a tab keeps besides its paths stays; an untouched tab is the same object.
+  expect(tabs.value.list[0].scrollTop).toBe(40);
+  expect(tabs.value.list[1]).toBe(list[1]);
+});
+
+test("the tab on screen: its Back and Forward follow, its folder is the view's", () => {
+  // Its saved copy is stale while it is active: the live state is what counts.
+  const list = [tab("/d/F", ["/old"]), tab("/d")];
+  const { refs, tabs } = setup({ tabs: { list, active: 0, back: ["/d", "/d/F/a"], forward: ["/d/F/b"] } });
+  refs.moved([{ from: "/d/F", to: "/d/G" }]);
+  expect(tabs.value.list[0]).toBe(list[0]);
+  expect(tabs.value.back).toEqual(["/d", "/d/G/a"]);
+  expect(tabs.value.forward).toEqual(["/d/G/b"]);
+  expect(tabs.value.active).toBe(0);
+});
+
+test("tabs no move touches aren't replaced, and a trashed folder stays in them", () => {
+  const { refs, tabs } = setup({ tabs: { list: [tab("/d/F", ["/d"]), tab("/d")], active: 1, back: ["/d/F"], forward: [] } });
+  refs.moved([{ from: "/d/Fx", to: "/d/G" }]);
+  refs.gone(["/d/F"]);
+  expect(tabs.sets).toBe(0);
+  expect(tabs.value.list[0].location).toBe("/d/F");
+  expect(tabs.value.back).toEqual(["/d/F"]);
+});
+
+test("Recent, Starred and Network never move", () => {
+  const { refs, tabs } = setup({ tabs: { list: [tab("pseudo:starred"), tab("/d")], active: 1, back: ["pseudo:recent"], forward: [] } });
+  refs.moved([{ from: "/d", to: "/e" }]);
+  expect(tabs.value.list[0].location).toBe("pseudo:starred");
+  expect(tabs.value.back).toEqual(["pseudo:recent"]);
 });

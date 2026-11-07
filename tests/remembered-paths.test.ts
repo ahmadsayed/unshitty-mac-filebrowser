@@ -1,4 +1,5 @@
-// What the app remembers by path (stars, bookmarks, the clipboard) after items are
+// What the app remembers by path (stars, bookmarks, the clipboard, tabs and
+// their Back and Forward) after items are
 // moved, renamed or sent to the Trash, driven through the real app. The
 // rules themselves are tested on their own in tests/path-refs.test.ts.
 import { beforeAll, expect, test } from "vitest";
@@ -9,10 +10,10 @@ const ROOT = "/Users/me/Refs";
 const DEST = `${ROOT}/Dest`;
 
 beforeAll(async () => {
-  for (const dir of ["", "/Dest", "/Other", "/A", "/Clash", "/Trashy", "/Empty", "/Marked", "/Outer", "/Outer/In", "/Cuts", "/CutDest", "/CopySrc", "/CopyDest", "/Spare", "/Halt", "/HaltDest", "/HaltNext"]) {
+  for (const dir of ["", "/Dest", "/Other", "/A", "/Clash", "/Trashy", "/Empty", "/Marked", "/Outer", "/Outer/In", "/Cuts", "/CutDest", "/CopySrc", "/CopyDest", "/Spare", "/Halt", "/HaltDest", "/HaltNext", "/TabDir", "/Box", "/Box/Sub", "/Hist", "/Fwd"]) {
     await invoke("make_dir", { path: ROOT + dir });
   }
-  for (const file of ["/note.txt", "/A/inner.txt", "/keep.txt", "/Dest/keep.txt", "/Trashy/x.txt", "/Trashy/y.txt", "/Trashy/z.txt", "/Cuts/c.txt", "/CopySrc/f.txt", "/Halt/p.txt", "/Halt/q.txt", "/HaltDest/q.txt"]) {
+  for (const file of ["/note.txt", "/A/inner.txt", "/keep.txt", "/Dest/keep.txt", "/Trashy/x.txt", "/Trashy/y.txt", "/Trashy/z.txt", "/Cuts/c.txt", "/CopySrc/f.txt", "/Halt/p.txt", "/Halt/q.txt", "/HaltDest/q.txt", "/TabDir/t.txt", "/Box/Sub/s.txt"]) {
     await invoke("create_file", { path: ROOT + file });
   }
   await boot();
@@ -263,4 +264,68 @@ test("a bookmark inside a moved folder follows it, keeping its place in the list
 
   expect(await pins()).toEqual([...before.slice(0, -1), `${DEST}/Outer/In`]);
   expect(bookmark("In")?.dataset.location).toBe(`${DEST}/Outer/In`);
+});
+
+// ---- Tabs and their Back and Forward ---------------------------------------------
+
+const tabTitles = () => $$(".tab .tab-title").map((t) => t.textContent);
+
+test("Back and Forward follow a rename in the tab on screen", async () => {
+  await goTo(`${ROOT}/Hist`);
+  await goTo(ROOT);
+  await rename("Hist", "Hist 2");
+  await key("ArrowLeft", { alt: true });
+  await settle(15);
+  expect(title()).toBe("Hist 2");
+
+  await goTo(ROOT);
+  await goTo(`${ROOT}/Fwd`);
+  await key("ArrowLeft", { alt: true });
+  await settle(15);
+  expect(title()).toBe("Refs");
+  await rename("Fwd", "Fwd 2");
+  await key("ArrowRight", { alt: true });
+  await settle(15);
+  expect(title()).toBe("Fwd 2");
+});
+
+test("a tab in the background follows a rename of the folder it shows", async () => {
+  await goTo(`${ROOT}/TabDir`);
+  await key("t", { mod: true }); // a second tab, also at TabDir
+  await settle(10);
+  await goTo(ROOT);
+  await rename("TabDir", "TabDir 2");
+  expect(tabTitles()).toEqual(["TabDir 2", "Refs"]);
+
+  await click($$(".tab")[0]);
+  await settle(20);
+  expect(title()).toBe("TabDir 2");
+  expect(names()).toEqual(["t.txt"]);
+  await key("w", { mod: true });
+  await settle(20);
+});
+
+test("a tab in the background follows a folder moved around it, and so does its history", async () => {
+  await goTo(`${ROOT}/Box`);
+  await goTo(`${ROOT}/Box/Sub`);
+  await key("t", { mod: true }); // a second tab; the first keeps Box in its Back
+  await settle(10);
+  await goTo(ROOT);
+  await select("Box");
+  await key("x", { mod: true });
+  await goTo(DEST);
+  await key("v", { mod: true });
+  await settle(30);
+  expect(tabTitles()).toEqual(["Sub", "Dest"]);
+
+  await click($$(".tab")[0]);
+  await settle(20);
+  expect(title()).toBe("Sub");
+  expect(names()).toEqual(["s.txt"]);
+  await key("ArrowLeft", { alt: true });
+  await settle(15);
+  expect(title()).toBe("Box");
+  expect(names()).toEqual(["Sub"]);
+  await key("w", { mod: true });
+  await settle(20);
 });
