@@ -28,7 +28,7 @@ import {
   type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
-import { entryIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
+import { entryIcon, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind, type IconBase } from "./icons";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl, preloadNativeIcons, recheckNativeIcons } from "./native-icons";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
@@ -1551,10 +1551,14 @@ function wantsThumb(e: Entry): boolean {
   return prefs.showThumbnails && !e.is_dir && THUMB_KINDS.has(fileKind(e.name));
 }
 
+/** The size items' icons are shown at, in CSS pixels, in this view and zoom. */
+function shownIconPx(): number {
+  return prefs.view === "grid" ? GRID_SIZES[prefs.gridZoom] : LIST_SIZES[prefs.listZoom];
+}
+
 /** Pixel size to request: the displayed icon size at screen resolution, in a few steps. */
 function thumbSize(): number {
-  const shownAt = prefs.view === "grid" ? GRID_SIZES[prefs.gridZoom] : LIST_SIZES[prefs.listZoom];
-  const px = shownAt * devicePixelRatio;
+  const px = shownIconPx() * devicePixelRatio;
   return px <= 128 ? 128 : px <= 256 ? 256 : 512;
 }
 
@@ -1562,22 +1566,23 @@ function thumbKeyFor(e: Entry, size = thumbSize()): string {
   return thumbKey(e.path, e.modified, e.size, size);
 }
 
-/** The thumbnail if it's loaded, otherwise the type icon. */
+/** An item's icon, with the emblems icons.ts puts on it. */
 function iconHtml(e: Entry): string {
-  if (wantsThumb(e)) {
-    const url = cachedThumb(thumbKeyFor(e));
-    if (url) {
-      const link = e.is_symlink ? `<span class="emblem">${sym("emblem-symbolic-link")}</span>` : "";
-      return `<img class="thumb" src="${url}" alt="" draggable="false">${link}`;
-    }
-  }
-  if (location === NETWORK && isSftpPath(e.path)) return `<span class="server-glyph">${sym("network-server")}</span>`;
-  const icon = nativeIconHtml(e) ?? entryIcon(e, folderKind(e), versionedFolders.has(e.path));
-  if (location === NETWORK) return `${icon}<span class="emblem">${sym("network-workgroup")}</span>`;
-  if (sharedFolders.some((share) => share.path === e.path)) {
-    return `${icon}<span class="emblem">${sym("network-workgroup")}</span>`;
-  }
-  return icon;
+  return itemIcon(e, iconBase(e), {
+    link: e.is_symlink,
+    versions: versionedFolders.has(e.path),
+    shared: location === NETWORK || sharedFolders.some((share) => share.path === e.path),
+  });
+}
+
+/** The thumbnail if it's loaded, an SSH server's glyph in Network, the OS
+ *  icon if it's loaded, otherwise the app's drawing. */
+function iconBase(e: Entry): IconBase {
+  const thumb = wantsThumb(e) ? cachedThumb(thumbKeyFor(e)) : null;
+  if (thumb) return { thumb };
+  if (location === NETWORK && isSftpPath(e.path)) return { glyph: "network-server" };
+  const native = wantsNativeIcon(e) ? nativeIconUrl(e.path, nativeIconPx()) : null;
+  return native ? { native } : { drawn: folderKind(e) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1590,33 +1595,18 @@ function wantsNativeIcon(e: Entry): boolean {
 }
 
 function nativeIconPx(): number {
-  return nativeIconSize(prefs.view === "grid" ? GRID_SIZES[prefs.gridZoom] : LIST_SIZES[prefs.listZoom]);
+  return nativeIconSize(shownIconPx());
 }
 
-/** The OS icon with the app's badges, or null until it's loaded (or if there is none). */
-function nativeIconHtml(e: Entry): string | null {
-  if (!wantsNativeIcon(e)) return null;
-  const url = nativeIconUrl(e.path, nativeIconPx());
-  if (!url) return null;
-  const link = e.is_symlink ? `<span class="emblem">${sym("emblem-symbolic-link")}</span>` : "";
-  const versions = versionedFolders.has(e.path) ? versionsBadge() : "";
-  return `<img class="native-icon" src="${url}" alt="" draggable="false">${link}${versions}`;
-}
-
-/** Swap the OS icon for `key` (a path, or an `appIconKey`) into a dialog's
- *  icon once it loads; the app's drawing stays meanwhile, and wherever the OS
- *  has none. Badges next to the drawing are kept. */
-function useNativeIcon(icon: HTMLElement, key: string, shownAt: number): void {
+/** Draw `entry` in a dialog's icon, then swap in the OS icon for `key` (its
+ *  path, or an `appIconKey`) once it loads; the app's drawing stays meanwhile,
+ *  and wherever the OS has none. The link emblem shows on both. */
+function dialogIcon(icon: HTMLElement, entry: Entry, shownAt: number, key = entry.path): void {
+  const emblems = { link: entry.is_symlink, versions: false, shared: false };
+  icon.innerHTML = itemIcon(entry, { drawn: folderKind(entry) }, emblems);
   if (isRemotePath(key)) return;
   void nativeIcon(key, nativeIconSize(shownAt)).then((url) => {
-    const drawing = icon.querySelector("svg.fc, .versioned-icon");
-    if (!url || !drawing) return;
-    const img = document.createElement("img");
-    img.className = "native-icon";
-    img.src = url;
-    img.alt = "";
-    img.draggable = false;
-    drawing.replaceWith(img);
+    if (url) icon.innerHTML = itemIcon(entry, { native: url }, emblems);
   });
 }
 
@@ -2999,8 +2989,7 @@ async function showProperties(entry: Entry): Promise<void> {
   header.className = "properties-header";
   const icon = document.createElement("div");
   icon.className = "properties-icon";
-  icon.innerHTML = entryIcon(entry, folderKind(entry));
-  useNativeIcon(icon, entry.path, 64);
+  dialogIcon(icon, entry, 64);
   const name = document.createElement("div");
   name.className = "properties-name";
   name.textContent = info.name;
@@ -4392,8 +4381,7 @@ function previewEmpty(entry: Entry, text: string): void {
   box.className = "preview-empty";
   const icon = document.createElement("div");
   icon.className = "preview-empty-icon";
-  icon.innerHTML = entryIcon(entry, folderKind(entry));
-  useNativeIcon(icon, entry.path, 192);
+  dialogIcon(icon, entry, 192);
   const label = document.createElement("p");
   label.textContent = text;
   box.append(icon, label);
@@ -4584,11 +4572,8 @@ function openCurrentFolderWithItem(): MenuItem {
 function showOpenWith(entry: Entry): void {
   showOpenWithDialog(entry, {
     icon(span, app) {
-      span.innerHTML = entryIcon(
-        { name: `${app.name}.app`, path: "", is_dir: true, size: 0, modified: 0, is_hidden: false, is_symlink: false },
-        "plain"
-      );
-      useNativeIcon(span, appIconKey(app.id), 28);
+      const bundle = { name: `${app.name}.app`, path: "", is_dir: true, size: 0, modified: 0, is_hidden: false, is_symlink: false };
+      dialogIcon(span, bundle, 28, appIconKey(app.id));
     },
     errorText: cleanError,
     opened(file) {
