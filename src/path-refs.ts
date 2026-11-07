@@ -5,6 +5,7 @@
 //
 //   holder       moved or renamed                   sent to the Trash
 //   stars        follow (starred.json)               kept
+//   bookmarks    follow, in their order (pins.json)  kept
 //   clipboard    kept                                dropped from it
 //
 // A holder is replaced at most once per report, and only when it changed,
@@ -62,6 +63,8 @@ export interface Clip {
 export interface PathHolders {
   /** Starred items; `set` saves them to starred.json. */
   stars: Slot<Set<string>>;
+  /** The sidebar's bookmarks, in order; `set` saves them to pins.json and redraws the sidebar. */
+  bookmarks: Slot<string[]>;
   /** The clipboard, null when empty. */
   clipboard: Slot<Clip | null>;
 }
@@ -76,10 +79,13 @@ export class PathRefs {
     const follow = (path: string) => followPath(path, moves);
     const stars = followAll(this.holders.stars.get(), follow);
     if (stars) this.holders.stars.set(new Set(stars));
+    const bookmarks = followAll(this.holders.bookmarks.get(), follow);
+    // Two bookmarks can end at one path (Replace): the first one stays.
+    if (bookmarks) this.holders.bookmarks.set([...new Set(bookmarks)]);
   }
 
   /** Items that went to the Trash: the clipboard drops them, and is emptied
-   *  when nothing is left. Stars stay on their paths. */
+   *  when nothing is left. Stars and bookmarks stay on their paths. */
   gone(paths: readonly string[]): void {
     const clip = this.holders.clipboard.get();
     if (!clip) return;

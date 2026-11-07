@@ -166,14 +166,23 @@ let pins: string[] = [];
 /** Paths the sidebar always shows (places, default bookmarks, volumes). */
 const fixedSidebarPaths = new Set<string>();
 
-/** What remembers paths (stars, the clipboard) follows moved, renamed and
- *  trashed items through this (src/path-refs.ts). */
+/** What remembers paths (stars, bookmarks, the clipboard) follows moved,
+ *  renamed and trashed items through this (src/path-refs.ts). */
 const pathRefs = new PathRefs({
   stars: {
     get: () => starred,
     set: (next) => {
       starred = next;
       void persistStarred();
+    },
+  },
+  bookmarks: {
+    get: () => pins,
+    set: (next) => {
+      // The folder moved already: the sidebar shows where it is now, saved or not.
+      pins = next;
+      renderPins();
+      savePins(next).catch((err) => showToast(`Could not save bookmarks: ${cleanError(err)}`));
     },
   },
   clipboard: {

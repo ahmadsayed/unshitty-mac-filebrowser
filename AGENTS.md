@@ -38,7 +38,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/qr-share.ts` | Send with QR Code…: the menu item and the dialog (code, link, progress, downloads) |
 | `src/preview-actions.ts` | Which actions the Space preview offers (Open, Rename…, Move to Trash, Open Item Location) for where the item is, from `item-actions.ts`'s rules plus the preview's kept exceptions |
 | `src/selection.ts` | The view's selection, cursor and anchor, and the user's intent counter a paste checks before selecting what it made (#50) |
-| `src/path-refs.ts` | What remembers paths (stars, the clipboard) kept pointing at moved, renamed and trashed items: `moved(pairs)` and `gone(paths)`, one rule per holder, each holder replaced (and saved) at most once per batch; `followPath`, the prefix rewrite for what is inside a moved folder |
+| `src/path-refs.ts` | What remembers paths (stars, bookmarks, the clipboard) kept pointing at moved, renamed and trashed items: `moved(pairs)` and `gone(paths)`, one rule per holder, each holder replaced (and saved) at most once per batch; `followPath`, the prefix rewrite for what is inside a moved folder |
 | `src/search.ts` | The search without the DOM: `SearchSession` (open or not, the text, the walk after a 160 ms pause, at most 1000 results, late answers dropped, what a tab saves), `arrangeSearch` / `searchSections` (what the view shows and its "In This Folder" / "In Subfolders" headers), and `fold`, tested against the backend's `fs_ops::fold` with `tests/fold-cases.json` |
 | `src/locations.ts` | Which kind of place a path is (`locationKind`: Recent, Starred, Network, the Trash, a folder in it, a share, an SSH server, Drive, a folder), in one precedence built on `paths.ts`'s `placeOf`, and what each kind allows: read only, local, recursive search, versions, new items; the copy-out refusal's wording; which items are local files (`isLocalFile`, `isLocalRegularFile`) |
 | `src/item-actions.ts` | Whether an action several surfaces reach (cut, copy, paste, rename, trash, delete permanently, star, bookmark, properties, open location) may run in a kind of place, and the toast that says why not: a `Record<LocationKind, …>` per action, or a rule over `locations.ts`'s kind predicates (cut, copy, paste, open location); differences between surfaces kept on purpose are marked "Kept:" |
@@ -298,7 +298,7 @@ GPL-3.0-or-later).
 - Code that moves, renames or trashes items reports it to `src/path-refs.ts`
   (`pathRefs.moved(pairs)` with the paths the backend reported, once per
   batch and only for what really moved; `pathRefs.gone(paths)` after a Move
-  to Trash) instead of updating stars, the clipboard or other holders by
+  to Trash) instead of updating stars, bookmarks, the clipboard or other holders by
   hand. A new holder of paths is a holder there, with its rule tested in
   `tests/path-refs.test.ts`.
 - In `lib.rs`, ask `place.rs` which kind a path is and whether it may be

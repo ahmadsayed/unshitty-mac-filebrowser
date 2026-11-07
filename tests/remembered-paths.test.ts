@@ -1,15 +1,15 @@
-// What the app remembers by path (stars, the clipboard) after items are
+// What the app remembers by path (stars, bookmarks, the clipboard) after items are
 // moved, renamed or sent to the Trash, driven through the real app. The
 // rules themselves are tested on their own in tests/path-refs.test.ts.
 import { beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, click, goTo, hit, item, key, mouse, names, respond, settle, toasts, type } from "./app";
+import { $, $$, boot, click, goTo, hit, item, key, mouse, names, respond, settle, title, toasts, type } from "./app";
 
 const ROOT = "/Users/me/Refs";
 const DEST = `${ROOT}/Dest`;
 
 beforeAll(async () => {
-  for (const dir of ["", "/Dest", "/Other", "/A", "/Clash", "/Trashy", "/Empty"]) {
+  for (const dir of ["", "/Dest", "/Other", "/A", "/Clash", "/Trashy", "/Empty", "/Marked", "/Outer", "/Outer/In"]) {
     await invoke("make_dir", { path: ROOT + dir });
   }
   for (const file of ["/note.txt", "/A/inner.txt", "/keep.txt", "/Dest/keep.txt", "/Trashy/x.txt", "/Trashy/y.txt", "/Trashy/z.txt"]) {
@@ -169,4 +169,43 @@ test("when every cut item went to the Trash, there is nothing to paste", async (
   const paste = $$(".popover .menu-item").find((b) => b.textContent === "Paste");
   expect(paste?.hasAttribute("disabled")).toBe(true);
   await key("Escape");
+});
+
+// ---- Bookmarks ----------------------------------------------------------------
+
+const bookmark = (label: string) =>
+  $$("#sidebar-bookmarks .sidebar-row.pin").find((row) => row.textContent?.trim() === label);
+const pins = () => invoke<string[]>("load_pins");
+
+test("a bookmark follows a rename of its folder", async () => {
+  await goTo(`${ROOT}/Marked`);
+  await key("d", { mod: true });
+  expect(bookmark("Marked")).toBeDefined();
+  await goTo(ROOT);
+  await rename("Marked", "Marked 2");
+
+  expect(bookmark("Marked")).toBeUndefined();
+  expect(bookmark("Marked 2")?.dataset.location).toBe(`${ROOT}/Marked 2`);
+  expect(await pins()).toContain(`${ROOT}/Marked 2`);
+  expect(await pins()).not.toContain(`${ROOT}/Marked`);
+  await click(bookmark("Marked 2")!);
+  await settle(15);
+  expect(title()).toBe("Marked 2");
+});
+
+test("a bookmark inside a moved folder follows it, keeping its place in the list", async () => {
+  await goTo(`${ROOT}/Outer/In`);
+  await key("d", { mod: true });
+  const before = await pins();
+  expect(before.at(-1)).toBe(`${ROOT}/Outer/In`);
+
+  await goTo(ROOT);
+  await select("Outer");
+  await key("x", { mod: true });
+  await goTo(DEST);
+  await key("v", { mod: true });
+  await settle(30);
+
+  expect(await pins()).toEqual([...before.slice(0, -1), `${DEST}/Outer/In`]);
+  expect(bookmark("In")?.dataset.location).toBe(`${DEST}/Outer/In`);
 });

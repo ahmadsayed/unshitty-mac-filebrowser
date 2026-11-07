@@ -17,11 +17,12 @@ function slot<T>(value: T): Slot<T> & { value: T; sets: number } {
   return held;
 }
 
-function setup(opts: { stars?: string[]; clipboard?: Clip | null } = {}) {
+function setup(opts: { stars?: string[]; bookmarks?: string[]; clipboard?: Clip | null } = {}) {
   const stars = slot(new Set(opts.stars ?? []));
+  const bookmarks = slot(opts.bookmarks ?? []);
   const clipboard = slot<Clip | null>(opts.clipboard ?? null);
-  const refs = new PathRefs({ stars, clipboard });
-  return { refs, stars, clipboard };
+  const refs = new PathRefs({ stars, bookmarks, clipboard });
+  return { refs, stars, bookmarks, clipboard };
 }
 
 const clip = (paths: string[], mode: Clip["mode"] = "cut", dirs: string[] = []): Clip => ({ paths, dirs: new Set(dirs), mode });
@@ -75,6 +76,33 @@ test("a trashed item keeps its star", () => {
   refs.gone(["/d/a.txt"]);
   expect(stars.sets).toBe(0);
   expect([...stars.value]).toEqual(["/d/a.txt"]);
+});
+
+// ---- Bookmarks -------------------------------------------------------------------
+
+test("bookmarks follow a batch in their own order, replaced and so saved once", () => {
+  const { refs, bookmarks } = setup({ bookmarks: ["/d/Projects", "/d/F/In", "/d/Other"] });
+  refs.moved([
+    { from: "/d/F", to: "/e/F" },
+    { from: "/d/Projects", to: "/d/Projects 2" },
+  ]);
+  expect(bookmarks.sets).toBe(1);
+  expect(bookmarks.value).toEqual(["/d/Projects 2", "/e/F/In", "/d/Other"]);
+});
+
+test("two bookmarks that end at one path become one", () => {
+  // Replace: the moved folder takes the place of another bookmarked one.
+  const { refs, bookmarks } = setup({ bookmarks: ["/d/Old", "/d/New"] });
+  refs.moved([{ from: "/d/New", to: "/d/Old" }]);
+  expect(bookmarks.value).toEqual(["/d/Old"]);
+});
+
+test("bookmarks no move touches aren't saved, and a trashed folder keeps its bookmark", () => {
+  const { refs, bookmarks } = setup({ bookmarks: ["/d/Projects"] });
+  refs.moved([{ from: "/d/Project", to: "/d/Plan" }]);
+  refs.gone(["/d/Projects"]);
+  expect(bookmarks.sets).toBe(0);
+  expect(bookmarks.value).toEqual(["/d/Projects"]);
 });
 
 // ---- The clipboard ----------------------------------------------------------------
