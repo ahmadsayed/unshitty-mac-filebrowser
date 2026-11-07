@@ -887,3 +887,42 @@ test("list_apps lists, waits, fails and can be replaced; open_with fails once on
   mockApps().reset();
   expect(mockApps().opened()).toEqual([]);
 });
+
+// ----- Any command -----
+
+type MockCalls = {
+  count(cmd: string): number; hold(cmd: string): void; release(cmd: string): void;
+  failNext(cmd: string, error: string): void; reset(): void;
+};
+const mockCalls = () => (globalThis as unknown as { __mockCalls: MockCalls }).__mockCalls;
+
+test("any command can be counted, held until released and failed once", async () => {
+  mockCalls().reset();
+  await invoke("path_exists", { path: HOME });
+  await invoke("path_exists", { path: HOME });
+  expect(mockCalls().count("path_exists")).toBe(2);
+  expect(mockCalls().count("list_dir")).toBe(0);
+
+  mockCalls().hold("path_exists");
+  mockCalls().hold("path_exists");
+  let done = false;
+  const held = invoke("path_exists", { path: HOME }).then((exists) => (done = exists as boolean));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(done).toBe(false);
+  expect(mockCalls().count("path_exists")).toBe(3);
+  mockCalls().release("path_exists");
+  await held;
+  expect(done).toBe(true);
+
+  mockCalls().failNext("path_exists", "Permission denied (os error 13)");
+  await expect(invoke("path_exists", { path: HOME })).rejects.toBe("Permission denied (os error 13)");
+  await expect(invoke("path_exists", { path: HOME })).resolves.toBe(true);
+
+  mockCalls().hold("path_exists");
+  mockCalls().failNext("path_exists", "gone");
+  const reset = invoke("path_exists", { path: HOME }).catch((err) => err);
+  await new Promise((r) => setTimeout(r, 20));
+  mockCalls().reset();
+  expect(await reset).toBe(true);
+  expect(mockCalls().count("path_exists")).toBe(0);
+});

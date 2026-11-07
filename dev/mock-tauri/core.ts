@@ -2050,9 +2050,53 @@ function isDriveTransfer(a: Args): boolean {
   return str(a, "from").startsWith("gdrive://") || str(a, "to").startsWith("gdrive://");
 }
 
+// ----- Any command: tests count calls, hold one until released, or fail the next (__mockCalls) -----
+
+const calls = {
+  counts: new Map<string, number>(),
+  /** Commands held, each with the calls waiting for release(). */
+  held: new Map<string, (() => void)[]>(),
+  /** The next call of each command rejects with this, once. */
+  failures: new Map<string, string>(),
+};
+
+function releaseCalls(cmd: string): void {
+  const waiting = calls.held.get(cmd) ?? [];
+  calls.held.delete(cmd);
+  waiting.forEach((resolve) => resolve());
+}
+
+(globalThis as Record<string, unknown>).__mockCalls = {
+  count: (cmd: string) => calls.counts.get(cmd) ?? 0,
+  hold(cmd: string) {
+    if (!calls.held.has(cmd)) calls.held.set(cmd, []);
+  },
+  release: releaseCalls,
+  failNext(cmd: string, error: string) {
+    calls.failures.set(cmd, error);
+  },
+  reset() {
+    [...calls.held.keys()].forEach(releaseCalls);
+    calls.counts.clear();
+    calls.failures.clear();
+  },
+};
+
+/** Count the call, wait while the command is held, and fail it if asked. */
+async function callGate(cmd: string): Promise<void> {
+  calls.counts.set(cmd, (calls.counts.get(cmd) ?? 0) + 1);
+  const waiting = calls.held.get(cmd);
+  if (waiting) await new Promise<void>((resolve) => waiting.push(resolve));
+  const failure = calls.failures.get(cmd);
+  if (failure === undefined) return;
+  calls.failures.delete(cmd);
+  throw failure;
+}
+
 export async function invoke<T>(cmd: string, args: Args = {}): Promise<T> {
   await new Promise((r) => setTimeout(r, DELAY));
   const command = COMMANDS[cmd];
   if (!command) throw `mock: unknown command ${cmd}`;
+  await callGate(cmd);
   return (await command(args)) as T;
 }
