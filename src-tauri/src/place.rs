@@ -2,7 +2,7 @@
 //! backend twin of `placeOf` (`src/paths.ts`) and `src/locations.ts`.
 //!
 //! A narrow gate, not a router. A command that works on this computer only
-//! takes its path from [`local`], a write command asks
+//! takes its path from [`local`] (or [`local_write`]), a write command asks
 //! [`writable`] first, and a batch command with nothing to say about remote
 //! paths answers through [`local_only`]. So a `gdrive://`, `share://` or
 //! `sftp://` path, well formed or not, never reaches `std::fs`, and neither
@@ -73,6 +73,13 @@ pub fn writable(path: &str) -> Result<(), String> {
 /// [`writable`] for both sides of a copy, move or rename; `from` first.
 pub fn writable_both(from: &str, to: &str) -> Result<(), String> {
     writable(from).and_then(|()| writable(to))
+}
+
+/// `path` as a file on this computer that may be written: the read-only
+/// refusal comes first, then [`local`]'s.
+pub fn local_write(path: &str) -> Result<&Path, String> {
+    writable(path)?;
+    local(path)
 }
 
 /// Every path as a file on this computer, or the first refusal.
@@ -154,6 +161,8 @@ mod tests {
                 Some(refusal) => assert_eq!(local(path).unwrap_err(), *refusal, "{path}"),
             }
             assert_eq!(writable(path).err().as_deref(), write_refusal, "{path}");
+            let expected_write = write_refusal.map(String::from).or(local_refusal);
+            assert_eq!(local_write(path).err(), expected_write, "{path}");
         }
     }
 

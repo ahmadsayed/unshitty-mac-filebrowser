@@ -390,11 +390,15 @@ async fn extract_archive(
     dest: String,
     create: bool,
 ) -> Result<archive::ExtractResult, String> {
+    place::local(&path)?;
+    place::local_write(&dest)?;
     blocking(move || archive::extract_archive(path, dest, create)).await?
 }
 
 #[tauri::command]
 async fn compress_archive(paths: Vec<String>, dest: String, format: String) -> Result<(), String> {
+    place::all_local(&paths)?;
+    place::local_write(&dest)?;
     blocking(move || archive::compress_archive(paths, dest, format)).await?
 }
 
@@ -506,21 +510,28 @@ async fn preview_text(path: String, limit: usize) -> Result<fs_ops::TextPreview,
 
 #[tauri::command]
 async fn rename_many(items: Vec<fs_ops::RenameItem>) -> Result<(), String> {
+    for item in &items {
+        place::local_write(&item.from)?;
+        place::local_write(&item.to)?;
+    }
     blocking(move || fs_ops::rename_many(items)).await?
 }
 
 #[tauri::command]
 async fn set_permissions(path: String, mode: u32) -> Result<(), String> {
+    place::local_write(&path)?;
     blocking(move || fs_ops::set_permissions(path, mode)).await?
 }
 
 #[tauri::command]
 async fn create_symlink(path: String) -> Result<String, String> {
+    place::local_write(&path)?;
     blocking(move || fs_ops::create_link(path)).await?
 }
 
 #[tauri::command]
 async fn create_file(path: String) -> Result<(), String> {
+    place::local_write(&path)?;
     blocking(move || fs_ops::create_file(path)).await?
 }
 
@@ -2318,6 +2329,95 @@ mod dispatch_tests {
         ] {
             assert_eq!(folder_size_refusal(path).unwrap_err(), refusal, "{path}");
         }
+    }
+}
+
+#[cfg(test)]
+mod write_guard_tests {
+    //! The write commands that work on this computer only refuse every
+    //! other path before anything is touched (the UI already offers them
+    //! only there; this is the backend's own check).
+    use super::*;
+    use tauri::async_runtime::block_on;
+
+    const SHARED: &str = "Shared folders are read only.";
+    const SSH: &str = "SSH servers are read only for now.";
+    const DRIVE: &str = "This action is not available for Google Drive items yet.";
+
+    /// Each refused path with its refusal.
+    fn refused() -> Vec<(&'static str, String)> {
+        vec![
+            ("share://r1/a.txt", SHARED.into()),
+            ("share://", SHARED.into()),
+            ("sftp://me@host/a.txt", SSH.into()),
+            ("gdrive://acct/root~x/~a.txt", DRIVE.into()),
+            ("gdrive://", DRIVE.into()),
+            ("a.txt", "“a.txt” is not a local file.".into()),
+        ]
+    }
+
+    fn local(dir: &tempfile::TempDir, name: &str) -> String {
+        dir.path().join(name).to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn create_file_and_permissions_and_links_refuse_other_paths() {
+        for (path, refusal) in refused() {
+            assert_eq!(block_on(create_file(path.into())).unwrap_err(), refusal, "{path}");
+            assert_eq!(block_on(set_permissions(path.into(), 0o644)).unwrap_err(), refusal, "{path}");
+            assert_eq!(block_on(create_symlink(path.into())).unwrap_err(), refusal, "{path}");
+        }
+        assert!(!Path::new("a.txt").exists());
+        let dir = tempfile::tempdir().unwrap();
+        let file = local(&dir, "a.txt");
+        block_on(create_file(file.clone())).unwrap();
+        block_on(set_permissions(file.clone(), 0o600)).unwrap();
+        assert_eq!(block_on(create_symlink(file)).unwrap(), local(&dir, "Link to a.txt"));
+    }
+
+    #[test]
+    fn rename_many_refuses_any_other_path_on_either_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (local(&dir, "a.txt"), local(&dir, "b.txt"));
+        std::fs::write(&a, "a").unwrap();
+        let item = |from: &str, to: &str| fs_ops::RenameItem { from: from.into(), to: to.into() };
+        for (path, refusal) in refused() {
+            let ok = item(&a, &b);
+            assert_eq!(block_on(rename_many(vec![ok, item(path, &b)])).unwrap_err(), refusal, "{path}");
+            assert_eq!(block_on(rename_many(vec![item(&a, path)])).unwrap_err(), refusal, "{path}");
+            assert!(Path::new(&a).exists() && !Path::new(&b).exists(), "{path}");
+        }
+        block_on(rename_many(vec![item(&a, &b)])).unwrap();
+        assert!(Path::new(&b).exists());
+    }
+
+    #[test]
+    fn archives_need_local_sources_and_a_writable_local_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = local(&dir, "a.txt");
+        std::fs::write(&file, "a").unwrap();
+        let zip = local(&dir, "a.zip");
+        for (path, refusal) in refused() {
+            let to_remote = block_on(compress_archive(vec![file.clone()], path.into(), "zip".into()));
+            assert_eq!(to_remote.unwrap_err(), refusal, "{path}");
+            let extract_to = block_on(extract_archive(zip.clone(), path.into(), true));
+            assert_eq!(extract_to.unwrap_err(), refusal, "{path}");
+        }
+        for (path, refusal) in [
+            ("share://r1/a.zip", "This action is not available for shared folders."),
+            ("sftp://me@host/a.zip", "This action is not available for SSH servers."),
+            ("gdrive://acct/root~x", DRIVE),
+            ("a.zip", "“a.zip” is not a local file."),
+        ] {
+            let from_remote = block_on(compress_archive(vec![file.clone(), path.into()], zip.clone(), "zip".into()));
+            assert_eq!(from_remote.unwrap_err(), refusal, "{path}");
+            let extract_from = block_on(extract_archive(path.into(), local(&dir, "out"), true));
+            assert_eq!(extract_from.unwrap_err(), refusal, "{path}");
+        }
+        assert!(!Path::new(&zip).exists());
+        block_on(compress_archive(vec![file], zip.clone(), "zip".into())).unwrap();
+        let out = block_on(extract_archive(zip, local(&dir, "out"), true)).unwrap();
+        assert_eq!(out.files, 1);
     }
 }
 
