@@ -10,6 +10,7 @@ use crate::cloud::CloudState;
 use crate::cloud::drive::{API_BASE, DriveClient, DriveError, DriveFile, FileChange};
 use crate::cloud::location::DriveLocation;
 use crate::cloud::service::{self, Refresh};
+use crate::placement::Refusal;
 use crate::progress::Progress;
 
 /// Where requests go and how tokens refresh; tests point it at a fake server.
@@ -177,7 +178,7 @@ struct Transfer<'a> {
     replaced: Option<DriveFile>,
 }
 
-/// The refusals of `fs_ops::check_transfer`, for Drive. Path-only checks run
+/// The refusals of `placement::check_transfer`, for Drive. Path-only checks run
 /// before any request.
 fn check<'a>(c: &Ctx<'a>, from: &str, to: &str, overwrite: bool) -> Result<Transfer<'a>, String> {
     let (source_location, account) = service::writable(c.state, from)?;
@@ -188,7 +189,7 @@ fn check<'a>(c: &Ctx<'a>, from: &str, to: &str, overwrite: bool) -> Result<Trans
     }
     let (target_parent, target_parent_id, name) = pending_target(to)?;
     if target_parent.segments.iter().any(|s| s.id == source_id) {
-        return Err("Cannot copy or move a folder into itself".into());
+        return Err(Refusal::IntoItself.into());
     }
     let source_parent_id = source_location
         .parent()
@@ -196,14 +197,14 @@ fn check<'a>(c: &Ctx<'a>, from: &str, to: &str, overwrite: bool) -> Result<Trans
     if source_parent_id.as_deref() == Some(target_parent_id.as_str())
         && source_location.name() == Some(name.as_str())
     {
-        return Err("The source and destination are the same".into());
+        return Err(Refusal::SamePath.into());
     }
 
     let client = client(c, &account.id)?;
     let shown = source_location.name().unwrap_or_default().to_string();
     let source = match client.get(&source_id) {
         Ok(file) if !file.trashed => file,
-        Ok(_) | Err(DriveError::NotFound) => return Err(format!("“{shown}” no longer exists")),
+        Ok(_) | Err(DriveError::NotFound) => return Err(Refusal::Vanished(shown).into()),
         Err(error) => return Err(message(error)),
     };
     let existing: Vec<DriveFile> = client
@@ -214,7 +215,7 @@ fn check<'a>(c: &Ctx<'a>, from: &str, to: &str, overwrite: bool) -> Result<Trans
         .collect();
     let replaced = match existing.len() {
         0 => None,
-        _ if !overwrite => return Err(format!("Target already exists: {name}")),
+        _ if !overwrite => return Err(Refusal::Exists(name).into()),
         1 => Some(existing.into_iter().next().unwrap()),
         _ => {
             return Err(format!(
@@ -224,7 +225,7 @@ fn check<'a>(c: &Ctx<'a>, from: &str, to: &str, overwrite: bool) -> Result<Trans
     };
     if let Some(old) = &replaced {
         if source_location.segments.iter().any(|s| s.id == old.id) {
-            return Err("Cannot replace a folder with an item inside it".into());
+            return Err(Refusal::ReplaceWithChild.into());
         }
     }
     Ok(Transfer {

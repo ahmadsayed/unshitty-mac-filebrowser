@@ -272,6 +272,30 @@ test("copy_entry and move_entry copy, move, replace and refuse", async () => {
   await expect(invoke("copy_entry", { from: `${HOME}/Box`, to: `${HOME}/Box/inner`, overwrite: false })).rejects.toMatch(/into itself/);
 });
 
+// The same cases as fs_ops.rs `refusals_keep_their_wording_and_order`.
+test("copy_entry and move_entry refuse in the backend's words and order", async () => {
+  const a = `${HOME}/Refusals`;
+  await invoke("make_dir", { path: a });
+  await invoke("make_dir", { path: `${a}/child` });
+  const cases: Array<[string, string, boolean, string]> = [
+    [`${HOME}/gone`, `${HOME}/gone`, true, `“${HOME}/gone” no longer exists`],
+    [a, a, true, "The source and destination are the same"],
+    [a, `${a}/child`, false, "Cannot copy or move a folder into itself"],
+    [a, `${a}/child`, true, "Cannot copy or move a folder into itself"],
+    [`${a}/child`, a, false, `Target already exists: ${a}`],
+    [`${a}/child`, a, true, "Cannot replace a folder with an item inside it"],
+    [`${HOME}/Desktop/todo.txt`, `${a}/child/..`, true, `“${a}/child/..” is not a valid name for a local item.`],
+    [`${HOME}/Desktop/todo.txt`, `${a}/child/.`, true, `“${a}/child/.” is not a valid name for a local item.`],
+  ];
+  for (const command of ["copy_entry", "move_entry"]) {
+    for (const [from, to, overwrite, message] of cases) {
+      await expect(invoke(command, { from, to, overwrite }), `${command} ${from} → ${to}`).rejects.toBe(message);
+    }
+  }
+  expect(await namesIn(a)).toEqual(["child"]);
+  expect(await namesIn(`${HOME}/Desktop`)).toContain("todo.txt");
+});
+
 type TrashOutcome = { trashed: string | null; error: string | null };
 const trashOne = async (path: string) => (await invoke<TrashOutcome[]>("trash_entries", { paths: [path] }))[0];
 

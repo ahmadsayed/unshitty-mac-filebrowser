@@ -10,7 +10,8 @@
 //! then renamed into place; on failure the staging path is removed. A new
 //! folder downloads straight under its name so it fills as you watch (as in
 //! GNOME Files); each file in it is still checked, and if the download fails
-//! or is cancelled the partial folder goes to the Trash.
+//! or is cancelled the partial folder goes to the Trash. `placement` does the
+//! staging and the Replace, as for local copies.
 //!
 //! A move removes its source only after the copy succeeded: a local source
 //! goes to the Trash, a Drive source to Drive's Trash.
@@ -22,6 +23,7 @@ use crate::cloud::drive::{DriveClient, DriveError, DriveFile, FileChange};
 use crate::cloud::service;
 use crate::cloud::write::{self, Ctx, message};
 use crate::fs_ops::Measure;
+use crate::placement::{self, Refusal, Stage, Staged, TrashFn, Unfilled};
 use crate::progress::Progress;
 
 const UPLOAD_SUFFIX: &str = ".filebrowser-upload";
@@ -119,12 +121,12 @@ pub(crate) fn upload_in(c: &Ctx, from: &Path, to: &str, overwrite: bool) -> Resu
     let (_, account) = service::writable(c.state, to)?;
     let (parent, parent_id, name) = write::pending_target(to)?;
     let meta = std::fs::symlink_metadata(from)
-        .map_err(|_| format!("“{}” no longer exists", from.display()))?;
+        .map_err(|_| String::from(Refusal::Vanished(from.display().to_string())))?;
     let client = write::client(c, &account.id)?;
     let existing = client.find_children(&parent_id, &name).map_err(message)?;
     let replaced = match existing.len() {
         0 => None,
-        _ if !overwrite => return Err(format!("Target already exists: {name}")),
+        _ if !overwrite => return Err(Refusal::Exists(name).into()),
         1 => existing.into_iter().next(),
         _ => {
             return Err(format!(
@@ -251,8 +253,7 @@ pub(crate) fn download_in(
     to: &Path,
     overwrite: bool,
 ) -> Result<String, String> {
-    let remove = |path: &Path| crate::fs_ops::remove_any(path).map_err(|e| e.to_string());
-    download_into(c, from, to, overwrite, &remove)
+    download_into(c, from, to, overwrite, &placement::remove)
 }
 
 /// Download a Drive item to `to`. A new folder downloads straight under its
@@ -264,22 +265,21 @@ pub(crate) fn download_into(
     from: &str,
     to: &Path,
     overwrite: bool,
-    discard: &dyn Fn(&Path) -> Result<(), String>,
+    discard: TrashFn,
 ) -> Result<String, String> {
-    // `/dest/..` or `/dest/.` would make Replace trash `dest` itself. The
-    // raw text is checked: `Path::components` quietly drops a trailing `.`.
-    let raw = to.to_string_lossy();
-    let last = raw.rsplit(std::path::MAIN_SEPARATOR).next().unwrap_or("");
-    if matches!(last, "" | "." | "..") {
-        return Err(format!(
-            "“{}” is not a valid name for a local item.",
-            to.display()
-        ));
-    }
-    let replacing = std::fs::symlink_metadata(to).is_ok();
-    if replacing && !overwrite {
-        return Err(format!("Target already exists: {}", to.display()));
-    }
+    download_into_with(c, from, to, overwrite, discard, &placement::to_trash)
+}
+
+/// `download_into` with the Trash a Replace uses, so tests can see it.
+fn download_into_with(
+    c: &Ctx,
+    from: &str,
+    to: &Path,
+    overwrite: bool,
+    discard: TrashFn,
+    trash: TrashFn,
+) -> Result<String, String> {
+    let target = placement::check_new(to, overwrite)?;
     let location = service::drive_location(from)?;
     let id = location
         .file_id()
@@ -290,60 +290,46 @@ pub(crate) fn download_into(
     let shown = location.name().unwrap_or_default().to_string();
     let file = match client.get(&id) {
         Ok(file) if !file.trashed => file,
-        Ok(_) | Err(DriveError::NotFound) => return Err(format!("“{shown}” no longer exists")),
+        Ok(_) | Err(DriveError::NotFound) => return Err(Refusal::Vanished(shown).into()),
         Err(error) => return Err(message(error)),
     };
     if !file.is_dir() && !file.can_download() {
         return Err(not_downloadable(&file));
     }
-
-    let in_place = file.is_dir() && !replacing;
-    let staging = if in_place {
-        to.to_path_buf()
+    let stage = if file.is_dir() {
+        Stage::WhenReplacing { discard }
     } else {
-        crate::fs_ops::staging_path(to)
+        Stage::Always
     };
     let mut skipped = Vec::new();
-    let result = if file.is_dir() {
-        // Only a folder this call created may be discarded on failure.
-        std::fs::create_dir(&staging)
-            .map_err(|error| error.to_string())
-            .and_then(|()| {
-                let fetched =
-                    download_children(&client, &file.id, &staging, &mut skipped, &c.progress);
-                if fetched.is_err() && in_place {
-                    let _ = discard(&staging);
-                }
-                fetched
-            })
-            .map(|()| c.progress.add_item())
-    } else {
-        download_verified(&client, &file, &staging, &c.progress)
-    };
-    if let Err(error) = result {
-        if !in_place {
-            let _ = crate::fs_ops::remove_any(&staging);
-        }
-        return Err(error);
-    }
-    if in_place {
-        // Already in place.
-    } else if replacing {
-        crate::fs_ops::replace_with_staged(
-            &staging,
-            to,
-            crate::fs_ops::Staged::Copy,
-            &crate::fs_ops::to_trash,
-        )?;
-    } else if let Err(error) = std::fs::rename(&staging, to) {
-        let _ = crate::fs_ops::remove_any(&staging);
-        return Err(format!("Failed to copy: {error}"));
-    }
+    let fill = |dest: &Path| download_to(&client, &file, dest, &mut skipped, &c.progress);
+    target.place(stage, fill, trash)?;
     match skipped.first() {
         // Everything else was copied; the error names what was left out.
         Some(reason) => Err(reason.clone()),
         None => Ok(to.to_string_lossy().into_owned()),
     }
+}
+
+/// Download `file` to `dest`: a file whole, a folder with everything in it
+/// that has bytes (the others are listed in `skipped`).
+fn download_to(
+    client: &DriveClient,
+    file: &DriveFile,
+    dest: &Path,
+    skipped: &mut Vec<String>,
+    progress: &Progress,
+) -> Result<Staged<'static>, Unfilled> {
+    if !file.is_dir() {
+        return download_verified(client, file, dest, progress)
+            .map(|()| Staged::Copy)
+            .map_err(Unfilled::Partial);
+    }
+    // Only a folder this call created may be discarded on failure.
+    std::fs::create_dir(dest).map_err(|error| Unfilled::Nothing(error.to_string()))?;
+    download_children(client, &file.id, dest, skipped, progress).map_err(Unfilled::Partial)?;
+    progress.add_item();
+    Ok(Staged::Copy)
 }
 
 /// Download one file to `dest` and check its size against Drive's.
@@ -876,6 +862,116 @@ mod tests {
         assert!(result.unwrap_err().starts_with("Target already exists"));
         assert_eq!(std::fs::read(&target).unwrap(), b"mine");
         assert!(heads(&log).is_empty());
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn no_discard(_: &Path) -> Result<(), String> {
+        panic!("nothing to discard")
+    }
+
+    /// Replace downloads under a hidden name next to the old item, sends the
+    /// old one to the Trash once the new one is whole, then renames it in.
+    #[test]
+    fn a_replacing_download_stages_then_trashes_then_renames_into_place() {
+        for is_folder in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let (target, replies, from) = if is_folder {
+                let target = dir.path().join("Docs");
+                std::fs::create_dir(&target).unwrap();
+                std::fs::write(target.join("old.txt"), b"old").unwrap();
+                let replies = vec![ok(folder("d1", "Docs")), found(&[sized("x1", "x.txt", 2)]), bytes(b"hi")];
+                (target, replies, format!("{ROOT}/d1~Docs"))
+            } else {
+                let target = local(&dir, "a.txt", b"old");
+                (target, vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")], format!("{ROOT}/f1~a.txt"))
+            };
+            let seen = std::cell::RefCell::new(Vec::new());
+            let trash = |p: &Path| {
+                seen.borrow_mut().push((p.to_path_buf(), names_in(dir.path())));
+                std::fs::rename(p, bin.join("old")).map_err(|e| e.to_string())
+            };
+            let (result, _) = run(replies, |c| {
+                download_into_with(c, &from, &target, true, &no_discard, &trash)
+            });
+            assert_eq!(result.unwrap(), target.to_string_lossy());
+            let seen = seen.into_inner();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].0, target);
+            let name = target.file_name().unwrap().to_string_lossy().into_owned();
+            let staged = format!(".{name}.filebrowser-{}-0", std::process::id());
+            let mut want = vec![staged, name.clone(), "bin".to_string()];
+            want.sort();
+            assert_eq!(seen[0].1, want);
+            let mut left = vec!["bin".to_string(), name];
+            left.sort();
+            assert_eq!(names_in(dir.path()), left);
+            if is_folder {
+                assert_eq!(std::fs::read(target.join("x.txt")).unwrap(), b"hi");
+                assert_eq!(std::fs::read(bin.join("old/old.txt")).unwrap(), b"old");
+            } else {
+                assert_eq!(std::fs::read(&target).unwrap(), b"hello");
+                assert_eq!(std::fs::read(bin.join("old")).unwrap(), b"old");
+            }
+        }
+    }
+
+    #[test]
+    fn a_replacing_download_whose_trash_fails_keeps_the_old_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = local(&dir, "a.txt", b"old");
+        let refuse = |_: &Path| Err("no Trash on this volume".to_string());
+        let (result, _) = run(vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")], |c| {
+            download_into_with(c, &format!("{ROOT}/f1~a.txt"), &target, true, &no_discard, &refuse)
+        });
+        assert_eq!(
+            result.unwrap_err(),
+            "Could not move the existing item to the Trash: no Trash on this volume"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        assert_eq!(names_in(dir.path()), ["a.txt"]);
+    }
+
+    /// The local refusals' words, and that the name check comes first.
+    #[test]
+    fn download_refusals_keep_their_wording_and_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = local(&dir, "a.txt", b"mine");
+        let dotdot = dir.path().join("sub/..");
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let cases = [
+            (target.clone(), format!("Target already exists: {}", target.display())),
+            // `sub/..` exists too, but isn't a name.
+            (dotdot.clone(), format!("“{}” is not a valid name for a local item.", dotdot.display())),
+        ];
+        for (to, want) in cases {
+            let (result, log) = run(vec![], |c| {
+                download_in(c, &format!("{ROOT}/f1~a.txt"), &to, false)
+            });
+            assert_eq!(result.unwrap_err(), want);
+            assert!(heads(&log).is_empty());
+        }
+        assert_eq!(std::fs::read(&target).unwrap(), b"mine");
+    }
+
+    #[test]
+    fn a_vanished_drive_source_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("a.txt");
+        let (result, _) = run(vec![Reply::json(404, "{}")], |c| {
+            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false)
+        });
+        assert_eq!(result.unwrap_err(), "“a.txt” no longer exists");
+        assert_eq!(names_in(dir.path()), Vec::<String>::new());
     }
 
     #[test]
