@@ -3,13 +3,18 @@
 //!
 //! A narrow gate, not a router. A command that works on this computer only
 //! takes its path from [`local`] (or [`local_write`]), a write command asks
-//! [`writable`] first, and a batch command with nothing to say about remote
-//! paths answers through [`local_only`]. So a `gdrive://`, `share://` or
-//! `sftp://` path, well formed or not, never reaches `std::fs`, and neither
-//! does a relative path, which would be read from the app's working
-//! directory. Commands that serve remote paths pick their handler with
-//! [`kind`]; each handler parses its own scheme (`cloud::location`,
-//! `share::location`, `sftp`) and refuses a malformed path.
+//! [`writable`] first (a copy, move or rename asks [`transfer`]), and a
+//! batch command with nothing to say about remote paths answers through
+//! [`local_only`]. A command that asks never hands `std::fs` a `gdrive://`,
+//! `share://` or `sftp://` path, well formed or not, nor a relative path,
+//! which would be read from the app's working directory. Not every command
+//! asks yet: Keep Versions, sharing a folder (`share_folder`, `share_info`)
+//! and `trash_info` still take their path as the UI sends it, which is a
+//! local one; the program and disk-image actions and dragging out refuse
+//! anything but an absolute path themselves. Commands that serve remote
+//! paths pick their handler with [`kind`]; each handler parses its own
+//! scheme (`cloud::location`, `share::location`, `sftp`) and refuses a
+//! malformed path.
 //!
 //! Plain functions, no Tauri.
 

@@ -47,7 +47,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/updates.ts` | Check for Updates dialogs: offer, download progress, restart, failures |
 | `src/drag-out.ts` | Dragging files out of the window: when the pointer has left it, and the system drag (our GTK command on Linux, the drag plugin on macOS) |
 | `src-tauri/src/fs_ops.rs` | Listing, item counts, mkdir, rename, copy/move/trash, path info |
-| `src-tauri/src/place.rs` | The backend twin of `placeOf`: a path's kind (`Local`/`Drive`/`Share`/`Sftp`), a local path or why it isn't one (remote, malformed or relative paths never reach `std::fs`), the read-only refusals (`writable`), and answering a batch for its local paths only (`local_only`) |
+| `src-tauri/src/place.rs` | The backend twin of `placeOf`: a path's kind (`Local`/`Drive`/`Share`/`Sftp`), a local path or why it isn't one (remote, malformed or relative), the read-only refusals (`writable`), where a copy, move or rename runs (`transfer`), and answering a batch for its local paths only (`local_only`) |
 | `src-tauri/src/placement.rs` | How a copy, move or Drive download reaches its local path: the refusals and their wording (`Refusal`), the `.`/`..` guard, staging names, Replace (stage, trash the old item, rename in) and what a failure undoes (`Target::place`) |
 | `src-tauri/src/sftp.rs` | Read-only SSH/SFTP connections for Network: agent/key/password auth, known-host checks, listing and downloads |
 | `src-tauri/src/share/file_share.rs`, `file_link.rs` | Send with QR Code: hashing, the separate iroh endpoint and serving (`file_share`); the ticket, file list and `filebrowser/file/2` wire format (the page still reads version 1 links), compiled into the phone page too (`file_link`) |
@@ -288,10 +288,12 @@ GPL-3.0-or-later).
   written, rather than chaining `is_cloud`, `is_share` and `is_sftp`: a
   command that works on this computer only takes its path from
   `place::local` (or `local_write`), a write command checks
-  `place::writable` first, and a batch with nothing to say about remote
-  paths answers through `place::local_only`. Keep each command's local arm a
-  single call into its module; a new kind or refusal is a row in
-  `place.rs`'s table test.
+  `place::writable` first (copy, move and rename: `place::transfer`), and a
+  batch with nothing to say about remote paths answers through
+  `place::local_only`. Keep Versions, `share_folder`, `share_info` and
+  `trash_info` don't ask yet; give a new command the gate rather than
+  copying them. Keep each command's local arm a single call into its
+  module; a new kind or refusal is a row in `place.rs`'s table test.
 - Commit messages: conventional style (`feat:`, `fix:`, `docs:`, `chore:`),
   imperative subject, a body explaining what and why.
 - Keep the README's feature list and "Not supported yet" section in sync with
