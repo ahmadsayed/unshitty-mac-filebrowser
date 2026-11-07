@@ -1040,6 +1040,24 @@ test("writes into shares and SSH servers are refused in the backend's words", as
   expect(await invoke("path_exists", { path: `${HOME}/hello.txt` })).toBe(false);
 });
 
+test("New Folder, copy, move, rename and Move to Trash refuse a relative path, also next to Drive", async () => {
+  const todo = `${HOME}/Desktop/todo.txt`;
+  const drive = "gdrive://acct/root~My%20Drive/~todo.txt";
+  const rel = "Desktop/todo.txt";
+  const refusal = `“${rel}” is not a local file.`;
+  await expect(invoke("make_dir", { path: "New Folder" })).rejects.toBe("“New Folder” is not a local file.");
+  for (const cmd of ["copy_entry", "move_entry"]) {
+    for (const [from, to] of [[rel, `${HOME}/todo.txt`], [todo, rel], [drive, rel], [rel, drive]]) {
+      await expect(invoke(cmd, { from, to, overwrite: false })).rejects.toBe(refusal);
+    }
+  }
+  await expect(invoke("rename_entry", { from: rel, to: `${HOME}/Desktop/a.txt` })).rejects.toBe(refusal);
+  await expect(invoke("rename_entry", { from: todo, to: rel })).rejects.toBe(refusal);
+  expect(await invoke("trash_entries", { paths: [rel] })).toEqual([{ trashed: null, error: refusal }]);
+  expect(await invoke("path_exists", { path: todo })).toBe(true);
+  expect(await invoke("path_exists", { path: `${HOME}/todo.txt` })).toBe(false);
+});
+
 test("the local-only write commands refuse every other path before touching anything", async () => {
   const share = await receivedShare();
   const todo = `${HOME}/Desktop/todo.txt`;

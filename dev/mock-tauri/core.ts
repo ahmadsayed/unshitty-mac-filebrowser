@@ -1297,8 +1297,7 @@ async function trashEntries(a: Args): Promise<Array<{ trashed: string | null; er
     }
     for (let i = start; i < Math.min(paths.length, start + TRASH_CHUNK); i++) {
       try {
-        writable(paths[i]);
-        const trashed = placeOf(paths[i]) === "drive" ? driveTrash(paths[i], true) : trashEntry(paths[i]);
+        const trashed = placeOf(paths[i]) === "drive" ? driveTrash(paths[i], true) : trashEntry(localWrite(paths[i]));
         outcomes[i] = { trashed, error: null };
         items++;
       } catch (err) {
@@ -1993,9 +1992,8 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   },
   make_dir: (a) => {
     const path = str(a, "path");
-    writable(path);
     if (placeOf(path) === "drive") return driveMakeDir(path);
-    makeDir(path);
+    makeDir(localWrite(path));
     return path;
   },
   load_pins: () => [...pins],
@@ -2064,8 +2062,8 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     if (placeOf(path) === "drive") return drivePathExists(path);
     return isLocal(path) && lookup(path) !== undefined;
   },
-  copy_entry: (a) => (writableBoth(a), isDriveTransfer(a) ? driveTransfer(a, false) : (transfer(a, false), str(a, "to"))),
-  move_entry: (a) => (writableBoth(a), isDriveTransfer(a) ? driveTransfer(a, true) : (transfer(a, true), str(a, "to"))),
+  copy_entry: (a) => (transferRoute(a) === "drive" ? driveTransfer(a, false) : (transfer(a, false), str(a, "to"))),
+  move_entry: (a) => (transferRoute(a) === "drive" ? driveTransfer(a, true) : (transfer(a, true), str(a, "to"))),
   trash_entries: trashEntries,
   trash_info: (a) => (a.paths as string[]).map(trashInfo),
   restore_entry: (a) => {
@@ -2076,8 +2074,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   empty_trash: () => emptyTrash(),
   rename_entry: (a) => {
     const from = str(a, "from"), to = str(a, "to");
-    writableBoth(a);
-    if (placeOf(from) === "drive" || placeOf(to) === "drive") return driveRename(from, to);
+    if (transferRoute(a) === "drive") return driveRename(from, to);
     renameEntry(from, to);
     return to;
   },
@@ -2113,10 +2110,6 @@ for (const name of ["copy_entry", "move_entry", "delete_permanently", "empty_tra
   COMMANDS[name] = gated(COMMANDS[name]);
 }
 
-function isDriveTransfer(a: Args): boolean {
-  return placeOf(str(a, "from")) === "drive" || placeOf(str(a, "to")) === "drive";
-}
-
 // ----- The backend's location gate (src-tauri/src/place.rs), same wording -----
 
 /** Throws for a path where nothing may be written: shares and SSH servers. */
@@ -2125,9 +2118,13 @@ function writable(path: string): void {
   if (placeOf(path) === "share") throw "Shared folders are read only.";
 }
 
-function writableBoth(a: Args): void {
-  writable(str(a, "from"));
-  writable(str(a, "to"));
+/** Where a copy, move or rename runs (place::transfer): both sides
+ *  writable, `from` first; a side outside Drive must be a local path. */
+function transferRoute(a: Args): "drive" | "local" {
+  const sides = [str(a, "from"), str(a, "to")];
+  sides.forEach(writable);
+  for (const side of sides) if (placeOf(side) !== "drive") localPath(side);
+  return sides.some((side) => placeOf(side) === "drive") ? "drive" : "local";
 }
 
 const NOT_LOCAL: Record<Exclude<Place, "local">, string> = {

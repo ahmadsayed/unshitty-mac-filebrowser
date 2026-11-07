@@ -82,6 +82,32 @@ pub fn local_write(path: &str) -> Result<&Path, String> {
     local(path)
 }
 
+// ---- Copy, move and rename ---------------------------------------------------
+
+/// Where a copy, move or rename runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// Through Drive: at least one side is in Drive.
+    Drive,
+    /// On this computer: both sides are local paths.
+    Local,
+}
+
+/// Where a copy, move or rename from `from` to `to` runs, or why it can't:
+/// both sides must be [`writable`] (`from` first), and a side outside Drive
+/// must be a [`local`] path, so Drive's uploads and downloads don't get a
+/// relative one either.
+pub fn transfer(from: &str, to: &str) -> Result<Route, String> {
+    writable_both(from, to)?;
+    let in_drive = |path: &str| kind(path) == Kind::Drive;
+    for side in [from, to] {
+        if !in_drive(side) {
+            local(side)?;
+        }
+    }
+    Ok(if in_drive(from) || in_drive(to) { Route::Drive } else { Route::Local })
+}
+
 /// Every path as a file on this computer, or the first refusal.
 pub fn all_local(paths: &[String]) -> Result<Vec<PathBuf>, String> {
     paths
@@ -187,6 +213,30 @@ mod tests {
         assert_eq!(writable_both("share://r1/a", local).unwrap_err(), SHARE_READ_ONLY);
         assert_eq!(writable_both(local, "sftp://me@host/b").unwrap_err(), SFTP_READ_ONLY);
         assert_eq!(writable_both("sftp://me@host/a", "share://r1/b").unwrap_err(), SFTP_READ_ONLY);
+    }
+
+    #[test]
+    fn a_transfer_runs_through_drive_or_between_local_paths() {
+        let (a, b) = ("/Users/me/a.txt", "/Users/me/b.txt");
+        let drive = "gdrive://acct/root~x/~b.txt";
+        assert_eq!(transfer(a, b), Ok(Route::Local));
+        assert_eq!(transfer(a, drive), Ok(Route::Drive));
+        assert_eq!(transfer(drive, a), Ok(Route::Drive));
+        assert_eq!(transfer(drive, "gdrive://acct/root~y"), Ok(Route::Drive));
+        // The read-only refusals come first, `from`'s before `to`'s.
+        assert_eq!(transfer("share://r1/a", "rel").unwrap_err(), SHARE_READ_ONLY);
+        assert_eq!(transfer("rel", "sftp://me@host/b").unwrap_err(), SFTP_READ_ONLY);
+        // A side outside Drive is a path on this computer, whichever way it goes.
+        for (from, to, bad) in [
+            ("rel", b, "rel"),
+            (a, "rel/b.txt", "rel/b.txt"),
+            ("a.txt", "b.txt", "a.txt"),
+            (drive, "b.txt", "b.txt"),
+            ("a.txt", drive, "a.txt"),
+            ("", b, ""),
+        ] {
+            assert_eq!(transfer(from, to).unwrap_err(), format!("“{bad}” is not a local file."), "{from} -> {to}");
+        }
     }
 
     #[test]

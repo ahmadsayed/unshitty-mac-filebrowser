@@ -26,7 +26,7 @@ use tauri::ipc::Channel;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 use cloud::CloudState;
-use place::Kind;
+use place::{Kind, Route};
 use versions::history::History;
 use versions::state::{Transfer, VersionsState};
 use versions::{VersionDiff, VersionInfo, restore};
@@ -649,10 +649,16 @@ fn cancel_folder_size(walk: u64) {
 /// known once Drive has given the new item an id.
 #[tauri::command]
 async fn make_dir(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    place::writable(&path)?;
     if place::kind(&path) == Kind::Drive {
         return blocking(move || cloud::write::make_dir(&app.state::<CloudState>(), &path)).await?;
     }
+    make_local_dir(path)
+}
+
+/// `make_dir` anywhere but Drive: refused for shares, SSH servers and
+/// anything that isn't a path on this computer.
+fn make_local_dir(path: String) -> Result<String, String> {
+    place::local_write(&path)?;
     fs_ops::make_dir(path.clone())?;
     Ok(path)
 }
@@ -715,10 +721,10 @@ async fn copy_entry(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
-    place::writable_both(&from, &to)?;
+    let route = place::transfer(&from, &to)?;
     let tracking = Tracking::start(&app, &op, on_progress);
     let progress = tracking.progress.clone();
-    let result = if place::kind(&from) == Kind::Drive || place::kind(&to) == Kind::Drive {
+    let result = if route == Route::Drive {
         drive_transfer(app.clone(), from, to, overwrite, false, progress).await
     } else {
         let app = app.clone();
@@ -746,10 +752,10 @@ async fn move_entry(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
-    place::writable_both(&from, &to)?;
+    let route = place::transfer(&from, &to)?;
     let tracking = Tracking::start(&app, &op, on_progress);
     let progress = tracking.progress.clone();
-    let result = if place::kind(&from) == Kind::Drive || place::kind(&to) == Kind::Drive {
+    let result = if route == Route::Drive {
         drive_transfer(app.clone(), from, to, overwrite, true, progress).await
     } else {
         let app = app.clone();
@@ -770,9 +776,8 @@ async fn move_entry(
 
 #[tauri::command]
 async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result<String, String> {
-    place::writable_both(&from, &to)?;
     // write::rename refuses a local path on either side.
-    if place::kind(&from) == Kind::Drive || place::kind(&to) == Kind::Drive {
+    if place::transfer(&from, &to)? == Route::Drive {
         return blocking(move || cloud::write::rename(&app.state::<CloudState>(), &from, &to))
             .await?;
     }
@@ -843,19 +848,16 @@ fn trash_batch(
     results.into_iter().map(TrashOutcome::from).collect()
 }
 
-/// A path of a Move to Trash that doesn't go to a local Trash: refused for
-/// read-only locations, or sent to Drive's own Trash (D10; never a
-/// permanent delete). `None` for local paths.
+/// A path of a Move to Trash that doesn't go to a local Trash: sent to
+/// Drive's own Trash (D10; never a permanent delete), or refused
+/// (`local_trash_refusal`). `None` for local paths.
 fn trash_elsewhere(
     app: &tauri::AppHandle,
     path: &str,
     progress: &progress::Progress,
 ) -> Option<Result<Option<String>, String>> {
-    if let Err(message) = place::writable(path) {
-        return Some(Err(message));
-    }
     if place::kind(path) != Kind::Drive {
-        return None;
+        return local_trash_refusal(path);
     }
     let result = progress
         .check()
@@ -864,6 +866,13 @@ fn trash_elsewhere(
         progress.add_item();
     }
     Some(result)
+}
+
+/// Why a path outside Drive can't go to the local Trash, if it can't:
+/// shares and SSH servers are read only, and anything else must be a path
+/// on this computer.
+fn local_trash_refusal(path: &str) -> Option<Result<Option<String>, String>> {
+    place::local_write(path).err().map(Err)
 }
 
 impl From<Result<Option<String>, String>> for TrashOutcome {
@@ -2333,6 +2342,40 @@ mod write_guard_tests {
         block_on(create_file(file.clone())).unwrap();
         block_on(set_permissions(file.clone(), 0o600)).unwrap();
         assert_eq!(block_on(create_symlink(file)).unwrap(), local(&dir, "Link to a.txt"));
+    }
+
+    #[test]
+    fn new_folder_on_this_computer_refuses_other_paths() {
+        // make_dir sends Drive paths to Drive first; the rest come here.
+        for (path, refusal) in refused() {
+            assert_eq!(make_local_dir(path.into()).unwrap_err(), refusal, "{path}");
+        }
+        assert!(!Path::new("a.txt").exists());
+        let dir = tempfile::tempdir().unwrap();
+        let folder = local(&dir, "New Folder");
+        assert_eq!(make_local_dir(folder.clone()), Ok(folder.clone()));
+        assert!(Path::new(&folder).is_dir());
+    }
+
+    #[test]
+    fn move_to_trash_hands_the_local_trash_absolute_paths_only() {
+        // trash_elsewhere sends Drive paths to Drive's Trash first; the rest
+        // are refused here or go to the local Trash.
+        let mut paths = vec!["/Users/me/a.txt".to_string()];
+        let others: Vec<(&str, String)> = refused().into_iter().filter(|(p, _)| place::kind(p) != Kind::Drive).collect();
+        paths.extend(others.iter().map(|(path, _)| path.to_string()));
+        paths.push("src".into());
+        let (results, moves) = trash_ops::trash_routed(&paths, local_trash_refusal, |origins| {
+            assert_eq!(origins, [PathBuf::from("/Users/me/a.txt")]);
+            vec![Ok(None)]
+        });
+        assert!(moves.is_empty());
+        let errors: Vec<Option<String>> = results.into_iter().map(Result::err).collect();
+        let mut expected = vec![None];
+        expected.extend(others.into_iter().map(|(_, refusal)| Some(refusal)));
+        expected.push(Some("“src” is not a local file.".into()));
+        assert_eq!(errors, expected);
+        assert!(Path::new("src").is_dir());
     }
 
     #[test]
