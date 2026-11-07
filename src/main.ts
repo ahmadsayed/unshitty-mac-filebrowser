@@ -156,6 +156,9 @@ let tabs: TabState[] = [];
 let activeTab = -1;
 /** Serialises tab switches so two async restores can't race. */
 let tabBusy = false;
+/** The tab being switched to while its folder is listed: a navigation that
+ *  shows before it does shows in this tab, on top of its history (#154). */
+let arrivingTab: TabState | null = null;
 
 /** Files copied or cut, waiting to be pasted. */
 let clipboard: { paths: string[]; dirs: Set<string>; mode: "copy" | "cut" } | null = null;
@@ -466,14 +469,18 @@ function renderTabbar(): void {
   tabbar.replaceChildren(next);
 }
 
-/** Restore a saved tab into the live view; false when its folder can't be listed. */
+/** Restore a saved tab into the live view; false when its folder can't be listed.
+ *  Its history comes back as its folder shows (`showLocation`). */
 async function restoreTab(tab: TabState): Promise<boolean> {
-  const went = await navigate(tab.location, { history: "none" });
+  let went: Navigated;
+  try {
+    went = await navigate(tab.location, { history: "none", tab });
+  } finally {
+    if (arrivingTab === tab) arrivingTab = null;
+  }
   if (went === "kept") return false;
-  // A later navigation took over: it shows in this tab instead.
+  // A later navigation showed first: it shows in this tab instead.
   if (went === "overtaken") return true;
-  backStack = [...tab.back];
-  forwardStack = [...tab.forward];
   if (tab.search !== null) {
     // navigate() closed the search; open it again the way the search button
     // does, so the placeholder names this folder and the recursive search runs.
@@ -577,11 +584,15 @@ type HistoryMove = "push" | "back" | "forward" | "none";
 interface NavigateOptions {
   history?: HistoryMove;
   select?: string;
+  /** A tab switch's navigation: only a later navigation that shows overtakes
+   *  it, so the tab still shows when that one fails. */
+  tab?: TabState;
 }
 
 /** What became of a navigate(): "shown" it went there; "kept" the folder
  *  couldn't be listed, so the view stayed and a toast said why; "overtaken"
- *  a later navigation started before this one could show (#154). */
+ *  a later navigation started (for a tab switch: showed) before this one
+ *  could show (#154). */
 type Navigated = "shown" | "kept" | "overtaken";
 
 /** What navigate() found at a location: its items, or the error or the
@@ -603,7 +614,9 @@ let navigationSeq = 0;
  */
 async function navigate(loc: string, opts: NavigateOptions = {}): Promise<Navigated> {
   const seq = ++navigationSeq;
-  const overtaken = () => seq !== navigationSeq;
+  const view = viewSeq;
+  const overtaken = opts.tab ? () => view !== viewSeq : () => seq !== navigationSeq;
+  if (opts.tab) arrivingTab = opts.tab;
   if (search.isOpen) closeSearch(false);
   closePreview();
 
@@ -646,7 +659,8 @@ async function arrive(loc: string, overtaken: () => boolean): Promise<Arrival | 
 
 /** navigate()'s last step, with nothing left to wait for: the view shows `loc`. */
 function showLocation(loc: string, arrival: Arrival, root: string | null, opts: NavigateOptions): void {
-  moveInHistory(loc, opts.history ?? "push");
+  const from = arrivingTab ? takeTabHistory(arrivingTab) : location;
+  moveInHistory(loc, from, opts.history ?? "push");
   location = loc;
   viewSeq++;
   sharePage = arrival.page;
@@ -670,18 +684,27 @@ function showLocation(loc: string, arrival: Arrival, root: string | null, opts: 
   viewEl.focus({ preventScroll: true });
 }
 
-/** Move along the history as a navigation to `loc` shows. Back and Forward
- *  take their step only then: one that fails or is overtaken leaves the
- *  history as it was. */
-function moveInHistory(loc: string, move: HistoryMove): void {
+/** The tab being switched to shows now, or a later navigation does in its
+ *  place: the view takes the tab's history first. Returns where the tab was. */
+function takeTabHistory(tab: TabState): string {
+  backStack = [...tab.back];
+  forwardStack = [...tab.forward];
+  arrivingTab = null;
+  return tab.location;
+}
+
+/** Move along the history from `from` as a navigation to `loc` shows. Back
+ *  and Forward take their step only then: one that fails or is overtaken
+ *  leaves the history as it was. */
+function moveInHistory(loc: string, from: string, move: HistoryMove): void {
   if (move === "back") {
     backStack.pop();
-    forwardStack.push(location);
+    forwardStack.push(from);
   } else if (move === "forward") {
     forwardStack.pop();
-    backStack.push(location);
-  } else if (move === "push" && location && loc !== location) {
-    backStack.push(location);
+    backStack.push(from);
+  } else if (move === "push" && from && loc !== from) {
+    backStack.push(from);
     forwardStack = [];
   }
 }
@@ -812,13 +835,21 @@ function openSettingsSafely(): void {
   openFullDiskAccessSettings().catch((err) => showToast(`Could not open System Settings: ${cleanError(err)}`));
 }
 
+/** The history Back and Forward step along: the tab being switched to brings its own. */
+function historyNow(): { back: string[]; forward: string[]; at: string } {
+  const tab = arrivingTab;
+  return tab ? { back: tab.back, forward: tab.forward, at: tab.location } : { back: backStack, forward: forwardStack, at: location };
+}
+
 function goBack(): void {
-  const prev = backStack[backStack.length - 1];
-  if (prev) void navigate(prev, { history: "back", select: childOf(prev, location) });
+  const { back, at } = historyNow();
+  const prev = back[back.length - 1];
+  if (prev) void navigate(prev, { history: "back", select: childOf(prev, at) });
 }
 
 function goForward(): void {
-  const next = forwardStack[forwardStack.length - 1];
+  const { forward } = historyNow();
+  const next = forward[forward.length - 1];
   if (next) void navigate(next, { history: "forward" });
 }
 
