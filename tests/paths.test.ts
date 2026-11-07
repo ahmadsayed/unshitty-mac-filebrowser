@@ -115,8 +115,7 @@ test("Drive child paths encode the name like the backend", () => {
 });
 
 // ---- Each scheme's layout ---------------------------------------------------
-// One row per kind of path. Rows marked "today's behaviour" pin a known
-// mistake that a follow-up fixes; until then nothing may change it by accident.
+// One row per kind of path.
 
 const DRIVE_ROOT = "gdrive://acct/root~My%20Drive";
 const NETWORK = null; // what parentPath returns above a share or server root
@@ -287,6 +286,20 @@ test.each([
   ["/Users/me/.Trash/a",     "/Users/me/.Trash", true],
 ])("isWithin(%j, %j) is %j", (path, dir, within) => {
   expect(isWithin(path, dir)).toBe(within);
+});
+
+// Why both stay (#149): for a folder written without a trailing slash they
+// are the same test, so normalising Home would remove that difference, but
+// Home is "/" when HOME=/. There the Home crumb and the Location column need
+// "/" to hold only itself (isWithin), while a transfer into "/" must reload
+// a folder being filled below it (isUnder, showLanded).
+test("isUnder and isWithin differ only for a dir that is \"/\" or ends in a slash", () => {
+  const paths = ["/", "/etc", "/Users", "/Users/me", "/Users/me/", "/Users/me/a", "/Users/meg", "/Users/me//a"];
+  for (const dir of ["/Users", "/Users/me", "/Users/me/.Trash", "/Volumes/USB"]) {
+    for (const path of paths) expect([path, dir, isUnder(path, dir)]).toEqual([path, dir, isWithin(path, dir)]);
+  }
+  expect([isUnder("/etc", "/"), isWithin("/etc", "/")]).toEqual([true, false]);
+  expect([isUnder("/Users/me/a", "/Users/me/"), isWithin("/Users/me/a", "/Users/me/")]).toEqual([true, false]);
 });
 
 // prettier-ignore

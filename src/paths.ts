@@ -371,7 +371,11 @@ export function isUnder(path: string, dir: string): boolean {
 /** Whether `path` is `dir` itself or inside it, with `dir` taken as written:
  *  "/" holds only "/", and a `dir` ending in a slash holds only itself. For
  *  Home (which is "/" when HOME=/), the Trash, volumes and items, where "/"
- *  must keep its own crumb and the Location column slices after `dir + "/"`. */
+ *  must keep its own crumb and the Location column slices after `dir + "/"`.
+ *
+ *  It differs from `isUnder` only when `dir` is "/" or ends in a slash, so
+ *  normalising Home's slash wouldn't let one go: HOME=/ still needs this
+ *  "/", and a transfer into "/" still needs `isUnder`'s (#149). */
 export function isWithin(path: string, dir: string): boolean {
   return path === dir || path.startsWith(dir + "/");
 }
