@@ -251,7 +251,134 @@ export interface DialogResponse {
 
 export interface DialogHandle {
   close(): void;
+  /** Whether a response can be chosen, as validation decides; while busy, only live ones can. */
   setResponseEnabled(id: string, enabled: boolean): void;
+  /**
+   * Run `work` as the dialog's one action in flight, showing `busyText` in
+   * the status line. While another runs, nothing starts and the result is
+   * undefined; a failure is shown in the status line and is undefined too.
+   */
+  run<T>(work: () => Promise<T>, busyText?: string): Promise<T | undefined>;
+  /** Show `text` in the status line, not as an error. */
+  setStatus(text: string): void;
+  /** True while an action is in flight. */
+  readonly busy: boolean;
+}
+
+/**
+ * What a dialog does while its work runs. With it, a promise from
+ * `onResponse` is the dialog's one action in flight: the other responses and
+ * the dialog's controls are disabled until it settles, then put back, and a
+ * rejection is shown in the status line with the dialog kept open.
+ */
+export interface DialogBusy {
+  /** Responses (by id) and controls that stay usable while the work runs. */
+  liveWhileBusy?: Array<string | HTMLElement>;
+  /** The line for the busy text and a failure; a failure is a toast without it. */
+  status?: HTMLElement;
+  /** A failure in words; cleanError by default. */
+  errorText?: (err: unknown) => string;
+}
+
+/** A backend error without its prefix and OS error number:
+ * "Failed to read directory: Permission denied (os error 13)" → "Permission denied". */
+export function cleanError(err: unknown): string {
+  return String(err).replace(/^[^:]*:\s*/, "").replace(/\s*\(os error \d+\)$/, "");
+}
+
+type Control = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement;
+
+/** A dialog's action in flight: the guard, what it disables, and what it puts back. */
+class InFlight {
+  running = false;
+  /** Each response's state as validation wants it, applied once not busy. */
+  private readonly wanted = new Map<string, boolean>();
+  /** The controls this action disabled, to enable again. */
+  private paused: Control[] = [];
+  private focused: HTMLElement | null = null;
+  /** The last element in the dialog that had focus, for work started from a nested prompt. */
+  private lastFocused: HTMLElement | null = null;
+
+  constructor(
+    private readonly dialog: HTMLElement,
+    private readonly buttons: Map<string, HTMLButtonElement>,
+    private readonly opts: DialogBusy
+  ) {
+    dialog.addEventListener("focusin", (e) => {
+      if (e.target instanceof HTMLElement) this.lastFocused = e.target;
+    });
+  }
+
+  live(target: string | Element): boolean {
+    const live = this.opts.liveWhileBusy ?? [];
+    if (typeof target === "string") return live.includes(target);
+    return live.some((el) => typeof el !== "string" && el.contains(target));
+  }
+
+  /** Whether response `id` can be chosen now. */
+  allows(id: string): boolean {
+    return !this.running || this.live(id);
+  }
+
+  setEnabled(id: string, enabled: boolean): void {
+    this.wanted.set(id, enabled);
+    this.apply(id);
+  }
+
+  private apply(id: string): void {
+    const b = this.buttons.get(id);
+    if (b) b.disabled = this.wanted.get(id) === false || !this.allows(id);
+  }
+
+  setStatus(text: string, error = false): void {
+    const status = this.opts.status;
+    if (!status) {
+      if (error) showToast(text);
+      return;
+    }
+    status.textContent = text;
+    status.classList.toggle("error", error);
+  }
+
+  /** Run `start` as the action in flight; `failed` when it rejected (and was shown). */
+  async track<T>(start: () => Promise<T> | T): Promise<{ value?: T; failed: boolean }> {
+    this.begin();
+    try {
+      return { value: await start(), failed: false };
+    } catch (err) {
+      this.setStatus((this.opts.errorText ?? cleanError)(err), true);
+      return { failed: true };
+    } finally {
+      this.end();
+    }
+  }
+
+  private begin(): void {
+    this.running = true;
+    // Work started from a nested prompt (Trust This Server?) begins while
+    // focus is in the prompt, which then closes onto a disabled control.
+    const active = document.activeElement;
+    this.focused = active instanceof HTMLElement && this.dialog.contains(active) ? active : this.lastFocused;
+    const responses = new Set<Element>(this.buttons.values());
+    this.paused = [...this.dialog.querySelectorAll<Control>("input, select, textarea, button")].filter(
+      (c) => !c.disabled && !responses.has(c) && !this.live(c)
+    );
+    for (const c of this.paused) c.disabled = true;
+    for (const id of this.buttons.keys()) this.apply(id);
+  }
+
+  private end(): void {
+    this.running = false;
+    for (const c of this.paused) c.disabled = false;
+    this.paused = [];
+    for (const id of this.buttons.keys()) this.apply(id);
+    // A control that had focus drops it to the page when disabled; give it
+    // back, unless focus has moved on (to a prompt the work opened).
+    const focused = this.focused;
+    this.focused = null;
+    const dropped = !document.activeElement || document.activeElement === document.body;
+    if (focused?.isConnected && dropped) focused.focus({ preventScroll: true });
+  }
 }
 
 export function openDialog(opts: {
@@ -263,6 +390,8 @@ export function openDialog(opts: {
   responses: DialogResponse[];
   defaultResponse?: string;
   closeResponse?: string;
+  /** Opt in to one action in flight at a time (see DialogBusy). */
+  busy?: DialogBusy;
   /** Return false to keep the dialog open. */
   onResponse?: (id: string) => boolean | void | Promise<boolean | void>;
 }): DialogHandle {
@@ -310,11 +439,16 @@ export function openDialog(opts: {
 
   const previousFocus = document.activeElement as HTMLElement | null;
   const closeId = opts.closeResponse ?? "cancel";
+  const work = new InFlight(dialog, buttons, opts.busy ?? {});
 
   async function respond(id: string) {
-    const btn = buttons.get(id);
-    if (btn?.disabled) return;
-    const keep = (await opts.onResponse?.(id)) === false;
+    if (buttons.get(id)?.disabled || !work.allows(id)) return;
+    const result = opts.onResponse?.(id);
+    // In busy mode a response's promise is the action in flight; a live
+    // response chosen while another runs is only awaited.
+    const keep = opts.busy && !work.running && result instanceof Promise
+      ? await work.track(() => result).then((r) => r.failed || r.value === false)
+      : (await result) === false;
     if (!keep) handle.close();
   }
 
@@ -342,8 +476,18 @@ export function openDialog(opts: {
       previousFocus?.focus?.({ preventScroll: true });
     },
     setResponseEnabled(id, enabled) {
-      const b = buttons.get(id);
-      if (b) b.disabled = !enabled;
+      work.setEnabled(id, enabled);
+    },
+    async run(start, busyText) {
+      if (work.running) return undefined;
+      if (busyText !== undefined) work.setStatus(busyText);
+      return (await work.track(start)).value;
+    },
+    setStatus(text) {
+      work.setStatus(text);
+    },
+    get busy() {
+      return work.running;
     },
   };
 

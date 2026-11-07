@@ -67,36 +67,22 @@ export function promptSharePassphrase<T>(submit: (passphrase: string) => Promise
       `<div class="field-message" role="status"></div>`;
     const input = extra.querySelector<HTMLInputElement>("input")!;
     const message = extra.querySelector<HTMLElement>(".field-message")!;
-    let busy = false;
     let dialog: ReturnType<typeof openDialog>;
-    const update = () => dialog.setResponseEnabled("unlock", !busy && !!input.value);
+    const update = () => dialog.setResponseEnabled("unlock", !!input.value);
     const unlock = async () => {
       const error = passphraseError(input.value);
       message.classList.toggle("error", !!error);
       message.textContent = error;
       if (error) return;
-      busy = true;
-      input.disabled = true;
-      dialog.setResponseEnabled("cancel", false);
-      update();
-      message.textContent = "Unlocking…";
-      try {
+      await dialog.run(async () => {
         const result = await submit(input.value);
         input.value = "";
         dialog.close();
         resolve(result);
-      } catch (err) {
-        message.classList.add("error");
-        message.textContent = err instanceof Error ? err.message : String(err);
-      } finally {
-        busy = false;
-        input.disabled = false;
-        dialog.setResponseEnabled("cancel", true);
-        update();
-        if (extra.isConnected) {
-          input.focus();
-          input.select();
-        }
+      }, "Unlocking…");
+      if (extra.isConnected) {
+        input.focus();
+        input.select();
       }
     };
     input.addEventListener("input", () => {
@@ -113,8 +99,8 @@ export function promptSharePassphrase<T>(submit: (passphrase: string) => Promise
       ],
       defaultResponse: "unlock",
       closeResponse: "cancel",
+      busy: { status: message, errorText: (err) => (err instanceof Error ? err.message : String(err)) },
       onResponse: (id) => {
-        if (busy) return false;
         if (id === "unlock") {
           void unlock();
           return false;

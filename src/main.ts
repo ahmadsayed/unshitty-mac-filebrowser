@@ -34,7 +34,7 @@ import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl,
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
-import { closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
+import { cleanError, closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { checkForUpdates } from "./updates";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
 import { macDmgItems } from "./mac-dmg";
@@ -772,11 +772,6 @@ function openSettingsSafely(): void {
   openFullDiskAccessSettings().catch((err) => showToast(`Could not open System Settings: ${cleanError(err)}`));
 }
 
-function cleanError(err: unknown): string {
-  // "Failed to read directory: Permission denied (os error 13)" → "Permission denied"
-  return String(err).replace(/^[^:]*:\s*/, "").replace(/\s*\(os error \d+\)$/, "");
-}
-
 /** True for ENOENT: the path was removed, not merely unreadable. */
 function isMissingPathError(err: unknown): boolean {
   return /no such file or directory/i.test(String(err));
@@ -1162,18 +1157,19 @@ function showConnectServerDialog(prefill = "", connectNow = false): void {
   serverInput.value = prefill;
 
   let dialog: ReturnType<typeof openDialog>;
-  let busy = false;
   const attempt = async (trust: boolean) => {
-    if (busy) return;
+    if (dialog.busy) return;
     const server = serverInput.value.trim();
     if (!server) {
       message.textContent = "Enter a server, for example user@host.";
       serverInput.focus();
       return;
     }
-    busy = true;
-    dialog.setResponseEnabled("connect", false);
-    message.textContent = "Connecting…";
+    const refused = await dialog.run(() => connectOnce(server, trust), "Connecting…");
+    if (refused) passwordInput.focus();
+  };
+  /** One connection attempt; true when the server refused the key or password. */
+  const connectOnce = async (server: string, trust: boolean): Promise<boolean> => {
     try {
       const outcome = await sftpConnect(server, passwordInput.value || undefined, trust);
       if (outcome.kind === "connected") {
@@ -1181,7 +1177,7 @@ function showConnectServerDialog(prefill = "", connectNow = false): void {
         await refreshSftpServers();
         await navigate(outcome.server.url);
         showToast(`Connected to ${outcome.server.label}`);
-        return;
+        return false;
       }
       if (outcome.kind === "host-key-unknown") {
         message.textContent = "";
@@ -1199,17 +1195,15 @@ function showConnectServerDialog(prefill = "", connectNow = false): void {
             void attempt(true);
           },
         });
-        return;
+        return false;
       }
       message.textContent = passwordInput.value
         ? "Authentication failed. Check your username and password."
         : "No SSH key was accepted. Enter your password.";
-      passwordInput.focus();
+      return true;
     } catch (err) {
       message.textContent = cleanError(err);
-    } finally {
-      busy = false;
-      dialog.setResponseEnabled("connect", true);
+      return false;
     }
   };
 
@@ -1224,6 +1218,8 @@ function showConnectServerDialog(prefill = "", connectNow = false): void {
     ],
     defaultResponse: "connect",
     closeResponse: "cancel",
+    // Escape and Cancel close it while it connects; the connection still goes ahead.
+    busy: { liveWhileBusy: ["cancel"], status: message },
     onResponse: (id) => {
       if (id !== "connect") return;
       void attempt(false);
@@ -2449,21 +2445,21 @@ function showCompressDialog(sel: Entry[]): void {
     ],
     defaultResponse: "compress",
     closeResponse: "cancel",
-    onResponse: (id) => {
+    // Escape and Cancel close it while it works; the archive still appears.
+    busy: { liveWhileBusy: ["cancel"] },
+    onResponse: async (id) => {
       if (id !== "compress") return;
       const name = validate();
       if (!name) return false;
       const format = formatInput.value as "zip" | "tar.gz" | "tar.xz";
-      void (async () => {
-        try {
-          await compressArchive(sel.map((entry) => entry.path), joinPath(dir, name), format);
-          dialog.close();
-          await reload([joinPath(dir, name)]);
-          showToast(`Created “${name}”`);
-        } catch (err) {
-          message.textContent = cleanError(err);
-        }
-      })();
+      try {
+        await compressArchive(sel.map((entry) => entry.path), joinPath(dir, name), format);
+        dialog.close();
+        await reload([joinPath(dir, name)]);
+        showToast(`Created “${name}”`);
+      } catch (err) {
+        message.textContent = cleanError(err);
+      }
       return false;
     },
   });
@@ -4113,23 +4109,22 @@ function showBatchRename(sel: Entry[]): void {
     ],
     defaultResponse: "rename",
     closeResponse: "cancel",
-    onResponse: (id) => {
+    busy: { liveWhileBusy: ["cancel"] },
+    onResponse: async (id) => {
       if (id !== "rename") return;
       const changed = validate();
       if (!changed) return false;
-      void (async () => {
-        try {
-          const items = changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) }));
-          await renameMany(items);
-          // The backend renames all of them or, undoing what it did, none.
-          followMoves(items);
-          dialog.close();
-          showToast(`Renamed ${changed.length} ${changed.length === 1 ? "item" : "items"}`);
-          await reload();
-        } catch (err) {
-          message.textContent = cleanError(err);
-        }
-      })();
+      try {
+        const items = changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) }));
+        await renameMany(items);
+        // The backend renames all of them or, undoing what it did, none.
+        followMoves(items);
+        dialog.close();
+        showToast(`Renamed ${changed.length} ${changed.length === 1 ? "item" : "items"}`);
+        await reload();
+      } catch (err) {
+        message.textContent = cleanError(err);
+      }
       return false;
     },
   });
@@ -4238,6 +4233,7 @@ function promptNewFolder(): void {
       { id: "create", label: "Create", style: "suggested" },
     ],
     defaultResponse: "create",
+    busy: { liveWhileBusy: ["cancel"] },
     onResponse: async (id) => {
       if (id !== "create") return;
       if (!validate()) return false;
@@ -4436,6 +4432,7 @@ function showPreviewRename(entry: Entry): void {
       { id: "rename", label: "Rename", style: "suggested" },
     ],
     defaultResponse: "rename",
+    busy: { liveWhileBusy: ["cancel"] },
     onResponse: async (id) => {
       if (id !== "rename") return;
       if (!validate()) return false;
@@ -4899,13 +4896,6 @@ async function showShareDialog(entry: Entry): Promise<void> {
   render();
 
   let dialog: ReturnType<typeof openDialog>;
-  let busy = false;
-  const setBusy = (value: boolean) => {
-    busy = value;
-    protection.element.disabled = value;
-    for (const id of ["anyone", "person", "stop", "close"]) dialog.setResponseEnabled(id, !value);
-    accessList.querySelectorAll<HTMLButtonElement>("button").forEach((button) => { button.disabled = value; });
-  };
   const copyToClipboard = async (link: string) => {
     try {
       await navigator.clipboard.writeText(link);
@@ -4917,20 +4907,19 @@ async function showShareDialog(entry: Entry): Promise<void> {
   const createLink = async (kind: "anyone" | "person") => {
     const passphrase = protection.read();
     if (passphrase === null) return;
-    setBusy(true);
-    try {
-      const person = kind === "person" ? await promptPersonName() : undefined;
-      if (person === null) return;
-      const made = await createShareLink(info.id, kind, person, passphrase);
-      if (!info.access.some((entry) => entry.id === made.entry.id)) info.access.push(made.entry);
-      protection.clear();
-      render();
-      await copyToClipboard(made.link);
-    } catch (err) {
-      showToast(`Could not create the link: ${cleanError(err)}`);
-    } finally {
-      setBusy(false);
-    }
+    await dialog.run(async () => {
+      try {
+        const person = kind === "person" ? await promptPersonName() : undefined;
+        if (person === null) return;
+        const made = await createShareLink(info.id, kind, person, passphrase);
+        if (!info.access.some((entry) => entry.id === made.entry.id)) info.access.push(made.entry);
+        protection.clear();
+        render();
+        await copyToClipboard(made.link);
+      } catch (err) {
+        showToast(`Could not create the link: ${cleanError(err)}`);
+      }
+    });
   };
 
   const confirmStop = () => {
@@ -4959,7 +4948,7 @@ async function showShareDialog(entry: Entry): Promise<void> {
   };
 
   accessList.addEventListener("click", (event) => {
-    if (busy) return;
+    if (dialog.busy) return;
     const copy = (event.target as HTMLElement).closest<HTMLElement>("[data-copy]");
     if (copy?.dataset.copy) {
       shareLinkFor(info.id, copy.dataset.copy)
@@ -4996,11 +4985,11 @@ async function showShareDialog(entry: Entry): Promise<void> {
     ],
     defaultResponse: "close",
     closeResponse: "close",
-    onResponse: async (id) => {
-      if (busy) return false;
+    // Nothing else responds while a link is made, Escape included.
+    busy: {},
+    onResponse: (id) => {
       if (id === "anyone" || id === "person") {
-        await createLink(id);
-        void refreshShares().then(() => renderWindow(true));
+        void createLink(id).then(() => refreshShares().then(() => renderWindow(true)));
         return false;
       }
       if (id === "stop") {
@@ -5088,33 +5077,23 @@ function openClientSetup(): void {
   file.hidden = true;
   const error = document.createElement("p");
   error.className = "dialog-text dialog-error";
-  extra.append(
-    dialogLinks([
-      { label: "Open Guide", action: () => void openExternal(DRIVE_GUIDE_URL) },
-      { label: "Choose File…", action: () => file.click() },
-    ]),
-    json,
-    file,
-    error,
-  );
+  const links = dialogLinks([
+    { label: "Open Guide", action: () => void openExternal(DRIVE_GUIDE_URL) },
+    { label: "Choose File…", action: () => file.click() },
+  ]);
+  extra.append(links, json, file, error);
 
-  const submit = async (): Promise<boolean> => {
-    try {
-      await driveClientSet(json.value);
-      dialog.close();
-      openConnectDialog();
-      return true;
-    } catch (err) {
-      error.textContent = cleanError(err);
-      return false;
-    }
+  const submit = async () => {
+    await driveClientSet(json.value);
+    dialog.close();
+    openConnectDialog();
   };
   file.addEventListener("change", async () => {
     const chosen = file.files?.[0];
     if (!chosen) return;
     json.value = await chosen.text();
     file.value = "";
-    await submit();
+    await dialog.run(submit);
   });
 
   // No default response: Enter must stay a newline in the paste box.
@@ -5127,9 +5106,12 @@ function openClientSetup(): void {
       { id: "add", label: "Add Client", style: "suggested" },
     ],
     closeResponse: "cancel",
+    // Cancel and the guide stay live while the client is checked; a failure
+    // is shown, cleaned, under the paste box.
+    busy: { liveWhileBusy: ["cancel", links.querySelector("button")!], status: error },
     onResponse: async (id) => {
       if (id !== "add") return;
-      if (!(await submit())) return false;
+      await submit();
     },
   });
   json.focus();
@@ -5137,31 +5119,28 @@ function openClientSetup(): void {
 
 function openConnectDialog(): void {
   let flowId: string | null = null;
-  let busy = false;
   const extra = document.createElement("div");
   const status = document.createElement("p");
   status.className = "dialog-text";
   status.textContent =
     "File Browser asks Google for access to see, edit, create and delete your Drive files. The token is kept in your system keychain. " +
     "Google warns that your client is unverified: choose Advanced, then continue.";
-  extra.append(
-    status,
-    dialogLinks([
-      { label: "Open Guide", action: () => void openExternal(DRIVE_GUIDE_URL) },
-      {
-        label: "Change Client…",
-        action: () => {
-          if (busy) return;
-          driveClientClear()
-            .then(() => {
-              dialog.close();
-              openClientSetup();
-            })
-            .catch((err) => showToast(cleanError(err)));
-        },
+  const links = dialogLinks([
+    { label: "Open Guide", action: () => void openExternal(DRIVE_GUIDE_URL) },
+    {
+      label: "Change Client…",
+      action: () => {
+        if (dialog.busy) return;
+        driveClientClear()
+          .then(() => {
+            dialog.close();
+            openClientSetup();
+          })
+          .catch((err) => showToast(cleanError(err)));
       },
-    ]),
-  );
+    },
+  ]);
+  extra.append(status, links);
   const dialog = openDialog({
     heading: "Connect to Google Drive",
     body: "Google opens in your browser. This app never sees your password.",
@@ -5172,14 +5151,13 @@ function openConnectDialog(): void {
     ],
     defaultResponse: "cancel",
     closeResponse: "cancel",
+    // Cancel stays live while Google waits: it cancels the sign-in.
+    busy: { liveWhileBusy: ["cancel", links.querySelector("button")!] },
     onResponse: async (id) => {
       if (id === "cancel") {
         if (flowId) await driveConnectCancel(flowId).catch(() => {});
         return;
       }
-      if (busy) return false;
-      busy = true;
-      dialog.setResponseEnabled("connect", false);
       try {
         const start = await driveConnectStart();
         flowId = start.flow_id;
@@ -5193,15 +5171,15 @@ function openConnectDialog(): void {
         await navigate(account.root_path);
       } catch (err) {
         const message = cleanError(err);
-        if (!/cancelled/i.test(message)) {
+        if (/cancelled/i.test(message)) {
+          // As before, a cancelled sign-in leaves Open Browser off.
+          dialog.setResponseEnabled("connect", false);
+        } else {
           status.textContent = message;
-          dialog.setResponseEnabled("connect", true);
           showToast(message);
         }
-        busy = false;
         return false;
       }
-      busy = false;
     },
   });
 }
