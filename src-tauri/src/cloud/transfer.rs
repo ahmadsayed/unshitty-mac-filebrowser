@@ -23,7 +23,7 @@ use crate::cloud::drive::{DriveClient, DriveError, DriveFile, FileChange};
 use crate::cloud::service;
 use crate::cloud::write::{self, Ctx, message};
 use crate::fs_ops::Measure;
-use crate::placement::{self, Refusal, Stage, Staged, TrashFn, Unfilled};
+use crate::placement::{self, DiscardFn, Refusal, Stage, Staged, TrashFn, Unfilled};
 use crate::progress::Progress;
 
 const UPLOAD_SUFFIX: &str = ".filebrowser-upload";
@@ -265,7 +265,7 @@ pub(crate) fn download_into(
     from: &str,
     to: &Path,
     overwrite: bool,
-    discard: TrashFn,
+    discard: DiscardFn,
 ) -> Result<String, String> {
     download_into_with(c, from, to, overwrite, discard, &placement::to_trash)
 }
@@ -276,7 +276,7 @@ fn download_into_with(
     from: &str,
     to: &Path,
     overwrite: bool,
-    discard: TrashFn,
+    discard: DiscardFn,
     trash: TrashFn,
 ) -> Result<String, String> {
     let target = placement::check_new(to, overwrite)?;
@@ -893,7 +893,8 @@ mod tests {
             let seen = std::cell::RefCell::new(Vec::new());
             let trash = |p: &Path| {
                 seen.borrow_mut().push((p.to_path_buf(), names_in(dir.path())));
-                std::fs::rename(p, bin.join("old")).map_err(|e| e.to_string())
+                std::fs::rename(p, bin.join("old")).map_err(|e| e.to_string())?;
+                Ok(Some(bin.join("old")))
             };
             let (result, _) = run(replies, |c| {
                 download_into_with(c, &from, &target, true, &no_discard, &trash)

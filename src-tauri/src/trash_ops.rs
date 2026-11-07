@@ -25,7 +25,9 @@
 //! order origins are looked up in, Restore, Delete Permanently, Empty Trash
 //! and what counts as inside the Trash. Trashing goes through the free
 //! functions `trash_many`, `trash_routed` and `trash_and_locate`, whose
-//! moves are then handed to `Trash::record`.
+//! moves are then handed to `Trash::record`. Replace (`placement.rs`)
+//! trashes the old item through `trash_located_by`, and if its last step
+//! fails a moment later takes it straight back out with `untrash`.
 
 use crate::progress::Progress;
 use std::collections::{HashMap, HashSet};
@@ -331,21 +333,29 @@ fn locate_all(
 /// Move `path` to the Trash and return where it ended up, if that could be
 /// worked out (it's needed for Undo, not for trashing itself).
 pub fn trash_and_locate(path: &Path, home: &Path) -> Result<Option<PathBuf>, String> {
-    let meta =
-        fs::symlink_metadata(path).map_err(|_| format!("“{}” no longer exists", path.display()))?;
+    if fs::symlink_metadata(path).is_err() {
+        return Err(format!("“{}” no longer exists", path.display()));
+    }
+    let delete = || trash::delete(path).map_err(|e| format!("Failed to move to Trash: {}", e));
+    trash_located_by(path, home, delete)
+}
+
+/// Send `path` to the Trash through `trash`, then say where it went there,
+/// if that can be worked out. Its errors are `trash`'s own.
+pub fn trash_located_by(
+    path: &Path,
+    home: &Path,
+    trash: impl FnOnce() -> Result<(), String>,
+) -> Result<Option<PathBuf>, String> {
+    let is_dir = fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir());
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let dir = trash_dir_for(path, home);
     let before = names_in(&dir);
-    trash::delete(path).map_err(|e| format!("Failed to move to Trash: {}", e))?;
-    Ok(find_new(
-        &dir,
-        &before,
-        &name,
-        meta.is_dir() && !meta.file_type().is_symlink(),
-    ))
+    trash()?;
+    Ok(find_new(&dir, &before, &name, is_dir))
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +631,19 @@ fn changed_time(path: &Path) -> i64 {
 #[cfg(not(unix))]
 fn changed_time(_: &Path) -> i64 {
     0
+}
+
+/// Take an item this app has just sent to the Trash straight back out to
+/// `origin`, unless another item is there now, and forget its `.trashinfo`.
+/// For undoing a step that failed a moment later (a Replace whose last
+/// rename failed), as Drive untrashes: unlike Restore it recreates no
+/// folder, and it never overwrites, even an item that appears meanwhile.
+pub fn untrash(trashed: &Path, origin: &Path) -> Result<(), String> {
+    crate::placement::rename_back(trashed, origin)?;
+    if let Some(trash_dir) = trashed.parent() {
+        drop_sidecar(trashed, trash_dir);
+    }
+    Ok(())
 }
 
 /// Move `trashed`, which sits in `trash_dir`, back to `origin`, recreating
@@ -1054,6 +1077,71 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    // --- untrash after a failed Replace -----------------------------------
+
+    /// Straight back, never over another item, and no folder made on the
+    /// way (Restore would make one). In this platform's Trash layout.
+    #[test]
+    fn untrash_returns_an_item_just_trashed_unless_its_place_is_taken() {
+        let dir = tempdir().unwrap();
+        let trashed = items_dir(&dir.path().join("Trash")).join("a.txt");
+        fs::write(&trashed, "old").unwrap();
+        let origin = dir.path().join("a.txt");
+        fs::write(&origin, "newer").unwrap();
+
+        assert_eq!(untrash(&trashed, &origin), Err("another item is there now".to_string()));
+        assert_eq!(fs::read_to_string(&origin).unwrap(), "newer");
+        assert_eq!(fs::read_to_string(&trashed).unwrap(), "old");
+
+        assert!(untrash(&trashed, &dir.path().join("gone/a.txt")).is_err());
+        assert!(!dir.path().join("gone").exists());
+
+        fs::remove_file(&origin).unwrap();
+        untrash(&trashed, &origin).unwrap();
+        assert_eq!(fs::read_to_string(&origin).unwrap(), "old");
+        assert!(!trashed.exists());
+    }
+
+    /// The macOS layout keeps no record beside a trashed item (Finder's are
+    /// in `.DS_Store`): only the item moves.
+    #[test]
+    fn untrash_from_a_trash_without_sidecars_moves_only_the_item() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join(".Trash");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join(".DS_Store"), "records").unwrap();
+        fs::write(root.join("a.txt"), "old").unwrap();
+        let origin = dir.path().join("a.txt");
+
+        untrash(&root.join("a.txt"), &origin).unwrap();
+        assert_eq!(fs::read_to_string(&origin).unwrap(), "old");
+        assert_eq!(fs::read_to_string(root.join(".DS_Store")).unwrap(), "records");
+        assert_eq!(names_in(&root), HashSet::from([OsString::from(".DS_Store")]));
+    }
+
+    /// The freedesktop layout: the item's `.trashinfo` is forgotten once the
+    /// item is back, and kept while it stays.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn untrash_forgets_the_sidecar_once_the_item_is_back() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("Trash");
+        let files = items_dir(&root);
+        let sidecar = root.join("info/a.txt.trashinfo");
+        fs::write(files.join("a.txt"), "old").unwrap();
+        fs::write(&sidecar, "[Trash Info]\nPath=/home/me/a.txt\n").unwrap();
+        let origin = dir.path().join("a.txt");
+        fs::write(&origin, "newer").unwrap();
+
+        assert!(untrash(&files.join("a.txt"), &origin).is_err());
+        assert!(sidecar.exists());
+        fs::remove_file(&origin).unwrap();
+        untrash(&files.join("a.txt"), &origin).unwrap();
+        assert_eq!(fs::read_to_string(&origin).unwrap(), "old");
+        assert!(!sidecar.exists());
+        assert!(names_in(&files).is_empty());
     }
 
     // --- layout helpers --------------------------------------------------

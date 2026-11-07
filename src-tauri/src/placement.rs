@@ -201,13 +201,22 @@ fn os_result(done: libc::c_int) -> io::Result<()> {
 
 // ---- Placing -----------------------------------------------------------------
 
-/// Sends an item to the Trash, or discards one. Placing takes it as a
-/// parameter so tests can make it fail or record it.
-pub(crate) type TrashFn<'a> = &'a dyn Fn(&Path) -> Result<(), String>;
+/// Sends the item a Replace replaces to the Trash and says where it went
+/// there, when that can be told, so a Replace that fails afterwards can put
+/// it back. Placing takes it as a parameter so tests can make it fail or
+/// record it.
+pub(crate) type TrashFn<'a> = &'a dyn Fn(&Path) -> Result<Option<PathBuf>, String>;
+
+/// Discards a partial copy filled in place: for good, or to the Trash.
+pub(crate) type DiscardFn<'a> = &'a dyn Fn(&Path) -> Result<(), String>;
 
 /// The system Trash, as Replace uses it.
-pub(crate) fn to_trash(path: &Path) -> Result<(), String> {
-    trash::delete(path).map_err(|e| e.to_string())
+pub(crate) fn to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
+    let delete = || trash::delete(path).map_err(|e| e.to_string());
+    match std::env::var_os("HOME") {
+        Some(home) => crate::trash_ops::trash_located_by(path, Path::new(&home), delete),
+        None => delete().map(|()| None),
+    }
 }
 
 /// Removes a file, a link or a whole folder for good. Only for what the app
@@ -256,7 +265,7 @@ pub enum Stage<'a> {
     /// the check, so a fill in place reports `Unfilled::Partial` only once it
     /// has created the item itself (`create_dir`, never a file that would
     /// truncate what is there).
-    WhenReplacing { discard: TrashFn<'a> },
+    WhenReplacing { discard: DiscardFn<'a> },
     /// Always under a hidden staging name, so the item appears only whole.
     Always,
 }
@@ -264,7 +273,7 @@ pub enum Stage<'a> {
 impl<'a> Stage<'a> {
     /// A new folder fills in place, so it can be watched filling, as in
     /// GNOME Files; anything else is staged and appears only whole.
-    pub fn by_kind(folder: bool, discard: TrashFn<'a>) -> Self {
+    pub fn by_kind(folder: bool, discard: DiscardFn<'a>) -> Self {
         if folder {
             Stage::WhenReplacing { discard }
         } else {
@@ -281,7 +290,8 @@ impl Target {
     /// On failure nothing of the user's is lost: a partial or staged copy is
     /// removed (or discarded, when filled in place), an original is renamed
     /// back, and if that is impossible it stays at the staging name and the
-    /// error says where.
+    /// error says where. An old item already in the Trash comes back out
+    /// unless something took its place; then the error says where it is.
     pub fn place<'a>(
         &self,
         stage: Stage,
@@ -358,16 +368,34 @@ fn staging_path(to: &Path) -> PathBuf {
 
 /// Swap the staged item into place, sending whatever was at `to` to the Trash.
 /// If either step fails, a staged copy is removed and a staged original goes
-/// back where it came from.
+/// back where it came from; if the old item is in the Trash by then, it comes
+/// back out too.
 fn replace_with_staged(staged: &Path, to: &Path, kind: Staged, trash: TrashFn) -> Result<(), String> {
     let failed = match trash(to) {
         Err(e) => format!("Could not move the existing item to the Trash: {}", e),
-        Ok(()) => match rename_new(staged, to) {
+        Ok(trashed) => match rename_new(staged, to) {
             Ok(()) => return Ok(()),
-            Err(e) => format!("Failed to replace: {}", e),
+            Err(e) => take_back(trashed.as_deref(), to, format!("Failed to replace: {}", e)),
         },
     };
     undo(staged, kind, failed)
+}
+
+/// After a Replace failed with `failed` once the old item was in the Trash,
+/// put that item back at `to`, as Drive untrashes it. If it can't go back
+/// (another item took its place, or where the Trash put it is unknown), it
+/// stays in the Trash and the error says where.
+fn take_back(trashed: Option<&Path>, to: &Path, failed: String) -> String {
+    let Some(trashed) = trashed else {
+        return format!("{failed}. The replaced item is in the Trash");
+    };
+    match crate::trash_ops::untrash(trashed, to) {
+        Ok(()) => failed,
+        Err(e) => format!(
+            "{failed}. The replaced item is in the Trash at “{}” and could not be put back: {e}",
+            trashed.display()
+        ),
+    }
 }
 
 /// Fail with `failed` after undoing the staging, naming where the user's item
@@ -399,7 +427,7 @@ fn give_back(staged: &Path, kind: Staged) -> Result<(), String> {
 }
 
 /// Rename `item` back to `origin`, unless another item is there now.
-fn rename_back(item: &Path, origin: &Path) -> Result<(), String> {
+pub(crate) fn rename_back(item: &Path, origin: &Path) -> Result<(), String> {
     rename_new(item, origin).map_err(|e| match e.kind() {
         io::ErrorKind::AlreadyExists => "another item is there now".to_string(),
         _ => e.to_string(),
@@ -423,7 +451,7 @@ mod tests {
         names
     }
 
-    fn failing_trash(_: &Path) -> Result<(), String> {
+    fn failing_trash(_: &Path) -> Result<Option<PathBuf>, String> {
         Err("no Trash on this volume".to_string())
     }
 
@@ -655,7 +683,8 @@ mod tests {
         let seen = RefCell::new(Vec::new());
         let trash = |p: &Path| {
             seen.borrow_mut().push(names_in(dir.path()));
-            fs::rename(p, bin.join("a.txt")).map_err(|e| e.to_string())
+            fs::rename(p, bin.join("a.txt")).map_err(|e| e.to_string())?;
+            Ok(Some(bin.join("a.txt")))
         };
         let target = check_new(&to, true).unwrap();
         let stage = Stage::WhenReplacing { discard: &no_discard };
@@ -666,8 +695,64 @@ mod tests {
         assert_eq!(fs::read_to_string(bin.join("a.txt")).unwrap(), "old");
     }
 
+    /// When the last rename of a Replace fails, the old item comes back out
+    /// of the Trash, as Drive untrashes it. Here the new item vanished
+    /// before it could be renamed in.
+    #[test]
+    fn a_replace_whose_last_rename_fails_puts_the_old_item_back() {
+        let dir = tempdir().unwrap();
+        let to = dir.path().join("a.txt");
+        fs::write(&to, "old").unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let staged = RefCell::new(PathBuf::new());
+        let fill = |dest: &Path| {
+            staged.replace(dest.to_path_buf());
+            write(dest, "new")
+        };
+        let trash = |p: &Path| {
+            fs::rename(p, bin.join("a.txt")).unwrap();
+            fs::remove_file(&*staged.borrow()).unwrap();
+            Ok(Some(bin.join("a.txt")))
+        };
+        let target = check_new(&to, true).unwrap();
+        let err = target.place(Stage::Always, fill, &trash).unwrap_err();
+        assert!(err.starts_with("Failed to replace: "), "{err}");
+        assert!(!err.contains("Trash"), "{err}");
+        assert_eq!(fs::read_to_string(&to).unwrap(), "old");
+        assert_eq!(names_in(&bin), Vec::<String>::new());
+        assert_eq!(names_in(dir.path()), ["a.txt", "bin"]);
+    }
+
+    /// Where the Trash put the old item isn't known: the error says it is
+    /// in the Trash.
+    #[test]
+    fn a_failed_replace_says_the_old_item_is_in_the_trash_when_it_cannot_tell_where() {
+        let dir = tempdir().unwrap();
+        let to = dir.path().join("a.txt");
+        fs::write(&to, "old").unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let staged = RefCell::new(PathBuf::new());
+        let fill = |dest: &Path| {
+            staged.replace(dest.to_path_buf());
+            write(dest, "new")
+        };
+        let trash = |p: &Path| {
+            fs::rename(p, bin.join("a 2.txt")).unwrap();
+            fs::remove_file(&*staged.borrow()).unwrap();
+            Ok(None)
+        };
+        let target = check_new(&to, true).unwrap();
+        let err = target.place(Stage::Always, fill, &trash).unwrap_err();
+        assert!(err.starts_with("Failed to replace: "), "{err}");
+        assert!(err.ends_with(". The replaced item is in the Trash"), "{err}");
+        assert_eq!(fs::read_to_string(bin.join("a 2.txt")).unwrap(), "old");
+    }
+
     /// Something that takes the name between the Trash and the last rename
-    /// isn't replaced either: the staged copy is removed instead.
+    /// isn't replaced either: the staged copy is removed, the old item stays
+    /// in the Trash, and the error says where.
     #[test]
     fn replace_never_renames_over_what_took_the_name_after_the_trash() {
         let dir = tempdir().unwrap();
@@ -677,11 +762,17 @@ mod tests {
         fs::create_dir(&bin).unwrap();
         let trash = |p: &Path| {
             fs::rename(p, bin.join("a.txt")).unwrap();
-            fs::write(p, "newer").map_err(|e| e.to_string())
+            fs::write(p, "newer").unwrap();
+            Ok(Some(bin.join("a.txt")))
         };
         let target = check_new(&to, true).unwrap();
         let err = target.place(Stage::Always, |d: &Path| write(d, "new"), &trash).unwrap_err();
         assert!(err.starts_with("Failed to replace: "), "{err}");
+        let kept = format!(
+            ". The replaced item is in the Trash at “{}” and could not be put back: another item is there now",
+            bin.join("a.txt").display()
+        );
+        assert!(err.ends_with(&kept), "{err}");
         assert_eq!(fs::read_to_string(&to).unwrap(), "newer");
         assert_eq!(fs::read_to_string(bin.join("a.txt")).unwrap(), "old");
         assert_eq!(names_in(dir.path()), ["a.txt", "bin"]);

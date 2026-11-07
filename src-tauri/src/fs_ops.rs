@@ -1543,7 +1543,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&dst).unwrap(), "new");
     }
 
-    fn failing_trash(_: &Path) -> Result<(), String> {
+    fn failing_trash(_: &Path) -> Result<Option<PathBuf>, String> {
         Err("no Trash on this volume".to_string())
     }
 
@@ -1638,11 +1638,14 @@ mod tests {
         let trash = |p: &Path| {
             fs::rename(p, bin.join("b.txt")).unwrap();
             fs::create_dir(p).unwrap();
-            fs::write(p.join("x"), "other").map_err(|e| e.to_string())
+            fs::write(p.join("x"), "other").unwrap();
+            Ok(Some(bin.join("b.txt")))
         };
 
         let err = move_entry_with(s(&src), s(&dst), true, &Progress::default(), &trash).unwrap_err();
         assert!(err.contains("Failed to replace"), "{err}");
+        // The old item can't come back over the folder: the error says where it is.
+        assert!(err.contains(&format!("in the Trash at “{}”", bin.join("b.txt").display())), "{err}");
         assert_eq!(fs::read_to_string(&src).unwrap(), "mine");
         assert_eq!(fs::read_to_string(bin.join("b.txt")).unwrap(), "old");
         assert_eq!(names_in(dir.path()), ["a.txt", "b.txt", "bin"]);
@@ -1657,7 +1660,10 @@ mod tests {
         fs::write(&dst, "old").unwrap();
         let bin = dir.path().join("bin");
         fs::create_dir(&bin).unwrap();
-        let trash = |p: &Path| fs::rename(p, bin.join("b.txt")).map_err(|e| e.to_string());
+        let trash = |p: &Path| {
+            fs::rename(p, bin.join("b.txt")).map_err(|e| e.to_string())?;
+            Ok(Some(bin.join("b.txt")))
+        };
 
         move_entry_with(s(&src), s(&dst), true, &Progress::default(), &trash).unwrap();
         assert!(!src.exists());
@@ -1728,7 +1734,8 @@ mod tests {
                 let seen = std::cell::RefCell::new(Vec::new());
                 let trash = |p: &Path| {
                     seen.borrow_mut().push((p.to_path_buf(), names_in(&dest)));
-                    fs::rename(p, bin.join("old")).map_err(|e| e.to_string())
+                    fs::rename(p, bin.join("old")).map_err(|e| e.to_string())?;
+                    Ok(Some(bin.join("old")))
                 };
                 op(s(&src), s(&dst), true, &Progress::default(), &trash).unwrap();
 
@@ -1763,7 +1770,7 @@ mod tests {
         let sub = dir.path().join("sub");
         fs::create_dir(&sub).unwrap();
         fs::write(sub.join("keep.txt"), "kept").unwrap();
-        let never = |p: &Path| -> Result<(), String> { panic!("{} went to the Trash", p.display()) };
+        let never = |p: &Path| -> Result<Option<PathBuf>, String> { panic!("{} went to the Trash", p.display()) };
         let ops: [OpWith; 2] = [copy_entry_with, move_entry_with];
         for op in ops {
             for to in [sub.join(".."), sub.join(".")] {
@@ -1820,7 +1827,8 @@ mod tests {
         let trash = |p: &Path| {
             source_there.set(src.exists());
             progress.cancel();
-            fs::rename(p, bin.join("b.txt")).map_err(|e| e.to_string())
+            fs::rename(p, bin.join("b.txt")).map_err(|e| e.to_string())?;
+            Ok(Some(bin.join("b.txt")))
         };
         move_entry_by(s(&src), s(&dst), true, &progress, &trash, &across_volumes).unwrap();
         assert!(source_there.get(), "the source was still there during the Replace");
