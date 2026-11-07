@@ -846,7 +846,7 @@ fn read_record(d: &[u8], mut p: usize, out: &mut Vec<(String, [u8; 4], String)>)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::progress::Progress;
     use tempfile::tempdir;
@@ -1270,7 +1270,7 @@ mod tests {
         s.encode_utf16().flat_map(|u| u.to_be_bytes()).collect()
     }
 
-    fn ustr_record(file: &str, code: &[u8; 4], value: &str) -> Vec<u8> {
+    pub(crate) fn ustr_record(file: &str, code: &[u8; 4], value: &str) -> Vec<u8> {
         let mut r = (file.encode_utf16().count() as u32).to_be_bytes().to_vec();
         r.extend(utf16(file));
         r.extend(code);
@@ -1289,7 +1289,7 @@ mod tests {
         r
     }
 
-    fn node(rightmost: u32, items: &[(Option<u32>, Vec<u8>)]) -> Vec<u8> {
+    pub(crate) fn node(rightmost: u32, items: &[(Option<u32>, Vec<u8>)]) -> Vec<u8> {
         let mut n = rightmost.to_be_bytes().to_vec();
         n.extend((items.len() as u32).to_be_bytes());
         for (child, rec) in items {
@@ -1303,7 +1303,7 @@ mod tests {
 
     /// A .DS_Store in the layout Finder writes: blocks at 32-byte-aligned
     /// offsets, block 0 the master record, the rest B-tree nodes.
-    fn ds_store(nodes: &[Vec<u8>], root: u32) -> Vec<u8> {
+    pub(crate) fn ds_store(nodes: &[Vec<u8>], root: u32) -> Vec<u8> {
         let mut d = vec![0u8; 0x8000];
         let put = |d: &mut Vec<u8>, at: usize, bytes: &[u8]| {
             d[at..at + bytes.len()].copy_from_slice(bytes)
