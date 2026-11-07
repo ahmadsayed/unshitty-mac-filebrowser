@@ -4,6 +4,7 @@
 //! Keep this file free of `tauri` types; `lib.rs` adapts these to commands.
 
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -230,17 +231,32 @@ fn linux_applications() -> Vec<AppChoice> {
 }
 
 fn linux_app_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(&home).join(".local/share/applications"));
-        dirs.push(PathBuf::from(home).join(".local/share/flatpak/exports/share/applications"));
+    linux_app_dirs_in(
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+        std::env::var_os("XDG_DATA_HOME"),
+        std::env::var("XDG_DATA_DIRS").ok(),
+    )
+}
+
+/// The folders whose `.desktop` files Open With offers, from the values of
+/// `HOME`, `XDG_DATA_HOME` and `XDG_DATA_DIRS`: the user's data folder first
+/// (where `install_appimage_at` puts its launchers), then the system's, each
+/// with its Flatpak exports, every folder once.
+fn linux_app_dirs_in(home: Option<&Path>, data_home: Option<OsString>, data_dirs: Option<String>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(data) = data_home_from(home, data_home) {
+        dirs.push(data.join("applications"));
+        dirs.push(data.join("flatpak/exports/share/applications"));
     }
-    let data_dirs = std::env::var("XDG_DATA_DIRS")
-        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
-    for dir in data_dirs.split(':').filter(|dir| !dir.is_empty()) {
+    let data_dirs = data_dirs
+        .filter(|dirs| !dirs.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
+    for dir in data_dirs.split(':').filter(|dir| dir.starts_with('/')) {
         dirs.push(PathBuf::from(dir).join("applications"));
     }
     dirs.push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
+    let mut seen = HashSet::new();
+    dirs.retain(|dir| seen.insert(dir.clone()));
     dirs
 }
 
@@ -800,10 +816,16 @@ pub fn read_text(path: &Path) -> Option<String> {
 /// `$XDG_DATA_HOME`, or its default `~/.local/share`. Used for the Trash and
 /// the recently-used list on Linux.
 pub fn data_home(home: &Path) -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
+    data_home_from(Some(home), std::env::var_os("XDG_DATA_HOME")).unwrap_or_else(|| home.join(".local/share"))
+}
+
+/// `data_home` from the values of `HOME` and `XDG_DATA_HOME`; a relative
+/// `XDG_DATA_HOME` is ignored, as the XDG spec says.
+fn data_home_from(home: Option<&Path>, data_home: Option<OsString>) -> Option<PathBuf> {
+    data_home
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| home.join(".local/share"))
+        .or_else(|| home.map(|home| home.join(".local/share")))
 }
 
 // ---- macOS disk-image application installation ---------------------------
@@ -1720,6 +1742,48 @@ mod tests {
         fs::write(dir.path().join("readme.txt"), "x").unwrap();
         let names: Vec<String> = apps_in_dir(dir.path()).into_iter().map(|app| app.name).collect();
         assert_eq!(names, ["Editor"]);
+    }
+
+    #[test]
+    fn open_with_looks_in_xdg_data_home_where_appimages_are_installed() {
+        let home = Path::new("/home/me");
+        let paths = |dirs: Vec<PathBuf>| -> Vec<String> {
+            dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect()
+        };
+        // XDG_DATA_HOME set: the installer writes `$XDG_DATA_HOME/applications`
+        // (see `install_appimage_at` and `data_home`), so Open With reads it.
+        assert_eq!(
+            paths(linux_app_dirs_in(Some(home), Some("/home/me/.data".into()), Some("/opt/share:/usr/share".into()))),
+            [
+                "/home/me/.data/applications",
+                "/home/me/.data/flatpak/exports/share/applications",
+                "/opt/share/applications",
+                "/usr/share/applications",
+                "/var/lib/flatpak/exports/share/applications",
+            ]
+        );
+        // Unset, or relative (which the spec says to ignore): `~/.local/share`.
+        // Unset or empty XDG_DATA_DIRS: the spec's default.
+        let defaults = [
+            "/home/me/.local/share/applications",
+            "/home/me/.local/share/flatpak/exports/share/applications",
+            "/usr/local/share/applications",
+            "/usr/share/applications",
+            "/var/lib/flatpak/exports/share/applications",
+        ];
+        assert_eq!(paths(linux_app_dirs_in(Some(home), None, None)), defaults);
+        assert_eq!(paths(linux_app_dirs_in(Some(home), Some("data".into()), Some(String::new()))), defaults);
+        // Each folder once, in order, even when the lists repeat one; relative
+        // entries in XDG_DATA_DIRS are skipped.
+        assert_eq!(
+            paths(linux_app_dirs_in(None, Some("/usr/share".into()), Some("/usr/share/::share:/usr/local/share:/usr/share".into()))),
+            [
+                "/usr/share/applications",
+                "/usr/share/flatpak/exports/share/applications",
+                "/usr/local/share/applications",
+                "/var/lib/flatpak/exports/share/applications",
+            ]
+        );
     }
 
     #[test]
