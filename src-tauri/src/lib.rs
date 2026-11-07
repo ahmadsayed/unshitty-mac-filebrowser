@@ -567,12 +567,11 @@ async fn item_counts(
     paths: Vec<String>,
     show_hidden: bool,
 ) -> Result<Vec<Option<fs_ops::FolderSummary>>, String> {
-    blocking(move || Ok(folder_summaries(&paths, show_hidden))).await?
-}
-
-/// `item_counts` for a batch: remote paths have no summary.
-fn folder_summaries(paths: &[String], show_hidden: bool) -> Vec<Option<fs_ops::FolderSummary>> {
-    place::local_only(paths, |local| fs_ops::item_counts(local, show_hidden))
+    blocking(move || {
+        // Remote and relative paths have no summary.
+        Ok(place::local_only(&paths, |local| fs_ops::item_counts(local, show_hidden)))
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -2206,14 +2205,16 @@ mod dispatch_tests {
 
     #[test]
     fn item_counts_summarises_local_folders_only() {
+        use tauri::async_runtime::block_on;
+        let counts = |paths: Vec<String>| block_on(item_counts(paths, false)).unwrap();
         let f = fixture();
         let mut paths = vec![f.folder.clone(), f.file.clone()];
         paths.extend(remote());
-        let out = folder_summaries(&paths, false);
+        let out = counts(paths.clone());
         assert_eq!(out.len(), paths.len());
         assert_eq!(out[0], Some(fs_ops::FolderSummary { count: 1, versioned: false }));
         assert!(out[1..].iter().all(Option::is_none), "{out:?}");
-        assert_eq!(folder_summaries(&strings(&[RELATIVE]), false), vec![None]);
+        assert_eq!(counts(strings(&[RELATIVE])), vec![None]);
     }
 
     #[test]
