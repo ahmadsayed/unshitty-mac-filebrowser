@@ -44,7 +44,7 @@ import { qrShareItems } from "./qr-share";
 import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type PreviewPlace } from "./preview-actions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { Selection, type Mark } from "./selection";
-import { acceptsNewItems, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
+import { acceptsNewItems, hasProperties, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
 // ---------------------------------------------------------------------------
@@ -2308,7 +2308,6 @@ function shareItemMenu(single: Entry | null): MenuItem[] {
     { label: "Open", action: activateSelection },
     { label: "Copy", disabled: true },
     { label: "Copy Location", disabled: !single, action: copyLocation },
-    ...(isSftpPath(location) ? [] : [propertiesMenuItem(single)]),
   ];
 }
 
@@ -4782,7 +4781,7 @@ const VIEW_SHORTCUTS: Shortcut[] = [
   [(k) => plainMod(k, "c") && selection.size > 0, () => setClipboard("copy")],
   [(k) => plainMod(k, "x") && selection.size > 0, () => setClipboard("cut")],
   [(k) => plainMod(k, "v") && !!clipboard && !isPseudo(location), () => paste(location)],
-  [(k) => plainMod(k, "i") && selection.size === 1, showSelectedProperties],
+  [(k) => plainMod(k, "i") && selection.size === 1 && hasProperties(selectedEntries()[0].path), showSelectedProperties],
 ];
 
 function showSelectedProperties(): void {

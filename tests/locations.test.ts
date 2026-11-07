@@ -4,6 +4,7 @@
 import { expect, test } from "vitest";
 import {
   acceptsNewItems,
+  hasProperties,
   isInTrash,
   isLocalLocation,
   isPseudo,
@@ -23,6 +24,7 @@ type Row = {
   searches: boolean;
   versions: boolean;
   newItems: boolean;
+  properties: boolean;
 };
 
 const F = false;
@@ -30,17 +32,17 @@ const T = true;
 
 // prettier-ignore
 const ROWS: Record<string, Row> = {
-  "a local folder":          { path: "/Users/me/Documents",              pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T },
-  "the root":                { path: "/",                                pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T },
-  "the Trash":               { path: TRASH,                              pseudo: F, readOnly: F, local: T, inTrash: T, searches: F, versions: F, newItems: T },
+  "a local folder":          { path: "/Users/me/Documents",              pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T, properties: T },
+  "the root":                { path: "/",                                pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T, properties: T },
+  "the Trash":               { path: TRASH,                              pseudo: F, readOnly: F, local: T, inTrash: T, searches: F, versions: F, newItems: T, properties: T },
   // Only the Trash itself is left out of the versions lookup.
-  "a folder in the Trash":   { path: `${TRASH}/old`,                     pseudo: F, readOnly: F, local: T, inTrash: T, searches: F, versions: T, newItems: T },
-  "a name that starts like the Trash": { path: `${TRASH}can`,            pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T },
-  "Recent":                  { path: "pseudo:recent",                    pseudo: T, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: F },
-  "Network":                 { path: "pseudo:network",                   pseudo: T, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: F },
-  "a Google Drive folder":   { path: "gdrive://acct/root~My%20Drive",    pseudo: F, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: T },
-  "a received share":        { path: "share://r1/sub",                   pseudo: F, readOnly: T, local: F, inTrash: F, searches: F, versions: F, newItems: F },
-  "an SSH server":           { path: "sftp://me@host/home",              pseudo: F, readOnly: T, local: F, inTrash: F, searches: F, versions: F, newItems: F },
+  "a folder in the Trash":   { path: `${TRASH}/old`,                     pseudo: F, readOnly: F, local: T, inTrash: T, searches: F, versions: T, newItems: T, properties: T },
+  "a name that starts like the Trash": { path: `${TRASH}can`,            pseudo: F, readOnly: F, local: T, inTrash: F, searches: T, versions: T, newItems: T, properties: T },
+  "Recent":                  { path: "pseudo:recent",                    pseudo: T, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: F, properties: F },
+  "Network":                 { path: "pseudo:network",                   pseudo: T, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: F, properties: F },
+  "a Google Drive folder":   { path: "gdrive://acct/root~My%20Drive",    pseudo: F, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: T, properties: T },
+  "a received share":        { path: "share://r1/sub",                   pseudo: F, readOnly: T, local: F, inTrash: F, searches: F, versions: F, newItems: F, properties: F },
+  "an SSH server":           { path: "sftp://me@host/home",              pseudo: F, readOnly: T, local: F, inTrash: F, searches: F, versions: F, newItems: F, properties: F },
 };
 
 for (const [name, row] of Object.entries(ROWS)) {
@@ -53,6 +55,7 @@ for (const [name, row] of Object.entries(ROWS)) {
       searches: searchesRecursively(row.path, TRASH),
       versions: mayHaveVersions(row.path, TRASH),
       newItems: acceptsNewItems(row.path),
+      properties: hasProperties(row.path),
     }).toEqual({
       pseudo: row.pseudo,
       readOnly: row.readOnly,
@@ -61,6 +64,7 @@ for (const [name, row] of Object.entries(ROWS)) {
       searches: row.searches,
       versions: row.versions,
       newItems: row.newItems,
+      properties: row.properties,
     });
   });
 }

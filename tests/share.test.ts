@@ -116,11 +116,18 @@ test("a received share browses read-only and remembers an offline sharer", async
   const labels = menuLabels();
   expect(labels).toContain("Open");
   expect(labels).toContain("Copy");
-  expect(labels).toContain("Properties");
+  expect(labels).not.toContain("Properties");
   expect(labels).not.toContain("Cut");
   expect(labels).not.toContain("Rename…");
   expect(labels).not.toContain("Move to Trash");
   expect(labels).not.toContain("Star");
+  await closeOverlays();
+  // The backend has no Properties for a shared item, so the shortcut does nothing.
+  const shown = toasts();
+  await key("i", { mod: true });
+  await settle();
+  expect(dialogHeading()).toBeUndefined();
+  expect(toasts()).toEqual(shown);
   await settle();
   await rightClick(item("Photos"));
   expect(menuLabels()).not.toContain("Share Folder…");
