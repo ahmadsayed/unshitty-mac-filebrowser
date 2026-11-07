@@ -346,6 +346,9 @@ test("trash, trash info, restore, delete permanently and empty", async () => {
   await expect(invoke("delete_permanently", { path: `${HOME}/main.rs` })).rejects.toMatch(/Only items in the Trash/);
   await invoke("delete_permanently", { path: again });
   await expect(invoke("delete_permanently", { path: again })).rejects.toMatch(/no longer exists/);
+  // Deleted for good, it is forgotten: a later item there has no origin yet.
+  const [forgotten] = await invoke<{ origin: string | null }[]>("trash_info", { paths: [again] });
+  expect(forgotten.origin).toBeNull();
   await invoke("empty_trash");
   expect(await namesIn(`${HOME}/.Trash`, true)).toEqual([]);
 });

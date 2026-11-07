@@ -869,14 +869,35 @@ impl Trash {
         Ok(origin)
     }
 
-    /// Delete an item in a Trash for good; refused anywhere else.
+    /// Delete an item in a Trash for good, and forget it; refused anywhere
+    /// else.
     pub fn delete_permanently(&self, path: &Path) -> Result<(), String> {
-        delete_permanently(path, &self.dir_for(path))
+        delete_permanently(path, &self.dir_for(path))?;
+        self.forget(|logged| logged.starts_with(path));
+        Ok(())
     }
 
-    /// Delete everything in the home Trash.
+    /// Delete everything in the home Trash, and forget what went (all of
+    /// it, unless it was cancelled or an item couldn't be deleted).
     pub fn empty(&self, progress: &Progress) -> Result<(), String> {
-        empty(&self.root, progress)
+        let emptied = empty(&self.root, progress);
+        self.forget(|logged| fs::symlink_metadata(logged).is_err());
+        emptied
+    }
+
+    /// Drop the log's entries for the items `gone` picks, so a later item
+    /// of the same name, trashed by another app, isn't given their origin.
+    fn forget(&self, gone: impl Fn(&Path) -> bool) {
+        let Some(log_path) = &self.log else {
+            return;
+        };
+        let _guard = self.lock();
+        let mut log = read_log(log_path);
+        let before = log.items.len();
+        log.items.retain(|trashed, _| !gone(Path::new(trashed)));
+        if log.items.len() < before {
+            let _ = crate::config_store::write_json(log_path, &log);
+        }
     }
 
     /// The Trash folder an item at `path` goes to, or sits in: the home
@@ -2248,6 +2269,48 @@ mod tests {
             assert_eq!(v.trash.send_with(&at_home[1], &refuse), Err("Failed to move to Trash: locked".into()));
             assert!(v.trash.send_with(&v.home.join("gone.txt"), &delete).is_err());
             assert_eq!(logged(&v.trash).items.keys().collect::<Vec<_>>(), [&text(&a)]);
+        }
+    }
+
+    /// `items` and `usb_items` hold a.txt and b.txt, logged as coming from
+    /// home and the stick; returns them.
+    fn logged_pair(v: &Volumes) -> (PathBuf, PathBuf) {
+        let (a, b) = (put_in(&v.items, "a.txt"), put_in(&v.usb_items, "b.txt"));
+        v.trash.record(&[(a.clone(), v.home.join("Documents/a.txt")), (b.clone(), v.usb.join("b.txt"))]);
+        (a, b)
+    }
+
+    #[test]
+    fn deleting_for_good_forgets_the_entry() {
+        for layout in [Layout::Finder, Layout::Freedesktop] {
+            let dir = tempdir().unwrap();
+            let v = with_usb(dir.path(), layout);
+            let (a, b) = logged_pair(&v);
+            let keep = put_in(&v.items, "keep.txt");
+            v.trash.record(&[(keep.clone(), v.home.join("keep.txt"))]);
+
+            v.trash.delete_permanently(&a).unwrap();
+            v.trash.delete_permanently(&b).unwrap();
+            assert_eq!(logged(&v.trash).items.keys().collect::<Vec<_>>(), [&text(&keep)], "{layout:?}");
+            // Another app's later "a.txt" isn't given the deleted one's origin.
+            let later = put_in(&v.items, "a.txt");
+            assert_eq!(v.trash.info(&[text(&later)])[0].origin, None);
+            assert_eq!(v.trash.restore(&later), Err("The original location is unknown".into()));
+        }
+    }
+
+    #[test]
+    fn emptying_forgets_what_it_deleted() {
+        for layout in [Layout::Finder, Layout::Freedesktop] {
+            let dir = tempdir().unwrap();
+            let v = with_usb(dir.path(), layout);
+            let (_, b) = logged_pair(&v);
+
+            v.trash.empty(&Progress::default()).unwrap();
+            // Only the home Trash is emptied: the stick's item and its entry stay.
+            assert_eq!(logged(&v.trash).items.keys().collect::<Vec<_>>(), [&text(&b)], "{layout:?}");
+            let later = put_in(&v.items, "a.txt");
+            assert_eq!(v.trash.info(&[text(&later)])[0].origin, None);
         }
     }
 

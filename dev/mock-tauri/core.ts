@@ -1,4 +1,4 @@
-import { encodeCloudName, placeOf, type Place } from "../../src/paths";
+import { encodeCloudName, isUnder, placeOf, type Place } from "../../src/paths";
 import { fold } from "../../src/search";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
@@ -1329,6 +1329,7 @@ function deletePermanently(path: string): void {
   const [parent, name] = parentAndName(path);
   if (!parent?.dir || !parent.children[name]) throw `“${path}” no longer exists`;
   delete parent.children[name];
+  for (const logged of trashLog.keys()) if (isUnder(logged, path)) trashLog.delete(logged);
 }
 
 function emptyTrash(): void {
