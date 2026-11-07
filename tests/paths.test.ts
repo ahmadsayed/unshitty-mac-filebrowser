@@ -188,8 +188,9 @@ test.each([
   [DRIVE_ROOT,                 "a b",     `${DRIVE_ROOT}/~a%20b`],
   ["sftp://me@host/",          "a b",     "sftp://me@host/a%20b"],
   ["sftp://me@host/docs",      "~x",      "sftp://me@host/docs/%7Ex"],
-  // today's behaviour, fixed in a follow-up: a share child isn't encoded (joinSharePath would).
-  ["share://r1",               "a b",     "share://r1/a b"],
+  // A share child is encoded as share/location.rs decodes it (NAME_SET).
+  ["share://r1",               "a b",     "share://r1/a%20b"],
+  ["share://r1/Photos/",       "~x é",    "share://r1/Photos/%7Ex%20%C3%A9"],
   // Local joins are byte-identical to what every copy, move and rename used.
   ["/Users/me",                "a b",     "/Users/me/a b"],
   ["/Users/me//",              "x",       "/Users/me/x"],

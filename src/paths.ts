@@ -310,9 +310,7 @@ const SCHEMES: Record<Place, Scheme> = {
   share: {
     name: (path) => remoteName(path, SHARE_PREFIX),
     parent: (path) => remoteParent(path, SHARE_PREFIX, shareRoot),
-    // today's behaviour, fixed in a follow-up: a share child is joined like a
-    // local one, unencoded (joinSharePath would encode it).
-    child: localChild,
+    child: joinSharePath,
     segments: (path) =>
       remoteSegments(path, "share", SHARE_PREFIX, {
         root: shareRoot,
@@ -352,7 +350,8 @@ export function parentPath(path: string): string | null {
 }
 
 /** The path of a child named `name` inside `dir`, encoded as the backend
- *  decodes it: a pending `~name` in Drive, `%XX` names on SSH servers. */
+ *  decodes it: a pending `~name` in Drive, `%XX` names in shares and on SSH
+ *  servers. */
 export function childPath(dir: string, name: string): string {
   return SCHEMES[placeOf(dir)].child(dir, name);
 }
