@@ -329,6 +329,8 @@ GPL-3.0-or-later).
   the Trash, volumes).
   Never rewrite a path the backend produced: stars, pins and history store
   them as they are, and only `src/path-refs.ts` changes them, to follow a move.
+  The one exception is Home: `homeFolder` trims `$HOME`'s trailing slash once
+  at start-up, keeping `/` for HOME=/ (#170).
 - Code that moves, renames or trashes items reports it to `src/path-refs.ts`
   (`pathRefs.moved(pairs)` with the paths the backend reported, as soon as
   it moved them and only for what really moved; `pathRefs.gone(paths)` after a Move

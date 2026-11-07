@@ -2,7 +2,7 @@
 // that must not fall back to a local path.
 import { expect, test } from "vitest";
 import {
-  childPath, cloudSegmentName, decodeSegment, isCloudRoot, isKnownPath, isUnder, isWithin, joinCloudPath, joinSharePath, joinSftpPath,
+  childPath, cloudSegmentName, decodeSegment, homeFolder, isCloudRoot, isKnownPath, isUnder, isWithin, joinCloudPath, joinSharePath, joinSftpPath,
   isCloudPath, isRemotePath, isShareLink, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket,
   isSharePath, isSftpPath, resolveTypedPath,
 } from "../src/paths";
@@ -302,6 +302,19 @@ test("isUnder and isWithin differ only for a dir that is \"/\" or ends in a slas
   }
   expect([isUnder("/etc", "/"), isWithin("/etc", "/")]).toEqual([true, false]);
   expect([isUnder("/Users/me/a", "/Users/me/"), isWithin("/Users/me/a", "/Users/me/")]).toEqual([true, false]);
+});
+
+// Tauri's homeDir keeps $HOME as written; the app trims it once at start-up (#170).
+// prettier-ignore
+test.each([
+  ["/Users/me",    "/Users/me"],
+  ["/Users/me/",   "/Users/me"],
+  ["/Users/me//",  "/Users/me"],
+  ["/",            "/"],
+  ["//",           "/"],
+  ["",             ""],
+])("homeFolder(%j) is %j", (home, folder) => {
+  expect(homeFolder(home)).toBe(folder);
 });
 
 // prettier-ignore
