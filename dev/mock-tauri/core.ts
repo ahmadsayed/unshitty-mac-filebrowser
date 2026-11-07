@@ -2253,6 +2253,11 @@ function releaseCalls(cmd: string): void {
     if (!calls.held.has(cmd)) calls.held.set(cmd, []);
   },
   release: releaseCalls,
+  /** Release only the latest call waiting, so it lands before the earlier
+   *  ones; the command stays held. */
+  releaseLast(cmd: string) {
+    calls.held.get(cmd)?.pop()?.();
+  },
   failNext(cmd: string, error: string) {
     calls.failures.set(cmd, error);
   },
