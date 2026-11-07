@@ -208,6 +208,10 @@ mod tests {
             assert_eq!(kind(path), Kind::Share);
             assert!(share::location::ShareLocation::parse(path).is_none(), "{path}");
         }
+        for path in ["sftp://", "sftp://host/home", "sftp://me@/home", "sftp://me@host/%FF"] {
+            assert_eq!(kind(path), Kind::Sftp);
+            assert!(sftp::parse_target(path).is_err(), "{path}");
+        }
     }
 
     #[test]
