@@ -3957,6 +3957,8 @@ function startRename(entry: Entry): void {
       renamed = await renameInPlace(entry, input.value);
     } catch (err) {
       renaming = false;
+      // Rename as the name wants it, so a click can try again like Enter.
+      validate();
       showValidation({ valid: false, message: cleanError(err), error: true }, input, message);
       return;
     }

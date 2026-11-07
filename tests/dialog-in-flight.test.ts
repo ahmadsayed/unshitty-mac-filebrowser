@@ -539,6 +539,7 @@ test("What name should people see?: a failure stays in the dialog, cleaned, with
   await respond("Continue");
   expect(dialogHeading()).toBe("What name should people see?");
   expect(message()).toBe("Read-only file system");
+  expect($(".dialog-layer .field-message").classList.contains("error")).toBe(true);
   expect(button("Continue").disabled).toBe(false);
   expect(button("Cancel").disabled).toBe(false);
   expect($<HTMLInputElement>("#share-name").disabled).toBe(false);
@@ -578,6 +579,7 @@ test("Permissions: a failure stays in the dialog, cleaned, with everything enabl
   await respond("Change");
   expect(dialogHeading()).toBe("Permissions");
   expect(message()).toBe("Operation not permitted");
+  expect($(".dialog-layer .field-message").classList.contains("error")).toBe(true);
   expect(button("Change").disabled).toBe(false);
   expect(button("Cancel").disabled).toBe(false);
   expect($<HTMLInputElement>('input[data-bit="128"]').disabled).toBe(false);
@@ -623,6 +625,7 @@ test("New Document: a failure stays in the dialog, cleaned, with every choice en
   await settle(20);
   expect(dialogHeading()).toBe("New Document");
   expect(message()).toBe("No space left on device");
+  expect($(".dialog-layer .field-message").classList.contains("error")).toBe(true);
   expect(choice("Letter.odt").disabled).toBe(false);
   expect(choice("Empty Text File").disabled).toBe(false);
   expect(button("Cancel").disabled).toBe(false);
@@ -662,6 +665,7 @@ test("Rename popover: a failure stays in the popover, and Enter tries again", as
   await key("Enter", { target: input });
   await settle(20);
   expect($(".rename-popover .field-message").textContent).toBe("Permission denied");
+  expect($<HTMLButtonElement>(".rename-popover button").disabled).toBe(false);
   await key("Enter", { target: input });
   await settle(30);
   expect(calls().count("rename_entry")).toBe(2);
