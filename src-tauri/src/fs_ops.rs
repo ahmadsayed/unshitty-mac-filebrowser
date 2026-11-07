@@ -8,7 +8,7 @@ use unicode_normalization::char::is_combining_mark;
 
 #[cfg(target_os = "linux")]
 use crate::progress::copy_counted;
-use crate::placement::{self, Stage, Staged, TrashFn, Unfilled, remove, remove_any, to_trash};
+use crate::placement::{self, Stage, Staged, Target, TrashFn, Unfilled, remove, remove_any, to_trash};
 use crate::progress::{CANCELLED, Progress, cancelled_io, is_cancel};
 
 pub fn make_dir(path: String) -> Result<(), String> {
@@ -552,16 +552,72 @@ pub fn copy_recursive(from: &Path, to: &Path, progress: &Progress) -> std::io::R
         std::fs::copy(from, to)?;
     } else if meta.is_dir() {
         std::fs::create_dir(to)?;
-        for entry in std::fs::read_dir(from)? {
-            let entry = entry?;
-            copy_recursive(&entry.path(), &to.join(entry.file_name()), progress)?;
-        }
-        std::fs::set_permissions(to, meta.permissions())?;
+        copy_children(from, to, &meta, progress)?;
     } else {
         copy_file_progress(from, to, progress)?;
     }
     progress.add_item();
     Ok(())
+}
+
+/// Copy what is in folder `from` into `to`, a folder just made for it, then
+/// give `to` the folder's permissions (last, so a read-only one still fills).
+fn copy_children(
+    from: &Path,
+    to: &Path,
+    meta: &std::fs::Metadata,
+    progress: &Progress,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        copy_recursive(&entry.path(), &to.join(entry.file_name()), progress)?;
+    }
+    std::fs::set_permissions(to, meta.permissions())
+}
+
+/// Fill `dest` with a copy of `from`, for a copy or a move across volumes.
+/// A folder fills in place (`Stage::by_kind`), so it is made first: until
+/// it is, a failure is no partial copy of ours, and whatever took the name
+/// after the check is left alone. Anything else goes to a staging name.
+fn copy_fill<'a>(
+    from: &Path,
+    dest: &Path,
+    folder: bool,
+    progress: &Progress,
+    verb: &str,
+) -> Result<Staged<'a>, Unfilled> {
+    let partial = |e| Unfilled::Partial(copy_error(verb, e));
+    if !folder {
+        return copy_recursive(from, dest, progress).map(|()| Staged::Copy).map_err(partial);
+    }
+    let meta = make_folder(from, dest, progress).map_err(|e| Unfilled::Nothing(fill_error(verb, dest, e)))?;
+    copy_children(from, dest, &meta, progress).map_err(partial)?;
+    progress.add_item();
+    Ok(Staged::Copy)
+}
+
+/// Make `dest`, the copy of folder `from`, refusing a name that is taken.
+fn make_folder(from: &Path, dest: &Path, progress: &Progress) -> std::io::Result<std::fs::Metadata> {
+    if progress.is_cancelled() {
+        return Err(cancelled_io());
+    }
+    let meta = std::fs::symlink_metadata(from)?;
+    std::fs::create_dir(dest)?;
+    Ok(meta)
+}
+
+/// The error of a fill that wrote nothing: a name taken after the check
+/// reads as the refusal the check would have made.
+fn fill_error(verb: &str, dest: &Path, error: std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::AlreadyExists {
+        return placement::Refusal::Exists(dest.display().to_string()).into();
+    }
+    copy_error(verb, error)
+}
+
+/// Whether `path` is a folder itself, not a link to one.
+fn is_folder(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
 }
 
 /// Copy one file in slices; std turns each `File` → `File` slice into
@@ -660,12 +716,14 @@ fn copy_entry_with(
 ) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let target = placement::check_transfer(from, to, overwrite)?;
-    let fill = |dest: &Path| {
-        copy_recursive(from, dest, progress)
-            .map(|()| Staged::Copy)
-            .map_err(|e| Unfilled::Partial(copy_error("copy", e)))
-    };
-    target.place(Stage::WhenReplacing { discard: &remove }, fill, trash)?;
+    copy_to(&target, from, progress, trash)
+}
+
+/// Copy `from` to a target that passed the refusals.
+fn copy_to(target: &Target, from: &Path, progress: &Progress, trash: TrashFn) -> Result<(), String> {
+    let folder = is_folder(from);
+    let fill = |dest: &Path| copy_fill(from, dest, folder, progress, "copy");
+    target.place(Stage::by_kind(folder, &remove), fill, trash)?;
     Ok(())
 }
 
@@ -686,12 +744,15 @@ fn move_entry_with(
     progress: &Progress,
     trash: TrashFn,
 ) -> Result<(), String> {
-    move_entry_by(from, to, overwrite, progress, trash, &|a, b| std::fs::rename(a, b))
+    move_entry_by(from, to, overwrite, progress, trash, MOVE_RENAME)
 }
 
 /// Renames an item. A move takes it as a parameter so tests can make it fail
 /// as it does across volumes.
 type RenameFn<'a> = &'a dyn Fn(&Path, &Path) -> std::io::Result<()>;
+
+/// How a move renames its item: never over one that took the name.
+const MOVE_RENAME: RenameFn<'static> = &placement::rename_new;
 
 fn move_entry_by(
     from: String,
@@ -703,8 +764,20 @@ fn move_entry_by(
 ) -> Result<(), String> {
     let (from, to) = (Path::new(&from), Path::new(&to));
     let target = placement::check_transfer(from, to, overwrite)?;
-    let fill = |dest: &Path| move_or_copy(from, dest, progress, rename);
-    let placed = target.place(Stage::WhenReplacing { discard: &remove }, fill, trash)?;
+    move_to(&target, from, progress, trash, rename)
+}
+
+/// Move `from` to a target that passed the refusals.
+fn move_to(
+    target: &Target,
+    from: &Path,
+    progress: &Progress,
+    trash: TrashFn,
+    rename: RenameFn,
+) -> Result<(), String> {
+    let folder = is_folder(from);
+    let fill = |dest: &Path| move_or_copy(from, dest, folder, progress, rename);
+    let placed = target.place(Stage::by_kind(folder, &remove), fill, trash)?;
     if placed == Staged::Copy {
         // Across volumes the source goes only now, with its copy in place.
         // No progress is checked from the end of the copy on, so a cancel
@@ -719,6 +792,7 @@ fn move_entry_by(
 fn move_or_copy<'a>(
     from: &'a Path,
     dest: &Path,
+    folder: bool,
     progress: &Progress,
     rename: RenameFn,
 ) -> Result<Staged<'a>, Unfilled> {
@@ -727,10 +801,8 @@ fn move_or_copy<'a>(
             progress.add_item();
             Ok(Staged::Original(from))
         }
-        Err(e) if is_cross_device(&e) => copy_recursive(from, dest, progress)
-            .map(|()| Staged::Copy)
-            .map_err(|e| Unfilled::Partial(copy_error("move", e))),
-        Err(e) => Err(Unfilled::Nothing(format!("Failed to move: {}", e))),
+        Err(e) if is_cross_device(&e) => copy_fill(from, dest, folder, progress, "move"),
+        Err(e) => Err(Unfilled::Nothing(fill_error("move", dest, e))),
     }
 }
 
@@ -1949,5 +2021,100 @@ mod tests {
         let measured = measure(&[root.clone()]);
         fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(measured, Measure { bytes: 10, items: 3 });
+    }
+
+    // ----- what took the name after the check -----
+
+    /// A file, or a folder holding `x`, with `body` in it.
+    fn make_item(path: &Path, folder: bool, body: &str) {
+        if folder {
+            fs::create_dir(path).unwrap();
+            fs::write(path.join("x"), body).unwrap();
+        } else {
+            fs::write(path, body).unwrap();
+        }
+    }
+
+    fn item_body(path: &Path) -> String {
+        let file = if path.is_dir() { path.join("x") } else { path.to_path_buf() };
+        fs::read_to_string(file).unwrap()
+    }
+
+    /// Every pair of (source is a folder, what took the name is a folder).
+    const KINDS: [(bool, bool); 4] = [(false, false), (false, true), (true, false), (true, true)];
+
+    /// The target passes the refusals, then another app takes its name
+    /// before the copy or move begins.
+    fn checked_then_taken(src: &Path, dst: &Path, theirs_folder: bool) -> Target {
+        let target = placement::check_transfer(src, dst, false).unwrap();
+        make_item(dst, theirs_folder, "theirs");
+        target
+    }
+
+    /// A copy never writes into what took its name after the check (a file
+    /// was truncated and overwritten) nor cleans it up as its own partial
+    /// copy (a folder was removed). It fails as the check would have.
+    #[test]
+    fn a_copy_leaves_alone_what_took_its_name_after_the_check() {
+        for (mine_folder, theirs_folder) in KINDS {
+            let dir = tempdir().unwrap();
+            let (src, dst) = (dir.path().join("mine"), dir.path().join("dest"));
+            make_item(&src, mine_folder, "mine");
+            let target = checked_then_taken(&src, &dst, theirs_folder);
+            let got = copy_to(&target, &src, &Progress::default(), &failing_trash);
+            let case = format!("folder → {mine_folder}, theirs a folder → {theirs_folder}");
+            assert_eq!(got, Err(format!("Target already exists: {}", dst.display())), "{case}");
+            assert_eq!(item_body(&dst), "theirs", "{case}");
+            assert_eq!(item_body(&src), "mine", "{case}");
+            assert_eq!(names_in(dir.path()), ["dest", "mine"], "{case}");
+        }
+    }
+
+    /// The same for a move, renamed on one volume or copied across two: the
+    /// source stays where it was.
+    #[test]
+    fn a_move_leaves_alone_what_took_its_name_after_the_check() {
+        let renames: [(&str, RenameFn); 2] = [("rename", MOVE_RENAME), ("across volumes", &across_volumes)];
+        for (how, rename) in renames {
+            for (mine_folder, theirs_folder) in KINDS {
+                let dir = tempdir().unwrap();
+                let (src, dst) = (dir.path().join("mine"), dir.path().join("dest"));
+                make_item(&src, mine_folder, "mine");
+                let target = checked_then_taken(&src, &dst, theirs_folder);
+                let got = move_to(&target, &src, &Progress::default(), &failing_trash, rename);
+                let case = format!("{how}: folder → {mine_folder}, theirs a folder → {theirs_folder}");
+                assert_eq!(got, Err(format!("Target already exists: {}", dst.display())), "{case}");
+                assert_eq!(item_body(&dst), "theirs", "{case}");
+                assert_eq!(item_body(&src), "mine", "{case}");
+                assert_eq!(names_in(dir.path()), ["dest", "mine"], "{case}");
+            }
+        }
+    }
+
+    /// A file is copied under a staging name and appears whole; a folder
+    /// fills in place, so it can be watched filling, as in GNOME Files.
+    #[test]
+    fn files_are_staged_and_folders_fill_in_place() {
+        for folder in [false, true] {
+            let dir = tempdir().unwrap();
+            let (src, dst) = (dir.path().join("mine"), dir.path().join("dest"));
+            make_item(&src, folder, "mine");
+            let seen = std::cell::RefCell::new(Vec::new());
+            let watch = |from: &Path, to: &Path| {
+                seen.borrow_mut().push(to.to_path_buf());
+                across_volumes(from, to)
+            };
+            let target = placement::check_transfer(&src, &dst, false).unwrap();
+            move_to(&target, &src, &Progress::default(), &failing_trash, &watch).unwrap();
+            let filled = seen.into_inner();
+            if folder {
+                assert_eq!(filled, [dst.clone()]);
+            } else {
+                let staged = dir.path().join(format!(".dest.filebrowser-{}-0", std::process::id()));
+                assert_eq!(filled, [staged]);
+            }
+            assert_eq!(item_body(&dst), "mine");
+            assert_eq!(names_in(dir.path()), ["dest"]);
+        }
     }
 }

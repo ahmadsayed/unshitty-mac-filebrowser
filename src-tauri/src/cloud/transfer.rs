@@ -296,14 +296,9 @@ fn download_into_with(
     if !file.is_dir() && !file.can_download() {
         return Err(not_downloadable(&file));
     }
-    let stage = if file.is_dir() {
-        Stage::WhenReplacing { discard }
-    } else {
-        Stage::Always
-    };
     let mut skipped = Vec::new();
     let fill = |dest: &Path| download_to(&client, &file, dest, &mut skipped, &c.progress);
-    target.place(stage, fill, trash)?;
+    target.place(Stage::by_kind(file.is_dir(), discard), fill, trash)?;
     match skipped.first() {
         // Everything else was copied; the error names what was left out.
         Some(reason) => Err(reason.clone()),

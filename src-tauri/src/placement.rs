@@ -252,10 +252,25 @@ pub enum Unfilled {
 /// Where a fill writes.
 pub enum Stage<'a> {
     /// At the target itself, unless it replaces an item; a partial copy
-    /// filled in place goes to `discard`.
+    /// filled in place goes to `discard`. Something may take the name after
+    /// the check, so a fill in place reports `Unfilled::Partial` only once it
+    /// has created the item itself (`create_dir`, never a file that would
+    /// truncate what is there).
     WhenReplacing { discard: TrashFn<'a> },
     /// Always under a hidden staging name, so the item appears only whole.
     Always,
+}
+
+impl<'a> Stage<'a> {
+    /// A new folder fills in place, so it can be watched filling, as in
+    /// GNOME Files; anything else is staged and appears only whole.
+    pub fn by_kind(folder: bool, discard: TrashFn<'a>) -> Self {
+        if folder {
+            Stage::WhenReplacing { discard }
+        } else {
+            Stage::Always
+        }
+    }
 }
 
 impl Target {

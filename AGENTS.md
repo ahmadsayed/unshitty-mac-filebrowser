@@ -221,6 +221,10 @@ GPL-3.0-or-later).
   don't build the sequence again at a call site.
 - Placing renames with `placement::rename_new`, never `std::fs::rename`:
   on Unix that replaces a file that took the name after it was checked free.
+- A new file is staged too and appears only whole; a new folder fills in
+  place (`Stage::by_kind`) and counts as a partial copy to clean up only
+  once the fill has created it, so a failure never removes what took the
+  name after the check.
 - A cross-volume move deletes the source only after the copy fully succeeded.
 - Copy/move refuse: vanished source, same path, destination inside the source,
   existing target without `overwrite`, replacing a folder with its own child,
