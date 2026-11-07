@@ -1174,26 +1174,32 @@ function makeDir(path: string): void {
   parent.children[name] = d({}, 0);
 }
 
-/** The same refusals as the backend's copy/move, in the same order. */
-function checkTransfer(from: string, to: string): { node: Node; fromParent: Node & { dir: true }; toParent: Node & { dir: true } } {
+/**
+ * The same refusals as the backend's copy/move (placement.rs
+ * `check_transfer`), in the same order; a missing destination folder fails
+ * after them, as the backend's copy does.
+ */
+function checkTransfer(from: string, to: string, overwrite: boolean): { node: Node; fromParent: Node & { dir: true }; toParent: Node & { dir: true }; toName: string } {
   const [fromParent, fromName] = parentAndName(from);
-  const [toParent] = parentAndName(to);
+  const [toParent, toName] = parentAndName(to);
   const node = fromParent?.dir ? fromParent.children[fromName] : undefined;
   if (!node || !fromParent?.dir) throw `“${from}” no longer exists`;
-  if (!toParent?.dir) throw "Failed to copy: No such file or directory";
   if (from === to) throw "The source and destination are the same";
   if (to.startsWith(from + "/")) throw "Cannot copy or move a folder into itself";
-  return { node, fromParent, toParent };
+  // `.` and `..` always name an existing folder; the mock resolves no further.
+  const dotted = toName === "." || toName === "..";
+  const existing = dotted || Boolean(toParent?.dir && toParent.children[toName]);
+  if (existing && !overwrite) throw `Target already exists: ${to}`;
+  if (existing && !dotted && from.startsWith(to + "/")) throw "Cannot replace a folder with an item inside it";
+  if (dotted || toName === "") throw `“${to}” is not a valid name for a local item.`;
+  if (!toParent?.dir) throw "Failed to copy: No such file or directory";
+  return { node, fromParent, toParent, toName };
 }
 
 function transfer(args: Args, move: boolean): void {
   const from = str(args, "from"), to = str(args, "to");
-  const { node, fromParent, toParent } = checkTransfer(from, to);
-  const toName = to.slice(to.lastIndexOf("/") + 1);
-  if (toParent.children[toName]) {
-    if (!args.overwrite) throw `Target already exists: ${to}`;
-    trash(toParent, toName);
-  }
+  const { node, fromParent, toParent, toName } = checkTransfer(from, to, Boolean(args.overwrite));
+  if (toParent.children[toName]) trash(toParent, toName);
   toParent.children[toName] = move ? node : structuredClone(node);
   if (move) delete fromParent.children[from.slice(from.lastIndexOf("/") + 1)];
 }
