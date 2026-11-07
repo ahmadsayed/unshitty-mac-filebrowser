@@ -48,6 +48,7 @@ import { arrangeSearch, fold, SEARCH_LIMIT, SearchSession, searchSections as arr
 import { FolderSummaries } from "./folder-summaries";
 import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
 import { PathRefs, type Clip } from "./path-refs";
+import { LatestSave } from "./latest-save";
 import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
 import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
@@ -172,6 +173,17 @@ let pins: string[] = [];
 /** Paths the sidebar always shows (places, default bookmarks, volumes). */
 const fixedSidebarPaths = new Set<string>();
 
+/** starred.json and pins.json: one write each at a time, the last with the
+ *  latest stars and bookmarks (src/latest-save.ts, #172). Every change to
+ *  them changes the state first and saves it after, so a save never writes
+ *  a list from before another change. */
+const starSaves = new LatestSave(() => [...starred], saveStarred, (err) =>
+  showToast(`Could not save starred files: ${cleanError(err)}`)
+);
+const pinSaves = new LatestSave(() => [...pins], savePins, (err) =>
+  showToast(`Could not save bookmarks: ${cleanError(err)}`)
+);
+
 /** What remembers paths (stars, bookmarks, the clipboard, tabs and their
  *  history) follows moved, renamed and trashed items through this
  *  (src/path-refs.ts). */
@@ -180,17 +192,13 @@ const pathRefs = new PathRefs<TabState>({
     get: () => starred,
     set: (next) => {
       starred = next;
-      void persistStarred();
+      void starSaves.save();
     },
   },
   bookmarks: {
     get: () => pins,
-    set: (next) => {
-      // The folder moved already: the sidebar shows where it is now, saved or not.
-      pins = next;
-      renderPins();
-      savePins(next).catch((err) => showToast(`Could not save bookmarks: ${cleanError(err)}`));
-    },
+    // The folder moved already: the sidebar shows where it is now, saved or not.
+    set: (next) => void setPins(next),
   },
   clipboard: {
     get: () => clipboard,
@@ -199,11 +207,19 @@ const pathRefs = new PathRefs<TabState>({
     },
   },
   tabs: {
-    get: () => ({ list: tabs, active: activeTab, back: backStack, forward: forwardStack }),
+    // While a tab is switched to, a move that lands meanwhile follows both
+    // the history it brings, which the view takes as its folder shows, and
+    // the view's own, which stays if the switch fails (#172).
+    get: () => ({ list: tabs, active: activeTab, back: backStack, forward: forwardStack, arriving: arrivingTab }),
     set: (next) => {
       tabs = next.list;
       backStack = next.back;
       forwardStack = next.forward;
+      if (arrivingTab && next.arriving) {
+        // In place: the switch holds this tab and takes its history from it.
+        arrivingTab.back = next.arriving.back;
+        arrivingTab.forward = next.arriving.forward;
+      }
       renderTabbar();
     },
   },
@@ -2923,17 +2939,10 @@ async function setStarred(paths: string[], on: boolean): Promise<void> {
     if (on) starred.add(p);
     else starred.delete(p);
   }
-  await persistStarred();
+  // Starred lists what starred.json holds: wait for the write with this change.
+  await starSaves.save();
   if (location === STARRED) await reload();
   else renderWindow(true);
-}
-
-async function persistStarred(): Promise<void> {
-  try {
-    await saveStarred([...starred]);
-  } catch (err) {
-    showToast(`Could not save starred files: ${cleanError(err)}`);
-  }
 }
 
 /** Show the folder holding `entry`, with it selected. */
@@ -3775,19 +3784,29 @@ function bookmarkMenuItem(path: string): MenuItem {
   return { label: "Add to Bookmarks", disabled: fixedSidebarPaths.has(path), action: () => setBookmarked(path, true) };
 }
 
-/** Add or remove a bookmark. Adding asks the rule (src/item-actions.ts); removing always works. */
+/** Add or remove a bookmark. Adding asks the rule (src/item-actions.ts); removing always works.
+ *  The sidebar shows it at once and takes it back if it couldn't be saved. */
 async function setBookmarked(path: string, on: boolean): Promise<void> {
   if (on === pins.includes(path) || (on && fixedSidebarPaths.has(path))) return;
   if (on && refuse("bookmark", { kind: locationKind(path, trashPath), items: [] })) return;
-  const next = on ? [...pins, path] : pins.filter((p) => p !== path);
-  try {
-    await savePins(next);
-  } catch (err) {
-    showToast(`Could not save bookmarks: ${cleanError(err)}`);
-    return;
-  }
+  const at = pins.indexOf(path);
+  if (!(await setPins(on ? [...pins, path] : pins.filter((p) => p !== path)))) undoBookmarked(path, on, at);
+}
+
+/** Take back a bookmark change that couldn't be saved, from the bookmarks as
+ *  they are now: a move may have changed them meanwhile. A removed bookmark
+ *  goes back at `at`, where it was. */
+function undoBookmarked(path: string, on: boolean, at: number): void {
+  if (on !== pins.includes(path)) return;
+  void setPins(on ? pins.filter((p) => p !== path) : [...pins.slice(0, at), path, ...pins.slice(at)]);
+}
+
+/** Show `next` as the bookmarks at once, and save it: true once it is
+ *  written (a failure says so in a toast). */
+function setPins(next: string[]): Promise<boolean> {
   pins = next;
   renderPins();
+  return pinSaves.save();
 }
 
 function renderPins(): void {

@@ -68,29 +68,42 @@ export interface Clip {
   mode: "copy" | "cut";
 }
 
-/** Where a tab is, and where its Back and Forward go. */
-export interface TabPaths {
-  location: string;
+/** Where Back and Forward go. */
+export interface History {
   back: string[];
   forward: string[];
 }
 
-/** The open tabs: each one as saved when it was left, and the live history
- *  of the one on screen (`active`), whose saved copy is stale meanwhile. */
-export interface Tabs<Tab extends TabPaths = TabPaths> {
+/** Where a tab is, and where its Back and Forward go. */
+export interface TabPaths extends History {
+  location: string;
+}
+
+/** The open tabs: each one as saved when it was left, and the view's live
+ *  history (`back`, `forward`), the one on screen's (`active`), whose saved
+ *  copy is stale meanwhile. While a tab is switched to, it is `active` and
+ *  `arriving` is the history it brings: the view takes that one when the
+ *  tab's folder shows, and goes on with its own if the switch fails. */
+export interface Tabs<Tab extends TabPaths = TabPaths> extends History {
   list: Tab[];
   active: number;
-  back: string[];
-  forward: string[];
+  arriving?: History | null;
+}
+
+/** `history` after `follow`, or null when nothing in it moved. */
+function followHistory(history: History, follow: (path: string) => string): History | null {
+  const back = followAll(history.back, follow);
+  const forward = followAll(history.forward, follow);
+  if (!back && !forward) return null;
+  return { back: back ?? history.back, forward: forward ?? history.forward };
 }
 
 /** A background tab after `follow`, or null when nothing in it moved. */
 function followTab<Tab extends TabPaths>(tab: Tab, follow: (path: string) => string): Tab | null {
   const location = follow(tab.location);
-  const back = followAll(tab.back, follow);
-  const forward = followAll(tab.forward, follow);
-  if (location === tab.location && !back && !forward) return null;
-  return { ...tab, location, back: back ?? tab.back, forward: forward ?? tab.forward };
+  const history = followHistory(tab, follow);
+  if (location === tab.location && !history) return null;
+  return { ...tab, location, ...history };
 }
 
 /** Everything that remembers paths. */
@@ -158,9 +171,15 @@ export class PathRefs<Tab extends TabPaths = TabPaths> {
       changed ||= moved !== null;
       return moved ?? tab;
     });
-    const back = followAll(tabs.back, follow);
-    const forward = followAll(tabs.forward, follow);
-    if (!changed && !back && !forward) return;
-    this.holders.tabs.set({ list, active: tabs.active, back: back ?? tabs.back, forward: forward ?? tabs.forward });
+    const live = followHistory(tabs, follow);
+    const arriving = tabs.arriving && followHistory(tabs.arriving, follow);
+    if (!changed && !live && !arriving) return;
+    this.holders.tabs.set({
+      list,
+      active: tabs.active,
+      back: live?.back ?? tabs.back,
+      forward: live?.forward ?? tabs.forward,
+      arriving: arriving ?? tabs.arriving,
+    });
   }
 }

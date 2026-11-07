@@ -190,6 +190,25 @@ test("the tab on screen: its Back and Forward follow, its folder is the view's",
   expect(tabs.value.active).toBe(0);
 });
 
+test("a tab being switched to: the history it brings follows, and so does the view's", () => {
+  // The view takes `arriving` when the tab shows, and keeps its own if the switch fails.
+  // It is the active tab itself, followed once, through `arriving`.
+  const arriving = tab("/x", ["/d/F/a"], ["/e"]);
+  const list = [tab("/d"), arriving];
+  const { refs, tabs } = setup({ tabs: { list, active: 1, back: ["/d/F"], forward: [], arriving } });
+  refs.moved([{ from: "/d/F", to: "/d/G" }]);
+  expect(tabs.sets).toBe(1);
+  expect(tabs.value.arriving).toEqual({ back: ["/d/G/a"], forward: ["/e"] });
+  expect(tabs.value.back).toEqual(["/d/G"]);
+  expect(tabs.value.list[1]).toBe(arriving);
+
+  // Only the arriving history moved: it alone is replaced, once.
+  refs.moved([{ from: "/e", to: "/f" }]);
+  expect(tabs.sets).toBe(2);
+  expect(tabs.value.arriving).toEqual({ back: ["/d/G/a"], forward: ["/f"] });
+  expect(tabs.value.back).toEqual(["/d/G"]);
+});
+
 test("tabs no move touches aren't replaced, and a trashed folder stays in them", () => {
   const { refs, tabs } = setup({ tabs: { list: [tab("/d/F", ["/d"]), tab("/d")], active: 1, back: ["/d/F"], forward: [] } });
   refs.moved([{ from: "/d/Fx", to: "/d/G" }]);
