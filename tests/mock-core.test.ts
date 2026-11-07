@@ -68,6 +68,15 @@ test("file_properties describes files, folders and links", async () => {
   await expect(invoke("file_properties", { path: "/nope" })).rejects.toMatch(/No such file/);
 });
 
+test("file_properties refuses shared folders and SSH servers, as the backend does", async () => {
+  await expect(invoke("file_properties", { path: "share://r1/hello.txt" })).rejects.toBe(
+    "Properties aren't available for shared folders yet.",
+  );
+  await expect(invoke("file_properties", { path: "sftp://me@host/home" })).rejects.toBe(
+    "Properties aren't available for SSH servers yet.",
+  );
+});
+
 test("folder size walks and their ids", async () => {
   const a = await invoke<number>("new_folder_walk");
   expect(await invoke<number>("new_folder_walk")).toBe(a + 1);

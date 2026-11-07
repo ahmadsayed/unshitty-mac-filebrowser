@@ -344,8 +344,9 @@ GNOME wording; `openDialog`, `openMenu`, `showToast` only.
   computer sharing them is on and Files is running."
 - **Inside a share:** path bar starts with the share name and network icon;
   subtitle "Shared by Ahmed · Read only". Menus: Open, Open With…, Copy, Copy
-  Location, Properties, Show Hidden Files, sort, view. No Cut, Rename, Move to
-  Trash, New Folder, Paste or Star. Drops onto a share are refused.
+  Location, Show Hidden Files, sort, view. No Cut, Rename, Move to Trash, New
+  Folder, Paste or Star. Drops onto a share are refused. No Properties either
+  (menu or ⌘I) until the backend can describe a shared item.
 - **Open:** progress toast "Downloading “video.mp4”… 45%" with Cancel.
 - **Copy out:** drag or Copy + Paste to a local folder; copy is the default;
   the normal transfer progress and clash dialog.

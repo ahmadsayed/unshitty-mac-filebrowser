@@ -354,29 +354,6 @@ function shareNode(path: string): Entry | undefined {
   }
 }
 
-function shareProperties(path: string) {
-  const entry = shareNode(path);
-  if (!entry) throw "Could not read properties: The shared file no longer exists.";
-  return {
-    name: entry.name,
-    path,
-    parent: path.slice(0, path.lastIndexOf("/")),
-    is_dir: entry.is_dir,
-    is_symlink: false,
-    symlink_target: null,
-    size: entry.size,
-    item_count: null,
-    modified: entry.modified,
-    accessed: entry.modified,
-    created: 0,
-    mode: "",
-    octal: "",
-    owner: "Ahmed",
-    group: "",
-    others: "",
-  };
-}
-
 function accessView(entry: { id: string; kind: "anyone" | "person"; name: string; bound: boolean; protected: boolean }) {
   const state = entry.bound ? (mockSharersOnline ? "online" : "offline") : "unused";
   return {
@@ -1793,7 +1770,8 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     ),
   file_properties: (a) => {
     const path = str(a, "path");
-    if (path.startsWith("share://")) return shareProperties(path);
+    if (path.startsWith("share://")) throw "Properties aren't available for shared folders yet.";
+    if (path.startsWith("sftp://")) throw "Properties aren't available for SSH servers yet.";
     return path.startsWith("gdrive://") ? driveProperties(path) : fileProperties(path);
   },
   set_permissions: (a) => {

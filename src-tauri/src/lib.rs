@@ -580,6 +580,17 @@ async fn path_info(
     .await?
 }
 
+/// Why the Properties dialog can't describe `path` yet, if it can't.
+fn properties_unavailable(path: &str) -> Option<&'static str> {
+    if sftp::is_sftp(path) {
+        Some("Properties aren't available for SSH servers yet.")
+    } else if share::location::is_share(path) {
+        Some("Properties aren't available for shared folders yet.")
+    } else {
+        None
+    }
+}
+
 /// Size, dates, permissions and contents for the Properties dialog.
 #[tauri::command]
 async fn file_properties(
@@ -587,8 +598,8 @@ async fn file_properties(
     path: String,
     show_hidden: bool,
 ) -> Result<properties::FileProperties, String> {
-    if sftp::is_sftp(&path) {
-        return Err("Properties aren't available for SSH servers yet.".into());
+    if let Some(reason) = properties_unavailable(&path) {
+        return Err(reason.into());
     }
     if cloud::is_cloud(&path) {
         return blocking(move || {
@@ -2142,6 +2153,25 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod properties_tests {
+    use super::properties_unavailable;
+
+    #[test]
+    fn properties_are_refused_for_shared_folders_and_ssh_servers() {
+        assert_eq!(
+            properties_unavailable("share://r1/hello.txt"),
+            Some("Properties aren't available for shared folders yet.")
+        );
+        assert_eq!(
+            properties_unavailable("sftp://me@host/home"),
+            Some("Properties aren't available for SSH servers yet.")
+        );
+        assert_eq!(properties_unavailable("/home/me/a.txt"), None);
+        assert_eq!(properties_unavailable("gdrive://acct/root~My%20Drive"), None);
+    }
 }
 
 #[cfg(test)]

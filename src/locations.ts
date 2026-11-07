@@ -45,3 +45,8 @@ export function mayHaveVersions(path: string, trashPath: string): boolean {
 export function acceptsNewItems(path: string): boolean {
   return !isPseudo(path) && !isReadOnlyLocation(path);
 }
+
+/** Whether Properties can describe an item at `path`: the backend can't read shared folders or SSH servers yet. */
+export function hasProperties(path: string): boolean {
+  return !isPseudo(path) && !isReadOnlyLocation(path);
+}
