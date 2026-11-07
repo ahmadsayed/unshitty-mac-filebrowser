@@ -44,7 +44,7 @@ import { qrShareItems } from "./qr-share";
 import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type PreviewPlace } from "./preview-actions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { Selection, type Mark } from "./selection";
-import { arrangeSearch, fold, searchSections as arrangedSections, type SearchSection } from "./search";
+import { arrangeSearch, fold, SEARCH_LIMIT, SearchSession, searchSections as arrangedSections, type SearchChange, type SearchSection } from "./search";
 import { acceptsNewItems, canRename, hasProperties, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
@@ -117,18 +117,15 @@ let listingError: string | null = null;
  *  positions in `shown`. A copy or move selects what it made only when the
  *  user hasn't chosen anything since pasting (`selection.intent`, #50). */
 const selection = new Selection<Entry>(() => shown);
-let searchQuery: string | null = null;
-/** Recursive search results; null means filter the current folder in memory. */
-let searchResults: Entry[] | null = null;
-let searchTimer = 0;
-let searchSeq = 0;
-/** Whether a recursive search is still sending results. */
-let searching = false;
+/** The search: open or not, its text, the walk and its results (src/search.ts). */
+const search = new SearchSession(
+  (at, query, limit, onFound) => searchDir(at, query, prefs.showHidden, limit, onFound),
+  cancelSearch,
+  onSearchChange,
+);
 /** In a recursive search, the index in `shown` of the first "In Subfolders"
  * item; the ones before it are "In This Folder". -1 elsewhere. */
 let sectionStart = -1;
-/** Cap on recursive results, so a broad query can't build an endless view. */
-const SEARCH_LIMIT = 1000;
 
 const counts = new Map<string, number | null>();
 /** Bumped whenever `counts` changes; sorting by size depends on it. */
@@ -146,8 +143,8 @@ interface TabState {
   selected: string[];
   anchorIndex: number;
   cursorIndex: number;
-  searchQuery: string | null;
-  searchText: string;
+  /** The search's text, null when it was closed. */
+  search: string | null;
   scrollTop: number;
 }
 
@@ -347,7 +344,7 @@ function hasEntries(loc: string): boolean {
 
 /** Views of items from many folders, which get a Location column. */
 function showsWhere(): boolean {
-  return location === RECENT || location === STARRED || location === trashPath || searchQuery !== null;
+  return location === RECENT || location === STARRED || location === trashPath || search.isOpen;
 }
 
 /** The entries shown at `loc`. */
@@ -417,17 +414,17 @@ function compareEntries(a: Entry, b: Entry): number {
 let shownFrom: unknown[] = [];
 
 function computeShown(): void {
-  const text = searchQuery ?? "";
+  const { text, results } = search;
   // Keyed on the folded text: "Cafe" and "café " show the same items.
-  const from = [entries, searchResults, fold(text.trim()), location, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && countsVersion];
+  const from = [entries, results, fold(text.trim()), location, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && countsVersion];
   if (from.every((value, i) => value === shownFrom[i])) return;
   shownFrom = from;
-  ({ items: shown, sectionStart } = arrangeSearch(entries, searchResults, text, location, compareEntries, canSearchRecursively()));
+  ({ items: shown, sectionStart } = arrangeSearch(entries, results, text, location, compareEntries, canSearchRecursively()));
 }
 
 /** The headed sections of a recursive search; none elsewhere. */
 function searchSections(): SearchSection[] {
-  return arrangedSections(sectionStart, shown.length, searching);
+  return arrangedSections(sectionStart, shown.length, search.busy);
 }
 
 /** Whether item `i` is one of "In This Folder", which needs no folder line. */
@@ -447,8 +444,7 @@ function tabSnapshot(): TabState {
     selected: selection.paths(),
     anchorIndex: selection.anchor,
     cursorIndex: selection.cursor,
-    searchQuery,
-    searchText: searchEntry?.value ?? "",
+    search: search.saved,
     scrollTop: scrollEl?.scrollTop ?? 0,
   };
 }
@@ -519,11 +515,11 @@ async function restoreTab(tab: TabState): Promise<boolean> {
   if (!ok) return false;
   backStack = [...tab.back];
   forwardStack = [...tab.forward];
-  if (tab.searchQuery !== null) {
+  if (tab.search !== null) {
     // navigate() closed the search; open it again the way the search button
     // does, so the placeholder names this folder and the recursive search runs.
     showSearchBar();
-    searchEntry.value = tab.searchText;
+    searchEntry.value = tab.search;
     onSearchInput();
   }
   selection.retain(tab.selected, entries);
@@ -563,12 +559,11 @@ async function newTab(): Promise<void> {
     selected: [],
     anchorIndex: -1,
     cursorIndex: -1,
-    searchQuery: null,
-    searchText: "",
+    search: null,
     scrollTop: 0,
   });
   activeTab = tabs.length - 1;
-  if (searchQuery !== null) closeSearch(false);
+  if (search.isOpen) closeSearch(false);
   backStack = [];
   forwardStack = [];
   selection.reset();
@@ -621,7 +616,7 @@ function openNewWindow(): void {
  * can't be read leaves the current view intact and shows a toast instead.
  */
 async function navigate(loc: string, opts: { history?: "push" | "none"; select?: string } = {}): Promise<boolean> {
-  if (searchQuery !== null) closeSearch(false);
+  if (search.isOpen) closeSearch(false);
   closePreview();
 
   // Started now so it runs alongside the listing instead of after it.
@@ -710,7 +705,7 @@ async function reload(select?: string[]): Promise<void> {
   else followCursor(mark);
   versionedRootPath = await lookupVersionedRoot(location);
   updateShareSubtitle();
-  if (searchQuery !== null) onSearchInput();
+  search.rerun();
 }
 
 /** After a reload, keep the cursor and anchor on the same items: new ones
@@ -950,7 +945,7 @@ function buildPathbar(): void {
 }
 
 function openPathEntry(prefill?: string): void {
-  if (searchQuery !== null) closeSearch(false);
+  if (search.isOpen) closeSearch(false);
   pathbarEl.classList.add("editing");
   crumbsEl.hidden = true;
   pathEntry.hidden = false;
@@ -1016,7 +1011,7 @@ async function submitPathEntry(): Promise<void> {
 function openSearch(initial = ""): void {
   if (!hasEntries(location)) return;
   closePathEntry();
-  if (searchQuery === null) showSearchBar();
+  if (!search.isOpen) showSearchBar();
   if (initial) searchEntry.value = initial;
   searchEntry.focus();
   onSearchInput();
@@ -1024,7 +1019,7 @@ function openSearch(initial = ""): void {
 
 /** Put the search bar in the path bar's place, for the current folder. */
 function showSearchBar(): void {
-  searchQuery = "";
+  search.open(location, canSearchRecursively());
   pathbarEl.hidden = true;
   searchbarEl.hidden = false;
   $("#btn-search").classList.add("open");
@@ -1032,13 +1027,9 @@ function showSearchBar(): void {
 }
 
 function closeSearch(rerender = true): void {
-  if (searchQuery === null) return;
-  searchQuery = null;
-  searchResults = null;
-  searchSeq += 1;
-  clearTimeout(searchTimer);
-  if (searching) void cancelSearch().catch(() => {});
-  setSearching(false);
+  if (!search.isOpen) return;
+  search.close();
+  showSearchBusy();
   showSearchStop(null);
   searchEntry.value = "";
   searchbarEl.hidden = true;
@@ -1056,63 +1047,46 @@ function canSearchRecursively(): boolean {
 }
 
 function selectFirstMatch(): void {
-  if (!searchQuery || shown.length === 0) return;
+  if (!search.text || shown.length === 0) return;
   selection.selectFirst();
   updateSelection();
 }
 
 function onSearchInput(): void {
-  searchQuery = searchEntry.value;
-  selection.dropCursor();
-  searchResults = null;
-  searchSeq += 1;
-  clearTimeout(searchTimer);
-  showSearchStop(null);
-  const query = searchQuery.trim();
-  const recursive = !!query && canSearchRecursively();
-  if (searching && !recursive) void cancelSearch().catch(() => {});
-  setSearching(recursive);
-  if (recursive) {
-    // Wait for a pause, then replace the quick local matches with the
-    // recursive backend results as they arrive.
-    const seq = searchSeq;
-    searchTimer = window.setTimeout(() => runSearch(seq, query), 160);
-  }
-  renderView();
-  // Like GNOME Files, the first local match is selected while search runs.
-  selectFirstMatch();
+  search.setText(searchEntry.value);
 }
 
-function runSearch(seq: number, query: string): void {
-  const at = location;
-  const current = () => seq === searchSeq && searchQuery !== null && location === at;
-  if (!current()) return;
-  searchDir(at, query, prefs.showHidden, SEARCH_LIMIT, (batch) => {
-    if (current()) addSearchResults(batch);
-  })
-    .then((summary) => {
-      if (!current()) return;
-      setSearching(false);
-      if (searchResults === null) addSearchResults([]);
-      else renderViewKeepingScroll(); // "Searching…" becomes "No Results Found"
-      showSearchStop(summary);
-    })
-    .catch((err) => {
-      if (!current()) return;
-      setSearching(false);
-      searchResults = [];
+/** Draw what the search says has changed. The selection rules live here:
+ *  a new text selects its first match, as GNOME Files does while the
+ *  search runs, and results arriving later don't move the cursor. */
+function onSearchChange(change: SearchChange, error?: unknown): void {
+  showSearchBusy();
+  switch (change) {
+    case "restarted":
+      selection.dropCursor();
+      showSearchStop(null);
       renderView();
-      showToast(`Could not search: ${cleanError(err)}`);
-    });
+      selectFirstMatch();
+      break;
+    case "grew":
+      showSearchResults();
+      break;
+    case "ended":
+      renderViewKeepingScroll(); // "Searching…" becomes "No Results Found"
+      showSearchStop(search.stop);
+      break;
+    case "failed":
+      renderView();
+      showToast(`Could not search: ${cleanError(error)}`);
+      break;
+  }
 }
 
-/** Add streamed results. The first batch replaces the quick local matches;
- *  later ones keep the cursor and anchor on the same items as the list grows. */
-function addSearchResults(batch: Entry[]): void {
-  // "In This Folder" is already shown and never moves; only an empty view
-  // gets its first match selected.
+/** Show streamed results. "In This Folder" is already shown and never
+ *  moves: later results keep the cursor and anchor on the same items as the
+ *  list grows, and only an empty view gets its first match selected. */
+function showSearchResults(): void {
   const hadItems = shown.length > 0;
-  searchResults = (searchResults ?? []).concat(batch);
   if (!hadItems) {
     renderView();
     selectFirstMatch();
@@ -1124,9 +1098,8 @@ function addSearchResults(batch: Entry[]): void {
   updateSelection();
 }
 
-function setSearching(on: boolean): void {
-  searching = on;
-  searchbarEl.classList.toggle("busy", on);
+function showSearchBusy(): void {
+  searchbarEl.classList.toggle("busy", search.busy);
 }
 
 /** Say when a search stopped before looking everywhere, so a short list isn't
@@ -1163,13 +1136,13 @@ function renderView(): void {
 
   if (sharePage) {
     viewEl.innerHTML = shareStatusPage(sharePage);
-  } else if (pseudo && (!hasEntries(location) || (shown.length === 0 && !searchQuery))) {
+  } else if (pseudo && (!hasEntries(location) || (shown.length === 0 && !search.text))) {
     viewEl.innerHTML = statusPage(pseudo.icon, pseudo.title, pseudo.text);
   } else if (listingError !== null) {
     viewEl.innerHTML = statusPage("dialog-error", "Unable to Access Location", listingError);
-  } else if (shown.length === 0 && searchQuery && searching) {
+  } else if (shown.length === 0 && search.text && search.busy) {
     viewEl.innerHTML = statusPage("system-search", "Searching…", "");
-  } else if (shown.length === 0 && searchQuery) {
+  } else if (shown.length === 0 && search.text) {
     viewEl.innerHTML = statusPage("system-search", "No Results Found", "Try a different search.");
   } else if (shown.length === 0 && location === trashPath) {
     viewEl.innerHTML = statusPage("user-trash", "Trash is Empty", "");
@@ -1463,7 +1436,7 @@ function itemHtml(i: number): string {
     const detail = location === NETWORK ? networkDetail(e) : "";
     const shared = detail ? `<div class="shared-by">${escapeHtml(detail)}</div>`
       : inThisFolderSection(i) ? `<div class="shared-by where"></div>`
-      : searchQuery !== null ? `<div class="shared-by where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</div>` : "";
+      : search.isOpen ? `<div class="shared-by where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</div>` : "";
     return `<div class="grid-item item${cls}" data-index="${i}" role="option" aria-selected="${sel}" title="${escapeHtml(e.name)}" ${pos}>` +
       `<div class="icon">${iconHtml(e)}</div>` +
       `<div class="name">${escapeHtml(e.name)}</div>${shared}</div>`;
@@ -1696,7 +1669,7 @@ function computeLayout(): void {
     const itemW = Math.floor((inner - sizes.gridGap * (cols - 1)) / cols);
     // icon + gap + two lines of label + padding. Network adds one line for
     // "Shared by …", search one for the folder each result is in.
-    const extraLine = location === NETWORK || searchQuery !== null;
+    const extraLine = location === NETWORK || search.isOpen;
     const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9 + (extraLine ? lineH : 0));
     layout = { cols, itemW, itemH, gap: sizes.gridGap, padX: sizes.gridPad, padY: sizes.gridPad, bodyTop: 0, ...viewSections() };
   } else {
@@ -4419,7 +4392,7 @@ function previewPlace(entry: Entry): PreviewPlace {
   return {
     local: isLocalLocation(entry.path),
     inTrash: trashed || inTrash(),
-    elsewhere: searchQuery !== null || parentOf(entry.path) !== location,
+    elsewhere: search.isOpen || parentOf(entry.path) !== location,
     inFolder: !isPseudo(location),
   };
 }
@@ -4672,7 +4645,7 @@ const VIEW_KEYS: Record<string, (k: ViewKey) => boolean> = {
   },
   Escape: () => {
     if (!previewLayer?.hidden) closePreview();
-    else if (searchQuery !== null) closeSearch();
+    else if (search.isOpen) closeSearch();
     else if (!cancelCut()) clearSelection();
     return true;
   },
@@ -5470,7 +5443,7 @@ async function init(): Promise<void> {
   // Headerbar
   $("#btn-back").addEventListener("click", goBack);
   $("#btn-forward").addEventListener("click", goForward);
-  $("#btn-search").addEventListener("click", () => (searchQuery === null ? openSearch() : closeSearch()));
+  $("#btn-search").addEventListener("click", () => (search.isOpen ? closeSearch() : openSearch()));
   $("#btn-main-menu").addEventListener("click", (e) => openMainMenu(e.currentTarget as HTMLElement));
   $("#btn-location-menu").addEventListener("click", (e) => openLocationMenu(e.currentTarget as HTMLElement));
   $("#btn-new-folder").addEventListener("click", promptNewFolder);
@@ -5560,7 +5533,7 @@ async function init(): Promise<void> {
   // Files saved or created in other apps meanwhile show up when the window
   // comes back. Recent also changes while it is open, so refresh it too.
   window.addEventListener("focus", () => {
-    if (hasOpenOverlay() || searchQuery !== null) return;
+    if (hasOpenOverlay() || search.isOpen) return;
     if (location === RECENT) void reload();
     else if (!isPseudo(location) && location !== trashPath) void reload();
   });
