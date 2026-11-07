@@ -1,12 +1,14 @@
 //! How a copy, a move or a download reaches its final local path without
 //! losing anything: the refusals checked before anything is written, when the
 //! new item is staged under a hidden name, Replace's order (stage, send the old
-//! item to the Trash, rename into place) and what a failure undoes.
+//! item to the Trash, rename into place), renames that never replace an item
+//! that took the name meanwhile, and what a failure undoes.
 //!
 //! Plain functions, no Tauri. Callers only say how to fill a path
 //! (`Target::place`'s `fill`): a rename, a recursive copy, a download.
 
 use std::fmt;
+use std::io;
 use std::path::{Path, PathBuf};
 
 // ---- Refusals ----------------------------------------------------------------
@@ -111,6 +113,92 @@ fn not_a_name(to: &Path) -> Result<(), Refusal> {
     }
 }
 
+// ---- Renames that never replace -----------------------------------------------
+
+/// Rename `from` to `to`, failing with `AlreadyExists` when something is at
+/// `to`: `std::fs::rename` replaces a file there (and an empty folder) on
+/// Unix, so an item that took the name meanwhile would be lost. Where the
+/// filesystem can't refuse by itself (some network ones), `to` is checked
+/// just before the rename, which leaves only that moment open.
+pub(crate) fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+    rename_new_by(from, to, rename_exclusive)
+}
+
+/// `rename_new` with the exclusive rename given, so tests can see the
+/// fallback.
+fn rename_new_by(
+    from: &Path,
+    to: &Path,
+    exclusive: fn(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    match exclusive(from, to) {
+        Err(e) if cannot_refuse(&e) => {
+            if std::fs::symlink_metadata(to).is_ok() {
+                return Err(io::ErrorKind::AlreadyExists.into());
+            }
+            std::fs::rename(from, to)
+        }
+        done => done,
+    }
+}
+
+/// Whether a rename failed only because the system or the filesystem has no
+/// rename that refuses a taken name.
+fn cannot_refuse(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::Unsupported
+        || e.raw_os_error().is_some_and(|code| CANNOT_REFUSE.contains(&code))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const CANNOT_REFUSE: [i32; 4] = [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP];
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const CANNOT_REFUSE: [i32; 0] = [];
+
+#[cfg(target_os = "linux")]
+fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    let (from, to) = (c_path(from)?, c_path(to)?);
+    // SAFETY: both are NUL-terminated paths that live through the call.
+    let done = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    os_result(done)
+}
+
+#[cfg(target_os = "macos")]
+fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    let (from, to) = (c_path(from)?, c_path(to)?);
+    // SAFETY: both are NUL-terminated paths that live through the call.
+    let done = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    os_result(done)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn rename_exclusive(_: &Path, _: &Path) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::ErrorKind::InvalidInput.into())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn os_result(done: libc::c_int) -> io::Result<()> {
+    if done == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 // ---- Placing -----------------------------------------------------------------
 
 /// Sends an item to the Trash, or discards one. Placing takes it as a
@@ -199,12 +287,19 @@ impl Target {
     }
 
     /// Rename the staged item onto the target, through Replace if needed.
+    /// An item that took the target's name meanwhile is never replaced: the
+    /// placing fails as if it had been there at the start.
     fn swap_in(&self, staged: &Path, kind: Staged, trash: TrashFn) -> Result<(), String> {
         if self.replacing {
             return replace_with_staged(staged, &self.to, kind, trash);
         }
-        std::fs::rename(staged, &self.to)
-            .or_else(|e| undo(staged, kind, format!("Failed to copy: {e}")))
+        rename_new(staged, &self.to).or_else(|e| {
+            let failed = match e.kind() {
+                io::ErrorKind::AlreadyExists => Refusal::Exists(self.to.display().to_string()).into(),
+                _ => format!("Failed to copy: {e}"),
+            };
+            undo(staged, kind, failed)
+        })
     }
 }
 
@@ -252,7 +347,7 @@ fn staging_path(to: &Path) -> PathBuf {
 fn replace_with_staged(staged: &Path, to: &Path, kind: Staged, trash: TrashFn) -> Result<(), String> {
     let failed = match trash(to) {
         Err(e) => format!("Could not move the existing item to the Trash: {}", e),
-        Ok(()) => match std::fs::rename(staged, to) {
+        Ok(()) => match rename_new(staged, to) {
             Ok(()) => return Ok(()),
             Err(e) => format!("Failed to replace: {}", e),
         },
@@ -278,21 +373,22 @@ fn give_back(staged: &Path, kind: Staged) -> Result<(), String> {
             let _ = remove_any(staged);
             Ok(())
         }
-        Staged::Original(from) => {
-            let back = if std::fs::symlink_metadata(from).is_ok() {
-                Err("another item is there now".to_string())
-            } else {
-                std::fs::rename(staged, from).map_err(|e| e.to_string())
-            };
-            back.map_err(|e| {
-                format!(
-                    "The item was kept at “{}” and could not be put back: {}",
-                    staged.display(),
-                    e
-                )
-            })
-        }
+        Staged::Original(from) => rename_back(staged, from).map_err(|e| {
+            format!(
+                "The item was kept at “{}” and could not be put back: {}",
+                staged.display(),
+                e
+            )
+        }),
     }
+}
+
+/// Rename `item` back to `origin`, unless another item is there now.
+fn rename_back(item: &Path, origin: &Path) -> Result<(), String> {
+    rename_new(item, origin).map_err(|e| match e.kind() {
+        io::ErrorKind::AlreadyExists => "another item is there now".to_string(),
+        _ => e.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -425,21 +521,72 @@ mod tests {
         assert_eq!(names_in(dir.path()), ["a.txt", "b.txt"]);
     }
 
+    /// Whatever took the name while the item was staged stays (`rename`
+    /// would replace a file on Unix): the staged item is removed and the
+    /// error is the refusal it would have met at the start.
     #[test]
-    fn a_staged_item_that_cannot_take_its_place_is_removed() {
+    fn a_staged_item_never_replaces_what_took_its_name() {
+        for folder in [true, false] {
+            let dir = tempdir().unwrap();
+            let to = dir.path().join("a.txt");
+            let target = check_new(&to, false).unwrap();
+            let theirs = if folder { to.join("x") } else { to.clone() };
+            let fill = |dest: &Path| {
+                if folder {
+                    fs::create_dir(&to).unwrap();
+                }
+                fs::write(&theirs, "someone else's").unwrap();
+                write(dest, "new")
+            };
+            let err = target.place(Stage::Always, fill, &failing_trash).unwrap_err();
+            assert_eq!(err, format!("Target already exists: {}", to.display()));
+            assert_eq!(fs::read_to_string(&theirs).unwrap(), "someone else's");
+            assert_eq!(names_in(dir.path()), ["a.txt"]);
+        }
+    }
+
+    /// Where the filesystem has no rename that refuses a taken name, the
+    /// name is checked just before renaming.
+    #[test]
+    fn a_rename_that_cannot_refuse_checks_the_name_first() {
         let dir = tempdir().unwrap();
-        let to = dir.path().join("a.txt");
-        let target = check_new(&to, false).unwrap();
-        // Something else takes the name meanwhile: a folder with content.
-        let fill = |dest: &Path| {
-            fs::create_dir(&to).unwrap();
-            fs::write(to.join("x"), "other").unwrap();
-            write(dest, "new")
-        };
-        let err = target.place(Stage::Always, fill, &failing_trash).unwrap_err();
-        assert!(err.starts_with("Failed to copy: "), "{err}");
-        assert_eq!(names_in(dir.path()), ["a.txt"]);
-        assert_eq!(fs::read_to_string(to.join("x")).unwrap(), "other");
+        let (from, to) = (dir.path().join("a"), dir.path().join("b"));
+        fs::write(&from, "mine").unwrap();
+        let unsupported: fn(&Path, &Path) -> io::Result<()> =
+            |_, _| Err(io::Error::from_raw_os_error(libc::EINVAL));
+        fs::write(&to, "theirs").unwrap();
+        let err = rename_new_by(&from, &to, unsupported).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&to).unwrap(), "theirs");
+        fs::remove_file(&to).unwrap();
+        rename_new_by(&from, &to, unsupported).unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "mine");
+        // Any other failure is the rename's own.
+        let denied: fn(&Path, &Path) -> io::Result<()> =
+            |_, _| Err(io::Error::from_raw_os_error(libc::EACCES));
+        let err = rename_new_by(&to, &from, denied).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::EACCES));
+        assert_eq!(names_in(dir.path()), ["b"]);
+    }
+
+    /// The real one, on this filesystem: a free name, then a taken file and
+    /// an empty folder, which `rename` would both replace.
+    #[test]
+    fn rename_new_refuses_a_taken_name() {
+        let dir = tempdir().unwrap();
+        let (from, to) = (dir.path().join("a"), dir.path().join("b"));
+        fs::write(&from, "mine").unwrap();
+        rename_new(&from, &to).unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "mine");
+        let empty = dir.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        fs::write(&from, "other").unwrap();
+        for taken in [&to, &empty] {
+            assert_eq!(rename_new(&from, taken).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        }
+        assert_eq!(fs::read_to_string(&to).unwrap(), "mine");
+        assert_eq!(fs::read_to_string(&from).unwrap(), "other");
+        assert!(empty.is_dir());
     }
 
     #[test]
@@ -502,6 +649,27 @@ mod tests {
         assert_eq!(*seen.borrow(), [vec![staged, "a.txt".into(), "bin".into()]]);
         assert_eq!(fs::read_to_string(&to).unwrap(), "new");
         assert_eq!(fs::read_to_string(bin.join("a.txt")).unwrap(), "old");
+    }
+
+    /// Something that takes the name between the Trash and the last rename
+    /// isn't replaced either: the staged copy is removed instead.
+    #[test]
+    fn replace_never_renames_over_what_took_the_name_after_the_trash() {
+        let dir = tempdir().unwrap();
+        let to = dir.path().join("a.txt");
+        fs::write(&to, "old").unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let trash = |p: &Path| {
+            fs::rename(p, bin.join("a.txt")).unwrap();
+            fs::write(p, "newer").map_err(|e| e.to_string())
+        };
+        let target = check_new(&to, true).unwrap();
+        let err = target.place(Stage::Always, |d: &Path| write(d, "new"), &trash).unwrap_err();
+        assert!(err.starts_with("Failed to replace: "), "{err}");
+        assert_eq!(fs::read_to_string(&to).unwrap(), "newer");
+        assert_eq!(fs::read_to_string(bin.join("a.txt")).unwrap(), "old");
+        assert_eq!(names_in(dir.path()), ["a.txt", "bin"]);
     }
 
     #[test]
