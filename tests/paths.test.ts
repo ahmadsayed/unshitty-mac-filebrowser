@@ -80,6 +80,13 @@ test("SFTP paths are remote and resolve as absolute locations", () => {
   expect(resolveTypedPath("/var/log", "sftp://me@host/", HOME)).toEqual({
     path: "sftp://me@host/var/log",
   });
+  // A server's root keeps its slash however it was typed.
+  expect(resolveTypedPath("/", "sftp://me@host/docs", HOME)).toEqual({ path: "sftp://me@host/" });
+  expect(resolveTypedPath("sftp://me@host", HOME, HOME)).toEqual({ path: "sftp://me@host/" });
+  expect(resolveTypedPath("sftp://me@host//", HOME, HOME)).toEqual({ path: "sftp://me@host/" });
+  expect(resolveTypedPath("sftp://me@host/docs/", HOME, HOME)).toEqual({ path: "sftp://me@host/docs" });
+  // Without a server there is no root to keep: the path stays as typed.
+  expect(resolveTypedPath("sftp:///docs", HOME, HOME)).toEqual({ path: "sftp:///docs" });
 });
 
 test("pasted Drive links become locations for the current account", () => {
@@ -110,8 +117,7 @@ test("Drive child paths encode the name like the backend", () => {
 });
 
 // ---- Each scheme's layout ---------------------------------------------------
-// One row per kind of path. Rows marked "today's behaviour" pin a known
-// mistake that a follow-up fixes; until then nothing may change it by accident.
+// One row per kind of path.
 
 const DRIVE_ROOT = "gdrive://acct/root~My%20Drive";
 const NETWORK = null; // what parentPath returns above a share or server root
@@ -145,6 +151,7 @@ test.each([
   ["sftp://me%40work@host:2222",             "me@work@host:2222"],
   ["sftp://me@host/docs/a%20b",              "a b"],
   ["sftp://me@host/docs/%zz",                "%zz"],
+  ["sftp://%E0%A4%A/",                       "%E0%A4%A"],
   ["sftp://",                                ""],
   // Local: the last segment as it is, none at the root.
   ["/Users/me/Documents/",                   "Documents"],
@@ -152,11 +159,6 @@ test.each([
   ["/",                                      ""],
 ])("pathName(%j) is %j", (path, name) => {
   expect(pathName(path)).toBe(name);
-});
-
-test("pathName throws on a malformed SSH authority", () => {
-  // today's behaviour, fixed in a follow-up: the authority is decoded without a guard.
-  expect(() => pathName("sftp://%E0%A4%A/")).toThrow(URIError);
 });
 
 // prettier-ignore
@@ -169,8 +171,10 @@ test.each([
   ["share://r1/Photos",                      "share://r1"],
   ["share://r1",                             NETWORK],
   ["sftp://me@host/",                        NETWORK],
-  // today's behaviour, fixed in a follow-up: the server's root is "sftp://me@host/".
-  ["sftp://me@host/docs",                    "sftp://me@host"],
+  // A server's root is written with its slash, as the server's URL is.
+  ["sftp://me@host/docs",                    "sftp://me@host/"],
+  ["sftp://me@host/docs/",                   "sftp://me@host/"],
+  ["sftp://me@host",                         NETWORK],
   ["sftp://me@host/docs/sub/",               "sftp://me@host/docs"],
   ["/Users/me/Documents/",                   "/Users/me"],
   ["/Users",                                 "/"],
@@ -185,8 +189,9 @@ test.each([
   [DRIVE_ROOT,                 "a b",     `${DRIVE_ROOT}/~a%20b`],
   ["sftp://me@host/",          "a b",     "sftp://me@host/a%20b"],
   ["sftp://me@host/docs",      "~x",      "sftp://me@host/docs/%7Ex"],
-  // today's behaviour, fixed in a follow-up: a share child isn't encoded (joinSharePath would).
-  ["share://r1",               "a b",     "share://r1/a b"],
+  // A share child is encoded as share/location.rs decodes it (NAME_SET).
+  ["share://r1",               "a b",     "share://r1/a%20b"],
+  ["share://r1/Photos/",       "~x é",    "share://r1/Photos/%7Ex%20%C3%A9"],
   // Local joins are byte-identical to what every copy, move and rename used.
   ["/Users/me",                "a b",     "/Users/me/a b"],
   ["/Users/me//",              "x",       "/Users/me/x"],
@@ -230,8 +235,10 @@ test("pathSegments breaks an SSH path into the server and its folders", () => {
     ],
   });
   expect(pathSegments("sftp://me%40work@host/").root.name).toBe("me@work@host");
-  // today's behaviour, fixed in a follow-up: the authority is decoded without a guard.
-  expect(() => pathSegments("sftp://%E0%A4%A/")).toThrow(URIError);
+  // A malformed authority is shown as it is, like every other segment.
+  expect(pathSegments("sftp://%E0%A4%A/").root).toEqual({
+    kind: "sftp", key: "%E0%A4%A", path: "sftp://%E0%A4%A/", name: "%E0%A4%A",
+  });
 });
 
 test("pathSegments and localSegments break a local path into its folders", () => {
@@ -283,17 +290,33 @@ test.each([
   expect(isWithin(path, dir)).toBe(within);
 });
 
+// Why both stay (#149): for a folder written without a trailing slash they
+// are the same test, so normalising Home would remove that difference, but
+// Home is "/" when HOME=/. There the Home crumb and the Location column need
+// "/" to hold only itself (isWithin), while a transfer into "/" must reload
+// a folder being filled below it (isUnder, showLanded).
+test("isUnder and isWithin differ only for a dir that is \"/\" or ends in a slash", () => {
+  const paths = ["/", "/etc", "/Users", "/Users/me", "/Users/me/", "/Users/me/a", "/Users/meg", "/Users/me//a"];
+  for (const dir of ["/Users", "/Users/me", "/Users/me/.Trash", "/Volumes/USB"]) {
+    for (const path of paths) expect([path, dir, isUnder(path, dir)]).toEqual([path, dir, isWithin(path, dir)]);
+  }
+  expect([isUnder("/etc", "/"), isWithin("/etc", "/")]).toEqual([true, false]);
+  expect([isUnder("/Users/me/a", "/Users/me/"), isWithin("/Users/me/a", "/Users/me/")]).toEqual([true, false]);
+});
+
 // prettier-ignore
 test.each([
   ["/Users/me",                  true],
   ["pseudo:recent",              true],
-  // today's behaviour, fixed in a follow-up: any pseudo: name is let through,
-  // and one the app doesn't know breaks the path bar.
-  ["pseudo:bogus",               true],
+  ["pseudo:starred",             true],
+  ["pseudo:network",             true],
+  // Only the pseudo locations the app has: an unknown one would break the path bar.
+  ["pseudo:bogus",               false],
+  ["pseudo:",                    false],
   [DRIVE_ROOT,                   true],
   ["share://r1/Photos",          true],
-  // today's behaviour, fixed in a follow-up: New Window from an SSH folder opens Home.
-  ["sftp://me@host/",            false],
+  ["sftp://me@host/",            true],
+  ["sftp://me@host/docs",        true],
   ["Documents",                  false],
   ["https://example.com",        false],
   ["",                           false],
