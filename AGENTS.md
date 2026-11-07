@@ -212,9 +212,11 @@ GPL-3.0-or-later).
   never rewritten.
 - Anything that touches the Trash must work for both layouts (macOS `~/.Trash`
   and freedesktop `Trash/{files,info}`); a change there needs a test on each.
-  Commands ask `trash_ops::Trash` (`record`, `info`, `restore`,
+  Commands ask `trash_ops::Trash` (`send`, `record`, `info`, `restore`,
   `delete_permanently`, `empty`, `listing_root`, `contains`) rather than
-  reading `trash_log.json` or building Trash paths in `lib.rs`.
+  reading `trash_log.json` or building Trash paths in `lib.rs`. Anything the
+  app trashes outside Move to Trash goes through `Trash::send`
+  (`send_to_trash` in `lib.rs`), which logs where it came from.
 - Replacing an existing item stages the new one under a temporary name, sends
   the old one to the Trash, then renames into place. Local copy, move and
   Drive downloads do this only through `placement.rs` (`Target::place`);

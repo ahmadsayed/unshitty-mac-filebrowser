@@ -535,6 +535,16 @@ test("copying between local folders and Drive", async () => {
   expect(await names(`${HOME}/FromDrive`)).toContain("todo.txt");
 });
 
+// As the backend's Trash::send: the local source of a move into Drive goes to
+// the Trash with its origin logged, so Restore knows where it came from.
+test("a local item moved into Drive is in the Trash with its origin", async () => {
+  await invoke("make_dir", { path: `${HOME}/Uploads` });
+  await invoke("create_file", { path: `${HOME}/Uploads/sent up.txt` });
+  await invoke("move_entry", { from: `${HOME}/Uploads/sent up.txt`, to: `${DRIVE}/~sent up.txt`, overwrite: false });
+  const [info] = await invoke<{ origin: string | null }[]>("trash_info", { paths: [`${HOME}/.Trash/sent up.txt`] });
+  expect(info.origin).toBe(`${HOME}/Uploads/sent up.txt`);
+});
+
 test("the mock Drive refuses like the backend on failure paths", async () => {
   await expect(
     invoke("copy_entry", { from: `${DRIVE}/file-2~Report.docx`, to: `${DRIVE}/~Report.docx`, overwrite: true }),

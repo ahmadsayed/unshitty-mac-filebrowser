@@ -23,9 +23,10 @@
 //!
 //! lib.rs keeps one `Trash`, which owns the log (its file and lock), the
 //! order origins are looked up in, Restore, Delete Permanently, Empty Trash
-//! and what counts as inside the Trash. Trashing goes through the free
-//! functions `trash_many`, `trash_routed` and `trash_and_locate`, whose
-//! moves are then handed to `Trash::record`.
+//! and what counts as inside the Trash. Move to Trash goes through the free
+//! functions `trash_many` and `trash_routed`, whose moves are then handed to
+//! `Trash::record`; every other item the app trashes goes through
+//! `Trash::send`, which logs it itself.
 
 use crate::progress::Progress;
 use std::collections::{HashMap, HashSet};
@@ -336,20 +337,24 @@ fn locate_all(
     found.into_iter().map(|f| f.map(|n| dir.join(n))).collect()
 }
 
-/// Move `path` to the Trash and return where it ended up, if that could be
-/// worked out (it's needed for Undo, not for trashing itself).
-pub fn trash_and_locate(path: &Path, home: &Path) -> Result<Option<PathBuf>, String> {
+/// Move `path` to the Trash with `delete` and return where it ended up in
+/// `dir`, the Trash folder it goes to, if that could be worked out (it's
+/// needed for Undo and Restore, not for trashing itself).
+fn trash_and_locate(
+    path: &Path,
+    dir: &Path,
+    delete: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<Option<PathBuf>, String> {
     let meta =
         fs::symlink_metadata(path).map_err(|_| format!("“{}” no longer exists", path.display()))?;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let dir = trash_dir_for(path, home);
-    let before = names_in(&dir);
-    trash::delete(path).map_err(|e| format!("Failed to move to Trash: {}", e))?;
+    let before = names_in(dir);
+    delete(path)?;
     Ok(find_new(
-        &dir,
+        dir,
         &before,
         &name,
         meta.is_dir() && !meta.file_type().is_symlink(),
@@ -732,8 +737,9 @@ fn empty(trash_root: &Path, progress: &Progress) -> Result<(), String> {
 // the order a trashed item's origin is looked up in (sidecar, log, Put
 // Back), Restore (never overwriting, then forgetting the entry) and what
 // counts as inside the Trash. It is plain, so it is tested without Tauri;
-// lib.rs keeps one in its state. Trashing itself (`trash_many`,
-// `trash_routed`, `trash_and_locate`) stays in the free functions above.
+// lib.rs keeps one in its state. Move to Trash's batches (`trash_many`,
+// `trash_routed`) stay in the free functions above; `send` trashes and logs
+// any other single item.
 // ---------------------------------------------------------------------------
 
 /// Why Restore fails when the app's config folder, and so the log, is
@@ -788,6 +794,30 @@ impl Trash {
     /// Whether `path` is inside the home Trash. Only compares paths.
     pub fn contains(&self, path: &Path) -> bool {
         path.starts_with(&self.root) || path.starts_with(self.layout.items_in(&self.root))
+    }
+
+    /// Move `path` to the Trash and remember where it went (`record`), so
+    /// Restore knows where it came from whoever sent it: a Drive move's
+    /// local source, the item a Replace sends away. Returns that place, when
+    /// it could be worked out. Move to Trash itself batches through
+    /// `trash_many` and records once.
+    pub fn send(&self, path: &Path) -> Result<Option<PathBuf>, String> {
+        self.send_with(path, &|path| {
+            trash::delete(path).map_err(|e| format!("Failed to move to Trash: {e}"))
+        })
+    }
+
+    /// `send` with the trashing passed in, so tests can stand in for Finder.
+    fn send_with(
+        &self,
+        path: &Path,
+        delete: &dyn Fn(&Path) -> Result<(), String>,
+    ) -> Result<Option<PathBuf>, String> {
+        let place = trash_and_locate(path, &self.dir_for(path), delete)?;
+        if let Some(trashed) = &place {
+            self.record(&[(trashed.clone(), path.to_path_buf())]);
+        }
+        Ok(place)
     }
 
     /// Remember where trashed items went (`(trashed, origin)` pairs), for
@@ -1446,21 +1476,22 @@ mod tests {
     }
 
     #[test]
-    fn trash_and_locate_moves_the_item_out() {
+    fn send_moves_the_item_to_the_real_trash() {
         let dir = tempdir().unwrap();
         let f = dir.path().join("trash-me.txt");
         fs::write(&f, "bye").unwrap();
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| dir.path().to_path_buf());
+        let trash = Trash::new(home, None);
 
-        let found = trash_and_locate(&f, &home).unwrap();
+        let found = trash.send(&f).unwrap();
         assert!(!f.exists());
         if let Some(p) = found {
             assert_eq!(fs::read_to_string(&p).unwrap(), "bye");
             let _ = fs::remove_file(p);
         }
-        assert!(trash_and_locate(&f, &home).is_err());
+        assert!(trash.send(&f).is_err());
     }
 
     // --- .DS_Store -------------------------------------------------------
@@ -2182,6 +2213,42 @@ mod tests {
 
         assert_eq!(v.trash.restore(&item), Ok(found.clone()));
         assert!(found.exists() && !item.exists());
+    }
+
+    /// Stands in for the `trash` crate: moves an item into the Trash folder
+    /// `trash` says it goes to, writing no record of its own.
+    fn into_its_trash(trash: &Trash) -> impl Fn(&Path) -> Result<(), String> + '_ {
+        move |path| {
+            let to = trash.dir_for(path).join(path.file_name().unwrap());
+            fs::rename(path, to).map_err(|e| e.to_string())
+        }
+    }
+
+    #[test]
+    fn an_item_sent_to_the_trash_is_logged_for_restore() {
+        for layout in [Layout::Finder, Layout::Freedesktop] {
+            let dir = tempdir().unwrap();
+            let v = with_usb(dir.path(), layout);
+            let at_home = files(&v.home.join("Documents"), &["a.txt", "c.txt"]);
+            let on_usb = files(&v.usb.join("Projects"), &["b.txt"]).remove(0);
+            let delete = into_its_trash(&v.trash);
+
+            let (a, b) = (v.items.join("a.txt"), v.usb_items.join("b.txt"));
+            assert_eq!(v.trash.send_with(&at_home[0], &delete), Ok(Some(a.clone())), "{layout:?}");
+            assert_eq!(v.trash.send_with(&on_usb, &delete), Ok(Some(b.clone())));
+            let log = logged(&v.trash);
+            assert_eq!(log.items[&text(&a)].origin, text(&at_home[0]));
+            assert_eq!(log.items[&text(&b)].origin, text(&on_usb));
+            // The log is all Restore needs: no sidecar, no Put Back record.
+            assert_eq!(v.trash.restore(&b), Ok(on_usb.clone()));
+            assert_eq!(fs::read_to_string(&on_usb).unwrap(), "b.txt");
+
+            // What couldn't be trashed is not logged.
+            let refuse = |_: &Path| Err("Failed to move to Trash: locked".to_string());
+            assert_eq!(v.trash.send_with(&at_home[1], &refuse), Err("Failed to move to Trash: locked".into()));
+            assert!(v.trash.send_with(&v.home.join("gone.txt"), &delete).is_err());
+            assert_eq!(logged(&v.trash).items.keys().collect::<Vec<_>>(), [&text(&a)]);
+        }
     }
 
     #[cfg(not(target_os = "macos"))]

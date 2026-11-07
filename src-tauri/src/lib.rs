@@ -689,13 +689,8 @@ async fn drive_transfer(
     progress: progress::Progress,
 ) -> Result<String, String> {
     blocking(move || {
-        let home = home_dir(&app)?;
         let versions = app.state::<VersionsState>();
-        let trash_local = |source: &Path| {
-            versions
-                .trash(source, || trash_ops::trash_and_locate(source, &home))
-                .map(|_| ())
-        };
+        let trash_local = |source: &Path| versions.trash(source, || send_to_trash(&app, source));
         let state = app.state::<CloudState>();
         cloud::transfer::dispatch(
             &state,
@@ -812,6 +807,12 @@ async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result
 fn trash_of(app: &tauri::AppHandle) -> Result<tauri::State<'_, trash_ops::Trash>, String> {
     app.try_state::<trash_ops::Trash>()
         .ok_or_else(|| "The home folder is unknown".to_string())
+}
+
+/// Send `path` to the Trash through the app's log (`Trash::send`), so
+/// Restore From Trash knows where it came from.
+fn send_to_trash(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
+    trash_of(app)?.send(path).map(|_| ())
 }
 
 fn home_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
