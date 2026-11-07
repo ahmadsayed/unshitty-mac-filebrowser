@@ -292,9 +292,11 @@ test.each([
 test.each([
   ["/Users/me",                  true],
   ["pseudo:recent",              true],
-  // today's behaviour, fixed in a follow-up: any pseudo: name is let through,
-  // and one the app doesn't know breaks the path bar.
-  ["pseudo:bogus",               true],
+  ["pseudo:starred",             true],
+  ["pseudo:network",             true],
+  // Only the pseudo locations the app has: an unknown one would break the path bar.
+  ["pseudo:bogus",               false],
+  ["pseudo:",                    false],
   [DRIVE_ROOT,                   true],
   ["share://r1/Photos",          true],
   ["sftp://me@host/",            true],

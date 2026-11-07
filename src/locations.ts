@@ -4,13 +4,12 @@
 // Kept free of DOM and app state so every branch can be tested directly
 // (tests/locations.test.ts).
 
-import { isWithin, placeOf, PSEUDO_PREFIX, type Place } from "./paths";
+import { isWithin, placeOf, PSEUDO_PREFIX, type Place, type Pseudo } from "./paths";
 
-/** The places that aren't folders: Recent, Starred and Network. */
-export type Pseudo = "recent" | "starred" | "network";
-
-/** Every pseudo location starts with this (spelled in paths.ts, which can't import this file). */
-export { PSEUDO_PREFIX };
+/** Every pseudo location starts with this, and Recent, Starred and Network
+ *  (the places that aren't folders) are its names: spelled in paths.ts,
+ *  which can't import this file. */
+export { PSEUDO_PREFIX, type Pseudo };
 
 /**
  * Which kind of place a path is, in one precedence: the Trash (the folder
@@ -24,8 +23,8 @@ const PSEUDO_KINDS = new Map<string, LocationKind>([["recent", "recent"], ["star
 const PLACE_KINDS: Record<Place, LocationKind> = { drive: "drive", share: "share", sftp: "sftp", local: "folder" };
 
 /** The kind of place `path` is. Nothing is in the Trash until its path is
- *  known; an unknown `pseudo:` name (only a hand-made `?path=` reaches one,
- *  and it lists nothing) is taken as Recent. */
+ *  known; an unknown `pseudo:` name (no window opens one: `isKnownPath`
+ *  refuses it) is taken as Recent. */
 export function locationKind(path: string, trashPath: string): LocationKind {
   if (trashPath && isWithin(path, trashPath)) return path === trashPath ? "trash" : "in-trash";
   if (isPseudo(path)) return PSEUDO_KINDS.get(path.slice(PSEUDO_PREFIX.length)) ?? "recent";

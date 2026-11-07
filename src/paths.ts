@@ -10,6 +10,12 @@
 /** Every pseudo location (Recent, Starred, Network) starts with this. */
 export const PSEUDO_PREFIX = "pseudo:";
 
+/** The pseudo locations the app has: `pseudo:<name>`. */
+export const PSEUDO_NAMES = ["recent", "starred", "network"] as const;
+
+/** A pseudo location's name. */
+export type Pseudo = (typeof PSEUDO_NAMES)[number];
+
 /** Every Google Drive location starts with this. */
 export const CLOUD_PREFIX = "gdrive://";
 
@@ -372,7 +378,12 @@ export function isWithin(path: string, dir: string): boolean {
 }
 
 /** Whether a window may open `path` from its `?path=` (New Window): a local
- *  path, a pseudo location, or a Drive, share or SSH location. */
+ *  path, one of the app's pseudo locations, or a Drive, share or SSH
+ *  location. An unknown `pseudo:` name has no label or crumb to show. */
 export function isKnownPath(path: string): boolean {
-  return path.startsWith("/") || path.startsWith(PSEUDO_PREFIX) || isRemotePath(path);
+  return path.startsWith("/") || isKnownPseudo(path) || isRemotePath(path);
+}
+
+function isKnownPseudo(path: string): boolean {
+  return PSEUDO_NAMES.some((name) => path === `${PSEUDO_PREFIX}${name}`);
 }
