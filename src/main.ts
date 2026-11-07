@@ -468,8 +468,10 @@ function renderTabbar(): void {
 
 /** Restore a saved tab into the live view; false when its folder can't be listed. */
 async function restoreTab(tab: TabState): Promise<boolean> {
-  const ok = await navigate(tab.location, { history: "none" });
-  if (!ok) return false;
+  const went = await navigate(tab.location, { history: "none" });
+  if (went === "kept") return false;
+  // A later navigation took over: it shows in this tab instead.
+  if (went === "overtaken") return true;
   backStack = [...tab.back];
   forwardStack = [...tab.forward];
   if (tab.search !== null) {
@@ -568,49 +570,89 @@ function openNewWindow(): void {
 // Navigation
 // ---------------------------------------------------------------------------
 
+/** How a navigation moves along the history once it shows: a new place
+ *  ("push"), one step "back" or "forward", or not at all ("none"). */
+type HistoryMove = "push" | "back" | "forward" | "none";
+
+interface NavigateOptions {
+  history?: HistoryMove;
+  select?: string;
+}
+
+/** What became of a navigate(): "shown" it went there; "kept" the folder
+ *  couldn't be listed, so the view stayed and a toast said why; "overtaken"
+ *  a later navigation started before this one could show (#154). */
+type Navigated = "shown" | "kept" | "overtaken";
+
+/** What navigate() found at a location: its items, or the error or the
+ *  share status page to show instead. */
+interface Arrival {
+  next: Entry[];
+  error: string | null;
+  page: "offline" | "no-access" | "missing" | null;
+}
+
+/** Goes up with each navigate(): only the latest one shows its location. */
+let navigationSeq = 0;
+
 /**
  * Go to `loc`. Listing happens before anything changes, so a folder that
  * can't be read leaves the current view intact and shows a toast instead.
+ * The latest navigation wins: one that a later one overtook while it
+ * waited changes nothing, whichever answer lands first.
  */
-async function navigate(loc: string, opts: { history?: "push" | "none"; select?: string } = {}): Promise<boolean> {
+async function navigate(loc: string, opts: NavigateOptions = {}): Promise<Navigated> {
+  const seq = ++navigationSeq;
+  const overtaken = () => seq !== navigationSeq;
   if (search.isOpen) closeSearch(false);
   closePreview();
 
   // Started now so it runs alongside the listing instead of after it.
   const rootLookup = lookupVersionedRoot(loc);
-  let next: Entry[] = [];
-  let error: string | null = null;
-  let page: typeof sharePage = null;
+  const arrival = await arrive(loc, overtaken);
+  if (overtaken()) return "overtaken";
+  if (!arrival) return "kept";
+  await itemIcons.listingStarted(loc, arrival.next);
+  const root = await rootLookup;
+  if (overtaken()) return "overtaken";
+  showLocation(loc, arrival, root, opts);
+  return "shown";
+}
+
+/** List `loc` for navigate(). Null when the view keeps its place: a toast
+ *  said why, or no toast because a later navigation overtook this one. */
+async function arrive(loc: string, overtaken: () => boolean): Promise<Arrival | null> {
+  const arrival: Arrival = { next: [], error: null, page: null };
   if (loc === NETWORK) await Promise.all([refreshShares(), refreshSftpServers()]);
   const shared = isSharePath(loc) ? receivedFor(loc) : undefined;
   if (shared && shared.status !== "online") {
-    page = shared.status;
+    arrival.page = shared.status;
   } else if (hasEntries(loc)) {
     try {
-      next = await listLocation(loc);
+      arrival.next = await listLocation(loc);
     } catch (err) {
+      if (overtaken()) return null;
       const failed = listingReaction(loc, err, listingContext(loc, location ? "navigate" : "first"));
-      if (failed.kind === "sharePage") page = failed.status;
-      else if (failed.kind === "toast") {
+      if (failed.kind === "toast") {
         showListingToast(failed);
-        return false;
-      } else error = failed.message;
+        return null;
+      }
+      if (failed.kind === "sharePage") arrival.page = failed.status;
+      else arrival.error = failed.message;
     }
   }
+  return arrival;
+}
 
-  await itemIcons.listingStarted(loc, next);
-
-  if (opts.history !== "none" && location && loc !== location) {
-    backStack.push(location);
-    forwardStack = [];
-  }
-
+/** navigate()'s last step, with nothing left to wait for: the view shows `loc`. */
+function showLocation(loc: string, arrival: Arrival, root: string | null, opts: NavigateOptions): void {
+  moveInHistory(loc, opts.history ?? "push");
   location = loc;
   viewSeq++;
-  sharePage = page;
-  versionedRootPath = await rootLookup;
-  entries = next;
-  listingError = error;
+  sharePage = arrival.page;
+  versionedRootPath = root;
+  entries = arrival.next;
+  listingError = arrival.error;
   summaries.reset();
   selection.reset(opts.select);
   if (search.isOpen) moveSearchHere();
@@ -626,7 +668,22 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   scrollEl.scrollTop = 0;
   if (opts.select) revealPath(opts.select);
   viewEl.focus({ preventScroll: true });
-  return true;
+}
+
+/** Move along the history as a navigation to `loc` shows. Back and Forward
+ *  take their step only then: one that fails or is overtaken leaves the
+ *  history as it was. */
+function moveInHistory(loc: string, move: HistoryMove): void {
+  if (move === "back") {
+    backStack.pop();
+    forwardStack.push(location);
+  } else if (move === "forward") {
+    forwardStack.pop();
+    backStack.push(location);
+  } else if (move === "push" && location && loc !== location) {
+    backStack.push(location);
+    forwardStack = [];
+  }
 }
 
 /** Re-list the current folder, keeping the selection where possible. */
@@ -701,7 +758,7 @@ async function listingFailed(err: unknown): Promise<boolean> {
     return false;
   }
   // A folder that went away goes to its parent, or shows the error page if that fails too.
-  if (failed.kind === "goTo" && (await navigate(failed.parent, { history: "none" }))) return true;
+  if (failed.kind === "goTo" && (await navigate(failed.parent, { history: "none" })) !== "kept") return true;
   listingError = failed.message;
   return false;
 }
@@ -755,25 +812,13 @@ function openSettingsSafely(): void {
 }
 
 function goBack(): void {
-  const prev = backStack.pop();
-  if (!prev) return;
-  const from = location;
-  navigate(prev, { history: "none", select: childOf(prev, from) }).then((ok) => {
-    if (ok) forwardStack.push(from);
-    else backStack.push(prev);
-    updateNavButtons();
-  });
+  const prev = backStack[backStack.length - 1];
+  if (prev) void navigate(prev, { history: "back", select: childOf(prev, location) });
 }
 
 function goForward(): void {
-  const next = forwardStack.pop();
-  if (!next) return;
-  const from = location;
-  navigate(next, { history: "none" }).then((ok) => {
-    if (ok) backStack.push(from);
-    else forwardStack.push(next);
-    updateNavButtons();
-  });
+  const next = forwardStack[forwardStack.length - 1];
+  if (next) void navigate(next, { history: "forward" });
 }
 
 function goUp(): void {
@@ -907,9 +952,14 @@ async function submitPathEntry(): Promise<void> {
   }
   const typed = resolved.path;
   if (!typed) return;
+  // Going there waits for the check: a navigation started meanwhile (a click
+  // in the sidebar) is the later one, so the typed path is dropped, silently.
+  const seq = navigationSeq;
+  const overtaken = () => seq !== navigationSeq;
   try {
     await listDir(typed, prefs.showHidden);
   } catch (err) {
+    if (overtaken()) return;
     const failed = listingReaction(typed, err, listingContext(typed, "entry"));
     if (failed.kind === "connect") {
       closePathEntry();
@@ -920,6 +970,7 @@ async function submitPathEntry(): Promise<void> {
     pathEntry.focus();
     return;
   }
+  if (overtaken()) return;
   closePathEntry();
   await navigate(typed);
 }
