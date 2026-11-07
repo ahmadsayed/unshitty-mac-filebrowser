@@ -1,4 +1,4 @@
-import { encodeCloudName, placeOf } from "../../src/paths";
+import { encodeCloudName, placeOf, type Place } from "../../src/paths";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
 // It serves a fake, in-memory home folder.
@@ -227,7 +227,7 @@ const SFTP_FILES: Record<string, Array<{ name: string; isDir: boolean; size: num
 };
 
 function sftpParts(path: string): { id: string; rest: string } | null {
-  if (!path.startsWith("sftp://")) return null;
+  if (placeOf(path) !== "sftp") return null;
   const rest = path.slice("sftp://".length);
   const slash = rest.indexOf("/");
   const authority = slash < 0 ? rest : rest.slice(0, slash);
@@ -630,7 +630,7 @@ function driveDownload(from: string, to: string, overwrite: boolean, move: boole
 function driveTransfer(args: Args, move: boolean): string {
   const from = str(args, "from"), to = str(args, "to");
   const overwrite = !!args.overwrite;
-  const [fromCloud, toCloud] = [from.startsWith("gdrive://"), to.startsWith("gdrive://")];
+  const [fromCloud, toCloud] = [placeOf(from) === "drive", placeOf(to) === "drive"];
   if (fromCloud && toCloud) return driveWithin(from, to, overwrite, move);
   return fromCloud ? driveDownload(from, to, overwrite, move) : driveUpload(from, to, overwrite, move);
 }
@@ -983,7 +983,7 @@ const MOCK_QR =
 
 function prepareFileShare(paths: string[]): string {
   if (paths.length === 0) throw "Choose files to send.";
-  if (paths.some((path) => /^(gdrive|share|sftp):\/\//.test(path))) throw "Only files on this computer can be sent with a QR code.";
+  if (!paths.every(isLocal)) throw "Only files on this computer can be sent with a QR code.";
   for (const path of paths) {
     const node = lookup(path);
     if (!node) throw "No such file or directory (os error 2)";
@@ -1020,7 +1020,7 @@ export const nativeIconMock = {
 };
 
 function mockIconId(path: string): string | null {
-  if (!nativeIconMock.enabled || /^(gdrive|share|sftp):\/\//.test(path)) return null;
+  if (!nativeIconMock.enabled || !isLocal(path)) return null;
   const node = lookup(path);
   if (!node) return null;
   if (node.dir) {
@@ -1231,7 +1231,8 @@ async function trashEntries(a: Args): Promise<Array<{ trashed: string | null; er
     }
     for (let i = start; i < Math.min(paths.length, start + TRASH_CHUNK); i++) {
       try {
-        const trashed = paths[i].startsWith("gdrive://") ? driveTrash(paths[i], true) : trashEntry(paths[i]);
+        writable(paths[i]);
+        const trashed = placeOf(paths[i]) === "drive" ? driveTrash(paths[i], true) : trashEntry(paths[i]);
         outcomes[i] = { trashed, error: null };
         items++;
       } catch (err) {
@@ -1755,9 +1756,8 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   },
   list_dir: (a) => {
     const path = str(a, "path");
-    if (path.startsWith("sftp://")) return listSftp(path);
-    if (path.startsWith("share://")) return listShare(path);
-    return path.startsWith("gdrive://") ? listDrive(path) : list(path, a.showHidden as boolean);
+    const lists = { sftp: listSftp, share: listShare, drive: listDrive, local: (p: string) => list(localPath(p), a.showHidden as boolean) };
+    return lists[placeOf(path)](path);
   },
   search_dir: (a) =>
     search(
@@ -1769,23 +1769,23 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     ),
   cancel_search: () => {},
   item_counts: (a) =>
-    (a.paths as string[]).map((path) => (placeOf(path) !== "local" ? null : folderSummary(path, a.showHidden as boolean))),
+    (a.paths as string[]).map((path) => (isLocal(path) ? folderSummary(path, a.showHidden as boolean) : null)),
   file_properties: (a) => {
     const path = str(a, "path");
-    if (path.startsWith("share://")) throw "Properties aren't available for shared folders yet.";
-    if (path.startsWith("sftp://")) throw "Properties aren't available for SSH servers yet.";
-    return path.startsWith("gdrive://") ? driveProperties(path) : fileProperties(path);
+    if (placeOf(path) === "share") throw "Properties aren't available for shared folders yet.";
+    if (placeOf(path) === "sftp") throw "Properties aren't available for SSH servers yet.";
+    return placeOf(path) === "drive" ? driveProperties(path) : fileProperties(localPath(path));
   },
   set_permissions: (a) => {
-    const path = str(a, "path");
+    const path = localWrite(str(a, "path"));
     if (!lookup(path)) throw "Failed to read permissions: No such file or directory (os error 2)";
     const mode = Number(a.mode);
     if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) throw "Invalid permissions.";
     mockModes.set(path, mode);
   },
   extract_archive: (a) => {
-    const path = str(a, "path");
-    const dest = str(a, "dest");
+    const path = localPath(str(a, "path"));
+    const dest = localWrite(str(a, "dest"));
     const node = lookup(path);
     if (!node || node.dir) throw "The archive no longer exists.";
     if (!/\.(zip|jar|tar|tar\.gz|tgz|tar\.bz2|tbz2|tbz|tar\.xz|txz|tar\.zst|tzst|gz|bz2|xz|zst)$/i.test(path)) {
@@ -1834,7 +1834,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     return `/tmp/opencode/mock-sftp/${name}`;
   },
   create_symlink: (a) => {
-    const path = str(a, "path");
+    const path = localWrite(str(a, "path"));
     const node = lookup(path);
     if (!node) throw "This item no longer exists.";
     const [parent, name] = parentAndName(path);
@@ -1847,8 +1847,8 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     }
   },
   compress_archive: (a) => {
-    const dest = str(a, "dest");
-    const paths = a.paths as string[];
+    const paths = (a.paths as string[]).map(localPath);
+    const dest = localWrite(str(a, "dest"));
     if (!paths.length) throw "Choose at least one item.";
     if (!/\.(zip|tar\.gz|tar\.xz)$/i.test(dest)) throw "That archive format isn't supported yet.";
     for (const path of paths) {
@@ -1861,7 +1861,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     parent.children[name] = f(1024, 0);
   },
   create_file: (a) => {
-    const path = str(a, "path");
+    const path = localWrite(str(a, "path"));
     const [parent, name] = parentAndName(path);
     if (!parent?.dir) throw "The destination folder no longer exists.";
     if (parent.children[name]) throw "Could not create the file: File exists (os error 17)";
@@ -1925,12 +1925,16 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   new_folder_walk: () => ++mockWalks,
   cancel_folder_size: () => undefined,
   folder_size: (a) => {
-    const node = lookup(str(a, "path"));
+    const path = str(a, "path");
+    if (placeOf(path) === "sftp") throw "Folder sizes aren't available for SSH servers yet.";
+    if (placeOf(path) === "share") throw "Folder sizes aren't available for shared folders yet.";
+    const node = lookup(localPath(path));
     return node ? totalSize(node) : 0;
   },
   make_dir: (a) => {
     const path = str(a, "path");
-    if (path.startsWith("gdrive://")) return driveMakeDir(path);
+    writable(path);
+    if (placeOf(path) === "drive") return driveMakeDir(path);
     makeDir(path);
     return path;
   },
@@ -1954,7 +1958,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   trash_dir: () => TRASH,
   thumbnail: async (a) => {
     const path = str(a, "path");
-    if (placeOf(path) !== "local") return new ArrayBuffer(0);
+    if (!isLocal(path)) return new ArrayBuffer(0);
     const ticket = a.ticket as number | undefined;
     thumbLog.requested.push(path);
     if (thumbsHeld && ticket !== undefined) {
@@ -1987,38 +1991,41 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
       heldThumbs.delete(ticket);
     }
   },
+  // Shares and SSH servers have no path info and nothing "exists" there,
+  // as in the backend (place::local_only).
   path_info: (a) =>
     (a.paths as string[]).map((path) => {
-      if (path.startsWith("share://")) {
-        const entry = shareNode(path);
-        return entry ? { is_dir: entry.is_dir, device: 0 } : null;
-      }
-      if (!path.startsWith("gdrive://")) return pathInfo(path);
+      if (placeOf(path) !== "drive") return isLocal(path) ? pathInfo(path) : null;
       const entry = driveNode(path);
       return entry ? { is_dir: entry.is_dir, device: 0 } : null;
     }),
   path_exists: (a) => {
     const path = str(a, "path");
-    if (path.startsWith("share://")) return !!shareNode(path);
-    return path.startsWith("gdrive://") ? drivePathExists(path) : lookup(path) !== undefined;
+    if (placeOf(path) === "drive") return drivePathExists(path);
+    return isLocal(path) && lookup(path) !== undefined;
   },
-  copy_entry: (a) => (isDriveTransfer(a) ? driveTransfer(a, false) : (transfer(a, false), str(a, "to"))),
-  move_entry: (a) => (isDriveTransfer(a) ? driveTransfer(a, true) : (transfer(a, true), str(a, "to"))),
+  copy_entry: (a) => (writableBoth(a), isDriveTransfer(a) ? driveTransfer(a, false) : (transfer(a, false), str(a, "to"))),
+  move_entry: (a) => (writableBoth(a), isDriveTransfer(a) ? driveTransfer(a, true) : (transfer(a, true), str(a, "to"))),
   trash_entries: trashEntries,
   trash_info: (a) => (a.paths as string[]).map(trashInfo),
   restore_entry: (a) => {
     const path = str(a, "path");
-    return path.startsWith("gdrive://") ? driveTrash(path, false) : restoreEntry(path);
+    return placeOf(path) === "drive" ? driveTrash(path, false) : restoreEntry(path);
   },
   delete_permanently: (a) => deletePermanently(str(a, "path")),
   empty_trash: () => emptyTrash(),
   rename_entry: (a) => {
     const from = str(a, "from"), to = str(a, "to");
-    if (from.startsWith("gdrive://") || to.startsWith("gdrive://")) return driveRename(from, to);
+    writableBoth(a);
+    if (placeOf(from) === "drive" || placeOf(to) === "drive") return driveRename(from, to);
     renameEntry(from, to);
     return to;
   },
-  rename_many: (a) => renameMany(a.items as Array<{ from: string; to: string }>),
+  rename_many: (a) => {
+    const items = a.items as Array<{ from: string; to: string }>;
+    items.forEach((item) => (localWrite(item.from), localWrite(item.to)));
+    return renameMany(items);
+  },
   ...SHARE_COMMANDS,
   ...DRIVE_COMMANDS,
   ...VERSION_COMMANDS,
@@ -2047,7 +2054,44 @@ for (const name of ["copy_entry", "move_entry", "delete_permanently", "empty_tra
 }
 
 function isDriveTransfer(a: Args): boolean {
-  return str(a, "from").startsWith("gdrive://") || str(a, "to").startsWith("gdrive://");
+  return placeOf(str(a, "from")) === "drive" || placeOf(str(a, "to")) === "drive";
+}
+
+// ----- The backend's location gate (src-tauri/src/place.rs), same wording -----
+
+/** Throws for a path where nothing may be written: shares and SSH servers. */
+function writable(path: string): void {
+  if (placeOf(path) === "sftp") throw "SSH servers are read only for now.";
+  if (placeOf(path) === "share") throw "Shared folders are read only.";
+}
+
+function writableBoth(a: Args): void {
+  writable(str(a, "from"));
+  writable(str(a, "to"));
+}
+
+const NOT_LOCAL: Record<Exclude<Place, "local">, string> = {
+  drive: "This action is not available for Google Drive items yet.",
+  share: "This action is not available for shared folders.",
+  sftp: "This action is not available for SSH servers.",
+};
+
+/** `path` when it is a file on this computer; throws why it isn't otherwise. */
+function localPath(path: string): string {
+  const place = placeOf(path);
+  if (place !== "local") throw NOT_LOCAL[place];
+  if (!path.startsWith("/")) throw `“${path}” is not a local file.`;
+  return path;
+}
+
+function isLocal(path: string): boolean {
+  return placeOf(path) === "local" && path.startsWith("/");
+}
+
+/** `path` when it is a file on this computer that may be written. */
+function localWrite(path: string): string {
+  writable(path);
+  return localPath(path);
 }
 
 // ----- Any command: tests count calls, hold one until released, or fail the next (__mockCalls) -----

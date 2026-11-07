@@ -926,3 +926,84 @@ test("any command can be counted, held until released and failed once", async ()
   expect(await reset).toBe(true);
   expect(mockCalls().count("path_exists")).toBe(0);
 });
+
+// ----- The backend's location gate (src-tauri/src/place.rs) -----
+
+const SHARED_RO = "Shared folders are read only.";
+const SSH_RO = "SSH servers are read only for now.";
+const DRIVE_NO = "This action is not available for Google Drive items yet.";
+
+async function receivedShare(): Promise<string> {
+  const [first] = await invoke<Array<{ id: string }>>("list_received");
+  const received = first ?? (await invoke<{ id: string }>("add_received", { link: "share://mockreceived" }));
+  return `share://${received.id}`;
+}
+
+test("path_info and path_exists know nothing of shares, SSH servers or relative paths, as the backend", async () => {
+  const share = await receivedShare();
+  expect((await ls(share)).map((e) => e.name)).toContain("hello.txt");
+  const paths = [`${HOME}/main.rs`, `${share}/hello.txt`, `${share}/Photos`, "sftp://user@host/Documents/hello.txt", "Users/me/main.rs"];
+  expect(await invoke("path_info", { paths })).toEqual([{ is_dir: false, device: 1 }, null, null, null, null]);
+  for (const path of paths.slice(1)) expect(await invoke("path_exists", { path })).toBe(false);
+  expect(await invoke("item_counts", { paths: ["Users/me", `${HOME}/Desktop`], showHidden: false })).toEqual([null, { count: 1, versioned: false }]);
+  await expect(invoke("file_share_prepare", { paths: ["Users/me/main.rs"] })).rejects.toMatch(/on this computer/);
+});
+
+test("local-only commands refuse relative paths", async () => {
+  await expect(ls("Users/me")).rejects.toBe("“Users/me” is not a local file.");
+  await expect(invoke("file_properties", { path: "main.rs" })).rejects.toBe("“main.rs” is not a local file.");
+});
+
+test("writes into shares and SSH servers are refused in the backend's words", async () => {
+  const share = await receivedShare();
+  const sftp = "sftp://user@host/Documents";
+  const todo = `${HOME}/Desktop/todo.txt`;
+  for (const [dir, refusal] of [[share, SHARED_RO], [sftp, SSH_RO]]) {
+    await expect(invoke("make_dir", { path: `${dir}/New Folder` })).rejects.toBe(refusal);
+    for (const cmd of ["copy_entry", "move_entry"]) {
+      await expect(invoke(cmd, { from: todo, to: `${dir}/todo.txt`, overwrite: false })).rejects.toBe(refusal);
+      await expect(invoke(cmd, { from: `${dir}/hello.txt`, to: `${HOME}/hello.txt`, overwrite: false })).rejects.toBe(refusal);
+    }
+    await expect(invoke("rename_entry", { from: `${dir}/hello.txt`, to: `${dir}/hi.txt` })).rejects.toBe(refusal);
+    expect(await invoke("trash_entries", { paths: [`${dir}/hello.txt`] })).toEqual([{ trashed: null, error: refusal }]);
+  }
+  expect(await invoke("path_exists", { path: todo })).toBe(true);
+  expect(await invoke("path_exists", { path: `${HOME}/hello.txt` })).toBe(false);
+});
+
+test("the local-only write commands refuse every other path before touching anything", async () => {
+  const share = await receivedShare();
+  const todo = `${HOME}/Desktop/todo.txt`;
+  const refused: Array<[string, string]> = [
+    [`${share}/hello.txt`, SHARED_RO],
+    ["sftp://user@host/Documents/hello.txt", SSH_RO],
+    ["gdrive://acct/root~My%20Drive/~a.txt", DRIVE_NO],
+    ["Users/me/a.txt", "“Users/me/a.txt” is not a local file."],
+  ];
+  for (const [path, refusal] of refused) {
+    await expect(invoke("create_file", { path })).rejects.toBe(refusal);
+    await expect(invoke("set_permissions", { path, mode: 0o644 })).rejects.toBe(refusal);
+    await expect(invoke("create_symlink", { path })).rejects.toBe(refusal);
+    await expect(invoke("rename_many", { items: [{ from: todo, to: `${HOME}/Desktop/a.txt` }, { from: path, to: `${HOME}/b.txt` }] })).rejects.toBe(refusal);
+    await expect(invoke("rename_many", { items: [{ from: todo, to: path }] })).rejects.toBe(refusal);
+    await expect(invoke("compress_archive", { paths: [todo], dest: path, format: "zip" })).rejects.toBe(refusal);
+    await expect(invoke("extract_archive", { path: `${HOME}/Archive.zip`, dest: path, create: true })).rejects.toBe(refusal);
+  }
+  expect(await invoke("path_exists", { path: todo })).toBe(true);
+  expect(await invoke("path_exists", { path: `${HOME}/Desktop/a.txt` })).toBe(false);
+  // Reading an archive or its sources from elsewhere is refused too.
+  await expect(invoke("compress_archive", { paths: [todo, `${share}/hello.txt`], dest: `${HOME}/a.zip`, format: "zip" })).rejects.toBe(
+    "This action is not available for shared folders.",
+  );
+  await expect(invoke("extract_archive", { path: "sftp://user@host/a.zip", dest: HOME, create: false })).rejects.toBe(
+    "This action is not available for SSH servers.",
+  );
+});
+
+test("folder_size walks local folders only", async () => {
+  const share = await receivedShare();
+  await expect(invoke("folder_size", { path: `${share}/Photos`, walk: 1 })).rejects.toBe("Folder sizes aren't available for shared folders yet.");
+  await expect(invoke("folder_size", { path: "sftp://user@host/Documents", walk: 1 })).rejects.toBe("Folder sizes aren't available for SSH servers yet.");
+  await expect(invoke("folder_size", { path: "gdrive://acct/root~My%20Drive", walk: 1 })).rejects.toBe(DRIVE_NO);
+  await expect(invoke("folder_size", { path: "Users/me", walk: 1 })).rejects.toBe("“Users/me” is not a local file.");
+});
