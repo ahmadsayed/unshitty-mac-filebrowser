@@ -145,6 +145,7 @@ test.each([
   ["sftp://me%40work@host:2222",             "me@work@host:2222"],
   ["sftp://me@host/docs/a%20b",              "a b"],
   ["sftp://me@host/docs/%zz",                "%zz"],
+  ["sftp://%E0%A4%A/",                       "%E0%A4%A"],
   ["sftp://",                                ""],
   // Local: the last segment as it is, none at the root.
   ["/Users/me/Documents/",                   "Documents"],
@@ -152,11 +153,6 @@ test.each([
   ["/",                                      ""],
 ])("pathName(%j) is %j", (path, name) => {
   expect(pathName(path)).toBe(name);
-});
-
-test("pathName throws on a malformed SSH authority", () => {
-  // today's behaviour, fixed in a follow-up: the authority is decoded without a guard.
-  expect(() => pathName("sftp://%E0%A4%A/")).toThrow(URIError);
 });
 
 // prettier-ignore
@@ -230,8 +226,10 @@ test("pathSegments breaks an SSH path into the server and its folders", () => {
     ],
   });
   expect(pathSegments("sftp://me%40work@host/").root.name).toBe("me@work@host");
-  // today's behaviour, fixed in a follow-up: the authority is decoded without a guard.
-  expect(() => pathSegments("sftp://%E0%A4%A/")).toThrow(URIError);
+  // A malformed authority is shown as it is, like every other segment.
+  expect(pathSegments("sftp://%E0%A4%A/").root).toEqual({
+    kind: "sftp", key: "%E0%A4%A", path: "sftp://%E0%A4%A/", name: "%E0%A4%A",
+  });
 });
 
 test("pathSegments and localSegments break a local path into its folders", () => {

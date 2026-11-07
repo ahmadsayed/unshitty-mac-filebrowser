@@ -243,6 +243,12 @@ function remoteSegments(path: string, kind: Exclude<Place, "local">, prefix: str
   return { root: { kind, key, path: shape.root(key), name: shape.rootName(key) }, segments };
 }
 
+/** The decoded last segment after `prefix`: the share id or the server's
+ *  authority at the root. Malformed escapes are shown as they are. */
+function remoteName(path: string, prefix: string): string {
+  return decodeSegment(afterPrefix(path, prefix).pop() ?? "");
+}
+
 /** Up from a share or server path: null above its root. */
 function remoteParent(path: string, prefix: string): string | null {
   const parts = afterPrefix(path, prefix);
@@ -278,7 +284,7 @@ const SCHEMES: Record<Place, Scheme> = {
       }),
   },
   share: {
-    name: (path) => decodeSegment(afterPrefix(path, SHARE_PREFIX).pop() ?? ""),
+    name: (path) => remoteName(path, SHARE_PREFIX),
     parent: (path) => remoteParent(path, SHARE_PREFIX),
     // today's behaviour, fixed in a follow-up: a share child is joined like a
     // local one, unencoded (joinSharePath would encode it).
@@ -291,19 +297,13 @@ const SCHEMES: Record<Place, Scheme> = {
       }),
   },
   sftp: {
-    name: (path) => {
-      const parts = afterPrefix(path, SFTP_PREFIX);
-      // today's behaviour, fixed in a follow-up: a malformed authority throws URIError.
-      if (parts.length <= 1) return parts[0] ? decodeURIComponent(parts[0]) : "";
-      return decodeSegment(parts.pop()!);
-    },
+    name: (path) => remoteName(path, SFTP_PREFIX),
     parent: (path) => remoteParent(path, SFTP_PREFIX),
     child: joinSftpPath,
     segments: (path) =>
       remoteSegments(path, "sftp", SFTP_PREFIX, {
         root: (key) => `${SFTP_PREFIX}${key}/`,
-        // today's behaviour, fixed in a follow-up: a malformed authority throws URIError.
-        rootName: (key) => decodeURIComponent(key),
+        rootName: decodeSegment,
         segment: decodeSegment,
       }),
   },
