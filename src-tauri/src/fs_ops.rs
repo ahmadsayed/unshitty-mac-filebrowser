@@ -8,7 +8,7 @@ use unicode_normalization::char::is_combining_mark;
 
 #[cfg(target_os = "linux")]
 use crate::progress::copy_counted;
-use crate::placement::{self, Stage, Staged, TrashFn, Unfilled, remove_any, to_trash};
+use crate::placement::{self, Stage, Staged, TrashFn, Unfilled, remove, remove_any, to_trash};
 use crate::progress::{CANCELLED, Progress, cancelled_io, is_cancel};
 
 pub fn make_dir(path: String) -> Result<(), String> {
@@ -638,11 +638,6 @@ fn copy_error(verb: &str, error: std::io::Error) -> String {
 
 fn is_cross_device(e: &std::io::Error) -> bool {
     e.kind() == std::io::ErrorKind::CrossesDevices || e.raw_os_error() == Some(18) // EXDEV
-}
-
-/// A partial copy filled in place is removed for good: it is ours.
-fn remove(path: &Path) -> Result<(), String> {
-    remove_any(path).map_err(|e| e.to_string())
 }
 
 /// Copy `from` to `to` (recursively for folders).

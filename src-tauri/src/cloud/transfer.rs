@@ -253,8 +253,7 @@ pub(crate) fn download_in(
     to: &Path,
     overwrite: bool,
 ) -> Result<String, String> {
-    let remove = |path: &Path| placement::remove_any(path).map_err(|e| e.to_string());
-    download_into(c, from, to, overwrite, &remove)
+    download_into(c, from, to, overwrite, &placement::remove)
 }
 
 /// Download a Drive item to `to`. A new folder downloads straight under its

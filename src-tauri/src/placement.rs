@@ -134,6 +134,12 @@ pub(crate) fn remove_any(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// `remove_any` as a discard: a partial copy filled in place is ours, so it
+/// goes for good rather than to the Trash.
+pub(crate) fn remove(path: &Path) -> Result<(), String> {
+    remove_any(path).map_err(|e| e.to_string())
+}
+
 /// Whose item a fill left at its path, which decides what a failure may do
 /// with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
