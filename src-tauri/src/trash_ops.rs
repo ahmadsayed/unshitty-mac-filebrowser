@@ -692,20 +692,15 @@ fn delete_permanently(path: &Path, trash_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Delete everything in a Trash. `trash_root` is the folder `home_trash`
-/// returns, so on Linux both `files/` and `info/` are emptied.
-/// Returns the error for the first item that couldn't be deleted, after
-/// trying all of them.
-fn empty(trash_root: &Path, progress: &Progress) -> Result<(), String> {
-    let files = trash_root.join("files");
-    // The layout is the one on disk: a Trash without `files/` keeps its
-    // items directly inside, as macOS does.
-    let freedesktop = info_dir_of(&files).filter(|_| files.is_dir());
-    let (items, info) = match freedesktop {
-        // freedesktop layout: keep `files/` and `info/` themselves.
-        Some(info) => (files, Some(info)),
-        None => (trash_root.to_path_buf(), None),
-    };
+/// Delete everything in a Trash whose root (`home_trash`) is `trash_root`,
+/// laid out as `layout`: a Finder Trash's items, or a freedesktop Trash's
+/// `files/` and `info/` contents (the two folders themselves stay). The
+/// layout is the Trash's, not the host's, so a trashed folder named `files`
+/// is just an item. Returns the error for the first item that couldn't be
+/// deleted, after trying all of them.
+fn empty(layout: Layout, trash_root: &Path, progress: &Progress) -> Result<(), String> {
+    let items = layout.items_in(trash_root);
+    let info = (layout == Layout::Freedesktop).then(|| trash_root.join("info"));
     let mut first_error = None;
     for entry in fs::read_dir(&items).into_iter().flatten().flatten() {
         progress.check()?;
@@ -883,7 +878,7 @@ impl Trash {
     /// Delete everything in the home Trash, and forget what went (all of
     /// it, unless it was cancelled or an item couldn't be deleted).
     pub fn empty(&self, progress: &Progress) -> Result<(), String> {
-        let emptied = empty(&self.root, progress);
+        let emptied = empty(self.layout, &self.root, progress);
         self.forget(|logged| fs::symlink_metadata(logged).is_err());
         emptied
     }
@@ -1223,7 +1218,7 @@ mod tests {
         delete_permanently(&trash.join("link"), &trash).unwrap();
         assert!(target.join("data.txt").exists());
         std::os::unix::fs::symlink(&target, trash.join("link2")).unwrap();
-        empty(&dir.path().join("Trash"), &Progress::default()).unwrap();
+        empty(Layout::HOST, &dir.path().join("Trash"), &Progress::default()).unwrap();
         assert!(target.join("data.txt").exists());
     }
 
@@ -1237,11 +1232,11 @@ mod tests {
         fs::write(trash.join(".DS_Store"), "x").unwrap();
         fs::write(dir.path().join("outside.txt"), "x").unwrap();
 
-        empty(&root, &Progress::default()).unwrap();
+        empty(Layout::HOST, &root, &Progress::default()).unwrap();
         assert!(root.exists());
         assert_eq!(fs::read_dir(&trash).unwrap().count(), 0);
         assert!(dir.path().join("outside.txt").exists());
-        empty(&dir.path().join("no-trash-here"), &Progress::default()).unwrap();
+        empty(Layout::HOST, &dir.path().join("no-trash-here"), &Progress::default()).unwrap();
     }
 
     #[test]
@@ -1843,17 +1838,16 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn emptying_keeps_the_files_and_info_folders() {
         let dir = tempdir().unwrap();
         let root = dir.path().join("Trash");
-        let files = items_dir(&root);
+        let files = make_trash(Layout::Freedesktop, &root);
         let info = root.join("info");
         fs::write(files.join("a.txt"), "x").unwrap();
         fs::write(info.join("a.txt.trashinfo"), "x").unwrap();
 
-        empty(&root, &Progress::default()).unwrap();
+        empty(Layout::Freedesktop, &root, &Progress::default()).unwrap();
         assert!(files.is_dir(), "files/ survives so the Trash still works");
         assert!(info.is_dir(), "info/ survives too");
         assert_eq!(fs::read_dir(&files).unwrap().count(), 0);
@@ -1904,14 +1898,13 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn empty_counts_items_freedesktop() {
         let dir = tempdir().unwrap();
         let root = dir.path().join("Trash");
         freedesktop_with_three(&root);
         let progress = Progress::default();
-        empty(&root, &progress).unwrap();
+        empty(Layout::Freedesktop, &root, &progress).unwrap();
         assert_eq!(progress.snapshot().items, 3);
         assert_eq!(fs::read_dir(root.join("files")).unwrap().count(), 0);
         assert_eq!(fs::read_dir(root.join("info")).unwrap().count(), 0);
@@ -1923,12 +1916,11 @@ mod tests {
         let root = dir.path().join(".Trash");
         macos_with_three(&root);
         let progress = Progress::default();
-        empty(&root, &progress).unwrap();
+        empty(Layout::Finder, &root, &progress).unwrap();
         assert_eq!(progress.snapshot().items, 3);
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn cancelled_empty_keeps_the_rest_freedesktop() {
         let dir = tempdir().unwrap();
@@ -1936,7 +1928,7 @@ mod tests {
         freedesktop_with_three(&root);
         let progress = Progress::default();
         progress.cancel();
-        assert_eq!(empty(&root, &progress), Err("Cancelled.".to_string()));
+        assert_eq!(empty(Layout::Freedesktop, &root, &progress), Err("Cancelled.".to_string()));
         assert_eq!(fs::read_dir(root.join("files")).unwrap().count(), 3);
         assert_eq!(fs::read_dir(root.join("info")).unwrap().count(), 3);
     }
@@ -1948,7 +1940,7 @@ mod tests {
         macos_with_three(&root);
         let progress = Progress::default();
         progress.cancel();
-        assert_eq!(empty(&root, &progress), Err("Cancelled.".to_string()));
+        assert_eq!(empty(Layout::Finder, &root, &progress), Err("Cancelled.".to_string()));
         assert_eq!(fs::read_dir(&root).unwrap().count(), 3);
     }
 
@@ -2317,6 +2309,35 @@ mod tests {
         }
     }
 
+    /// Empty Trash follows the Trash's layout, whatever the host's: in a
+    /// Finder Trash, trashed folders named `files` and `info` go like any
+    /// item; a freedesktop Trash keeps its own `files/` and `info/`.
+    #[test]
+    fn emptying_follows_the_layout() {
+        for layout in [Layout::Finder, Layout::Freedesktop] {
+            let dir = tempdir().unwrap();
+            let v = with_usb(dir.path(), layout);
+            let info = v.trash.root.join("info");
+            put_in(&v.items, "a.txt");
+            if layout == Layout::Finder {
+                fs::create_dir_all(v.items.join("files")).unwrap();
+                put_in(&v.items.join("files"), "b.txt");
+                fs::create_dir_all(&info).unwrap();
+            } else {
+                fs::write(info.join("a.txt.trashinfo"), "x").unwrap();
+            }
+
+            let progress = Progress::default();
+            v.trash.empty(&progress).unwrap();
+            let items = if layout == Layout::Finder { 3 } else { 1 };
+            assert_eq!(progress.snapshot().items, items, "{layout:?}");
+            assert_eq!(fs::read_dir(&v.items).unwrap().count(), 0, "{layout:?}");
+            if layout == Layout::Freedesktop {
+                assert_eq!(fs::read_dir(&info).unwrap().count(), 0);
+            }
+        }
+    }
+
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn the_sidecar_answers_before_the_log_and_goes_with_the_restore() {
@@ -2349,6 +2370,25 @@ mod tests {
         assert_eq!(trash.dir_for(&item), trash_dir_for(&item, home));
     }
 
+    /// Whether `code` names the `trash` crate (`trash::…`, `use trash::{…}`,
+    /// `::trash::…`), as opposed to a name ending in `trash`.
+    fn names_the_trash_crate(code: &str) -> bool {
+        code.match_indices("trash::").any(|(at, _)| {
+            !code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_')
+        })
+    }
+
+    #[test]
+    fn the_source_guard_sees_every_path_into_the_crate() {
+        let calls = ["trash::delete(p)", "trash::delete_all(v)", "use trash::{delete};", "::trash::os_limited::list()"];
+        for code in calls {
+            assert!(names_the_trash_crate(code), "{code}");
+        }
+        for code in ["trash_ops::Trash", "self.trash.send(p)", "move_to_trash::run()"] {
+            assert!(!names_the_trash_crate(code), "{code}");
+        }
+    }
+
     /// Every item the app trashes goes through this module, so the log
     /// knows where it came from: no other module calls the `trash` crate
     /// (`Trash::send` for single items, `send_to_trash` in lib.rs).
@@ -2362,7 +2402,7 @@ mod tests {
                 if path.is_dir() {
                     folders.push(path);
                 } else if path != src.join("trash_ops.rs")
-                    && fs::read_to_string(&path).unwrap_or_default().contains("trash::delete")
+                    && names_the_trash_crate(&fs::read_to_string(&path).unwrap_or_default())
                 {
                     callers.push(path.strip_prefix(&src).unwrap().to_string_lossy().to_string());
                 }
@@ -2472,7 +2512,7 @@ mod tests {
         let home = dir.path().join("home");
         let root = home.join(".Trash");
         macos_with_three(&root);
-        let trash = Trash::with_root(home, root.clone(), None);
+        let trash = Trash::with_root(home, root.clone(), None).laid_out(Layout::Finder, |_| Some(1));
 
         let progress = Progress::default();
         trash.empty(&progress).unwrap();

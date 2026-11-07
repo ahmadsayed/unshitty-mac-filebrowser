@@ -2397,9 +2397,9 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
 }
 
 // The background and location menus of each kind of place. In the Trash and
-// the folders inside it, nothing adds to them, since only Move to Trash
-// records where an item came from; a folder inside the Trash keeps Open
-// With…, as trashed items do.
+// the folders inside it, nothing adds to them, since only an item sent to the
+// Trash knows where it came from (a pasted or new one wouldn't); a folder
+// inside the Trash keeps Open With…, as trashed items do.
 
 const emptyTrashMenu = (): MenuItem[] => [
   { label: "Empty Trash…", disabled: entries.length === 0, action: confirmEmptyTrash },
