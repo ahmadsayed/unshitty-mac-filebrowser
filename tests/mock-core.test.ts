@@ -275,6 +275,16 @@ test("held thumbnails wait until released, and cancelled ones come back empty", 
   delete (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
 });
 
+test("thumbnails of shares, SSH servers and relative paths are empty and never requested, as in the backend", async () => {
+  type MockThumbs = { reset(): void; log: { requested: string[]; cancelled: number[] } };
+  const thumbs = (globalThis as unknown as { __mockThumbs: MockThumbs }).__mockThumbs;
+  thumbs.reset();
+  for (const path of ["share://r1/Photos/DSC 1.jpg", "sftp://user@host/DSC 1.jpg", "Users/me/Pictures/Camera/DSC 1.jpg"]) {
+    expect((await invoke<ArrayBuffer>("thumbnail", { path, size: 64, ticket: 7 })).byteLength, path).toBe(0);
+  }
+  expect(thumbs.log.requested).toEqual([]);
+});
+
 test("copy_entry and move_entry copy, move, replace and refuse", async () => {
   await invoke("make_dir", { path: `${HOME}/Box` });
   await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/Box/todo.txt`, overwrite: false });
