@@ -791,9 +791,13 @@ impl Trash {
         self.layout.items_in(&self.root)
     }
 
-    /// Whether `path` is inside the home Trash. Only compares paths.
+    /// Whether `path` is inside the home Trash or the Trash of the volume
+    /// it is on (at that volume's mount point, for this user). Reads only
+    /// which filesystem each folder is on; creates nothing.
     pub fn contains(&self, path: &Path) -> bool {
-        path.starts_with(&self.root) || path.starts_with(self.layout.items_in(&self.root))
+        path.starts_with(&self.root)
+            || path.starts_with(self.layout.items_in(&self.root))
+            || path.starts_with(self.volume_trash(path))
     }
 
     /// Move `path` to the Trash and remember where it went (`record`), so
@@ -2347,7 +2351,29 @@ mod tests {
     }
 
     #[test]
-    fn contains_only_compares_paths() {
+    fn contains_covers_each_volumes_trash() {
+        for layout in [Layout::Finder, Layout::Freedesktop] {
+            let dir = tempdir().unwrap();
+            let v = with_usb(dir.path(), layout);
+            let me = uid(&v.home);
+            let usb_root = layout.volume_trash(&v.usb, me);
+
+            assert!(v.trash.contains(&v.usb_items.join("a.txt")), "{layout:?}");
+            assert!(v.trash.contains(&v.usb_items.join("Folder/deep.txt")));
+            assert!(v.trash.contains(&usb_root));
+            assert!(v.trash.contains(&usb_root.join("info/a.txt.trashinfo")));
+            assert!(v.trash.contains(&v.items.join("a.txt")));
+            assert!(!v.trash.contains(&v.usb.join("Projects/a.txt")));
+            // Named like a Trash but below the stick's root: user data.
+            let lookalike = layout.volume_trash(&v.usb.join("Projects"), me);
+            assert!(!v.trash.contains(&layout.items_in(&lookalike).join("a.txt")));
+            // Another user's Trash on the stick.
+            assert!(!v.trash.contains(&layout.volume_trash(&v.usb, me + 1).join("a.txt")));
+        }
+    }
+
+    #[test]
+    fn contains_creates_nothing() {
         let dir = tempdir().unwrap();
         let home = dir.path().join("home");
         let root = if cfg!(target_os = "macos") {

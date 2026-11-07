@@ -946,8 +946,9 @@ fn trash_dir(app: tauri::AppHandle) -> String {
         .unwrap_or_default()
 }
 
-/// True when `path` is inside the user's home Trash; versioned_root, shared
-/// folders and the program and disk-image actions refuse it.
+/// True when `path` is inside the user's home Trash or its volume's Trash
+/// (`Trash::contains`); versioned_root, shared folders and the program and
+/// disk-image actions refuse it.
 fn in_trash(app: &tauri::AppHandle, path: &Path) -> bool {
     trash_of(app).is_ok_and(|trash| trash.contains(path))
 }
