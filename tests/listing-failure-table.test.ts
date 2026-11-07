@@ -1,7 +1,8 @@
 // listingReaction on its own: one case per row of the table. What the app
 // shows for them is in listing-failure.test.ts.
 import { expect, test } from "vitest";
-import { cleanError, listingReaction, type ListingContext, type ListingPhase } from "../src/listing-failure";
+import { listingReaction, type ListingContext, type ListingPhase } from "../src/listing-failure";
+import { cleanError } from "../src/ui";
 
 const NOT_PERMITTED = "Failed to read directory: Operation not permitted (os error 1)";
 const MISSING = "Failed to read directory: No such file or directory (os error 2)";

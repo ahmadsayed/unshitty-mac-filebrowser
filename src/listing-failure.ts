@@ -18,6 +18,7 @@
 // so every row can be tested directly (tests/listing-failure-table.test.ts).
 
 import { isLocalLocation } from "./locations";
+import { cleanError } from "./ui";
 import { isSftpPath, isSharePath } from "./paths";
 
 export type ListingPhase = "first" | "navigate" | "reload" | "entry";
@@ -48,11 +49,6 @@ export type Reaction =
 
 /** A reaction, with the cleaned message for the error page to show or fall back on. */
 export type ListingReaction = Reaction & { message: string };
-
-/** "Failed to read directory: Permission denied (os error 13)" → "Permission denied" */
-export function cleanError(err: unknown): string {
-  return String(err).replace(/^[^:]*:\s*/, "").replace(/\s*\(os error \d+\)$/, "");
-}
 
 interface Failure {
   loc: string;
