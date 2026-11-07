@@ -414,7 +414,7 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
   },
   share_folder: (a) => {
     const path = str(a, "path");
-    if (!lookup(path)?.dir) throw "Only folders on this computer can be shared.";
+    if (!isLocal(path) || !lookup(path)?.dir) throw "Only folders on this computer can be shared.";
     const existing = mockShares.find((share) => share.path === path);
     if (existing) return shareInfo(existing);
     const share = { id: `share-${++mockShareSeq}`, path, access: [] };
@@ -422,7 +422,8 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     return shareInfo(share);
   },
   share_info: (a) => {
-    const share = mockShares.find((item) => item.path === str(a, "path"));
+    // Shares are folders on this computer: nothing for any other path.
+    const share = isLocal(str(a, "path")) && mockShares.find((item) => item.path === str(a, "path"));
     return share ? shareInfo(share) : null;
   },
   list_shares: () => mockShares.map(shareSummary),
@@ -490,13 +491,14 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
   remove_received: (a) => {
     mockReceived = mockReceived.filter((item) => item.id !== str(a, "id"));
   },
-  share_open: (a) => {
-    const path = str(a, "path");
-    const name = path.slice(path.lastIndexOf("/") + 1);
-    if (!name || name === path) throw "Only files can be opened.";
-    return `/tmp/opencode/mock-share/${decodeURIComponent(name)}`;
-  },
 };
+
+/** open_target for a share file: where its downloaded copy lands. */
+function shareOpen(path: string): string {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  if (!name || name === path || path.indexOf("/", "share://".length) < 0) throw "Only files can be opened.";
+  return `/tmp/opencode/mock-share/${decodeURIComponent(name)}`;
+}
 
 (globalThis as Record<string, unknown>).__mockShare = {
   protect: protectMockShare,
@@ -967,12 +969,22 @@ async function progressGate(a: Args): Promise<void> {
   await new Promise<void>((resolve, reject) => held.push({ op, channel, bytes: 0, resolve, reject }));
 }
 
+/** The bytes a long command's final update carries, as the backend's does:
+ *  every byte of a file it copies from the disk or downloads from Drive. */
+function fileBytes(a: Args): number {
+  if (typeof a.from !== "string") return 0;
+  if (placeOf(a.from) === "drive") {
+    const item = typeof a.to === "string" && placeOf(a.to) !== "drive" ? driveItemAt(a.from) : undefined;
+    return item && !item.isDir && !item.doc ? item.size : 0;
+  }
+  const source = lookup(a.from);
+  return source && !source.dir ? source.size : 0;
+}
+
 function gated(command: (a: Args) => unknown): (a: Args) => Promise<unknown> {
   return async (a) => {
     await progressGate(a);
-    // The final update carries every byte of the item, as the backend's does.
-    const source = typeof a.from === "string" ? lookup(a.from) : undefined;
-    const done = update(source && !source.dir ? source.size : 0, true);
+    const done = update(fileBytes(a), true);
     const result = await command(a);
     if (holdingAfter) {
       holding = true;
@@ -998,11 +1010,35 @@ function measureNode(node: Node | undefined, total: { bytes: number; items: numb
   else total.bytes += node.size;
 }
 
+/** Like the backend's `measure_paths`: Drive paths are asked of Drive, local
+ *  paths are walked, and nothing else (shares, SSH servers, relative paths)
+ *  counts. A Drive refusal fails the whole measure. */
 function measure(paths: string[]): { bytes: number; items: number } {
   if (measureFails) throw "Could not measure.";
   const total = { bytes: 0, items: 0 };
-  for (const path of paths) measureNode(lookup(path), total);
+  for (const path of paths) {
+    if (placeOf(path) === "drive") measureDriveItem(driveItemToMeasure(path), total);
+    else if (isLocal(path)) measureNode(lookup(path), total);
+  }
   return total;
+}
+
+/** The Drive item at `path`, looked up by id as `cloud::transfer::measure` does. */
+function driveItemToMeasure(path: string): DriveItem {
+  const { ids, pending } = parseDrive(path);
+  const id = ids[ids.length - 1];
+  if (pending !== undefined || !id) throw "This Google Drive item has no id.";
+  const item = driveItems.get(id);
+  if (!item) throw "The Google Drive item no longer exists.";
+  return item;
+}
+
+/** Every item counts; Google Docs files have no bytes; a folder's trashed
+ *  children aren't listed. */
+function measureDriveItem(item: DriveItem, total: { bytes: number; items: number }): void {
+  total.items += 1;
+  if (item.isDir) driveChildren(item.id).forEach((child) => measureDriveItem(child, total));
+  else total.bytes += item.doc ? 0 : item.size;
 }
 
 // QR shares: preparing at the first status call, ready from the next one.
@@ -1474,25 +1510,38 @@ function stopKeepingVersions(root: string): void {
   versionedRoots.delete(root);
 }
 
+/** Keep Versions works on this computer only: the path in `key`, after the
+ *  backend's `place::local` refusals. */
+const at = (a: Args, key = "path") => localPath(str(a, key));
+
 const VERSION_COMMANDS: Record<string, (args: Args) => unknown> = {
   versioned_root: (a) => versionedRoot(str(a, "path")),
-  make_versioned_dir: (a) => makeVersionedDir(str(a, "path")),
-  list_versions: (a) => mockVersions(str(a, "path")),
-  version_count: (a) => mockVersions(str(a, "path")).length,
-  version_diff: (a) => versionDiff(str(a, "path"), a.version as number),
+  make_versioned_dir: (a) => makeVersionedDir(localWrite(str(a, "path"))),
+  list_versions: (a) => mockVersions(at(a)),
+  version_count: (a) => mockVersions(at(a)).length,
+  version_diff: (a) => versionDiff(at(a), a.version as number),
   restore_version_copy: (a) =>
-    placeRestored(str(a, "path"), str(a, "name"), 1_700, `An item named “${str(a, "name")}” already exists`),
-  open_version: (a) => `${OPENED}/${str(a, "name")}`,
-  replace_with_version: (a) => replaceWithVersion(str(a, "path")),
-  deleted_files: (a) => [{ path: `${str(a, "dir")}/draft.md`, deleted_at: now - 3 * 3600, size: 320 }],
+    placeRestored(at(a), str(a, "name"), 1_700, `An item named “${str(a, "name")}” already exists`),
+  open_version: (a) => {
+    at(a);
+    return `${OPENED}/${str(a, "name")}`;
+  },
+  replace_with_version: (a) => replaceWithVersion(at(a)),
+  deleted_files: (a) => [{ path: `${at(a, "dir")}/draft.md`, deleted_at: now - 3 * 3600, size: 320 }],
   restore_deleted: (a) => {
-    const path = str(a, "path");
+    const path = at(a);
     return placeRestored(path, path.slice(path.lastIndexOf("/") + 1), 320, "Something is already at that path");
   },
-  open_deleted: (a) => `${OPENED}/${str(a, "name")}`,
-  history_info: () => ({ bytes: 12_400_000, versions: 214, files: 37 }),
-  clear_history: (a) => clearHistory(str(a, "root")),
-  stop_keeping_versions: (a) => stopKeepingVersions(str(a, "root")),
+  open_deleted: (a) => {
+    at(a);
+    return `${OPENED}/${str(a, "name")}`;
+  },
+  history_info: (a) => {
+    at(a, "root");
+    return { bytes: 12_400_000, versions: 214, files: 37 };
+  },
+  clear_history: (a) => clearHistory(at(a, "root")),
+  stop_keeping_versions: (a) => stopKeepingVersions(at(a, "root")),
 };
 
 /** Offline stand-in for the Google Drive account commands. */
@@ -1580,12 +1629,14 @@ const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
   drive_disconnect: () => {
     driveAccount = null;
   },
-  drive_open: (a) => {
-    const entry = driveNode(str(a, "path"));
-    if (entry?.cloud?.web_url) return { kind: "url", url: entry.cloud.web_url };
-    return { kind: "file", path: `/tmp/opencode/mock-drive/${entry?.name ?? "file"}` };
-  },
 };
+
+/** open_target for a Drive file: a Google Docs file's page, or where its copy lands. */
+function driveOpen(path: string): OpenTarget {
+  const entry = driveNode(path);
+  if (entry?.cloud?.web_url) return { kind: "url", url: entry.cloud.web_url };
+  return { kind: "file", path: `/tmp/opencode/mock-drive/${entry?.name ?? "file"}` };
+}
 
 // ----- Check for Updates: tests drive the answers through __mockUpdate -----
 
@@ -1897,11 +1948,6 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   sftp_disconnect: (a) => {
     mockSftpServers = mockSftpServers.filter((server) => server.id !== str(a, "id"));
   },
-  sftp_open: (a) => {
-    const path = str(a, "path");
-    const name = decodeURIComponent(path.split("/").pop() ?? "file");
-    return `/tmp/opencode/mock-sftp/${name}`;
-  },
   create_symlink: (a) => {
     const path = localWrite(str(a, "path"));
     const node = lookup(path);
@@ -2075,7 +2121,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   copy_entry: (a) => (transferRoute(a) === "drive" ? driveTransfer(a, false) : (transfer(a, false), str(a, "to"))),
   move_entry: (a) => (transferRoute(a) === "drive" ? driveTransfer(a, true) : (transfer(a, true), str(a, "to"))),
   trash_entries: trashEntries,
-  trash_info: (a) => (a.paths as string[]).map(trashInfo),
+  trash_info: (a) => (a.paths as string[]).map((path) => (isLocal(path) ? trashInfo(path) : null)),
   restore_entry: (a) => {
     const path = str(a, "path");
     return placeOf(path) === "drive" ? driveTrash(path, false) : restoreEntry(localPath(path));
@@ -2116,9 +2162,31 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
 };
 
 // Long commands report progress and can be held by tests (see __mockOps).
-for (const name of ["copy_entry", "move_entry", "delete_permanently", "empty_trash", "drive_open", "sftp_open", "share_open"]) {
+for (const name of ["copy_entry", "move_entry", "delete_permanently", "empty_trash"]) {
   COMMANDS[name] = gated(COMMANDS[name]);
 }
+
+// ----- Opening a file (open_target): remote files download first -----
+
+type OpenTarget = { kind: "file"; path: string } | { kind: "url"; url: string };
+
+/** A remote file's copy to open, by its kind, as the backend's handlers answer. */
+const DOWNLOAD_TO_OPEN: Record<Exclude<Place, "local">, (path: string) => OpenTarget> = {
+  drive: driveOpen,
+  share: (path) => ({ kind: "file", path: shareOpen(path) }),
+  sftp: (path) => ({ kind: "file", path: `/tmp/opencode/mock-sftp/${decodeURIComponent(path.split("/").pop() ?? "file")}` }),
+};
+
+/** Like the backend, only a download is an operation (held, cancelled, reported). */
+const downloadToOpen = gated((a) => {
+  const path = str(a, "path");
+  return DOWNLOAD_TO_OPEN[placeOf(path) as Exclude<Place, "local">](path);
+});
+
+COMMANDS.open_target = (a) => {
+  const path = str(a, "path");
+  return placeOf(path) === "local" ? { kind: "file", path: localPath(path) } : downloadToOpen(a);
+};
 
 // ----- The backend's location gate (src-tauri/src/place.rs), same wording -----
 

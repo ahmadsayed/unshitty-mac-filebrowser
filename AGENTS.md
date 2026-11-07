@@ -329,10 +329,9 @@ GPL-3.0-or-later).
   `place::local` (or `local_write`), a write command checks
   `place::writable` first (copy, move and rename: `place::transfer`), and a
   batch with nothing to say about remote paths answers through
-  `place::local_only`. Keep Versions, `share_folder`, `share_info` and
-  `trash_info` don't ask yet; give a new command the gate rather than
-  copying them. Keep each command's local arm a single call into its
-  module; a new kind or refusal is a row in `place.rs`'s table test.
+  `place::local_only`; give a new command the gate too. Keep each
+  command's local arm a single call into its module; a new kind or refusal
+  is a row in `place.rs`'s table test.
 - Commit messages: conventional style (`feat:`, `fix:`, `docs:`, `chore:`),
   imperative subject, a body explaining what and why.
 - Keep the README's feature list and "Not supported yet" section in sync with

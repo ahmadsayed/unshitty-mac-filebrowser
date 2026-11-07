@@ -864,6 +864,24 @@ impl Trash {
     }
 }
 
+/// A Trash for a temp home under `dir`, with its root where this platform
+/// keeps the home Trash whatever `XDG_DATA_HOME` says (`Trash::new` would
+/// follow it to the user's own Trash), its items folder made, and its log in
+/// a temp config folder. Returns the Trash, the home and the items folder.
+#[cfg(test)]
+pub(crate) fn temp_trash(dir: &Path) -> (Trash, PathBuf, PathBuf) {
+    let home = dir.join("home");
+    let root = if cfg!(target_os = "macos") {
+        home.join(".Trash")
+    } else {
+        home.join(".local/share/Trash")
+    };
+    let items = ensure_items_in(&root);
+    fs::create_dir_all(&items).unwrap();
+    let log = Some(dir.join("config/trash_log.json"));
+    (Trash::with_root(home.clone(), root, log), home, items)
+}
+
 /// The Put Back records of the home Trash: `~/.Trash/.DS_Store`, on the
 /// volume mounted at `/`.
 fn home_put_back(home: &Path) -> HashMap<String, PathBuf> {
@@ -1954,22 +1972,6 @@ mod tests {
     }
 
     // --- Trash: the log, Put Back and "is in a Trash" ---------------------
-
-    /// A Trash for a temp home, with its root where this platform keeps the
-    /// home Trash whatever `XDG_DATA_HOME` says, and its log in a temp
-    /// config folder. Returns the Trash, the home and the items folder.
-    fn temp_trash(dir: &Path) -> (Trash, PathBuf, PathBuf) {
-        let home = dir.join("home");
-        let root = if cfg!(target_os = "macos") {
-            home.join(".Trash")
-        } else {
-            home.join(".local/share/Trash")
-        };
-        let items = items_dir(&root);
-        fs::create_dir_all(&items).unwrap();
-        let log = Some(dir.join("config/trash_log.json"));
-        (Trash::with_root(home.clone(), root, log), home, items)
-    }
 
     fn text(path: &Path) -> String {
         path.to_string_lossy().to_string()

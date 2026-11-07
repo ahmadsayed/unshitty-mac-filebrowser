@@ -70,7 +70,8 @@ succeeded. The frontend treats "Cancelled." as a cancel, not an error.
 **D3. `lib.rs` wires it to a Tauri `Channel`.** The long commands gain
 `op: String` and `progress: Channel<ProgressUpdate>`: `copy_entry`,
 `move_entry`, `trash_entries`, `delete_permanently`, `empty_trash`,
-`drive_open`, `sftp_open`, `share_open`. A registry in managed state maps
+and `open_target` when it downloads a Drive, share or SSH file (it replaced
+`drive_open`, `sftp_open` and `share_open`). A registry in managed state maps
 `op` to its `Progress`; `cancel_operation(op)` sets the flag (cancelling an
 unknown or finished op does nothing). While a command runs, a ticker sends
 `{ bytes, items, phase }` at most every 100 ms, and once more when it ends;
