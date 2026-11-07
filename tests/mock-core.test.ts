@@ -58,6 +58,26 @@ test("item_counts summarises folders: count, versioned, null when unreadable", a
   ).toEqual([{ count: 1, versioned: false }, { count: 3, versioned: true }, null]);
 });
 
+test("item_counts logs what it was asked, answers null for remote folders, and can be held", async () => {
+  type MockCounts = { log: { asked: string[][] }; hold(hold: boolean): void; held(): number; reset(): void };
+  const counts = (globalThis as unknown as { __mockCounts: MockCounts }).__mockCounts;
+  counts.reset();
+  expect(await invoke("item_counts", { paths: ["sftp://user@host/x", "share://abc/x", "gdrive://root"], showHidden: false }))
+    .toEqual([null, null, null]);
+  counts.hold(true);
+  let answer: unknown;
+  const pending = invoke("item_counts", { paths: [`${HOME}/Desktop`], showHidden: false }).then((a) => (answer = a));
+  await new Promise((r) => setTimeout(r, 5));
+  expect(counts.held()).toBe(1);
+  expect(answer).toBeUndefined();
+  counts.hold(false);
+  await pending;
+  expect(answer).toEqual([{ count: 1, versioned: false }]);
+  expect(counts.log.asked).toEqual([["sftp://user@host/x", "share://abc/x", "gdrive://root"], [`${HOME}/Desktop`]]);
+  counts.reset();
+  expect(counts.log.asked).toEqual([]);
+});
+
 test("file_properties describes files, folders and links", async () => {
   const file = await invoke<Record<string, unknown>>("file_properties", { path: `${HOME}/main.rs` });
   expect(file).toMatchObject({ name: "main.rs", parent: HOME, is_dir: false, size: 18_400, mode: "-rw-r--r--", item_count: null });

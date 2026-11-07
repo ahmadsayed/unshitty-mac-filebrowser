@@ -1,0 +1,100 @@
+// What a folder that can't be listed turns into, depending on how the view
+// got there: the first view shows an error page, going to it keeps the view
+// and shows a toast (with Grant Access for a macOS privacy block), the path
+// entry checks before going, and a reload of a share shows its status page.
+import { beforeAll, expect, test } from "vitest";
+import { invoke } from "../dev/mock-tauri/core";
+import { $, $$, boot, click, closeOverlays, dialogHeading, goTo, key, names, open, settle, title } from "./app";
+
+const HOME = "/Users/me";
+const place = (label: string) => $$(".sidebar-row").find((row) => row.textContent?.trim() === label)!;
+const share = () =>
+  (globalThis as unknown as {
+    __mockShare: { reset(): void; setOnline(v: boolean): void; setNoAccess(v: boolean): void };
+  }).__mockShare;
+
+/** The toast that says `text`, if one is on screen. */
+const toastWith = (text: string) => $$(".toast").find((t) => t.textContent?.includes(text));
+
+beforeAll(async () => {
+  // The window opens on a folder macOS won't let it read.
+  history.replaceState(null, "", "/?path=/System");
+  await boot();
+  history.replaceState(null, "", "/");
+});
+
+test("the first view of a folder that can't be read is an error page", () => {
+  expect(title()).toBe("System");
+  expect($("#view").textContent).toContain("Unable to Access Location");
+  expect($("#view").textContent).toContain("Operation not permitted");
+});
+
+test("reloading the error page keeps it", async () => {
+  await key("F5");
+  await settle(20);
+  expect(title()).toBe("System");
+  expect($("#view").textContent).toContain("Unable to Access Location");
+});
+
+test("going back to it keeps the view and offers Grant Access", async () => {
+  await goTo(HOME);
+  expect(title()).toBe("Home");
+  await key("Backspace");
+  await settle(20);
+  expect(title()).toBe("Home");
+  expect(names()).toContain("Documents");
+  const toast = toastWith("Unable to access “System”: Operation not permitted");
+  expect(toast).toBeTruthy();
+  expect(toast!.querySelector(".btn")?.textContent).toBe("Grant Access");
+});
+
+test("the path entry names the typed path, with Grant Access only for a privacy block", async () => {
+  await goTo("/System");
+  expect(title()).toBe("Home");
+  const blocked = toastWith("Unable to access “/System”: Operation not permitted");
+  expect(blocked?.querySelector(".btn")?.textContent).toBe("Grant Access");
+  await closeOverlays();
+
+  await goTo(`${HOME}/Nowhere`);
+  expect(title()).toBe("Home");
+  const missing = toastWith(`Unable to find “${HOME}/Nowhere”: No such file or directory`);
+  expect(missing).toBeTruthy();
+  expect(missing!.querySelector(".btn")).toBeNull();
+  await closeOverlays();
+});
+
+test("the path entry asks to connect to an SSH server that isn't connected", async () => {
+  (globalThis as unknown as { __mockSftp: { reset(): void } }).__mockSftp.reset();
+  await goTo("sftp://user@host/home");
+  expect(dialogHeading()).toBe("Connect to Server");
+  expect($<HTMLInputElement>("#sftp-server").value).toBe("sftp://user@host/home");
+  await closeOverlays();
+  expect(title()).toBe("Home");
+});
+
+test("reloading a share whose sharer went offline, or took access away, shows its status page", async () => {
+  share().reset();
+  await invoke("add_received", { link: `share://${"mockreload".padEnd(64, "a")}` });
+  await click(place("Network"));
+  await settle(20);
+  await open("Photos");
+  await settle(20);
+  expect(names()).toEqual(["Photos", "hello.txt"]);
+
+  share().setOnline(false);
+  await key("F5");
+  await settle(20);
+  expect($("#view").textContent).toContain("Ahmed Is Offline");
+
+  share().setOnline(true);
+  await key("F5");
+  await settle(20);
+  expect(names()).toEqual(["Photos", "hello.txt"]);
+
+  share().setNoAccess(true);
+  await key("F5");
+  await settle(20);
+  expect($("#view").textContent).toContain("No Access");
+  expect($("#view").textContent).toContain("Ahmed stopped sharing this folder with you.");
+  share().reset();
+});
