@@ -30,10 +30,11 @@ export interface ListingContext {
   isMac: boolean;
   /** For a share:// location, its share's status. */
   share?: ShareState;
-  /** The location's name, as the path bar shows it. */
-  name: string;
-  /** The location's parent, where a folder that went away goes. */
-  parent: string;
+  /** A location's name, as the path bar shows it (main.ts's basename). Only
+   *  called for the row that needs it: some names can't be decoded. */
+  nameOf: (loc: string) => string;
+  /** A location's parent, where a folder that went away goes (main.ts's parentOf). */
+  parentOf: (loc: string) => string;
 }
 
 /** What the view does: a share's status page, the Connect to Server dialog,
@@ -94,9 +95,9 @@ const ROWS: Row[] = [
   { when: entry, then: (f) => ({ kind: "toast", text: `Unable to find “${f.loc}”: ${f.message}`, grantAccess: false }) },
   // A cancelled copy deletes the folder it was writing, and the view can
   // still be showing it: go to its parent rather than strand it on an error page.
-  { when: (f) => f.ctx.phase === "reload" && isLocalLocation(f.loc) && MISSING.test(f.raw), then: (f) => ({ kind: "goTo", parent: f.ctx.parent }) },
+  { when: (f) => f.ctx.phase === "reload" && isLocalLocation(f.loc) && MISSING.test(f.raw), then: (f) => ({ kind: "goTo", parent: f.ctx.parentOf(f.loc) }) },
   // Going somewhere keeps the view.
-  { when: (f) => f.ctx.phase === "navigate", then: (f) => accessToast(f.ctx.name, f) },
+  { when: (f) => f.ctx.phase === "navigate", then: (f) => accessToast(f.ctx.nameOf(f.loc), f) },
   // The first view and a reload: the error page.
   { when: () => true, then: () => ({ kind: "errorPage" }) },
 ];

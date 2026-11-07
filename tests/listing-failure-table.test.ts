@@ -12,8 +12,8 @@ const SFTP = "sftp://me@host/home";
 const ctx = (phase: ListingPhase, more: Partial<ListingContext> = {}): ListingContext => ({
   phase,
   isMac: true,
-  name: "Name",
-  parent: "/parent",
+  nameOf: (loc) => `name of ${loc}`,
+  parentOf: (loc) => `parent of ${loc}`,
   ...more,
 });
 
@@ -42,23 +42,33 @@ const rows: [string, string, unknown, ListingContext, object][] = [
     kind: "toast", text: "Unable to find “/nope”: No such file or directory", grantAccess: false,
   }],
   // Going somewhere
-  ["going to a folder a privacy block refuses", "/System", NOT_PERMITTED, ctx("navigate", { name: "System" }), {
-    kind: "toast", text: "Unable to access “System”: Operation not permitted", grantAccess: true,
+  ["going to a folder a privacy block refuses", "/System", NOT_PERMITTED, ctx("navigate"), {
+    kind: "toast", text: "Unable to access “name of /System”: Operation not permitted", grantAccess: true,
   }],
-  ["going to a folder that went away", "/a/gone", MISSING, ctx("navigate", { name: "gone" }), {
-    kind: "toast", text: "Unable to access “gone”: No such file or directory", grantAccess: false,
+  ["going to a folder that went away", "/a/gone", MISSING, ctx("navigate"), {
+    kind: "toast", text: "Unable to access “name of /a/gone”: No such file or directory", grantAccess: false,
   }],
-  ["going to a server that isn't connected", SFTP, "Connect to this server first.", ctx("navigate", { name: "home" }), {
-    kind: "toast", text: "Unable to access “home”: Connect to this server first.", grantAccess: false,
+  ["going to a server that isn't connected", SFTP, "Connect to this server first.", ctx("navigate"), {
+    kind: "toast", text: "Unable to access “name of sftp://me@host/home”: Connect to this server first.", grantAccess: false,
   }],
   // The first view
   ["a first view a privacy block refuses", "/System", NOT_PERMITTED, ctx("first"), { kind: "errorPage" }],
   // A reload
-  ["reload of a local folder that went away", "/a/gone", MISSING, ctx("reload"), { kind: "goTo", parent: "/parent" }],
+  ["reload of a local folder that went away", "/a/gone", MISSING, ctx("reload"), { kind: "goTo", parent: "parent of /a/gone" }],
   ["reload of a server folder that went away", `${SFTP}/gone`, MISSING, ctx("reload"), { kind: "errorPage" }],
   ["reload of a folder that can't be read", "/a/locked", DENIED, ctx("reload"), { kind: "errorPage" }],
 ];
 
 test.each(rows)("%s", (_label, loc, err, context, expected) => {
   expect(listingReaction(loc, err, context)).toEqual({ ...expected, message: cleanError(err) });
+});
+
+test("a name is only asked for when a toast shows it", () => {
+  const throws = () => {
+    throw new URIError("URI malformed");
+  };
+  const typed = "sftp://us%zz@host";
+  expect(listingReaction(typed, "Connect to this server first.", ctx("entry", { nameOf: throws, parentOf: throws })))
+    .toMatchObject({ kind: "connect", url: typed });
+  expect(listingReaction("/a/locked", DENIED, ctx("reload", { nameOf: throws, parentOf: throws }))).toMatchObject({ kind: "errorPage" });
 });

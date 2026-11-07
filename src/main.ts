@@ -724,7 +724,7 @@ async function listingFailed(err: unknown): Promise<boolean> {
 
 /** What listingReaction needs to know about `loc` (src/listing-failure.ts). */
 function listingContext(loc: string, phase: ListingPhase): ListingContext {
-  return { phase, isMac, share: isSharePath(loc) ? receivedFor(loc)?.status : undefined, name: basename(loc), parent: parentOf(loc) };
+  return { phase, isMac, share: isSharePath(loc) ? receivedFor(loc)?.status : undefined, nameOf: basename, parentOf };
 }
 
 /** "Shared by Ahmed · Read only" under the path bar. */
