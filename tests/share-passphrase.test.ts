@@ -219,3 +219,23 @@ test("an in-flight unlock cannot submit twice or report cancellation while claim
   expect(input.value).toBe("");
   expect(dialogHeading()).toBeUndefined();
 });
+
+test("a failed unlock keeps the prompt with everything enabled and the passphrase selected", async () => {
+  const submit = vi.fn(async () => { throw new Error("Incorrect passphrase or damaged share link."); });
+  const result = promptSharePassphrase(submit);
+  const input = $<HTMLInputElement>("#share-unlock-passphrase");
+  await type(input, PHRASE);
+  await respond("Unlock");
+  expect($(".dialog-extra .field-message").textContent).toBe("Incorrect passphrase or damaged share link.");
+  expect($(".dialog-extra .field-message").classList.contains("error")).toBe(true);
+  const buttons = $$(".dialog-layer .dialog-responses button") as HTMLButtonElement[];
+  expect(buttons.map((b) => b.disabled)).toEqual([false, false]);
+  expect(input.disabled).toBe(false);
+  expect(document.activeElement).toBe(input);
+  expect([input.selectionStart, input.selectionEnd]).toEqual([0, PHRASE.length]);
+  submit.mockImplementation(async () => { throw "Failed: the sharer is offline"; });
+  await respond("Unlock");
+  expect($(".dialog-extra .field-message").textContent).toBe("Failed: the sharer is offline");
+  await respond("Cancel");
+  expect(await result).toBeNull();
+});
