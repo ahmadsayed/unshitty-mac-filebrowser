@@ -2,22 +2,40 @@
 // their Back and Forward) after items are
 // moved, renamed or sent to the Trash, driven through the real app. The
 // rules themselves are tested on their own in tests/path-refs.test.ts.
-import { beforeAll, expect, test } from "vitest";
+import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, click, closeOverlays, goTo, hit, item, key, mouse, names, respond, settle, title, toasts, type } from "./app";
+import { $, $$, boot, click, closeOverlays, dialogHeading, goTo, hit, item, key, mouse, names, respond, settle, title, toasts, type } from "./app";
 
 const ROOT = "/Users/me/Refs";
 const DEST = `${ROOT}/Dest`;
+/** Where the tests of a paste still running work, so ROOT fits on screen. */
+const RUN = "/Users/me/Running";
 
 beforeAll(async () => {
   for (const dir of ["", "/Dest", "/Other", "/A", "/Clash", "/Trashy", "/Empty", "/Marked", "/Outer", "/Outer/In", "/Cuts", "/CutDest", "/CopySrc", "/CopyDest", "/Spare", "/Halt", "/HaltDest", "/HaltNext", "/TabDir", "/Box", "/Box/Sub", "/Hist", "/Fwd"]) {
     await invoke("make_dir", { path: ROOT + dir });
   }
+  for (const dir of ["", "/Wait", "/Wait/Folder", "/WaitDest", "/Race", "/Race/Folder", "/RaceDest"]) {
+    await invoke("make_dir", { path: RUN + dir });
+  }
   for (const file of ["/note.txt", "/A/inner.txt", "/keep.txt", "/Dest/keep.txt", "/Trashy/x.txt", "/Trashy/y.txt", "/Trashy/z.txt", "/Cuts/c.txt", "/CopySrc/f.txt", "/Halt/p.txt", "/Halt/q.txt", "/HaltDest/q.txt", "/TabDir/t.txt", "/Box/Sub/s.txt"]) {
     await invoke("create_file", { path: ROOT + file });
   }
+  for (const file of ["/Wait/a.txt", "/Wait/b.txt", "/WaitDest/b.txt", "/Race/a.txt", "/Race/b.txt"]) {
+    await invoke("create_file", { path: RUN + file });
+  }
   await boot();
   await key("1", { mod: true }); // list view: rows have a star button
+});
+
+type MockOps = { hold(): void; held(): number; release(): void; reset(): void };
+const ops = () => (globalThis as unknown as { __mockOps: MockOps }).__mockOps;
+
+afterEach(async () => {
+  ops().release();
+  ops().reset();
+  await settle(20);
+  await closeOverlays();
 });
 
 const starred = (name: string) => item(name).querySelector(".star")!.classList.contains("starred");
@@ -328,4 +346,75 @@ test("a tab in the background follows a folder moved around it, and so does its 
   expect(names()).toEqual(["Sub"]);
   await key("w", { mod: true });
   await settle(20);
+});
+
+// ---- While a paste runs ------------------------------------------------------------
+
+/** Wait until the mock holds the next item of a paste. */
+async function waitHeld(): Promise<void> {
+  await vi.waitFor(() => expect(ops().held()).toBe(1), { timeout: 2000 });
+  await settle(10);
+}
+
+test("an item a paste moved is followed as it lands, while the paste waits on a name clash", async () => {
+  await goTo(`${RUN}/Wait`);
+  await star("a.txt");
+  await goTo(`${RUN}/Wait/Folder`);
+  await key("d", { mod: true });
+  await goTo(`${RUN}/Wait`);
+  await select("Folder", "a.txt", "b.txt");
+  await key("x", { mod: true });
+  await goTo(`${RUN}/WaitDest`);
+  await key("v", { mod: true }); // Folder and a.txt move; b.txt clashes
+  await settle(30);
+  expect(dialogHeading()).toMatch(/b\.txt/);
+
+  // Saved already: closing the window now loses nothing.
+  const stars = await saved();
+  expect(stars).toContain(`${RUN}/WaitDest/a.txt`);
+  expect(stars).not.toContain(`${RUN}/Wait/a.txt`);
+  expect(await pins()).toContain(`${RUN}/WaitDest/Folder`);
+  expect(await pins()).not.toContain(`${RUN}/Wait/Folder`);
+  expect(bookmark("Folder")?.dataset.location).toBe(`${RUN}/WaitDest/Folder`);
+
+  await respond("Skip");
+  await settle(20);
+  expect(starred("a.txt")).toBe(true);
+  expect(await saved()).toContain(`${RUN}/WaitDest/a.txt`);
+});
+
+test("an item renamed after it landed, while the rest of its paste runs, keeps its star and bookmark", async () => {
+  await goTo(`${RUN}/Race`);
+  await star("a.txt");
+  await goTo(`${RUN}/Race/Folder`);
+  await key("d", { mod: true });
+  await goTo(`${RUN}/Race`);
+  await select("Folder", "a.txt", "b.txt");
+  await key("x", { mod: true });
+  ops().hold();
+  await goTo(`${RUN}/RaceDest`);
+  await key("v", { mod: true });
+  await waitHeld(); // Folder
+  ops().release();
+  await waitHeld(); // a.txt
+  ops().release();
+  await waitHeld(); // b.txt: Folder and a.txt have landed
+  await key("r", { mod: true });
+  await settle(20);
+  expect(names()).toEqual(["Folder", "a.txt"]);
+  expect(starred("a.txt")).toBe(true);
+
+  await rename("a.txt", "a2.txt");
+  await rename("Folder", "Folder 2");
+  ops().release();
+  await settle(40);
+
+  expect(names()).toEqual(["Folder 2", "a2.txt", "b.txt"]);
+  expect(starred("a2.txt")).toBe(true);
+  const stars = await saved();
+  expect(stars).toContain(`${RUN}/RaceDest/a2.txt`);
+  expect(stars).not.toContain(`${RUN}/RaceDest/a.txt`);
+  expect(await pins()).toContain(`${RUN}/RaceDest/Folder 2`);
+  expect(await pins()).not.toContain(`${RUN}/RaceDest/Folder`);
+  expect(bookmark("Folder 2")?.dataset.location).toBe(`${RUN}/RaceDest/Folder 2`);
 });

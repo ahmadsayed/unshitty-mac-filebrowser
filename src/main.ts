@@ -47,7 +47,7 @@ import { Selection, type Mark } from "./selection";
 import { arrangeSearch, fold, SEARCH_LIMIT, SearchSession, searchSections as arrangedSections, type SearchChange, type SearchSection } from "./search";
 import { FolderSummaries } from "./folder-summaries";
 import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
-import { PathRefs, type Clip, type Move } from "./path-refs";
+import { PathRefs, type Clip } from "./path-refs";
 import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
 import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
@@ -2998,6 +2998,10 @@ async function transferItem(op: Operation, from: string, to: string, overwrite: 
   try {
     const result = moving ? await moveEntry(from, to, overwrite, tracked) : await copyEntry(from, to, overwrite, tracked);
     await Promise.race([last, new Promise((resolve) => setTimeout(resolve, LAST_UPDATE_MS))]);
+    // Followed as it lands, so stars and bookmarks are saved before the rest
+    // of the batch (src/path-refs.ts): the user can rename this item, or
+    // close the window, while a name clash or a long item still waits.
+    if (moving) pathRefs.moved([{ from, to: result }]);
     return result;
   } finally {
     finished = true;
@@ -3038,56 +3042,47 @@ async function transferBatch(
   let anyMove = false;
   let applyToAll: ConflictChoice | null = null;
 
-  // What moved, as the backend reported it: followed once for the batch,
-  // even when it stopped part-way (src/path-refs.ts).
-  const moves: Move[] = [];
-  try {
-    for (let i = 0; i < paths.length && !batch.cancelled; i++) {
-      const from = paths[i];
-      // A Drive name can be "a/b" or "..": locally it must stay one plain name.
-      const name = isCloud(from) && !isCloud(destDir) ? safeLocalName(basename(from)) : basename(from);
-      const isDir = dirs.has(from);
-      const moving = move(from);
-      anyMove ||= moving;
-      let to = joinPath(destDir, name);
-      let overwrite = false;
+  for (let i = 0; i < paths.length && !batch.cancelled; i++) {
+    const from = paths[i];
+    // A Drive name can be "a/b" or "..": locally it must stay one plain name.
+    const name = isCloud(from) && !isCloud(destDir) ? safeLocalName(basename(from)) : basename(from);
+    const isDir = dirs.has(from);
+    const moving = move(from);
+    anyMove ||= moving;
+    let to = joinPath(destDir, name);
+    let overwrite = false;
 
-      // Same folder: in Drive `from` is an id path and `to` a pending name,
-      // so compare folders, not paths.
-      if (parentOf(from) === destDir.replace(/\/+$/, "") && basename(from) === name) {
-        // A copy into its own folder makes a duplicate, as in GNOME Files;
-        // moving into the same folder does nothing.
-        if (moving) continue;
-        to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
-      } else if (await pathExists(to)) {
-        let choice: ConflictChoice | null = applyToAll;
-        if (!choice) {
-          const answer = await askConflict(name, isDir, destDir, paths.length - i - 1);
-          choice = answer.choice;
-          if (answer.all) applyToAll = choice;
-        }
-        if (choice === "cancel") {
-          batch.cancelled = true;
-          break;
-        }
-        if (choice === "skip") continue;
-        if (choice === "keepboth") to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
-        else overwrite = true;
+    // Same folder: in Drive `from` is an id path and `to` a pending name,
+    // so compare folders, not paths.
+    if (parentOf(from) === destDir.replace(/\/+$/, "") && basename(from) === name) {
+      // A copy into its own folder makes a duplicate, as in GNOME Files;
+      // moving into the same folder does nothing.
+      if (moving) continue;
+      to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
+    } else if (await pathExists(to)) {
+      let choice: ConflictChoice | null = applyToAll;
+      if (!choice) {
+        const answer = await askConflict(name, isDir, destDir, paths.length - i - 1);
+        choice = answer.choice;
+        if (answer.all) applyToAll = choice;
       }
-
-      try {
-        const landed = await transferItem(op, from, to, overwrite, moving);
-        done.push(landed);
-        if (moving) moves.push({ from, to: landed });
-        showLanded(destDir);
-      } catch (err) {
-        // A cancel is not a failure: no toast, finished items stay.
-        if (cleanError(err) === CANCELLED) batch.cancelled = true;
-        else errors.push(`“${name}”: ${cleanError(err)}`);
+      if (choice === "cancel") {
+        batch.cancelled = true;
+        break;
       }
+      if (choice === "skip") continue;
+      if (choice === "keepboth") to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
+      else overwrite = true;
     }
-  } finally {
-    pathRefs.moved(moves);
+
+    try {
+      done.push(await transferItem(op, from, to, overwrite, moving));
+      showLanded(destDir);
+    } catch (err) {
+      // A cancel is not a failure: no toast, finished items stay.
+      if (cleanError(err) === CANCELLED) batch.cancelled = true;
+      else errors.push(`“${name}”: ${cleanError(err)}`);
+    }
   }
 
   const verb = anyMove ? "move" : "copy";

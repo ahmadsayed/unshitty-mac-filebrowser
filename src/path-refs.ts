@@ -1,7 +1,8 @@
 // What the app remembers by path, kept pointing at items that were moved or
 // renamed, or that went to the Trash. Code that moves, renames or trashes
-// items reports it here once per batch (`moved`, `gone`) instead of updating
-// each holder by hand; this module knows every holder and its rule:
+// items reports it here as soon as the backend has done it (`moved`, `gone`)
+// instead of updating each holder by hand; this module knows every holder
+// and its rule:
 //
 //   holder       moved or renamed                     sent to the Trash
 //   stars        follow (starred.json)                kept
@@ -14,7 +15,10 @@
 // did before, going to the parent when a reload finds the folder gone.
 //
 // A holder is replaced at most once per report, and only when it changed,
-// so it saves once: two saves of one batch could land out of order. A new
+// so a report saves it once (Batch Rename reports all its items at once). A
+// paste reports each item as it lands, not at the end: until then a star
+// would show on nothing, be lost if the window closed, and land on a dead
+// path if the user renamed the landed item before the paste ended. A new
 // path is always one the backend reported for a moved item, or a path
 // inside a moved folder with the folder's part swapped: nothing is guessed.
 // No DOM here: main.ts keeps the state, and saves and redraws in `set`.
@@ -104,8 +108,8 @@ export interface PathHolders<Tab extends TabPaths = TabPaths> {
 export class PathRefs<Tab extends TabPaths = TabPaths> {
   constructor(private readonly holders: PathHolders<Tab>) {}
 
-  /** Items the backend moved or renamed, one batch at a time: only pairs
-   *  that really moved, so a star never follows a move that failed. */
+  /** Items the backend moved or renamed, reported as soon as they moved:
+   *  only pairs that really moved, so a star never follows a move that failed. */
   moved(moves: readonly Move[]): void {
     if (moves.length === 0) return;
     const follow = (path: string) => followPath(path, moves);
