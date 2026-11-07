@@ -243,12 +243,7 @@ pub(crate) fn staging_path(to: &Path) -> PathBuf {
 /// Swap the staged item into place, sending whatever was at `to` to the Trash.
 /// If either step fails, a staged copy is removed and a staged original goes
 /// back where it came from.
-pub(crate) fn replace_with_staged(
-    staged: &Path,
-    to: &Path,
-    kind: Staged,
-    trash: TrashFn,
-) -> Result<(), String> {
+fn replace_with_staged(staged: &Path, to: &Path, kind: Staged, trash: TrashFn) -> Result<(), String> {
     let failed = match trash(to) {
         Err(e) => format!("Could not move the existing item to the Trash: {}", e),
         Ok(()) => match std::fs::rename(staged, to) {
