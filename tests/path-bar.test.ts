@@ -123,17 +123,30 @@ test("an SSH server's crumbs start at the server; Up from its root selects it in
   expect(selectedNames()).toEqual(["user@host"]);
 });
 
-test("Up from an SSH subfolder reaches the server without its trailing slash", async () => {
+test("Up from an SSH subfolder reaches the server's root; Up again selects it in Network", async () => {
   await openItem("user@host");
   await openItem("Documents");
   await up();
-  // today's behaviour, fixed in a follow-up: Up yields "sftp://user@host"
-  // while the root crumb and the server's URL are "sftp://user@host/", so
-  // the second Up lands in Network without selecting the server.
   expect(names()).toEqual(["Documents", "notes.txt"]);
   expect(selectedNames()).toEqual(["Documents"]);
   expect(crumbs()).toEqual([["user@host", "sftp://user@host/"]]);
   await up();
   expect(title()).toBe("Network");
-  expect(selectedNames()).toEqual([]);
+  expect(selectedNames()).toEqual(["user@host"]);
+});
+
+test("a server's root typed with or without its slash is the same place", async () => {
+  for (const typed of ["sftp://user@host", "sftp://user@host/", "sftp://user@host//"]) {
+    await goTo(typed);
+    expect(crumbs()).toEqual([["user@host", "sftp://user@host/"]]);
+    await up();
+    expect(title()).toBe("Network");
+    expect(selectedNames()).toEqual(["user@host"]);
+  }
+  // "/" typed on a server is its root too.
+  await goTo("sftp://user@host/Documents");
+  await goTo("/");
+  expect(crumbs()).toEqual([["user@host", "sftp://user@host/"]]);
+  await up();
+  expect(selectedNames()).toEqual(["user@host"]);
 });

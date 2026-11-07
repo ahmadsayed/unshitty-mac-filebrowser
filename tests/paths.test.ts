@@ -80,6 +80,11 @@ test("SFTP paths are remote and resolve as absolute locations", () => {
   expect(resolveTypedPath("/var/log", "sftp://me@host/", HOME)).toEqual({
     path: "sftp://me@host/var/log",
   });
+  // A server's root keeps its slash however it was typed.
+  expect(resolveTypedPath("/", "sftp://me@host/docs", HOME)).toEqual({ path: "sftp://me@host/" });
+  expect(resolveTypedPath("sftp://me@host", HOME, HOME)).toEqual({ path: "sftp://me@host/" });
+  expect(resolveTypedPath("sftp://me@host//", HOME, HOME)).toEqual({ path: "sftp://me@host/" });
+  expect(resolveTypedPath("sftp://me@host/docs/", HOME, HOME)).toEqual({ path: "sftp://me@host/docs" });
 });
 
 test("pasted Drive links become locations for the current account", () => {
@@ -165,8 +170,10 @@ test.each([
   ["share://r1/Photos",                      "share://r1"],
   ["share://r1",                             NETWORK],
   ["sftp://me@host/",                        NETWORK],
-  // today's behaviour, fixed in a follow-up: the server's root is "sftp://me@host/".
-  ["sftp://me@host/docs",                    "sftp://me@host"],
+  // A server's root is written with its slash, as the server's URL is.
+  ["sftp://me@host/docs",                    "sftp://me@host/"],
+  ["sftp://me@host/docs/",                   "sftp://me@host/"],
+  ["sftp://me@host",                         NETWORK],
   ["sftp://me@host/docs/sub/",               "sftp://me@host/docs"],
   ["/Users/me/Documents/",                   "/Users/me"],
   ["/Users",                                 "/"],

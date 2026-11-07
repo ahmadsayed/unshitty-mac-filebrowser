@@ -77,6 +77,17 @@ export function sftpAuthority(path: string): string {
   return path.slice(SFTP_PREFIX.length).split("/")[0] ?? "";
 }
 
+/** A server's root, `sftp://<authority>/`: always with its slash, as the
+ *  server's URL is written, so Up, the root crumb and Network agree. */
+export function sftpRoot(authority: string): string {
+  return `${SFTP_PREFIX}${authority}/`;
+}
+
+/** A received share's root, `share://<id>`, without a slash. */
+function shareRoot(id: string): string {
+  return `${SHARE_PREFIX}${id}`;
+}
+
 /** The account key in `gdrive://<account>/…`. */
 export function cloudAccountKey(path: string): string {
   return path.slice(CLOUD_PREFIX.length).split("/")[0] ?? "";
@@ -155,7 +166,14 @@ export function resolveTypedPath(
     typed = `${location.replace(/\/+$/, "")}/${typed}`;
   }
 
-  return { path: typed.length > 1 ? typed.replace(/\/+$/, "") : typed };
+  return { path: withoutTrailingSlash(typed) };
+}
+
+/** Typed text without its trailing slashes, except "/" and a server's root,
+ *  which keeps exactly one. */
+function withoutTrailingSlash(typed: string): string {
+  const path = typed.length > 1 ? typed.replace(/\/+$/, "") : typed;
+  return isSftpPath(path) && afterPrefix(path, SFTP_PREFIX).length === 1 ? sftpRoot(sftpAuthority(path)) : path;
 }
 
 // ---------------------------------------------------------------------------
@@ -249,12 +267,12 @@ function remoteName(path: string, prefix: string): string {
   return decodeSegment(afterPrefix(path, prefix).pop() ?? "");
 }
 
-/** Up from a share or server path: null above its root. */
-function remoteParent(path: string, prefix: string): string | null {
+/** Up from a share or server path: its root written as `root` writes it,
+ *  null above it. */
+function remoteParent(path: string, prefix: string, root: (key: string) => string): string | null {
   const parts = afterPrefix(path, prefix);
   parts.pop();
-  // today's behaviour, fixed in a follow-up: an SSH subfolder's parent is
-  // `sftp://<authority>`, without the trailing slash of the server's root.
+  if (parts.length === 1) return root(parts[0]);
   return parts.length ? `${prefix}${parts.join("/")}` : null;
 }
 
@@ -285,24 +303,24 @@ const SCHEMES: Record<Place, Scheme> = {
   },
   share: {
     name: (path) => remoteName(path, SHARE_PREFIX),
-    parent: (path) => remoteParent(path, SHARE_PREFIX),
+    parent: (path) => remoteParent(path, SHARE_PREFIX, shareRoot),
     // today's behaviour, fixed in a follow-up: a share child is joined like a
     // local one, unencoded (joinSharePath would encode it).
     child: localChild,
     segments: (path) =>
       remoteSegments(path, "share", SHARE_PREFIX, {
-        root: (key) => `${SHARE_PREFIX}${key}`,
+        root: shareRoot,
         rootName: (key) => key,
         segment: decodeSegment,
       }),
   },
   sftp: {
     name: (path) => remoteName(path, SFTP_PREFIX),
-    parent: (path) => remoteParent(path, SFTP_PREFIX),
+    parent: (path) => remoteParent(path, SFTP_PREFIX, sftpRoot),
     child: joinSftpPath,
     segments: (path) =>
       remoteSegments(path, "sftp", SFTP_PREFIX, {
-        root: (key) => `${SFTP_PREFIX}${key}/`,
+        root: sftpRoot,
         rootName: decodeSegment,
         segment: decodeSegment,
       }),

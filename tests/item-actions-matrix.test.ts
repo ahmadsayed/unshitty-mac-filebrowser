@@ -279,9 +279,8 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     // Kept: as for a share.
     keys: { copy: SSH_COPY, paste: READ_ONLY_PASTE, properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing" },
     drag: SSH_COPY,
-    // The server's root is `sftp://user@host/`, but its items' parent is
-    // `sftp://user@host` (paths.ts), so they count as shown elsewhere.
-    preview: ["Open Item Location", "Open"],
+    // The item is in the folder on screen (the server's root): no Open Item Location.
+    preview: ["Open"],
     // Kept: as for a share.
     star: true,
   }],
