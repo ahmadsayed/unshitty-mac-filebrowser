@@ -5281,9 +5281,10 @@ async function init(): Promise<void> {
   $(".sidebar").addEventListener("contextmenu", onSidebarContextMenu);
 
   home = await homeDir().catch(() => "");
-  // The backend knows the platform's Trash folder; the fallback only matters
-  // if the command fails.
-  trashPath = await trashDir().catch(() => (home ? joinPath(home, ".Trash") : ""));
+  // Only the backend knows the platform's Trash folder (~/.Trash on a Mac,
+  // ~/.local/share/Trash/files on Linux). Without its answer there is no
+  // Trash place, rather than a guess.
+  trashPath = await trashDir().catch(() => "");
   await buildSidebar();
   const requested = new URLSearchParams(window.location.search).get("path");
   const initial = requested && isKnownPath(requested) ? requested : home || "/";
