@@ -501,7 +501,8 @@ test("Drive copy, move, trash and restore", async () => {
   expect(await names(DRIVE)).not.toContain("moved.txt");
   expect(await invoke("restore_entry", { path: moved })).toBe(moved);
   expect(await names(DRIVE)).toContain("moved.txt");
-  await expect(invoke("delete_permanently", { path: moved })).rejects.toMatch(/Trash/);
+  // As in the backend: Drive's own Trash can't be emptied from here yet.
+  await expect(invoke("delete_permanently", { path: moved })).rejects.toBe("This action is not available for Google Drive items yet.");
 });
 
 test("copying between local folders and Drive", async () => {
@@ -1085,6 +1086,29 @@ test("the local-only write commands refuse every other path before touching anyt
   await expect(invoke("extract_archive", { path: "sftp://user@host/a.zip", dest: HOME, create: false })).rejects.toBe(
     "This action is not available for SSH servers.",
   );
+});
+
+test("search, the text preview, opening and the Trash commands take local paths only", async () => {
+  const share = await receivedShare();
+  const refused: Array<[string, string]> = [
+    [`${share}/hello.txt`, "This action is not available for shared folders."],
+    ["sftp://user@host/Documents/hello.txt", "This action is not available for SSH servers."],
+    ["Users/me/Desktop/todo.txt", "“Users/me/Desktop/todo.txt” is not a local file."],
+  ];
+  for (const [path, refusal] of refused) {
+    await expect(invoke("search_dir", { path, query: "todo", showHidden: false, limit: 10 })).rejects.toBe(refusal);
+    await expect(invoke("preview_text", { path, limit: 100 })).rejects.toBe(refusal);
+    await expect(invoke("open_file", { path })).rejects.toBe(refusal);
+    await expect(invoke("open_with", { path, app: "/Applications/TextEdit.app" })).rejects.toBe(refusal);
+    await expect(invoke("restore_entry", { path })).rejects.toBe(refusal);
+    await expect(invoke("delete_permanently", { path })).rejects.toBe(refusal);
+  }
+  // Drive restores from its own Trash; the rest have nothing for Drive.
+  const drive = "gdrive://acct/root~My%20Drive/~a.txt";
+  for (const cmd of ["preview_text", "open_file", "open_with", "delete_permanently"]) {
+    await expect(invoke(cmd, { path: drive, limit: 100, app: "/Applications/TextEdit.app" })).rejects.toBe(DRIVE_NO);
+  }
+  expect(await invoke("path_exists", { path: `${HOME}/Desktop/todo.txt` })).toBe(true);
 });
 
 test("folder_size walks local folders only", async () => {

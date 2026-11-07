@@ -365,7 +365,7 @@ async fn search_dir(
 ) -> Result<fs_ops::SearchSummary, String> {
     let stop = app.state::<Searches>().restart(window.label());
     blocking(move || {
-        fs_ops::search_dir(
+        search_local(
             &path,
             &query,
             show_hidden,
@@ -377,6 +377,19 @@ async fn search_dir(
         )
     })
     .await?
+}
+
+/// `search_dir` under a folder on this computer.
+fn search_local(
+    path: &str,
+    query: &str,
+    show_hidden: bool,
+    limit: usize,
+    found: &mut dyn FnMut(Vec<fs_ops::Entry>),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<fs_ops::SearchSummary, String> {
+    place::local(path)?;
+    fs_ops::search_dir(path, query, show_hidden, limit, found, cancelled)
 }
 
 #[tauri::command]
@@ -488,6 +501,7 @@ async fn list_apps() -> Result<Vec<platform::AppChoice>, String> {
 
 #[tauri::command]
 async fn open_file(path: String) -> Result<(), String> {
+    place::local(&path)?;
     blocking(move || platform::open_default(&path)).await?
 }
 
@@ -500,11 +514,13 @@ async fn open_url(url: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn open_with(path: String, app: String) -> Result<(), String> {
+    place::local(&path)?;
     blocking(move || platform::open_with(&path, &app)).await?
 }
 
 #[tauri::command]
 async fn preview_text(path: String, limit: usize) -> Result<fs_ops::TextPreview, String> {
+    place::local(&path)?;
     blocking(move || fs_ops::preview_text(path, limit)).await?
 }
 
@@ -905,20 +921,20 @@ async fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, St
     if place::kind(&path) == Kind::Drive {
         return blocking(move || cloud::write::restore(&app.state::<CloudState>(), &path)).await?;
     }
+    let trashed = place::local(&path)?.to_path_buf();
     blocking(move || {
-        let origin = trash_of(&app)?.restore(Path::new(&path))?;
+        let origin = trash_of(&app)?.restore(&trashed)?;
         Ok(origin.to_string_lossy().to_string())
     })
     .await?
 }
 
-/// Delete an item in the Trash for good.
+/// Delete an item in the Trash for good. Not for Drive's own Trash yet:
+/// `place::local` refuses it, as every other path that isn't on this computer.
 #[tauri::command]
 async fn delete_permanently(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    if place::kind(&path) == Kind::Drive {
-        return Err(cloud::service::unsupported());
-    }
-    blocking(move || trash_of(&app)?.delete_permanently(Path::new(&path))).await?
+    let path = place::local(&path)?.to_path_buf();
+    blocking(move || trash_of(&app)?.delete_permanently(&path)).await?
 }
 
 /// The folder the Trash view lists. On Linux this is
@@ -2520,5 +2536,55 @@ mod updater_config_tests {
         }
         assert!(updater.get("dangerousInsecureTransportProtocol").is_none());
         assert!(conf["bundle"].get("createUpdaterArtifacts").is_none(), "only CI turns this on");
+    }
+}
+
+#[cfg(test)]
+mod read_gate_tests {
+    //! Search, the text preview and opening a file work on this computer
+    //! only: every other path is refused before anything is read or launched.
+    use super::*;
+    use tauri::async_runtime::block_on;
+
+    /// Each refused path with its refusal, with `relative` as the relative one.
+    fn refused(relative: &'static str) -> Vec<(&'static str, String)> {
+        vec![
+            ("share://r1/a.txt", "This action is not available for shared folders.".into()),
+            ("sftp://me@host/a.txt", "This action is not available for SSH servers.".into()),
+            ("gdrive://acct/root~x/~a.txt", "This action is not available for Google Drive items yet.".into()),
+            (relative, format!("“{relative}” is not a local file.")),
+        ]
+    }
+
+    #[test]
+    fn preview_and_search_read_local_paths_only() {
+        // `Cargo.toml` and `src` are in the tests' working directory (the
+        // crate root), so their refusal isn't a missing file.
+        for (path, refusal) in refused("Cargo.toml") {
+            assert_eq!(block_on(preview_text(path.into(), 100)).unwrap_err(), refusal, "{path}");
+        }
+        for (path, refusal) in refused("src") {
+            let found = search_local(path, "lib", false, 10, &mut |_| panic!("searched {path}"), &|| false);
+            assert_eq!(found.unwrap_err(), refusal, "{path}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
+        let file = dir.path().join("notes.txt").to_string_lossy().to_string();
+        assert_eq!(block_on(preview_text(file, 100)).unwrap().text, "hello");
+        let mut found = Vec::new();
+        let root = dir.path().to_string_lossy().to_string();
+        search_local(&root, "notes", false, 10, &mut |batch| found.extend(batch), &|| false).unwrap();
+        assert_eq!(found.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["notes.txt"]);
+    }
+
+    #[test]
+    fn open_and_open_with_refuse_other_paths_before_launching_anything() {
+        // Neither the file nor the app exists, so without the check these
+        // fail on the missing file and never launch anything.
+        for (path, refusal) in refused("missing.txt") {
+            assert_eq!(block_on(open_file(path.into())).unwrap_err(), refusal, "{path}");
+            let with = block_on(open_with(path.into(), "/no/such.desktop".into()));
+            assert_eq!(with.unwrap_err(), refusal, "{path}");
+        }
     }
 }

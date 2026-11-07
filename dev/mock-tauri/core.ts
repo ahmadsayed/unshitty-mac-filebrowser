@@ -754,7 +754,7 @@ export const searchMock = {
 };
 
 function searchCommand(a: Args): unknown {
-  const run = () => search(str(a, "path"), str(a, "query"), a.showHidden as boolean, a.limit as number, a.onResults as Channel<Entry[]> | undefined);
+  const run = () => search(localPath(str(a, "path")), str(a, "query"), a.showHidden as boolean, a.limit as number, a.onResults as Channel<Entry[]> | undefined);
   if (!searchMock.hold) return run();
   return new Promise((resolve, reject) => {
     searchMock.held.push({
@@ -1733,7 +1733,7 @@ async function mockListApps(): Promise<MockApp[]> {
 }
 
 function mockOpenWith(a: Args): undefined {
-  const path = str(a, "path");
+  const path = localPath(str(a, "path"));
   if (!lookup(path)) throw "No such file or directory";
   if (apps.failOpen) {
     const failure = apps.failOpen;
@@ -1928,7 +1928,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   },
   list_templates: () => list("/Users/me/Templates", false),
   preview_text: (a) => {
-    const path = str(a, "path");
+    const path = localPath(str(a, "path"));
     const node = lookup(path);
     if (!node || node.dir) throw "This file can't be previewed as text.";
     const limit = Math.max(1, Math.min(1_048_576, Number(a.limit)));
@@ -1965,7 +1965,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     return true;
   },
   open_file: (a) => {
-    const path = str(a, "path");
+    const path = localPath(str(a, "path"));
     // Downloaded remote files and opened versions live outside the fake filesystem.
     const outside = path.startsWith("/tmp/") || path.startsWith(`${OPENED}/`);
     if (!outside && !lookup(path)) throw "No such file or directory";
@@ -2068,9 +2068,9 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   trash_info: (a) => (a.paths as string[]).map(trashInfo),
   restore_entry: (a) => {
     const path = str(a, "path");
-    return placeOf(path) === "drive" ? driveTrash(path, false) : restoreEntry(path);
+    return placeOf(path) === "drive" ? driveTrash(path, false) : restoreEntry(localPath(path));
   },
-  delete_permanently: (a) => deletePermanently(str(a, "path")),
+  delete_permanently: (a) => deletePermanently(localPath(str(a, "path"))),
   empty_trash: () => emptyTrash(),
   rename_entry: (a) => {
     const from = str(a, "from"), to = str(a, "to");
