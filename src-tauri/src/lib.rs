@@ -4,6 +4,7 @@ mod config_store;
 mod downloads;
 mod file_icons;
 mod fs_ops;
+mod place;
 mod placement;
 mod platform;
 mod progress;
@@ -25,6 +26,7 @@ use tauri::ipc::Channel;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 use cloud::CloudState;
+use place::{Kind, Route};
 use versions::history::History;
 use versions::state::{Transfer, VersionsState};
 use versions::{VersionDiff, VersionInfo, restore};
@@ -41,20 +43,6 @@ fn lock_state<T>(mutex: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, Strin
     mutex
         .lock()
         .map_err(|_| "Google Drive state is unavailable.".to_string())
-}
-
-fn read_only_one(path: &str) -> Option<&'static str> {
-    if sftp::is_sftp(path) {
-        return Some("SSH servers are read only for now.");
-    }
-    if share::location::is_share(path) {
-        return Some("Shared folders are read only.");
-    }
-    None
-}
-
-fn read_only_write(from: &str, to: &str) -> Option<&'static str> {
-    read_only_one(from).or_else(|| read_only_one(to))
 }
 
 fn share_versions_hint(app: &tauri::AppHandle) -> share::host::VersionsHint {
@@ -249,18 +237,29 @@ fn cancel_operation(registry: tauri::State<progress::Registry>, op: String) {
 #[tauri::command]
 async fn measure(app: tauri::AppHandle, paths: Vec<String>) -> Result<fs_ops::Measure, String> {
     blocking(move || {
-        let (drive, local): (Vec<String>, Vec<String>) =
-            paths.into_iter().partition(|path| cloud::is_cloud(path));
-        let local: Vec<PathBuf> = local.into_iter().map(PathBuf::from).collect();
-        let mut total = fs_ops::measure(&local);
-        if !drive.is_empty() {
-            let remote = cloud::transfer::measure(&app.state::<CloudState>(), &drive)?;
-            total.bytes += remote.bytes;
-            total.items += remote.items;
-        }
-        Ok(total)
+        measure_paths(paths, |drive| cloud::transfer::measure(&app.state::<CloudState>(), drive))
     })
     .await?
+}
+
+/// The total of `paths`: Drive paths through `drive`, the others on disk.
+fn measure_paths(
+    paths: Vec<String>,
+    drive: impl FnOnce(&[String]) -> Result<fs_ops::Measure, String>,
+) -> Result<fs_ops::Measure, String> {
+    let (drive_paths, others): (Vec<String>, Vec<String>) =
+        paths.into_iter().partition(|path| place::kind(path) == Kind::Drive);
+    let local: Vec<PathBuf> = others
+        .iter()
+        .filter_map(|path| place::local(path).ok().map(Path::to_path_buf))
+        .collect();
+    let mut total = fs_ops::measure(&local);
+    if !drive_paths.is_empty() {
+        let remote = drive(&drive_paths)?;
+        total.bytes += remote.bytes;
+        total.items += remote.items;
+    }
+    Ok(total)
 }
 
 #[tauri::command]
@@ -269,22 +268,30 @@ async fn list_dir(
     path: String,
     show_hidden: bool,
 ) -> Result<Vec<fs_ops::Entry>, String> {
-    if share::location::is_share(&path) {
-        let state = app.state::<share::state::ShareState>();
-        let hint = share_versions_hint(&app);
-        return state.list_dir(&path, show_hidden, hint).await;
+    match place::kind(&path) {
+        Kind::Share => {
+            let state = app.state::<share::state::ShareState>();
+            let hint = share_versions_hint(&app);
+            state.list_dir(&path, show_hidden, hint).await
+        }
+        Kind::Sftp => {
+            let app = app.clone();
+            blocking(move || app.state::<sftp::SftpState>().list(&path, show_hidden)).await?
+        }
+        Kind::Drive => {
+            blocking(move || {
+                let state = app.state::<CloudState>();
+                cloud::service::list_dir(&state, &path, show_hidden)
+            })
+            .await?
+        }
+        Kind::Local => list_local(path, show_hidden).await,
     }
-    if sftp::is_sftp(&path) {
-        let app = app.clone();
-        return blocking(move || app.state::<sftp::SftpState>().list(&path, show_hidden)).await?;
-    }
-    if cloud::is_cloud(&path) {
-        return blocking(move || {
-            let state = app.state::<CloudState>();
-            cloud::service::list_dir(&state, &path, show_hidden)
-        })
-        .await?;
-    }
+}
+
+/// `list_dir` for a folder on this computer.
+async fn list_local(path: String, show_hidden: bool) -> Result<Vec<fs_ops::Entry>, String> {
+    place::local(&path)?;
     blocking(move || fs_ops::list_dir(path, show_hidden)).await?
 }
 
@@ -358,7 +365,7 @@ async fn search_dir(
 ) -> Result<fs_ops::SearchSummary, String> {
     let stop = app.state::<Searches>().restart(window.label());
     blocking(move || {
-        fs_ops::search_dir(
+        search_local(
             &path,
             &query,
             show_hidden,
@@ -372,6 +379,19 @@ async fn search_dir(
     .await?
 }
 
+/// `search_dir` under a folder on this computer.
+fn search_local(
+    path: &str,
+    query: &str,
+    show_hidden: bool,
+    limit: usize,
+    found: &mut dyn FnMut(Vec<fs_ops::Entry>),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<fs_ops::SearchSummary, String> {
+    place::local(path)?;
+    fs_ops::search_dir(path, query, show_hidden, limit, found, cancelled)
+}
+
 #[tauri::command]
 fn cancel_search(app: tauri::AppHandle, window: tauri::Window) {
     app.state::<Searches>().restart(window.label());
@@ -383,11 +403,15 @@ async fn extract_archive(
     dest: String,
     create: bool,
 ) -> Result<archive::ExtractResult, String> {
+    place::local(&path)?;
+    place::local_write(&dest)?;
     blocking(move || archive::extract_archive(path, dest, create)).await?
 }
 
 #[tauri::command]
 async fn compress_archive(paths: Vec<String>, dest: String, format: String) -> Result<(), String> {
+    place::all_local(&paths)?;
+    place::local_write(&dest)?;
     blocking(move || archive::compress_archive(paths, dest, format)).await?
 }
 
@@ -477,6 +501,7 @@ async fn list_apps() -> Result<Vec<platform::AppChoice>, String> {
 
 #[tauri::command]
 async fn open_file(path: String) -> Result<(), String> {
+    place::local(&path)?;
     blocking(move || platform::open_default(&path)).await?
 }
 
@@ -489,31 +514,40 @@ async fn open_url(url: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn open_with(path: String, app: String) -> Result<(), String> {
+    place::local(&path)?;
     blocking(move || platform::open_with(&path, &app)).await?
 }
 
 #[tauri::command]
 async fn preview_text(path: String, limit: usize) -> Result<fs_ops::TextPreview, String> {
+    place::local(&path)?;
     blocking(move || fs_ops::preview_text(path, limit)).await?
 }
 
 #[tauri::command]
 async fn rename_many(items: Vec<fs_ops::RenameItem>) -> Result<(), String> {
+    for item in &items {
+        place::local_write(&item.from)?;
+        place::local_write(&item.to)?;
+    }
     blocking(move || fs_ops::rename_many(items)).await?
 }
 
 #[tauri::command]
 async fn set_permissions(path: String, mode: u32) -> Result<(), String> {
+    place::local_write(&path)?;
     blocking(move || fs_ops::set_permissions(path, mode)).await?
 }
 
 #[tauri::command]
 async fn create_symlink(path: String) -> Result<String, String> {
+    place::local_write(&path)?;
     blocking(move || fs_ops::create_link(path)).await?
 }
 
 #[tauri::command]
 async fn create_file(path: String) -> Result<(), String> {
+    place::local_write(&path)?;
     blocking(move || fs_ops::create_file(path)).await?
 }
 
@@ -534,22 +568,8 @@ async fn item_counts(
     show_hidden: bool,
 ) -> Result<Vec<Option<fs_ops::FolderSummary>>, String> {
     blocking(move || {
-        let mut out: Vec<Option<fs_ops::FolderSummary>> = (0..paths.len()).map(|_| None).collect();
-        let mut local = Vec::new();
-        let mut positions = Vec::new();
-        for (index, path) in paths.iter().enumerate() {
-            if !cloud::is_cloud(path) && !share::location::is_share(path) && !sftp::is_sftp(path) {
-                local.push(path.clone());
-                positions.push(index);
-            }
-        }
-        for (position, summary) in positions
-            .into_iter()
-            .zip(fs_ops::item_counts(local, show_hidden))
-        {
-            out[position] = summary;
-        }
-        Ok(out)
+        // Remote and relative paths have no summary.
+        Ok(place::local_only(&paths, |local| fs_ops::item_counts(local, show_hidden)))
     })
     .await?
 }
@@ -561,34 +581,33 @@ async fn path_info(
 ) -> Result<Vec<Option<fs_ops::PathInfo>>, String> {
     blocking(move || {
         let state = app.state::<CloudState>();
-        let mut out = Vec::with_capacity(paths.len());
-        for path in &paths {
-            if share::location::is_share(path) || sftp::is_sftp(path) {
-                out.push(None);
-            } else if cloud::is_cloud(path) {
-                out.push(cloud::service::path_info(&state, path).ok());
-            } else {
-                out.push(
-                    fs_ops::path_info(vec![path.clone()])
-                        .into_iter()
-                        .next()
-                        .flatten(),
-                );
-            }
-        }
-        Ok(out)
+        Ok(path_infos(&paths, |path| cloud::service::path_info(&state, path).ok()))
     })
     .await?
 }
 
+/// `path_info` for a batch: Drive paths through `drive`, shares and SSH
+/// servers have none.
+fn path_infos(
+    paths: &[String],
+    drive: impl Fn(&str) -> Option<fs_ops::PathInfo>,
+) -> Vec<Option<fs_ops::PathInfo>> {
+    let mut out = place::local_only(paths, fs_ops::path_info);
+    for (info, path) in out.iter_mut().zip(paths) {
+        if place::kind(path) == Kind::Drive {
+            *info = drive(path);
+        }
+    }
+    out
+}
+
 /// Why the Properties dialog can't describe `path` yet, if it can't.
-fn properties_unavailable(path: &str) -> Option<&'static str> {
-    if sftp::is_sftp(path) {
-        Some("Properties aren't available for SSH servers yet.")
-    } else if share::location::is_share(path) {
-        Some("Properties aren't available for shared folders yet.")
-    } else {
-        None
+fn properties_refusal(path: &str) -> Result<(), String> {
+    match place::kind(path) {
+        Kind::Sftp => Err("Properties aren't available for SSH servers yet.".into()),
+        Kind::Share => Err("Properties aren't available for shared folders yet.".into()),
+        Kind::Drive => Ok(()),
+        Kind::Local => place::local(path).map(|_| ()),
     }
 }
 
@@ -599,10 +618,8 @@ async fn file_properties(
     path: String,
     show_hidden: bool,
 ) -> Result<properties::FileProperties, String> {
-    if let Some(reason) = properties_unavailable(&path) {
-        return Err(reason.into());
-    }
-    if cloud::is_cloud(&path) {
+    properties_refusal(&path)?;
+    if place::kind(&path) == Kind::Drive {
         return blocking(move || {
             let state = app.state::<CloudState>();
             cloud::service::file_properties(&state, &path, show_hidden)
@@ -616,13 +633,19 @@ async fn file_properties(
 /// `walk` lets `cancel_folder_size` stop it when the dialog closes.
 #[tauri::command]
 async fn folder_size(path: String, walk: u64) -> Result<u64, String> {
-    if sftp::is_sftp(&path) {
-        return Err("Folder sizes aren't available for SSH servers yet.".into());
-    }
-    if cloud::is_cloud(&path) {
-        return Err(cloud::service::unsupported());
-    }
+    folder_size_refusal(&path)?;
     blocking(move || properties::folder_size(&path, || properties::walk_cancelled(walk))).await?
+}
+
+/// Why `folder_size` can't measure `path`, if it can't: only folders on
+/// this computer are walked.
+fn folder_size_refusal(path: &str) -> Result<(), String> {
+    match place::kind(path) {
+        Kind::Sftp => Err("Folder sizes aren't available for SSH servers yet.".into()),
+        Kind::Share => Err("Folder sizes aren't available for shared folders yet.".into()),
+        Kind::Drive => Err(cloud::service::unsupported()),
+        Kind::Local => place::local(path).map(|_| ()),
+    }
 }
 
 /// A fresh id for `folder_size`.
@@ -641,12 +664,16 @@ fn cancel_folder_size(walk: u64) {
 /// known once Drive has given the new item an id.
 #[tauri::command]
 async fn make_dir(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    if let Some(message) = read_only_one(&path) {
-        return Err(message.into());
-    }
-    if cloud::is_cloud(&path) {
+    if place::kind(&path) == Kind::Drive {
         return blocking(move || cloud::write::make_dir(&app.state::<CloudState>(), &path)).await?;
     }
+    make_local_dir(path)
+}
+
+/// `make_dir` anywhere but Drive: refused for shares, SSH servers and
+/// anything that isn't a path on this computer.
+fn make_local_dir(path: String) -> Result<String, String> {
+    place::local_write(&path)?;
     fs_ops::make_dir(path.clone())?;
     Ok(path)
 }
@@ -686,14 +713,18 @@ async fn drive_transfer(
 #[tauri::command]
 async fn path_exists(app: tauri::AppHandle, path: String) -> bool {
     blocking(move || {
-        if cloud::is_cloud(&path) {
-            cloud::service::path_exists(&app.state::<CloudState>(), &path)
-        } else {
-            fs_ops::path_exists(path)
-        }
+        exists_at(&path, |path| cloud::service::path_exists(&app.state::<CloudState>(), path))
     })
     .await
     .unwrap_or(false)
+}
+
+/// `path_exists`: Drive paths through `drive`, the others on disk.
+fn exists_at(path: &str, drive: impl FnOnce(&str) -> bool) -> bool {
+    match place::kind(path) {
+        Kind::Drive => drive(path),
+        _ => place::local(path).is_ok_and(|path| fs_ops::path_exists(path.to_string_lossy().into())),
+    }
 }
 
 #[tauri::command]
@@ -705,12 +736,10 @@ async fn copy_entry(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
-    if let Some(message) = read_only_write(&from, &to) {
-        return Err(message.into());
-    }
+    let route = place::transfer(&from, &to)?;
     let tracking = Tracking::start(&app, &op, on_progress);
     let progress = tracking.progress.clone();
-    let result = if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
+    let result = if route == Route::Drive {
         drive_transfer(app.clone(), from, to, overwrite, false, progress).await
     } else {
         let app = app.clone();
@@ -738,12 +767,10 @@ async fn move_entry(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
-    if let Some(message) = read_only_write(&from, &to) {
-        return Err(message.into());
-    }
+    let route = place::transfer(&from, &to)?;
     let tracking = Tracking::start(&app, &op, on_progress);
     let progress = tracking.progress.clone();
-    let result = if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
+    let result = if route == Route::Drive {
         drive_transfer(app.clone(), from, to, overwrite, true, progress).await
     } else {
         let app = app.clone();
@@ -764,11 +791,8 @@ async fn move_entry(
 
 #[tauri::command]
 async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result<String, String> {
-    if let Some(message) = read_only_write(&from, &to) {
-        return Err(message.into());
-    }
     // write::rename refuses a local path on either side.
-    if cloud::is_cloud(&from) || cloud::is_cloud(&to) {
+    if place::transfer(&from, &to)? == Route::Drive {
         return blocking(move || cloud::write::rename(&app.state::<CloudState>(), &from, &to))
             .await?;
     }
@@ -839,19 +863,16 @@ fn trash_batch(
     results.into_iter().map(TrashOutcome::from).collect()
 }
 
-/// A path of a Move to Trash that doesn't go to a local Trash: refused for
-/// read-only locations, or sent to Drive's own Trash (D10; never a
-/// permanent delete). `None` for local paths.
+/// A path of a Move to Trash that doesn't go to a local Trash: sent to
+/// Drive's own Trash (D10; never a permanent delete), or refused
+/// (`local_trash_refusal`). `None` for local paths.
 fn trash_elsewhere(
     app: &tauri::AppHandle,
     path: &str,
     progress: &progress::Progress,
 ) -> Option<Result<Option<String>, String>> {
-    if let Some(message) = read_only_one(path) {
-        return Some(Err(message.into()));
-    }
-    if !cloud::is_cloud(path) {
-        return None;
+    if place::kind(path) != Kind::Drive {
+        return local_trash_refusal(path);
     }
     let result = progress
         .check()
@@ -860,6 +881,13 @@ fn trash_elsewhere(
         progress.add_item();
     }
     Some(result)
+}
+
+/// Why a path outside Drive can't go to the local Trash, if it can't:
+/// shares and SSH servers are read only, and anything else must be a path
+/// on this computer.
+fn local_trash_refusal(path: &str) -> Option<Result<Option<String>, String>> {
+    place::local_write(path).err().map(Err)
 }
 
 impl From<Result<Option<String>, String>> for TrashOutcome {
@@ -889,23 +917,23 @@ async fn trash_info(
 /// Returns the restored path.
 #[tauri::command]
 async fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    if cloud::is_cloud(&path) {
+    if place::kind(&path) == Kind::Drive {
         return blocking(move || cloud::write::restore(&app.state::<CloudState>(), &path)).await?;
     }
+    let trashed = place::local(&path)?.to_path_buf();
     blocking(move || {
-        let origin = trash_of(&app)?.restore(Path::new(&path))?;
+        let origin = trash_of(&app)?.restore(&trashed)?;
         Ok(origin.to_string_lossy().to_string())
     })
     .await?
 }
 
-/// Delete an item in the Trash for good.
+/// Delete an item in the Trash for good. Not for Drive's own Trash yet:
+/// `place::local` refuses it, as every other path that isn't on this computer.
 #[tauri::command]
 async fn delete_permanently(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    if cloud::is_cloud(&path) {
-        return Err(cloud::service::unsupported());
-    }
-    blocking(move || trash_of(&app)?.delete_permanently(Path::new(&path))).await?
+    let path = place::local(&path)?.to_path_buf();
+    blocking(move || trash_of(&app)?.delete_permanently(&path)).await?
 }
 
 /// The folder the Trash view lists. On Linux this is
@@ -1013,11 +1041,8 @@ async fn make_versioned_dir(app: tauri::AppHandle, path: String) -> Result<(), S
 /// `.versions/meta.json`, not SQLite.
 #[tauri::command]
 async fn versioned_root(app: tauri::AppHandle, path: String) -> Option<String> {
-    if cloud::is_cloud(&path) || share::location::is_share(&path) {
-        return None;
-    }
+    let path = place::local(&path).ok()?.to_path_buf();
     blocking(move || {
-        let path = PathBuf::from(&path);
         if in_trash(&app, &path) || versions::is_internal_path(&path) {
             return None;
         }
@@ -1273,14 +1298,14 @@ async fn thumbnail(
     ticket: Option<u64>,
 ) -> tauri::ipc::Response {
     let size = size.clamp(32, 1024);
-    let png = if cloud::is_cloud(&path) {
+    let png = if place::kind(&path) == Kind::Drive {
         blocking(move || {
             let state = app.state::<CloudState>();
             cloud::service::thumbnail(&state, &path, size)
         })
         .await
         .unwrap_or_default()
-    } else if share::location::is_share(&path) || sftp::is_sftp(&path) {
+    } else if place::local(&path).is_err() {
         Vec::new()
     } else {
         // Registered until it finishes, so the window can cancel it.
@@ -1311,11 +1336,12 @@ async fn file_share_prepare(
     shares: tauri::State<'_, share::file_share::FileShares>,
     paths: Vec<String>,
 ) -> Result<String, String> {
-    if paths.iter().any(|path| cloud::is_cloud(path) || share::location::is_share(path) || sftp::is_sftp(path)) {
-        return Err("Only files on this computer can be sent with a QR code.".into());
-    }
-    let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
-    shares.prepare(&paths, window.label())
+    shares.prepare(&qr_sources(&paths)?, window.label())
+}
+
+/// What Send with QR Code serves: files on this computer only.
+fn qr_sources(paths: &[String]) -> Result<Vec<PathBuf>, String> {
+    place::all_local(paths).map_err(|_| "Only files on this computer can be sent with a QR code.".into())
 }
 
 /// Progress, link and downloads of a QR share; None once it was stopped.
@@ -1339,16 +1365,15 @@ fn file_share_stop(shares: tauri::State<'_, share::file_share::FileShares>, id: 
 async fn icon_ids(app: tauri::AppHandle, paths: Vec<String>) -> Vec<Option<String>> {
     blocking(move || {
         let icons = app.state::<file_icons::Icons>();
-        paths
-            .iter()
-            .map(|path| {
-                let remote = cloud::is_cloud(path) || share::location::is_share(path) || sftp::is_sftp(path);
-                if remote { None } else { icons.id(Path::new(path)) }
-            })
-            .collect()
+        os_icon_ids(&paths, |path| icons.id(path))
     })
     .await
     .unwrap_or_default()
+}
+
+/// `icon_ids` for a batch: `id` is asked about local paths only.
+fn os_icon_ids(paths: &[String], id: impl Fn(&Path) -> Option<String>) -> Vec<Option<String>> {
+    place::local_only(paths, |local| local.iter().map(|path| id(Path::new(path))).collect())
 }
 
 /// The icon id for each app Open With offers (`list_apps` ids), or None.
@@ -2118,20 +2143,313 @@ pub fn run() {
 
 #[cfg(test)]
 mod properties_tests {
-    use super::properties_unavailable;
+    use super::properties_refusal;
 
     #[test]
     fn properties_are_refused_for_shared_folders_and_ssh_servers() {
         assert_eq!(
-            properties_unavailable("share://r1/hello.txt"),
-            Some("Properties aren't available for shared folders yet.")
+            properties_refusal("share://r1/hello.txt").unwrap_err(),
+            "Properties aren't available for shared folders yet."
         );
         assert_eq!(
-            properties_unavailable("sftp://me@host/home"),
-            Some("Properties aren't available for SSH servers yet.")
+            properties_refusal("sftp://me@host/home").unwrap_err(),
+            "Properties aren't available for SSH servers yet."
         );
-        assert_eq!(properties_unavailable("/home/me/a.txt"), None);
-        assert_eq!(properties_unavailable("gdrive://acct/root~My%20Drive"), None);
+        assert_eq!(properties_refusal("/home/me/a.txt"), Ok(()));
+        assert_eq!(properties_refusal("gdrive://acct/root~My%20Drive"), Ok(()));
+        assert_eq!(properties_refusal("a.txt").unwrap_err(), "“a.txt” is not a local file.");
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    //! What the commands that tell local paths from remote ones answer for
+    //! each kind of path, malformed remote paths included.
+    use super::*;
+    use std::cell::RefCell;
+
+    const DRIVE: &str = "gdrive://acct/root~My%20Drive";
+    const BAD_DRIVE: &str = "gdrive://";
+    const SHARE: &str = "share://r1/Photos";
+    const BAD_SHARE: &str = "share://";
+    const SFTP: &str = "sftp://me@host/home";
+    const BAD_SFTP: &str = "sftp://";
+    /// A folder relative to the tests' working directory (the crate root).
+    const RELATIVE: &str = "src";
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        folder: String,
+        file: String,
+    }
+
+    /// `folder` holds one 3-byte file; `file` is 5 bytes.
+    fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("a.txt"), "abc").unwrap();
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, "hello").unwrap();
+        let text = |p: PathBuf| p.to_string_lossy().to_string();
+        Fixture { folder: text(folder), file: text(file), _dir: dir }
+    }
+
+    fn remote() -> Vec<String> {
+        [DRIVE, BAD_DRIVE, SHARE, BAD_SHARE, SFTP, BAD_SFTP].map(String::from).to_vec()
+    }
+
+    fn strings(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+
+    #[test]
+    fn item_counts_summarises_local_folders_only() {
+        use tauri::async_runtime::block_on;
+        let counts = |paths: Vec<String>| block_on(item_counts(paths, false)).unwrap();
+        let f = fixture();
+        let mut paths = vec![f.folder.clone(), f.file.clone()];
+        paths.extend(remote());
+        let out = counts(paths.clone());
+        assert_eq!(out.len(), paths.len());
+        assert_eq!(out[0], Some(fs_ops::FolderSummary { count: 1, versioned: false }));
+        assert!(out[1..].iter().all(Option::is_none), "{out:?}");
+        assert_eq!(counts(strings(&[RELATIVE])), vec![None]);
+    }
+
+    #[test]
+    fn list_dir_lists_local_folders_and_refuses_relative_ones() {
+        // list_dir sends the remote kinds to their own handlers; the rest
+        // come here. `src` exists in the tests' working directory.
+        use tauri::async_runtime::block_on;
+        let f = fixture();
+        let listed = block_on(list_local(f.folder.clone(), false)).unwrap();
+        assert_eq!(listed.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["a.txt"]);
+        assert_eq!(block_on(list_local(RELATIVE.into(), false)).unwrap_err(), "“src” is not a local file.");
+        assert_eq!(block_on(list_local(String::new(), false)).unwrap_err(), "“” is not a local file.");
+    }
+
+    #[test]
+    fn path_info_asks_drive_and_has_nothing_for_shares_and_ssh() {
+        let f = fixture();
+        let mut paths = vec![f.folder.clone(), f.file.clone()];
+        paths.extend(remote());
+        let asked = RefCell::new(Vec::new());
+        let out = path_infos(&paths, |path| {
+            asked.borrow_mut().push(path.to_string());
+            Some(fs_ops::PathInfo { is_dir: true, device: 7 })
+        });
+        assert_eq!(asked.into_inner(), strings(&[DRIVE, BAD_DRIVE]));
+        let kinds: Vec<Option<(bool, bool)>> =
+            out.iter().map(|o| o.as_ref().map(|i| (i.is_dir, i.device == 7))).collect();
+        assert_eq!(
+            kinds,
+            vec![Some((true, false)), Some((false, false)), Some((true, true)), Some((true, true)), None, None, None, None]
+        );
+        assert_eq!(path_infos(&strings(&[RELATIVE]), |_| panic!("not Drive")), vec![None]);
+    }
+
+    #[test]
+    fn path_exists_asks_drive_and_looks_on_disk_for_the_rest() {
+        let f = fixture();
+        assert!(exists_at(&f.file, |_| panic!("not Drive")));
+        assert!(!exists_at(&format!("{}/gone", f.folder), |_| panic!("not Drive")));
+        assert!(exists_at(DRIVE, |path| path == DRIVE));
+        assert!(!exists_at(BAD_DRIVE, |_| false));
+        for path in [SHARE, BAD_SHARE, SFTP, BAD_SFTP] {
+            assert!(!exists_at(path, |_| panic!("not Drive")), "{path}");
+        }
+        assert!(!exists_at(RELATIVE, |_| panic!("not Drive")));
+    }
+
+    #[test]
+    fn qr_share_refuses_every_remote_path() {
+        let f = fixture();
+        assert_eq!(qr_sources(&[f.file.clone()]).unwrap(), vec![PathBuf::from(&f.file)]);
+        for path in remote() {
+            assert_eq!(
+                qr_sources(&[f.file.clone(), path.clone()]).unwrap_err(),
+                "Only files on this computer can be sent with a QR code.",
+                "{path}"
+            );
+        }
+        assert!(qr_sources(&strings(&[RELATIVE])).is_err());
+    }
+
+    #[test]
+    fn icon_ids_asks_the_os_about_local_paths_only() {
+        let f = fixture();
+        let mut paths = vec![f.file.clone()];
+        paths.extend(remote());
+        let asked = RefCell::new(Vec::new());
+        let out = os_icon_ids(&paths, |path| {
+            asked.borrow_mut().push(path.to_path_buf());
+            Some("id".into())
+        });
+        assert_eq!(asked.into_inner(), vec![PathBuf::from(&f.file)]);
+        assert_eq!(out[0].as_deref(), Some("id"));
+        assert!(out[1..].iter().all(Option::is_none));
+        assert_eq!(os_icon_ids(&strings(&[RELATIVE]), |_| panic!("not local")), vec![None]);
+    }
+
+    #[test]
+    fn measure_sends_drive_paths_to_drive_and_counts_the_rest_on_disk() {
+        let f = fixture();
+        let on_disk = fs_ops::measure(&[PathBuf::from(&f.file), PathBuf::from(&f.folder)]);
+        let mut paths = vec![f.file.clone(), f.folder.clone()];
+        paths.extend(remote());
+        let asked = RefCell::new(Vec::new());
+        let total = measure_paths(paths, |drive| {
+            asked.borrow_mut().extend_from_slice(drive);
+            Ok(fs_ops::Measure { bytes: 100, items: 1 })
+        })
+        .unwrap();
+        assert_eq!(asked.into_inner(), strings(&[DRIVE, BAD_DRIVE]));
+        assert_eq!(total, fs_ops::Measure { bytes: on_disk.bytes + 100, items: on_disk.items + 1 });
+        let failed = measure_paths(strings(&[DRIVE]), |_| Err("offline".into()));
+        assert_eq!(failed.unwrap_err(), "offline");
+        let relative = measure_paths(strings(&[RELATIVE]), |_| panic!("not Drive")).unwrap();
+        assert_eq!(relative, fs_ops::Measure::default());
+    }
+
+    #[test]
+    fn folder_size_walks_local_folders_only() {
+        let f = fixture();
+        assert_eq!(folder_size_refusal(&f.folder), Ok(()));
+        for (path, refusal) in [
+            (DRIVE, "This action is not available for Google Drive items yet."),
+            (BAD_DRIVE, "This action is not available for Google Drive items yet."),
+            (SHARE, "Folder sizes aren't available for shared folders yet."),
+            (BAD_SHARE, "Folder sizes aren't available for shared folders yet."),
+            (SFTP, "Folder sizes aren't available for SSH servers yet."),
+            (BAD_SFTP, "Folder sizes aren't available for SSH servers yet."),
+            (RELATIVE, "“src” is not a local file."),
+        ] {
+            assert_eq!(folder_size_refusal(path).unwrap_err(), refusal, "{path}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod write_guard_tests {
+    //! The write commands that work on this computer only refuse every
+    //! other path before anything is touched (the UI already offers them
+    //! only there; this is the backend's own check).
+    use super::*;
+    use tauri::async_runtime::block_on;
+
+    const SHARED: &str = "Shared folders are read only.";
+    const SSH: &str = "SSH servers are read only for now.";
+    const DRIVE: &str = "This action is not available for Google Drive items yet.";
+
+    /// Each refused path with its refusal.
+    fn refused() -> Vec<(&'static str, String)> {
+        vec![
+            ("share://r1/a.txt", SHARED.into()),
+            ("share://", SHARED.into()),
+            ("sftp://me@host/a.txt", SSH.into()),
+            ("gdrive://acct/root~x/~a.txt", DRIVE.into()),
+            ("gdrive://", DRIVE.into()),
+            ("a.txt", "“a.txt” is not a local file.".into()),
+        ]
+    }
+
+    fn local(dir: &tempfile::TempDir, name: &str) -> String {
+        dir.path().join(name).to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn create_file_and_permissions_and_links_refuse_other_paths() {
+        for (path, refusal) in refused() {
+            assert_eq!(block_on(create_file(path.into())).unwrap_err(), refusal, "{path}");
+            assert_eq!(block_on(set_permissions(path.into(), 0o644)).unwrap_err(), refusal, "{path}");
+            assert_eq!(block_on(create_symlink(path.into())).unwrap_err(), refusal, "{path}");
+        }
+        assert!(!Path::new("a.txt").exists());
+        let dir = tempfile::tempdir().unwrap();
+        let file = local(&dir, "a.txt");
+        block_on(create_file(file.clone())).unwrap();
+        block_on(set_permissions(file.clone(), 0o600)).unwrap();
+        assert_eq!(block_on(create_symlink(file)).unwrap(), local(&dir, "Link to a.txt"));
+    }
+
+    #[test]
+    fn new_folder_on_this_computer_refuses_other_paths() {
+        // make_dir sends Drive paths to Drive first; the rest come here.
+        for (path, refusal) in refused() {
+            assert_eq!(make_local_dir(path.into()).unwrap_err(), refusal, "{path}");
+        }
+        assert!(!Path::new("a.txt").exists());
+        let dir = tempfile::tempdir().unwrap();
+        let folder = local(&dir, "New Folder");
+        assert_eq!(make_local_dir(folder.clone()), Ok(folder.clone()));
+        assert!(Path::new(&folder).is_dir());
+    }
+
+    #[test]
+    fn move_to_trash_hands_the_local_trash_absolute_paths_only() {
+        // trash_elsewhere sends Drive paths to Drive's Trash first; the rest
+        // are refused here or go to the local Trash.
+        let mut paths = vec!["/Users/me/a.txt".to_string()];
+        let others: Vec<(&str, String)> = refused().into_iter().filter(|(p, _)| place::kind(p) != Kind::Drive).collect();
+        paths.extend(others.iter().map(|(path, _)| path.to_string()));
+        paths.push("src".into());
+        let (results, moves) = trash_ops::trash_routed(&paths, local_trash_refusal, |origins| {
+            assert_eq!(origins, [PathBuf::from("/Users/me/a.txt")]);
+            vec![Ok(None)]
+        });
+        assert!(moves.is_empty());
+        let errors: Vec<Option<String>> = results.into_iter().map(Result::err).collect();
+        let mut expected = vec![None];
+        expected.extend(others.into_iter().map(|(_, refusal)| Some(refusal)));
+        expected.push(Some("“src” is not a local file.".into()));
+        assert_eq!(errors, expected);
+        assert!(Path::new("src").is_dir());
+    }
+
+    #[test]
+    fn rename_many_refuses_any_other_path_on_either_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (local(&dir, "a.txt"), local(&dir, "b.txt"));
+        std::fs::write(&a, "a").unwrap();
+        let item = |from: &str, to: &str| fs_ops::RenameItem { from: from.into(), to: to.into() };
+        for (path, refusal) in refused() {
+            let ok = item(&a, &b);
+            assert_eq!(block_on(rename_many(vec![ok, item(path, &b)])).unwrap_err(), refusal, "{path}");
+            assert_eq!(block_on(rename_many(vec![item(&a, path)])).unwrap_err(), refusal, "{path}");
+            assert!(Path::new(&a).exists() && !Path::new(&b).exists(), "{path}");
+        }
+        block_on(rename_many(vec![item(&a, &b)])).unwrap();
+        assert!(Path::new(&b).exists());
+    }
+
+    #[test]
+    fn archives_need_local_sources_and_a_writable_local_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = local(&dir, "a.txt");
+        std::fs::write(&file, "a").unwrap();
+        let zip = local(&dir, "a.zip");
+        for (path, refusal) in refused() {
+            let to_remote = block_on(compress_archive(vec![file.clone()], path.into(), "zip".into()));
+            assert_eq!(to_remote.unwrap_err(), refusal, "{path}");
+            let extract_to = block_on(extract_archive(zip.clone(), path.into(), true));
+            assert_eq!(extract_to.unwrap_err(), refusal, "{path}");
+        }
+        for (path, refusal) in [
+            ("share://r1/a.zip", "This action is not available for shared folders."),
+            ("sftp://me@host/a.zip", "This action is not available for SSH servers."),
+            ("gdrive://acct/root~x", DRIVE),
+            ("a.zip", "“a.zip” is not a local file."),
+        ] {
+            let from_remote = block_on(compress_archive(vec![file.clone(), path.into()], zip.clone(), "zip".into()));
+            assert_eq!(from_remote.unwrap_err(), refusal, "{path}");
+            let extract_from = block_on(extract_archive(path.into(), local(&dir, "out"), true));
+            assert_eq!(extract_from.unwrap_err(), refusal, "{path}");
+        }
+        assert!(!Path::new(&zip).exists());
+        block_on(compress_archive(vec![file], zip.clone(), "zip".into())).unwrap();
+        let out = block_on(extract_archive(zip, local(&dir, "out"), true)).unwrap();
+        assert_eq!(out.files, 1);
     }
 }
 
@@ -2231,5 +2549,55 @@ mod updater_config_tests {
         }
         assert!(updater.get("dangerousInsecureTransportProtocol").is_none());
         assert!(conf["bundle"].get("createUpdaterArtifacts").is_none(), "only CI turns this on");
+    }
+}
+
+#[cfg(test)]
+mod read_gate_tests {
+    //! Search, the text preview and opening a file work on this computer
+    //! only: every other path is refused before anything is read or launched.
+    use super::*;
+    use tauri::async_runtime::block_on;
+
+    /// Each refused path with its refusal, with `relative` as the relative one.
+    fn refused(relative: &'static str) -> Vec<(&'static str, String)> {
+        vec![
+            ("share://r1/a.txt", "This action is not available for shared folders.".into()),
+            ("sftp://me@host/a.txt", "This action is not available for SSH servers.".into()),
+            ("gdrive://acct/root~x/~a.txt", "This action is not available for Google Drive items yet.".into()),
+            (relative, format!("“{relative}” is not a local file.")),
+        ]
+    }
+
+    #[test]
+    fn preview_and_search_read_local_paths_only() {
+        // `Cargo.toml` and `src` are in the tests' working directory (the
+        // crate root), so their refusal isn't a missing file.
+        for (path, refusal) in refused("Cargo.toml") {
+            assert_eq!(block_on(preview_text(path.into(), 100)).unwrap_err(), refusal, "{path}");
+        }
+        for (path, refusal) in refused("src") {
+            let found = search_local(path, "lib", false, 10, &mut |_| panic!("searched {path}"), &|| false);
+            assert_eq!(found.unwrap_err(), refusal, "{path}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
+        let file = dir.path().join("notes.txt").to_string_lossy().to_string();
+        assert_eq!(block_on(preview_text(file, 100)).unwrap().text, "hello");
+        let mut found = Vec::new();
+        let root = dir.path().to_string_lossy().to_string();
+        search_local(&root, "notes", false, 10, &mut |batch| found.extend(batch), &|| false).unwrap();
+        assert_eq!(found.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["notes.txt"]);
+    }
+
+    #[test]
+    fn open_and_open_with_refuse_other_paths_before_launching_anything() {
+        // Neither the file nor the app exists, so without the check these
+        // fail on the missing file and never launch anything.
+        for (path, refusal) in refused("missing.txt") {
+            assert_eq!(block_on(open_file(path.into())).unwrap_err(), refusal, "{path}");
+            let with = block_on(open_with(path.into(), "/no/such.desktop".into()));
+            assert_eq!(with.unwrap_err(), refusal, "{path}");
+        }
     }
 }

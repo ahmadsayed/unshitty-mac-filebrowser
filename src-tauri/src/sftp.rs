@@ -37,7 +37,7 @@ pub enum ConnectOutcome {
     HostKeyUnknown { server: ServerInfo, fingerprint: String },
 }
 
-struct Target {
+pub(crate) struct Target {
     user: String,
     host: String,
     port: u16,
@@ -87,7 +87,7 @@ fn list_entry(base: &str, remote: &Path, stat: &ssh2::FileStat) -> Option<crate:
     })
 }
 
-fn parse_target(input: &str) -> Result<Target, String> {
+pub(crate) fn parse_target(input: &str) -> Result<Target, String> {
     let text = input.trim();
     if text.is_empty() {
         return Err("Enter a server, for example user@host.".into());
