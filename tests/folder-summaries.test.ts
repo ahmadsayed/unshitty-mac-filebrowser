@@ -142,3 +142,40 @@ test("one() counts a single folder by the same rules", async () => {
   expect(summaries.count("/home/c")).toBeNull();
   expect(changes).toHaveLength(2);
 });
+
+test("asking with a new Show Hidden setting forgets the counts but keeps the badges", async () => {
+  const { summaries, calls, changes } = setup();
+  void summaries.request(["/home/a"], false);
+  await calls[0].answer([{ count: 2, versioned: true }]);
+  const old = summaries.request(["/home/b"], false);
+
+  const before = summaries.version;
+  const fresh = summaries.request(["/home/a", "/home/b"], true);
+  expect(summaries.version).not.toBe(before);
+  expect(summaries.count("/home/a")).toBeUndefined();
+  expect(summaries.versioned("/home/a")).toBe(true);
+  expect(calls.map((c) => [c.paths, c.showHidden])).toEqual([
+    [["/home/a"], false],
+    [["/home/b"], false],
+    [["/home/a", "/home/b"], true],
+  ]);
+  // The answer counted without hidden items lands first and is dropped.
+  await calls[1].answer([{ count: 1, versioned: false }]);
+  expect(await old).toBe(false);
+  expect(summaries.count("/home/b")).toBeUndefined();
+  await calls[2].answer([{ count: 5, versioned: true }, { count: 3, versioned: false }]);
+  expect(await fresh).toBe(true);
+  expect(summaries.count("/home/a")).toBe(5);
+  expect(summaries.count("/home/b")).toBe(3);
+  // The badge didn't change, so no icon needs redrawing.
+  expect(changes.at(-1)).toEqual({ counts: ["/home/a", "/home/b"], badges: [] });
+
+  // one() follows the setting too.
+  summaries.one("/home/a", false);
+  expect(summaries.count("/home/a")).toBeNull();
+  expect(calls.at(-1)).toMatchObject({ paths: ["/home/a"], showHidden: false });
+  await calls.at(-1)!.answer([{ count: 2, versioned: false }]);
+  expect(summaries.count("/home/b")).toBeUndefined();
+  expect(summaries.versioned("/home/a")).toBe(false);
+  expect(changes.at(-1)).toEqual({ counts: ["/home/a"], badges: ["/home/a"] });
+});

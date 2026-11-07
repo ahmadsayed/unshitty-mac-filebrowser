@@ -2,8 +2,9 @@
 // ("12 items") and whether it keeps versions (the badge on its icon). They
 // are fetched only for the folders the view asks about, in batches, never
 // for remote folders (Drive, shares and SSH servers have no local count),
-// and an answer that arrives after the view moved on is dropped. No DOM
-// here: the app patches the view from `onChange`.
+// and an answer that arrives after the view moved on is dropped. Counts
+// depend on Show Hidden, so asking with the other setting forgets them. No
+// DOM here: the app patches the view from `onChange`.
 
 import type { FolderSummary } from "./api";
 import { isRemotePath } from "./paths";
@@ -31,6 +32,8 @@ export class FolderSummaries {
   private readonly inFlight = new Set<string>();
   private generation = 0;
   private changes = 0;
+  /** The Show Hidden setting the counts were asked with; null before the first ask. */
+  private showHidden: boolean | null = null;
 
   /**
    * `fetch` asks the backend, `current` is the location on screen, and
@@ -63,6 +66,7 @@ export class FolderSummaries {
    * sorted by size knows to sort again.
    */
   async request(paths: string[], showHidden: boolean): Promise<boolean> {
+    this.useSetting(showHidden);
     const pending = paths.filter((p) => !isRemotePath(p) && !this.counts.has(p) && !this.inFlight.has(p));
     if (pending.length === 0) return false;
     pending.forEach((p) => this.inFlight.add(p));
@@ -79,6 +83,7 @@ export class FolderSummaries {
    * before the answer doesn't fetch it twice.
    */
   one(path: string, showHidden: boolean): void {
+    this.useSetting(showHidden);
     if (isRemotePath(path) || this.counts.has(path)) return;
     this.counts.set(path, null);
     this.changes++;
@@ -92,6 +97,19 @@ export class FolderSummaries {
     this.counts.clear();
     this.inFlight.clear();
     this.badges.clear();
+    this.generation++;
+    this.changes++;
+  }
+
+  /** A new Show Hidden setting forgets the counts and drops the answers on their way.
+   *  The version badges stay: they don't depend on it. */
+  private useSetting(showHidden: boolean): void {
+    if (showHidden === this.showHidden) return;
+    const changed = this.showHidden !== null;
+    this.showHidden = showHidden;
+    if (!changed) return;
+    this.counts.clear();
+    this.inFlight.clear();
     this.generation++;
     this.changes++;
   }

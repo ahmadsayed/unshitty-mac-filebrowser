@@ -2,7 +2,8 @@
 // except when sorting by size, and the selected folder's count reaches the
 // floating bar. The rules themselves are tested in folder-summaries.test.ts.
 import { afterEach, beforeAll, expect, test } from "vitest";
-import { $, $$, boot, chooseMenu, click, goTo, item, prefs, settle, type } from "./app";
+import { invoke } from "../dev/mock-tauri/core";
+import { $, $$, boot, chooseMenu, click, goTo, item, key, prefs, settle, type } from "./app";
 
 const HOME = "/Users/me";
 type MockCounts = { log: { asked: string[][] }; hold(hold: boolean): void; held(): number; reset(): void };
@@ -11,6 +12,12 @@ const asked = () => counts().log.asked.flat();
 
 async function showAs(view: "grid" | "list"): Promise<void> {
   if (prefs().view !== view) await click($("#btn-view-toggle"));
+}
+
+/** Show Hidden off, as the other tests expect it. */
+async function hideHidden(): Promise<void> {
+  if (prefs().showHidden) await key("h", { ctrl: true });
+  await settle(20);
 }
 
 async function sortBy(label: string): Promise<void> {
@@ -23,8 +30,9 @@ beforeAll(async () => {
   await boot();
 });
 
-afterEach(() => {
+afterEach(async () => {
   counts().reset();
+  await hideHidden();
 });
 
 test("only the folders on screen are counted", async () => {
@@ -71,6 +79,51 @@ test("selecting a folder that is already being counted doesn't ask for it again"
   expect($("#floating-bar").textContent).toBe("“Desktop” selected (containing 1 item)");
 });
 
+test("Show Hidden counts folders again with the hidden items in", async () => {
+  await showAs("list");
+  await goTo("/Users");
+  const sizeOf = (name: string) => item(name).querySelector(".size")?.textContent;
+  const countOf = async (showHidden: boolean) =>
+    ((await invoke("item_counts", { paths: [HOME], showHidden })) as { count: number }[])[0].count;
+  const without = await countOf(false);
+  const withHidden = await countOf(true);
+  expect(withHidden).toBeGreaterThan(without);
+  expect(sizeOf("me")).toBe(`${without} items`);
+
+  await key("h", { ctrl: true });
+  await settle(20);
+  expect(prefs().showHidden).toBe(true);
+  expect(sizeOf("me")).toBe(`${withHidden} items`);
+  // The floating bar counts with them too.
+  await click(item("me").querySelector(".icon")!);
+  await settle(10);
+  expect($("#floating-bar").textContent).toBe(`“me” selected (containing ${withHidden} items)`);
+
+  await key("h", { ctrl: true });
+  await settle(20);
+  expect(prefs().showHidden).toBe(false);
+  expect(sizeOf("me")).toBe(`${without} items`);
+  await showAs("grid");
+});
+
+test("a count asked for before Show Hidden changed is dropped when it lands", async () => {
+  await showAs("list");
+  await goTo(HOME);
+  counts().hold(true);
+  await goTo("/Users");
+  expect(counts().held()).toBe(1);
+  await key("h", { ctrl: true });
+  await settle(20);
+  // Both answers land, the one counted without hidden items first.
+  counts().hold(false);
+  await settle(20);
+  const answer = ((await invoke("item_counts", { paths: [HOME], showHidden: true })) as { count: number }[])[0].count;
+  expect(item("me").querySelector(".size")?.textContent).toBe(`${answer} items`);
+  await key("h", { ctrl: true });
+  await settle(20);
+  await showAs("grid");
+});
+
 test("selecting a folder on an SSH server doesn't ask for a count", async () => {
   (globalThis as unknown as { __mockSftp: { reset(): void } }).__mockSftp.reset();
   await click($$(".sidebar-row").find((row) => row.textContent?.trim() === "Network")!);
@@ -83,4 +136,5 @@ test("selecting a folder on an SSH server doesn't ask for a count", async () => 
   await settle(10);
   expect($("#floating-bar").textContent).toBe("“Documents” selected");
   expect(asked().filter((p) => p.startsWith("sftp://"))).toEqual([]);
+  // Last in this file: typed paths now resolve on the server.
 });
