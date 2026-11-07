@@ -410,7 +410,7 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
   },
   share_folder: (a) => {
     const path = str(a, "path");
-    if (!lookup(path)?.dir) throw "Only folders on this computer can be shared.";
+    if (!isLocal(path) || !lookup(path)?.dir) throw "Only folders on this computer can be shared.";
     const existing = mockShares.find((share) => share.path === path);
     if (existing) return shareInfo(existing);
     const share = { id: `share-${++mockShareSeq}`, path, access: [] };
@@ -418,7 +418,8 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     return shareInfo(share);
   },
   share_info: (a) => {
-    const share = mockShares.find((item) => item.path === str(a, "path"));
+    // Shares are folders on this computer: nothing for any other path.
+    const share = isLocal(str(a, "path")) && mockShares.find((item) => item.path === str(a, "path"));
     return share ? shareInfo(share) : null;
   },
   list_shares: () => mockShares.map(shareSummary),
@@ -1471,25 +1472,38 @@ function stopKeepingVersions(root: string): void {
   versionedRoots.delete(root);
 }
 
+/** Keep Versions works on this computer only: the path in `key`, after the
+ *  backend's `place::local` refusals. */
+const at = (a: Args, key = "path") => localPath(str(a, key));
+
 const VERSION_COMMANDS: Record<string, (args: Args) => unknown> = {
   versioned_root: (a) => versionedRoot(str(a, "path")),
-  make_versioned_dir: (a) => makeVersionedDir(str(a, "path")),
-  list_versions: (a) => mockVersions(str(a, "path")),
-  version_count: (a) => mockVersions(str(a, "path")).length,
-  version_diff: (a) => versionDiff(str(a, "path"), a.version as number),
+  make_versioned_dir: (a) => makeVersionedDir(localWrite(str(a, "path"))),
+  list_versions: (a) => mockVersions(at(a)),
+  version_count: (a) => mockVersions(at(a)).length,
+  version_diff: (a) => versionDiff(at(a), a.version as number),
   restore_version_copy: (a) =>
-    placeRestored(str(a, "path"), str(a, "name"), 1_700, `An item named “${str(a, "name")}” already exists`),
-  open_version: (a) => `${OPENED}/${str(a, "name")}`,
-  replace_with_version: (a) => replaceWithVersion(str(a, "path")),
-  deleted_files: (a) => [{ path: `${str(a, "dir")}/draft.md`, deleted_at: now - 3 * 3600, size: 320 }],
+    placeRestored(at(a), str(a, "name"), 1_700, `An item named “${str(a, "name")}” already exists`),
+  open_version: (a) => {
+    at(a);
+    return `${OPENED}/${str(a, "name")}`;
+  },
+  replace_with_version: (a) => replaceWithVersion(at(a)),
+  deleted_files: (a) => [{ path: `${at(a, "dir")}/draft.md`, deleted_at: now - 3 * 3600, size: 320 }],
   restore_deleted: (a) => {
-    const path = str(a, "path");
+    const path = at(a);
     return placeRestored(path, path.slice(path.lastIndexOf("/") + 1), 320, "Something is already at that path");
   },
-  open_deleted: (a) => `${OPENED}/${str(a, "name")}`,
-  history_info: () => ({ bytes: 12_400_000, versions: 214, files: 37 }),
-  clear_history: (a) => clearHistory(str(a, "root")),
-  stop_keeping_versions: (a) => stopKeepingVersions(str(a, "root")),
+  open_deleted: (a) => {
+    at(a);
+    return `${OPENED}/${str(a, "name")}`;
+  },
+  history_info: (a) => {
+    at(a, "root");
+    return { bytes: 12_400_000, versions: 214, files: 37 };
+  },
+  clear_history: (a) => clearHistory(at(a, "root")),
+  stop_keeping_versions: (a) => stopKeepingVersions(at(a, "root")),
 };
 
 /** Offline stand-in for the Google Drive account commands. */
@@ -2063,7 +2077,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   copy_entry: (a) => (transferRoute(a) === "drive" ? driveTransfer(a, false) : (transfer(a, false), str(a, "to"))),
   move_entry: (a) => (transferRoute(a) === "drive" ? driveTransfer(a, true) : (transfer(a, true), str(a, "to"))),
   trash_entries: trashEntries,
-  trash_info: (a) => (a.paths as string[]).map(trashInfo),
+  trash_info: (a) => (a.paths as string[]).map((path) => (isLocal(path) ? trashInfo(path) : null)),
   restore_entry: (a) => {
     const path = str(a, "path");
     return placeOf(path) === "drive" ? driveTrash(path, false) : restoreEntry(localPath(path));

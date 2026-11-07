@@ -429,6 +429,49 @@ test("the Keep Versions commands", async () => {
   expect(await invoke("versioned_root", { path: `${HOME}/Kept` })).toBeNull();
 });
 
+test("Keep Versions, sharing a folder and the Trash's details refuse paths that aren't on this computer, as the backend does", async () => {
+  const refused: Array<[string, string]> = [
+    ["share://r1/a.txt", "This action is not available for shared folders."],
+    ["sftp://me@host/a.txt", "This action is not available for SSH servers."],
+    ["gdrive://mock/mock-root~My%20Drive/file-1~hello.txt", "This action is not available for Google Drive items yet."],
+    ["Users/me/Documents/Versioned/notes.txt", "“Users/me/Documents/Versioned/notes.txt” is not a local file."],
+  ];
+  for (const [path, refusal] of refused) {
+    for (const [cmd, args] of [
+      ["list_versions", { path }],
+      ["version_count", { path }],
+      ["version_diff", { path, version: 1 }],
+      ["restore_version_copy", { path, version: 1, name: "n1.txt" }],
+      ["open_version", { path, version: 1, name: "n1.txt" }],
+      ["replace_with_version", { path, version: 1 }],
+      ["deleted_files", { dir: path }],
+      ["restore_deleted", { path, fallbackName: "" }],
+      ["open_deleted", { path, name: "a.txt" }],
+      ["history_info", { root: path }],
+      ["clear_history", { root: path }],
+      ["stop_keeping_versions", { root: path }],
+    ] as const) {
+      await expect(invoke(cmd, args), `${cmd} ${path}`).rejects.toBe(refusal);
+    }
+    await expect(invoke("share_folder", { path })).rejects.toBe("Only folders on this computer can be shared.");
+    expect(await invoke("share_info", { path })).toBeNull();
+  }
+  // New Folder with Keep versions: the read-only refusals come first.
+  for (const [path, refusal] of [
+    ["share://r1/New", "Shared folders are read only."],
+    ["sftp://me@host/New", "SSH servers are read only for now."],
+    ["gdrive://mock/mock-root~My%20Drive/~New", "This action is not available for Google Drive items yet."],
+    ["Users/me/New", "“Users/me/New” is not a local file."],
+  ]) {
+    await expect(invoke("make_versioned_dir", { path })).rejects.toBe(refusal);
+  }
+  expect(await invoke("path_exists", { path: `${HOME}/New` })).toBe(false);
+  // The Trash's details: nothing for a path that isn't on this computer.
+  const infos = await invoke<unknown[]>("trash_info", { paths: [...refused.map(([path]) => path), `${HOME}/.Trash/old.txt`] });
+  expect(infos.slice(0, 4)).toEqual([null, null, null, null]);
+  expect(infos[4]).toMatchObject({ origin: null });
+});
+
 test("Google Drive account commands connect, cancel and disconnect", async () => {
   const accounts = () => invoke<Array<{ id: string; email: string; root_path: string }>>("drive_accounts");
   expect(await accounts()).toEqual([]);

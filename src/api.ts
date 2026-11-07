@@ -449,9 +449,9 @@ export interface TrashInfo {
   trashed: number;
 }
 
-/** Original location and trash date of items in the Trash. */
-export async function trashInfo(paths: string[]): Promise<TrashInfo[]> {
-  return invoke<TrashInfo[]>("trash_info", { paths });
+/** Original location and trash date of items in the Trash; null for a path that isn't on this computer. */
+export async function trashInfo(paths: string[]): Promise<(TrashInfo | null)[]> {
+  return invoke<(TrashInfo | null)[]>("trash_info", { paths });
 }
 
 /** Move an item in the Trash back to where it came from; resolves with that path. */

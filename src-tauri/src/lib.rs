@@ -960,18 +960,24 @@ impl From<Result<Option<String>, String>> for TrashOutcome {
     }
 }
 
-/// Original location and trash date of items in the Trash.
+/// Original location and trash date of items in the Trash; nothing for a
+/// path that isn't on this computer.
 #[tauri::command]
 async fn trash_info(
     app: tauri::AppHandle,
     paths: Vec<String>,
-) -> Result<Vec<trash_ops::TrashInfo>, String> {
+) -> Result<Vec<Option<trash_ops::TrashInfo>>, String> {
     blocking(move || {
         trash_of(&app)
-            .map(|trash| trash.info(&paths))
+            .map(|trash| trash_infos(&trash, &paths))
             .unwrap_or_default()
     })
     .await
+}
+
+/// `trash_info` with the home Trash.
+fn trash_infos(trash: &trash_ops::Trash, paths: &[String]) -> Vec<Option<trash_ops::TrashInfo>> {
+    place::local_only(paths, |local| trash.info(&local).into_iter().map(Some).collect())
 }
 
 /// "Restore From Trash" and Undo: move an item back where it came from.
@@ -1081,21 +1087,22 @@ async fn run_shell_script(app: tauri::AppHandle, path: String) -> Result<(), Str
 /// history cannot be created (D13).
 #[tauri::command]
 async fn make_versioned_dir(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    blocking(move || {
-        let root = PathBuf::from(&path);
-        fs_ops::make_dir(path)?;
-        let state = app.state::<VersionsState>();
-        match History::create(&root) {
-            Ok(history) => {
-                state.adopt(history);
-                Ok(())
-            }
-            Err(error) => Err(format!(
-                "The folder was created, but versions could not be turned on: {error}"
-            )),
+    blocking(move || make_versioned(&app.state::<VersionsState>(), path)).await?
+}
+
+/// `make_versioned_dir` with `state`, on this computer only.
+fn make_versioned(state: &VersionsState, path: String) -> Result<(), String> {
+    let root = place::local_write(&path)?.to_path_buf();
+    fs_ops::make_dir(path)?;
+    match History::create(&root) {
+        Ok(history) => {
+            state.adopt(history);
+            Ok(())
         }
-    })
-    .await?
+        Err(error) => Err(format!(
+            "The folder was created, but versions could not be turned on: {error}"
+        )),
+    }
 }
 
 /// The nearest versioned root for a location, if any. Cheap: it reads
@@ -1131,12 +1138,21 @@ fn history_and_rel(
     app: &tauri::AppHandle,
     path: &str,
 ) -> Result<(std::sync::Arc<History>, PathBuf), String> {
-    let state = app.state::<VersionsState>();
-    if versions::is_internal_path(Path::new(path)) {
+    history_in(&app.state::<VersionsState>(), path)
+}
+
+/// The history keeping versions of `path`, a path on this computer, and
+/// `path` relative to its root.
+fn history_in(
+    state: &VersionsState,
+    path: &str,
+) -> Result<(std::sync::Arc<History>, PathBuf), String> {
+    let path = place::local(path)?;
+    if versions::is_internal_path(path) {
         return Err("This folder does not keep versions.".to_string());
     }
     let Some((history, rel)) = state
-        .history_for(Path::new(path))
+        .history_for(path)
         .map_err(|e| e.to_string())?
     else {
         return Err("This folder does not keep versions.".to_string());
@@ -1286,30 +1302,40 @@ async fn history_info(
     app: tauri::AppHandle,
     root: String,
 ) -> Result<versions::HistoryInfo, String> {
-    blocking(move || {
-        app.state::<VersionsState>()
-            .info_under(Path::new(&root))
-            .map_err(|e| e.to_string())
-    })
-    .await?
+    blocking(move || history_info_in(&app.state::<VersionsState>(), &root)).await?
+}
+
+/// `history_info` with `state`.
+fn history_info_in(state: &VersionsState, root: &str) -> Result<versions::HistoryInfo, String> {
+    state.info_under(place::local(root)?).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn clear_history(app: tauri::AppHandle, root: String) -> Result<(), String> {
-    blocking(move || {
-        app.state::<VersionsState>()
-            .clear(Path::new(&root), trash_history_dir)
-    })
-    .await?
+    blocking(move || clear_history_in(&app.state::<VersionsState>(), &root, trash_history_dir)).await?
+}
+
+/// `clear_history` with `state`, sending the old `.versions/` away with `trash_dir`.
+fn clear_history_in(
+    state: &VersionsState,
+    root: &str,
+    trash_dir: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    state.clear(place::local(root)?, trash_dir)
 }
 
 #[tauri::command]
 async fn stop_keeping_versions(app: tauri::AppHandle, root: String) -> Result<(), String> {
-    blocking(move || {
-        app.state::<VersionsState>()
-            .stop_keeping(Path::new(&root), trash_history_dir)
-    })
-    .await?
+    blocking(move || stop_keeping_in(&app.state::<VersionsState>(), &root, trash_history_dir)).await?
+}
+
+/// `stop_keeping_versions` with `state`, sending `.versions/` away with `trash_dir`.
+fn stop_keeping_in(
+    state: &VersionsState,
+    root: &str,
+    trash_dir: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    state.stop_keeping(place::local(root)?, trash_dir)
 }
 
 /// Clear History and Stop Keeping Versions move `.versions/` to the Trash (D7).
@@ -1645,11 +1671,18 @@ async fn share_folder(
     state: tauri::State<'_, share::state::ShareState>,
     path: String,
 ) -> Result<share::state::ShareInfo, String> {
+    let path = share_source(&path)?;
     let hint = share_versions_hint(&app);
     let trash = app.clone();
     state
-        .share_folder(Path::new(&path), move |p| in_trash(&trash, p), hint)
+        .share_folder(path, move |p| in_trash(&trash, p), hint)
         .await
+}
+
+/// The folder a share command names: a folder on this computer, refused
+/// before the sharing node starts. `share_info` has nothing for another path.
+fn share_source(path: &str) -> Result<&Path, String> {
+    place::local(path).map_err(|_| "Only folders on this computer can be shared.".into())
 }
 
 #[tauri::command]
@@ -1658,8 +1691,11 @@ async fn share_info(
     state: tauri::State<'_, share::state::ShareState>,
     path: String,
 ) -> Result<Option<share::state::ShareInfo>, String> {
+    let Ok(path) = share_source(&path) else {
+        return Ok(None);
+    };
     let hint = share_versions_hint(&app);
-    state.info(Path::new(&path), hint).await
+    state.info(path, hint).await
 }
 
 #[tauri::command]
@@ -2630,5 +2666,101 @@ mod read_gate_tests {
             let with = block_on(open_with(path.into(), "/no/such.desktop".into()));
             assert_eq!(with.unwrap_err(), refusal, "{path}");
         }
+    }
+}
+
+#[cfg(test)]
+mod local_gate_tests {
+    //! Keep Versions, sharing a folder and the Trash's details work on this
+    //! computer only: every other path, and a relative one (which would be
+    //! read from the app's working directory), is refused before anything
+    //! is read or written.
+    use super::*;
+
+    /// In the tests' working directory (the crate root), so a refusal isn't
+    /// a missing folder.
+    const RELATIVE: &str = "src";
+
+    /// Each refused path with its refusal.
+    fn refused() -> Vec<(&'static str, String)> {
+        vec![
+            ("share://r1/a.txt", "This action is not available for shared folders.".into()),
+            ("sftp://me@host/a.txt", "This action is not available for SSH servers.".into()),
+            ("gdrive://acct/root~x/f1~a.txt", "This action is not available for Google Drive items yet.".into()),
+            (RELATIVE, format!("“{RELATIVE}” is not a local file.")),
+        ]
+    }
+
+    fn versions_state(dir: &tempfile::TempDir) -> VersionsState {
+        VersionsState::new(dir.path().join("versioned.json"))
+    }
+
+    fn text(path: &Path) -> String {
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn keep_versions_reads_histories_on_this_computer_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = versions_state(&dir);
+        for (path, refusal) in refused() {
+            assert_eq!(history_in(&state, path).err(), Some(refusal.clone()), "{path}");
+            assert_eq!(history_info_in(&state, path).err(), Some(refusal.clone()), "{path}");
+            let trash = |_: &Path| -> Result<(), String> { panic!("trashed the history of {path}") };
+            assert_eq!(clear_history_in(&state, path, trash).err(), Some(refusal.clone()), "{path}");
+            assert_eq!(stop_keeping_in(&state, path, trash).err(), Some(refusal), "{path}");
+        }
+        // A folder on this computer still gets its answer.
+        let root = dir.path().join("Projects");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("a.txt"), "a").unwrap();
+        let none = "This folder does not keep versions.".to_string();
+        assert_eq!(history_in(&state, &text(&root.join("a.txt"))).err(), Some(none.clone()));
+        drop(History::create(&root).unwrap());
+        let (_, rel) = history_in(&state, &text(&root.join("a.txt"))).unwrap();
+        assert_eq!(rel, PathBuf::from("a.txt"));
+        assert_eq!(history_in(&state, &text(&root.join(".versions/meta.json"))).err(), Some(none));
+        assert!(history_info_in(&state, &text(&root)).is_ok());
+    }
+
+    #[test]
+    fn new_versioned_folders_are_made_on_this_computer_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = versions_state(&dir);
+        // Parents that don't exist, so nothing is made even without the check.
+        for (path, refusal) in [
+            ("share://r1/New Folder", "Shared folders are read only."),
+            ("sftp://me@host/New Folder", "SSH servers are read only for now."),
+            ("gdrive://acct/root~x/~New Folder", "This action is not available for Google Drive items yet."),
+            ("no-such-folder/New Folder", "“no-such-folder/New Folder” is not a local file."),
+        ] {
+            assert_eq!(make_versioned(&state, path.into()).unwrap_err(), refusal, "{path}");
+        }
+        let folder = dir.path().join("Notes");
+        make_versioned(&state, text(&folder)).unwrap();
+        assert!(folder.join(".versions").is_dir());
+    }
+
+    #[test]
+    fn sharing_takes_folders_on_this_computer_only() {
+        for (path, _) in refused() {
+            assert_eq!(share_source(path).unwrap_err(), "Only folders on this computer can be shared.", "{path}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(share_source(&text(dir.path())), Ok(dir.path()));
+    }
+
+    #[test]
+    fn trash_details_come_from_this_computer_only() {
+        let home = tempfile::tempdir().unwrap();
+        let trash = trash_ops::Trash::new(home.path().to_path_buf(), None);
+        let item = trash.listing_root().join("old.txt");
+        std::fs::write(&item, "old").unwrap();
+        let mut paths: Vec<String> = refused().into_iter().map(|(path, _)| path.to_string()).collect();
+        paths.push(text(&item));
+        let infos = trash_infos(&trash, &paths);
+        assert_eq!(infos.len(), paths.len());
+        assert!(infos[..paths.len() - 1].iter().all(Option::is_none), "{infos:?}");
+        assert!(infos[paths.len() - 1].as_ref().is_some_and(|info| info.trashed > 0));
     }
 }
