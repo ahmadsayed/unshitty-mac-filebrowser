@@ -551,27 +551,26 @@ function renderTabbar(): void {
   tabbar.replaceChildren(next);
 }
 
-/** Restore a saved tab into the live view. */
-async function restoreTab(tab: TabState): Promise<void> {
+/** Restore a saved tab into the live view; false when its folder can't be listed. */
+async function restoreTab(tab: TabState): Promise<boolean> {
   const ok = await navigate(tab.location, { history: "none" });
-  if (!ok) return;
+  if (!ok) return false;
   backStack = [...tab.back];
   forwardStack = [...tab.forward];
+  if (tab.searchQuery !== null) {
+    // navigate() closed the search; open it again the way the search button
+    // does, so the placeholder names this folder and the recursive search runs.
+    showSearchBar();
+    searchEntry.value = tab.searchText;
+    onSearchInput();
+  }
   selection.retain(tab.selected, entries);
   selection.place(tab.anchorIndex, tab.cursorIndex);
-  if (tab.searchQuery !== null) {
-    searchQuery = tab.searchQuery;
-    searchEntry.value = tab.searchText;
-    pathbarEl.hidden = true;
-    searchbarEl.hidden = false;
-    $("#btn-search").classList.add("open");
-    renderView();
-    selection.place(tab.anchorIndex, tab.cursorIndex);
-  }
   updateSelection();
   updateNavButtons();
   renderTabbar();
   scrollEl.scrollTop = tab.scrollTop;
+  return true;
 }
 
 async function switchTab(index: number): Promise<void> {
@@ -579,8 +578,13 @@ async function switchTab(index: number): Promise<void> {
   tabBusy = true;
   try {
     saveActiveTab();
+    const previous = activeTab;
     activeTab = index;
-    await restoreTab(tabs[index]);
+    if (await restoreTab(tabs[index])) return;
+    // navigate() showed a toast and left the view, but closed its search:
+    // the previous tab stays active and comes back as it was saved.
+    activeTab = previous;
+    await restoreTab(tabs[previous]);
   } finally {
     tabBusy = false;
   }
@@ -1050,16 +1054,19 @@ async function submitPathEntry(): Promise<void> {
 function openSearch(initial = ""): void {
   if (!hasEntries(location)) return;
   closePathEntry();
-  if (searchQuery === null) {
-    searchQuery = "";
-    pathbarEl.hidden = true;
-    searchbarEl.hidden = false;
-    $("#btn-search").classList.add("open");
-    searchEntry.placeholder = `Search ${locationName(location)}`;
-  }
+  if (searchQuery === null) showSearchBar();
   if (initial) searchEntry.value = initial;
   searchEntry.focus();
   onSearchInput();
+}
+
+/** Put the search bar in the path bar's place, for the current folder. */
+function showSearchBar(): void {
+  searchQuery = "";
+  pathbarEl.hidden = true;
+  searchbarEl.hidden = false;
+  $("#btn-search").classList.add("open");
+  searchEntry.placeholder = `Search ${locationName(location)}`;
 }
 
 function closeSearch(rerender = true): void {
