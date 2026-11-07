@@ -338,9 +338,19 @@ export function pathSegments(path: string): PathSegments {
   return SCHEMES[placeOf(path)].segments(path);
 }
 
-/** Whether `path` is `dir` itself or inside it; a trailing slash on `dir` doesn't matter. */
+/** Whether `path` is `dir` itself or inside it; a trailing slash on `dir` doesn't
+ *  matter, so "/" holds every absolute path. For roots typed or stored with a
+ *  slash (a versioned folder, a folder that just received items). */
 export function isUnder(path: string, dir: string): boolean {
   return path === dir || path.startsWith(dir.replace(/\/+$/, "") + "/");
+}
+
+/** Whether `path` is `dir` itself or inside it, with `dir` taken as written:
+ *  "/" holds only "/", and a `dir` ending in a slash holds only itself. For
+ *  Home (which is "/" when HOME=/), the Trash, volumes and items, where "/"
+ *  must keep its own crumb and the Location column slices after `dir + "/"`. */
+export function isWithin(path: string, dir: string): boolean {
+  return path === dir || path.startsWith(dir + "/");
 }
 
 /** Whether a window may open `path` from its `?path=` (New Window). */

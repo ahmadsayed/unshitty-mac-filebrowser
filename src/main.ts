@@ -45,7 +45,7 @@ import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type Preview
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { Selection, type Mark } from "./selection";
 import { acceptsNewItems, canRename, hasProperties, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
-import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
+import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -841,11 +841,11 @@ function crumbsFor(loc: string): Crumb[] {
   if (isInTrash(loc, trashPath)) {
     return [{ label: "Trash", path: trashPath, icon: "user-trash" }, ...segments(trashPath, loc)];
   }
-  if (home && isUnder(loc, home)) {
+  if (home && isWithin(loc, home)) {
     return [{ label: "Home", path: home, icon: "user-home" }, ...segments(home, loc)];
   }
   const volume = mountedVolumes
-    .filter((v) => isUnder(loc, v.path))
+    .filter((v) => isWithin(loc, v.path))
     .sort((a, b) => b.path.length - a.path.length)[0];
   if (volume) {
     return [{ label: volume.name, path: volume.path, icon: "drive-harddisk" }, ...segments(volume.path, loc)];
@@ -1443,7 +1443,7 @@ function starButton(e: Entry): string {
 function whereText(path: string): string {
   const dir = parentOf(path);
   if (dir === home) return "Home";
-  if (home && isUnder(dir, home)) return dir.slice(home.length + 1);
+  if (home && isWithin(dir, home)) return dir.slice(home.length + 1);
   return dir;
 }
 
@@ -3022,7 +3022,7 @@ function followMoves(moves: { from: string; to: string }[]): void {
   for (const { from, to } of moves) {
     const next = new Set<string>();
     for (const p of starred) {
-      if (isUnder(p, from)) {
+      if (isWithin(p, from)) {
         next.add(to + p.slice(from.length));
         changed = true;
       } else {
@@ -3541,7 +3541,7 @@ function dropTargetAt(x: number, y: number, sources: string[]): DropTarget | nul
 /** The volume a path is on, for a quick guess before device ids arrive. */
 function volumeRoot(path: string): string {
   return mountedVolumes
-    .filter((v) => isUnder(path, v.path))
+    .filter((v) => isWithin(path, v.path))
     .sort((a, b) => b.path.length - a.path.length)[0]?.path ?? "/";
 }
 
@@ -3550,7 +3550,7 @@ function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; 
   const dir = target.dir;
   if (isReadOnlyLocation(dir) || sources.some(isReadOnlyLocation)) return null;
   // Into itself or its own subfolder: refused.
-  if (sources.some((src) => isUnder(dir, src))) return null;
+  if (sources.some((src) => isWithin(dir, src))) return null;
   // Drive items go to Drive's Trash with Move to Trash, not the app's Trash.
   if (dir === trashPath) return inTrash() || sources.some(isCloud) ? null : "trash";
   // Only Move to Trash puts items in the Trash: a folder inside it takes nothing.

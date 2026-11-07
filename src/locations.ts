@@ -4,7 +4,7 @@
 // Kept free of DOM and app state so every branch can be tested directly
 // (tests/locations.test.ts).
 
-import { isRemotePath, isSftpPath, isSharePath, isUnder, PSEUDO_PREFIX } from "./paths";
+import { isRemotePath, isSftpPath, isSharePath, isWithin, PSEUDO_PREFIX } from "./paths";
 
 /** The places that aren't folders: Recent, Starred and Network. */
 export type Pseudo = "recent" | "starred" | "network";
@@ -28,7 +28,7 @@ export function isLocalLocation(path: string): boolean {
 
 /** The Trash or a folder inside it; nothing until the Trash's path is known. */
 export function isInTrash(path: string, trashPath: string): boolean {
-  return !!trashPath && isUnder(path, trashPath);
+  return !!trashPath && isWithin(path, trashPath);
 }
 
 /** Recursive name search is for local folders; the others filter in place. */

@@ -2,7 +2,7 @@
 // that must not fall back to a local path.
 import { expect, test } from "vitest";
 import {
-  childPath, cloudSegmentName, decodeSegment, isCloudRoot, isKnownPath, isUnder, joinCloudPath, joinSharePath, joinSftpPath,
+  childPath, cloudSegmentName, decodeSegment, isCloudRoot, isKnownPath, isUnder, isWithin, joinCloudPath, joinSharePath, joinSftpPath,
   isCloudPath, isRemotePath, isShareLink, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket,
   isSharePath, isSftpPath, resolveTypedPath,
 } from "../src/paths";
@@ -263,6 +263,24 @@ test.each([
   ["sftp://me@host",         "sftp://me@host/", false],
 ])("isUnder(%j, %j) is %j", (path, dir, under) => {
   expect(isUnder(path, dir)).toBe(under);
+});
+
+// The containment Home, the Trash, volumes and dragged items use: "/" (Home
+// when HOME=/) and a folder written with a trailing slash hold only themselves.
+// prettier-ignore
+test.each([
+  ["/Users/me",              "/Users/me",      true],
+  ["/Users/me/a/b",          "/Users/me",      true],
+  ["/Users/meg",             "/Users/me",      false],
+  ["/Users",                 "/Users/me",      false],
+  ["/",                      "/",              true],
+  ["/etc",                   "/",              false],
+  ["/Volumes/USB",           "/",              false],
+  ["/Users/me/",             "/Users/me/",     true],
+  ["/Users/me/Documents",    "/Users/me/",     false],
+  ["/Users/me/.Trash/a",     "/Users/me/.Trash", true],
+])("isWithin(%j, %j) is %j", (path, dir, within) => {
+  expect(isWithin(path, dir)).toBe(within);
 });
 
 // prettier-ignore
