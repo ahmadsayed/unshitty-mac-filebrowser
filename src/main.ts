@@ -106,6 +106,9 @@ const NETWORK = `${PSEUDO_PREFIX}network`;
 
 /** Current location: an absolute path, or "pseudo:<name>". */
 let location = "";
+/** Goes up each time navigate() shows a location: a reload asked for before
+ *  drops what it learns after that, like the other late answers (#154). */
+let viewSeq = 0;
 /** Nearest folder that keeps versions, if the current location is in one. */
 let versionedRootPath: string | null = null;
 let entries: Entry[] = [];
@@ -603,6 +606,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   }
 
   location = loc;
+  viewSeq++;
   sharePage = page;
   versionedRootPath = await rootLookup;
   entries = next;
@@ -634,17 +638,13 @@ async function reload(select?: string[]): Promise<void> {
     return;
   }
   if (!hasEntries(location)) return;
+  // The view may go somewhere else while this waits: what lands after that is dropped.
+  const seq = viewSeq;
+  const moved = () => seq !== viewSeq;
   if (isSharePath(location) || location === NETWORK) await refreshShares();
   if (location === NETWORK) await refreshSftpServers();
-  if (showShareStatusPage()) return;
-  try {
-    entries = await listLocation(location);
-    listingError = null;
-    sharePage = null;
-    itemIcons.listingReloaded();
-  } catch (err) {
-    if (await listingFailed(err)) return;
-  }
+  if (moved() || showShareStatusPage()) return;
+  if (!(await relist(moved))) return;
   selection.retain(select ?? selection.paths(), entries);
   const mark = selection.mark();
   const top = scrollEl.scrollTop;
@@ -652,9 +652,27 @@ async function reload(select?: string[]): Promise<void> {
   scrollEl.scrollTop = top;
   if (select?.[0]) revealPath(select[0]);
   else followCursor(mark);
-  versionedRootPath = await lookupVersionedRoot(location);
+  const root = await lookupVersionedRoot(location);
+  if (moved()) return;
+  versionedRootPath = root;
   updateShareSubtitle();
   search.rerun();
+}
+
+/** List the location again for reload(). False when there is nothing more
+ *  for it to do: the view moved on meanwhile, or went to the parent instead. */
+async function relist(moved: () => boolean): Promise<boolean> {
+  try {
+    const listed = await listLocation(location);
+    if (moved()) return false;
+    entries = listed;
+    listingError = null;
+    sharePage = null;
+    itemIcons.listingReloaded();
+    return true;
+  } catch (err) {
+    return !moved() && !(await listingFailed(err));
+  }
 }
 
 /** After a reload, keep the cursor and anchor on the same items: new ones
