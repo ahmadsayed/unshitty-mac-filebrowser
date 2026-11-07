@@ -584,3 +584,46 @@ test("Permissions: a failure stays in the dialog, cleaned, with everything enabl
   await respond("Cancel");
   await key("Escape");
 });
+
+// ----- New Document: the choices are buttons, and Enter is its Cancel -----
+
+const choice = (label: string) => $$(".dialog-layer .app-choice").find((b) => b.textContent === label) as HTMLButtonElement;
+
+async function openNewDocument(): Promise<void> {
+  await folder("newdoc", []);
+  await rightClick($("#view"));
+  await chooseMenu("New Document…");
+  await settle(20);
+  expect(dialogHeading()).toBe("New Document");
+}
+
+test("New Document: a double click makes one document, and Enter or Escape waits for it", async () => {
+  await openNewDocument();
+  calls().hold("create_file");
+  await click(choice("Empty Text File"));
+  await click(choice("Empty Text File"));
+  expect(choice("Empty Text File").disabled).toBe(true);
+  expect(choice("Letter.odt").disabled).toBe(true);
+  expect(button("Cancel").disabled).toBe(true);
+  await key("Enter");
+  await key("Escape");
+  expect(dialogHeading()).toBe("New Document");
+  calls().release("create_file");
+  await settle(30);
+  expect(calls().count("create_file")).toBe(1);
+  expect(dialogHeading()).toBeUndefined();
+  expect(names()).toEqual(["Untitled.txt"]);
+  expect(toasts().join(" ")).toContain("Created “Untitled.txt”");
+});
+
+test("New Document: a failure stays in the dialog, cleaned, with every choice enabled", async () => {
+  await openNewDocument();
+  calls().failNext("copy_entry", "Failed to copy: No space left on device (os error 28)");
+  await click(choice("Letter.odt"));
+  await settle(20);
+  expect(dialogHeading()).toBe("New Document");
+  expect(message()).toBe("No space left on device");
+  expect(choice("Letter.odt").disabled).toBe(false);
+  expect(choice("Empty Text File").disabled).toBe(false);
+  expect(button("Cancel").disabled).toBe(false);
+});

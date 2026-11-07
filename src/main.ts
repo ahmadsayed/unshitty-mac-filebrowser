@@ -2118,19 +2118,21 @@ async function showNewDocumentDialog(): Promise<void> {
     responses: [{ id: "cancel", label: "Cancel" }],
     defaultResponse: "cancel",
     closeResponse: "cancel",
+    // Nothing else responds while a document is made; a failure stays in the dialog.
+    busy: { status: message },
   });
 
-  const create = async (name: string, make: (dest: string) => Promise<void>) => {
-    const dest = joinPath(location, name);
-    try {
+  /** Make `fileName` (or "fileName 2", …) here as the dialog's one action in flight. */
+  const create = (fileName: string, make: (dest: string) => Promise<void>) =>
+    void dialog.run(async () => {
+      const dir = location;
+      const name = await freeDocumentName(dir, fileName);
+      const dest = joinPath(dir, name);
       await make(dest);
       dialog.close();
       await reload([dest]);
       showToast(`Created “${name}”`);
-    } catch (err) {
-      message.textContent = cleanError(err);
-    }
-  };
+    });
   const addChoice = (label: string, action: () => void) => {
     const button = document.createElement("button");
     button.className = "app-choice";
@@ -2148,24 +2150,16 @@ async function showNewDocumentDialog(): Promise<void> {
     extra.insertBefore(button, message);
   };
 
-  addChoice("Empty Text File", () =>
-    void (async () => {
-      const name = await freeDocumentName(location, "Untitled.txt");
-      await create(name, (dest) => createFile(dest));
-    })()
-  );
+  addChoice("Empty Text File", () => create("Untitled.txt", (dest) => createFile(dest)));
 
   try {
     const templates = (await listTemplates()).filter((entry) => !entry.is_dir);
     loading.remove();
     for (const template of templates) {
       addChoice(template.name, () =>
-        void (async () => {
-          const name = await freeDocumentName(location, template.name);
-          await create(name, async (dest) => {
-            await copyEntry(template.path, dest, false);
-          });
-        })()
+        create(template.name, async (dest) => {
+          await copyEntry(template.path, dest, false);
+        })
       );
     }
   } catch (err) {
