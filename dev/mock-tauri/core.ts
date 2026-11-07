@@ -293,6 +293,9 @@ let mockShareSeq = 0;
 let mockLinkSeq = 0;
 let mockSharersOnline = true;
 let mockNoAccess = false;
+// The sharer dropped after Network last asked: the status still says online,
+// but listing fails as if offline.
+let mockSharerUnreachable = false;
 
 // Simulate unlocking in memory. Real cryptography is exercised by Rust tests.
 const mockProtectedLinks = new Map<string, { ticket: string; passphrase: string }>();
@@ -328,7 +331,7 @@ function unlockMockShare(link: string, passphrase?: string): string {
 }
 
 function listShare(path: string): Entry[] {
-  if (!mockSharersOnline) throw "Ahmed is offline.";
+  if (!mockSharersOnline || mockSharerUnreachable) throw "Ahmed is offline.";
   const entries = SHARE_FILES[path];
   if (!entries) throw "The shared folder was moved or deleted.";
   return entries.map((entry) => ({
@@ -498,6 +501,9 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
   setNoAccess(value: boolean) {
     mockNoAccess = value;
   },
+  setUnreachable(value: boolean) {
+    mockSharerUnreachable = value;
+  },
   holdReceived(hold: boolean) {
     receivedHeld = hold;
     if (!hold) receivedWaiters.splice(0).forEach((resolve) => resolve());
@@ -513,6 +519,7 @@ const SHARE_COMMANDS: Record<string, (args: Args) => unknown> = {
     mockLinkSeq = 0;
     mockSharersOnline = true;
     mockNoAccess = false;
+    mockSharerUnreachable = false;
   },
 };
 
@@ -1062,6 +1069,31 @@ const thumbLog = { requested: [] as string[], cancelled: [] as number[] };
     thumbLog.cancelled.length = 0;
   },
 };
+
+// Folder counts can be held by tests, standing in for a slow disk, and every
+// request is logged (the folders asked for, one list per call).
+let countsHeld = false;
+const heldCounts: (() => void)[] = [];
+const countLog = { asked: [] as string[][] };
+
+(globalThis as Record<string, unknown>).__mockCounts = {
+  log: countLog,
+  hold(hold: boolean) {
+    countsHeld = hold;
+    if (!hold) heldCounts.splice(0).forEach((resolve) => resolve());
+  },
+  held: () => heldCounts.length,
+  reset() {
+    this.hold(false);
+    countLog.asked.length = 0;
+  },
+};
+
+async function itemCounts(paths: string[], showHidden: boolean): Promise<({ count: number; versioned: boolean } | null)[]> {
+  countLog.asked.push([...paths]);
+  if (countsHeld) await new Promise<void>((resolve) => heldCounts.push(resolve));
+  return paths.map((path) => (placeOf(path) !== "local" ? null : folderSummary(path, showHidden)));
+}
 
 (globalThis as Record<string, unknown>).__mockOps = {
   hold() {
@@ -1768,8 +1800,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
       a.onResults as Channel<Entry[]> | undefined,
     ),
   cancel_search: () => {},
-  item_counts: (a) =>
-    (a.paths as string[]).map((path) => (placeOf(path) !== "local" ? null : folderSummary(path, a.showHidden as boolean))),
+  item_counts: (a) => itemCounts(a.paths as string[], a.showHidden as boolean),
   file_properties: (a) => {
     const path = str(a, "path");
     if (path.startsWith("share://")) throw "Properties aren't available for shared folders yet.";

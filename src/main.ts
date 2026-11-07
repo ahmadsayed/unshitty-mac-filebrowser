@@ -3,7 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { forgetDragOut, isOwnDragOut, leftWindow, startSystemDrag } from "./drag-out";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
-  listDir, searchDir, cancelSearch, type SearchSummary, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
+  listDir, searchDir, cancelSearch, type SearchSummary, makeDir, renameEntry, renameMany, itemCounts, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
   extractArchive,
   newWindow,
   windowButtons,
@@ -44,6 +44,8 @@ import { qrShareItems } from "./qr-share";
 import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type PreviewPlace } from "./preview-actions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { Selection, type Mark } from "./selection";
+import { FolderSummaries } from "./folder-summaries";
+import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
 import { acceptsNewItems, canRename, hasProperties, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
 import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
 
@@ -129,11 +131,11 @@ let sectionStart = -1;
 /** Cap on recursive results, so a broad query can't build an endless view. */
 const SEARCH_LIMIT = 1000;
 
-const counts = new Map<string, number | null>();
-/** Bumped whenever `counts` changes; sorting by size depends on it. */
-let countsVersion = 0;
-/** Folders whose summary said they keep versions; drives the version badge. */
-const versionedFolders = new Set<string>();
+/** Folder item counts and version badges for the view (src/folder-summaries.ts). */
+const summaries = new FolderSummaries(itemCounts, () => location, ({ badges }) => {
+  badges.forEach(patchIcon);
+  patchCounts();
+});
 let backStack: string[] = [];
 let forwardStack: string[] = [];
 
@@ -328,7 +330,7 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "bas
 
 function sortValue(e: Entry): number {
   if (prefs.sortKey === "modified") return e.trashed ?? e.modified;
-  if (e.is_dir) return counts.get(e.path) ?? -1;
+  if (e.is_dir) return summaries.count(e.path) ?? -1;
   return e.size;
 }
 
@@ -365,7 +367,7 @@ let shownFrom: unknown[] = [];
 
 function computeShown(): void {
   const q = searchQuery ? fold(searchQuery.trim()) : "";
-  const from = [entries, searchResults, q, location, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && countsVersion];
+  const from = [entries, searchResults, q, location, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && summaries.version];
   if (from.every((value, i) => value === shownFrom[i])) return;
   shownFrom = from;
   sectionStart = -1;
@@ -618,14 +620,12 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
     try {
       next = await listLocation(loc);
     } catch (err) {
-      if (isSharePath(loc)) {
-        page = receivedFor(loc)?.status === "no-access" ? "no-access" : "offline";
-      } else if (location) {
-        showAccessError(basename(loc), cleanError(err));
+      const failed = listingReaction(loc, err, listingContext(loc, location ? "navigate" : "first"));
+      if (failed.kind === "sharePage") page = failed.status;
+      else if (failed.kind === "toast") {
+        showListingToast(failed);
         return false;
-      } else {
-        error = cleanError(err);
-      }
+      } else error = failed.message;
     }
   }
 
@@ -642,10 +642,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   versionedRootPath = await rootLookup;
   entries = next;
   listingError = error;
-  counts.clear();
-  countsVersion++;
-  countsInFlight.clear();
-  versionedFolders.clear();
+  summaries.reset();
   selection.reset(opts.select);
 
   document.title = locationName(loc);
@@ -714,18 +711,20 @@ function showShareStatusPage(): boolean {
 /** Show why `reload` couldn't list the folder. True when it navigated away instead. */
 async function listingFailed(err: unknown): Promise<boolean> {
   entries = [];
-  if (isSharePath(location)) {
-    sharePage = "offline";
+  const failed = listingReaction(location, err, listingContext(location, "reload"));
+  if (failed.kind === "sharePage") {
+    sharePage = failed.status;
     return false;
   }
-  if (isLocalLocation(location) && isMissingPathError(err)) {
-    // The folder went away under us: a cancelled copy deletes the folder it
-    // was writing, and the view can still be showing it. Go to its parent
-    // rather than stranding the view on an error page.
-    if (await navigate(parentOf(location), { history: "none" })) return true;
-  }
-  listingError = cleanError(err);
+  // A folder that went away goes to its parent, or shows the error page if that fails too.
+  if (failed.kind === "goTo" && (await navigate(failed.parent, { history: "none" }))) return true;
+  listingError = failed.message;
   return false;
+}
+
+/** What listingReaction needs to know about `loc` (src/listing-failure.ts). */
+function listingContext(loc: string, phase: ListingPhase): ListingContext {
+  return { phase, isMac, share: isSharePath(loc) ? receivedFor(loc)?.status : undefined, nameOf: basename, parentOf };
 }
 
 /** "Shared by Ahmed · Read only" under the path bar. */
@@ -763,18 +762,12 @@ function lookupVersionedRoot(loc: string): Promise<string | null> {
 }
 
 /** A failed folder open; macOS privacy blocks get a shortcut to the setting. */
-function showAccessError(name: string, message: string): void {
-  const blocked = isMac && /not permitted/i.test(message);
-  showToast(`Unable to access “${name}”: ${message}`, blocked ? { button: { label: "Grant Access", onClick: openSettingsSafely } } : {});
+function showListingToast(failed: { text: string; grantAccess: boolean }): void {
+  showToast(failed.text, failed.grantAccess ? { button: { label: "Grant Access", onClick: openSettingsSafely } } : {});
 }
 
 function openSettingsSafely(): void {
   openFullDiskAccessSettings().catch((err) => showToast(`Could not open System Settings: ${cleanError(err)}`));
-}
-
-/** True for ENOENT: the path was removed, not merely unreadable. */
-function isMissingPathError(err: unknown): boolean {
-  return /no such file or directory/i.test(String(err));
 }
 
 function goBack(): void {
@@ -933,14 +926,13 @@ async function submitPathEntry(): Promise<void> {
   try {
     await listDir(typed, prefs.showHidden);
   } catch (err) {
-    const message = cleanError(err);
-    if (isSftpPath(typed) && /Connect to this server first/.test(message)) {
+    const failed = listingReaction(typed, err, listingContext(typed, "entry"));
+    if (failed.kind === "connect") {
       closePathEntry();
-      showConnectServerDialog(typed);
+      showConnectServerDialog(failed.url);
       return;
     }
-    if (/not permitted/i.test(message)) showAccessError(typed, message);
-    else showToast(`Unable to find “${typed}”: ${message}`);
+    if (failed.kind === "toast") showListingToast(failed);
     pathEntry.focus();
     return;
   }
@@ -1089,7 +1081,7 @@ function folderKind(entry: Entry): FolderKind {
 
 function sizeText(entry: Entry): string {
   if (!entry.is_dir) return formatSize(entry.size);
-  const n = counts.get(entry.path);
+  const n = summaries.count(entry.path);
   return n === undefined || n === null ? "" : formatItemCount(n);
 }
 
@@ -1121,7 +1113,7 @@ function renderView(): void {
     viewEl.innerHTML = `<div class="list">${listHeaderHtml()}<div class="list-body"></div></div>`;
     itemsLayer = viewEl.querySelector<HTMLElement>(".list-body");
     // Sorting by size needs every folder's count; otherwise only visible rows ask.
-    if (prefs.sortKey === "size") requestCounts(shown.filter((e) => e.is_dir).map((e) => e.path), true);
+    if (prefs.sortKey === "size") void requestCounts(shown.filter((e) => e.is_dir).map((e) => e.path), true);
   }
   const overlay = viewEl.closest(".view-overlay") ?? viewEl;
   overlay.querySelector(".network-paste")?.remove();
@@ -1472,7 +1464,7 @@ function thumbKeyFor(e: Entry, size = thumbSize()): string {
 function iconHtml(e: Entry): string {
   return itemIcon(e, iconBase(e), {
     link: e.is_symlink,
-    versions: versionedFolders.has(e.path),
+    versions: summaries.versioned(e.path),
     shared: location === NETWORK || sharedFolders.some((share) => share.path === e.path),
   });
 }
@@ -1699,7 +1691,7 @@ function renderWindow(force = false): void {
   // version badge that comes with them. Only rendered folders are asked.
   const dirs: string[] = [];
   for (let i = start; i <= end; i++) if (shown[i].is_dir) dirs.push(shown[i].path);
-  requestCounts(dirs, false);
+  void requestCounts(dirs, false);
 }
 
 /** Scroll just enough to show item `i`, then render it. */
@@ -1869,39 +1861,11 @@ function updateViewButtons(): void {
   toggle.title = target === "list" ? `List View (${MOD}1)` : `Grid View (${MOD}2)`;
 }
 
-/** Fetch "N items" for `paths`, then patch the visible cells. */
-const countsInFlight = new Set<string>();
+/** Fetch "N items" for `paths`; `summaries` patches the visible cells as they land.
+ *  Sorting by size sorts again once every folder is counted. */
 async function requestCounts(paths: string[], resortWhenDone: boolean): Promise<void> {
-  const loc = location;
-  // Remote items have no local item count; Drive returns null, Network has no size cell.
-  const pending = paths.filter((p) => !isRemotePath(p) && !counts.has(p) && !countsInFlight.has(p));
-  if (pending.length === 0) return;
-  pending.forEach((p) => countsInFlight.add(p));
-  for (let i = 0; i < pending.length; i += 400) {
-    const batch = pending.slice(i, i + 400);
-    let result: (FolderSummary | null)[] = [];
-    try {
-      result = await itemCounts(batch, prefs.showHidden);
-    } catch {
-      /* leave those cells blank */
-    }
-    batch.forEach((p) => countsInFlight.delete(p));
-    if (loc !== location) return;
-    batch.forEach((p, j) => rememberSummary(p, result[j] ?? null));
-    patchCounts();
-  }
-  if (resortWhenDone && prefs.sortKey === "size") renderViewKeepingScroll();
-}
-
-/** Store a folder's count, and redraw its icon if its version badge changed. */
-function rememberSummary(path: string, summary: FolderSummary | null): void {
-  counts.set(path, summary?.count ?? null);
-  countsVersion++;
-  const versioned = !!summary?.versioned;
-  if (versioned === versionedFolders.has(path)) return;
-  if (versioned) versionedFolders.add(path);
-  else versionedFolders.delete(path);
-  patchIcon(path);
+  const landed = await summaries.request(paths, prefs.showHidden);
+  if (landed && resortWhenDone && prefs.sortKey === "size") renderViewKeepingScroll();
 }
 
 function patchCounts(): void {
@@ -1980,7 +1944,7 @@ function updateFloatingBar(): void {
     if (isAppBundle(e)) {
       text = `“${e.name}” selected`;
     } else if (e.is_dir) {
-      const n = counts.get(e.path);
+      const n = summaries.count(e.path);
       if (n === undefined) fetchCount(e.path);
       text = `“${e.name}” selected` + (n === undefined || n === null ? "" : ` (containing ${n === 1 ? "1 item" : `${n.toLocaleString()} items`})`);
     } else {
@@ -2001,14 +1965,10 @@ function updateFloatingBar(): void {
   floatingBar.hidden = false;
 }
 
+/** The selected folder's count, for the floating bar, which `summaries` updates when it lands. */
 function fetchCount(path: string): void {
-  counts.set(path, null);
-  countsVersion++;
   if (isMac && !isRemotePath(path)) void recheckNativeIcons([path], nativeIconPx(), refreshItemIcons);
-  itemCounts([path], prefs.showHidden).then(([summary]) => {
-    rememberSummary(path, summary);
-    updateFloatingBar();
-  }).catch(() => {});
+  summaries.one(path, prefs.showHidden);
 }
 
 // ---------------------------------------------------------------------------
