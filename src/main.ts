@@ -34,7 +34,7 @@ import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl,
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
-import { closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
+import { cleanError, closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { checkForUpdates } from "./updates";
 import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
 import { macDmgItems } from "./mac-dmg";
@@ -770,11 +770,6 @@ function showAccessError(name: string, message: string): void {
 
 function openSettingsSafely(): void {
   openFullDiskAccessSettings().catch((err) => showToast(`Could not open System Settings: ${cleanError(err)}`));
-}
-
-function cleanError(err: unknown): string {
-  // "Failed to read directory: Permission denied (os error 13)" → "Permission denied"
-  return String(err).replace(/^[^:]*:\s*/, "").replace(/\s*\(os error \d+\)$/, "");
 }
 
 /** True for ENOENT: the path was removed, not merely unreadable. */
