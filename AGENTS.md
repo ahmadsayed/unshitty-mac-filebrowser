@@ -242,7 +242,9 @@ GPL-3.0-or-later).
   item comes back out (`placement::ReplaceTrash::take_back`; the app's is
   `Trash::untrash`, which also forgets its log entry; as Drive untrashes)
   unless something took its place; then it stays in the Trash, logged, and
-  the error says where.
+  the error says where. Histories the Trash step closed come back with it:
+  a Drive download's Replace goes through `versions::state::VersionedTrash`,
+  which reopens and registers them again.
 - A cross-volume move deletes the source only after the copy fully succeeded.
 - Copy/move refuse: vanished source, same path, destination inside the source,
   existing target without `overwrite`, replacing a folder with its own child,

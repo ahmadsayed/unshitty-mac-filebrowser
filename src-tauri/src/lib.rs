@@ -29,7 +29,7 @@ use cloud::CloudState;
 use cloud::service::OpenTarget;
 use place::{Kind, Route};
 use versions::history::History;
-use versions::state::{Transfer, VersionsState};
+use versions::state::{Transfer, VersionedTrash, VersionsState};
 use versions::{VersionDiff, VersionInfo, restore};
 
 fn config_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
@@ -751,7 +751,7 @@ async fn drive_transfer(
 ) -> Result<String, String> {
     blocking(move || {
         let versions = app.state::<VersionsState>();
-        let trash_local = AppTrash { app: &app, versions: Some(&versions) };
+        let trash_local = VersionedTrash::new(&versions, AppTrash { app: &app });
         let state = app.state::<CloudState>();
         cloud::transfer::dispatch(
             &state,
@@ -803,7 +803,7 @@ async fn copy_entry(
             let state = app.state::<VersionsState>();
             let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
             state.transfer(&from_path, &to_path, Transfer::Copy, || {
-                let trash = AppTrash { app: &app, versions: None };
+                let trash = AppTrash { app: &app };
                 fs_ops::copy_entry_with(from, to.clone(), overwrite, &progress, &trash)
             })?;
             Ok(to_path.to_string_lossy().to_string())
@@ -835,7 +835,7 @@ async fn move_entry(
             let state = app.state::<VersionsState>();
             let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
             state.transfer(&from_path, &to_path, Transfer::Move, || {
-                let trash = AppTrash { app: &app, versions: None };
+                let trash = AppTrash { app: &app };
                 fs_ops::move_entry_with(from, to.clone(), overwrite, &progress, &trash)
             })?;
             Ok(to_path.to_string_lossy().to_string())
@@ -881,21 +881,17 @@ fn send_to_trash(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
 /// The app's logged Trash as a copy, a move or a Drive transfer uses it
 /// (`placement::ReplaceTrash`): Restore knows where each item came from,
 /// and the old item a failed Replace takes back is forgotten. Looked up only
-/// when something goes to the Trash. With `versions`, the histories inside
-/// an item are closed before it goes (a local copy or move has
-/// `VersionsState::transfer` for that).
+/// when something goes to the Trash. A local copy or move closes the
+/// histories inside an item with `VersionsState::transfer`; a Drive
+/// transfer wraps this in `VersionedTrash`, which closes them before an
+/// item goes and reopens them if a failed Replace takes it back.
 struct AppTrash<'a> {
     app: &'a tauri::AppHandle,
-    versions: Option<&'a VersionsState>,
 }
 
 impl placement::ReplaceTrash for AppTrash<'_> {
     fn send(&self, path: &Path) -> Result<Option<PathBuf>, String> {
-        let send = || trash_of(self.app)?.send(path);
-        match self.versions {
-            Some(versions) => versions.trash(path, send),
-            None => send(),
-        }
+        trash_of(self.app)?.send(path)
     }
 
     fn take_back(&self, trashed: &Path, origin: &Path) -> Result<(), String> {
