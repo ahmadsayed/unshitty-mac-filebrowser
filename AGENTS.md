@@ -28,7 +28,8 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), drawn for the theme; file-kind detection; `itemIcon`, every item icon's markup: its picture (drawing, OS icon, thumbnail, glyph) and which emblems (link, versions, shared) go on it, in what order |
 | `src/icons-macos.ts` | The macOS theme's drawings under the same symbol ids: folders, file pages, line icons |
 | `src/thumbnails.ts` | Thumbnail request queue (4 concurrent) and bounded blob-URL cache |
-| `src/native-icons.ts` | Icons from the OS: ids in one batch per render, one image per type and size; single icons for Open With, Properties and the preview |
+| `src/item-icons.ts` | Which picture an item shows (thumbnail, SSH server glyph in Network, OS icon, drawing), the shown size, which places have OS icons, the first-screenful wait before a folder shows, the macOS folder icons asked again per listing and when recounted; the dialogs' icons |
+| `src/native-icons.ts` | The OS icons' cache: ids in one batch, one image per type and size, rechecking cached ids; `item-icons.ts` decides what to ask for and when |
 | `src/format.ts` | GNOME-style size and date strings |
 | `src/api.ts` | Typed wrappers for every Tauri command |
 | `src/styles.css` | All styling: layout, views and widgets, reading every look-related value from theme tokens |
@@ -37,9 +38,12 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/qr-share.ts` | Send with QR Code…: the menu item and the dialog (code, link, progress, downloads) |
 | `src/preview-actions.ts` | Which actions the Space preview offers (Open, Rename…, Move to Trash, Open Item Location) for where the item is, from `item-actions.ts`'s rules plus the preview's kept exceptions |
 | `src/selection.ts` | The view's selection, cursor and anchor, and the user's intent counter a paste checks before selecting what it made (#50) |
+| `src/search.ts` | The search without the DOM: `SearchSession` (open or not, the text, the walk after a 160 ms pause, at most 1000 results, late answers dropped, what a tab saves), `arrangeSearch` / `searchSections` (what the view shows and its "In This Folder" / "In Subfolders" headers), and `fold`, tested against the backend's `fs_ops::fold` with `tests/fold-cases.json` |
 | `src/locations.ts` | Which kind of place a path is (`locationKind`: Recent, Starred, Network, the Trash, a folder in it, a share, an SSH server, Drive, a folder), in one precedence built on `paths.ts`'s `placeOf`, and what each kind allows: read only, local, recursive search, versions, new items; the copy-out refusal's wording; which items are local files (`isLocalFile`, `isLocalRegularFile`) |
 | `src/item-actions.ts` | Whether an action several surfaces reach (cut, copy, paste, rename, trash, delete permanently, star, bookmark, properties, open location) may run in a kind of place, and the toast that says why not: one `Record<LocationKind, …>` per action; differences between surfaces kept on purpose are marked "Kept:" |
 | `src/paths.ts` | Each kind of path's layout (`gdrive://`, `share://`, `sftp://`, local) as one row: its kind (`placeOf`), name, parent, child join (encoded as the backend decodes it) and crumbs; containment (`isUnder`), which paths a window may open, share links, what the path bar resolves typed text to |
+| `src/folder-summaries.ts` | Folder item counts and version badges for the view: batches of 400, skips remote, known and in-flight folders, drops late answers, forgets counts on a new location or Show Hidden setting; says which answers were asked for one by one (`recounted`) |
+| `src/listing-failure.ts` | What a folder that couldn't be listed turns into, one table row per kind and phase (first view, navigate, reload, path entry): share status page, Connect to Server, go to the parent, toast with Grant Access, error page |
 | `src/open-with.ts` | Open With…: the searchable application chooser (filter, keyboard selection, launch and retry) |
 | `src/updates.ts` | Check for Updates dialogs: offer, download progress, restart, failures |
 | `src/drag-out.ts` | Dragging files out of the window: when the pointer has left it, and the system drag (our GTK command on Linux, the drag plugin on macOS) |
@@ -52,7 +56,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src-tauri/src/platform.rs` | Platform differences: volume roots per OS, `%XX` decoding, `file://` URIs, XDG data dir |
 | `src-tauri/src/thumbnails.rs` | Quick Look (`qlmanage`) thumbnails on macOS with an `image`-crate fallback everywhere, disk cache |
 | `src-tauri/src/file_icons.rs` | File and folder icons from the OS: Finder's (NSWorkspace) on macOS, the desktop's icon theme (GIO + freedesktop lookup) on Linux |
-| `src-tauri/src/trash_ops.rs` | Trash + locate (for Undo), restore, delete permanently, empty; macOS `~/.Trash` + Finder "Put Back" in `.DS_Store`, Linux `Trash/{files,info}` + `.trashinfo`, `trash_log.json` |
+| `src-tauri/src/trash_ops.rs` | `Trash` (one in `lib.rs`'s state): `trash_log.json` and its lock, where an item came from (sidecar, log, Put Back), restore, delete permanently, empty, what is inside the Trash; trash + locate (for Undo) as free functions; macOS `~/.Trash` + Finder "Put Back" in `.DS_Store`, Linux `Trash/{files,info}` + `.trashinfo` |
 | `src-tauri/src/updates.rs` | Check for Updates: how this copy was installed (only the AppImage and the Mac app replace themselves), failure kinds, one install at a time; `lib.rs` wraps `tauri-plugin-updater` |
 | `src-tauri/src/downloads.rs` | Copies of opened SFTP/Drive/share files in the app cache: marks them as downloaded, prunes them after a week (edited copies go to the Trash) |
 | `src-tauri/src/recent.rs` | Recent: Spotlight (`mdfind`) on macOS, `recently-used.xbel` on Linux, merged with `recent.json` |
@@ -207,6 +211,9 @@ GPL-3.0-or-later).
   never rewritten.
 - Anything that touches the Trash must work for both layouts (macOS `~/.Trash`
   and freedesktop `Trash/{files,info}`); a change there needs a test on each.
+  Commands ask `trash_ops::Trash` (`record`, `info`, `restore`,
+  `delete_permanently`, `empty`, `listing_root`, `contains`) rather than
+  reading `trash_log.json` or building Trash paths in `lib.rs`.
 - Replacing an existing item stages the new one under a temporary name, sends
   the old one to the Trash, then renames into place. Local copy, move and
   Drive downloads do this only through `placement.rs` (`Target::place`);

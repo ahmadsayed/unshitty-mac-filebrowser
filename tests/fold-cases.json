@@ -1,0 +1,17 @@
+[
+  { "name": "Café", "folded": "cafe", "why": "a precomposed accent" },
+  { "name": "CAFÉ", "folded": "cafe", "why": "upper case with an accent" },
+  { "name": "Résumé.txt", "folded": "resume.txt", "why": "combining marks, as macOS file systems may hand names back" },
+  { "name": "Résumé.txt", "folded": "resume.txt", "why": "the same name precomposed" },
+  { "name": "Ångström", "folded": "angstrom", "why": "a ring above, upper and lower case" },
+  { "name": "Crème Brûlée", "folded": "creme brulee", "why": "several accents in one name" },
+  { "name": "naïve", "folded": "naive", "why": "a diaeresis" },
+  { "name": "Ñandú", "folded": "nandu", "why": "a tilde and an acute" },
+  { "name": "Tiếng Việt", "folded": "tieng viet", "why": "two marks stacked on one letter" },
+  { "name": "ạ̈́", "folded": "a", "why": "a letter followed only by combining marks" },
+  { "name": "İstanbul", "folded": "istanbul", "why": "a dotted capital I loses its dot before lower-casing" },
+  { "name": "ΟΔΟΣ", "folded": "οδος", "why": "Greek capitals, with a final sigma" },
+  { "name": "Straße", "folded": "straße", "why": "ß has no accent and stays" },
+  { "name": "ﬁle", "folded": "ﬁle", "why": "a ligature: canonical decomposition only, not compatibility" },
+  { "name": "", "folded": "", "why": "nothing" }
+]

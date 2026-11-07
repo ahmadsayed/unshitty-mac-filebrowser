@@ -3,7 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { forgetDragOut, isOwnDragOut, leftWindow, startSystemDrag } from "./drag-out";
 import { homeDir, documentDir, downloadDir, audioDir, pictureDir, videoDir, desktopDir, publicDir } from "@tauri-apps/api/path";
 import {
-  listDir, searchDir, cancelSearch, type SearchSummary, makeDir, renameEntry, renameMany, itemCounts, type FolderSummary, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
+  listDir, searchDir, cancelSearch, type SearchSummary, makeDir, renameEntry, renameMany, itemCounts, copyEntry, moveEntry, trashEntries, type TrashOutcome, pathExists,
   extractArchive,
   newWindow,
   windowButtons,
@@ -28,9 +28,9 @@ import {
   type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
-import { entryIcon, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind, type IconBase } from "./icons";
-import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
-import { appIconKey, loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl, preloadNativeIcons, recheckNativeIcons } from "./native-icons";
+import { entryIcon, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
+import { appIconKey } from "./native-icons";
+import { GRID_SIZES, ItemIcons, LIST_SIZES, THUMB_KINDS } from "./item-icons";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
@@ -44,7 +44,10 @@ import { qrShareItems } from "./qr-share";
 import { PREVIEW_ACTION_LABELS, previewActions, previewPlace, type PreviewAction } from "./preview-actions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { Selection, type Mark } from "./selection";
-import { acceptsNewItems, copyOutRefusal, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
+import { arrangeSearch, fold, SEARCH_LIMIT, SearchSession, searchSections as arrangedSections, type SearchChange, type SearchSection } from "./search";
+import { FolderSummaries } from "./folder-summaries";
+import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
+import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
 import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
 
@@ -54,9 +57,6 @@ import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnow
 
 type ViewMode = "grid" | "list";
 type SortKey = "name" | "size" | "modified" | "type";
-
-const GRID_SIZES = [48, 64, 96, 128, 192, 256];
-const LIST_SIZES = [16, 32, 48];
 
 const prefs = {
   view: "grid" as ViewMode,
@@ -117,24 +117,22 @@ let listingError: string | null = null;
  *  positions in `shown`. A copy or move selects what it made only when the
  *  user hasn't chosen anything since pasting (`selection.intent`, #50). */
 const selection = new Selection<Entry>(() => shown);
-let searchQuery: string | null = null;
-/** Recursive search results; null means filter the current folder in memory. */
-let searchResults: Entry[] | null = null;
-let searchTimer = 0;
-let searchSeq = 0;
-/** Whether a recursive search is still sending results. */
-let searching = false;
+/** The search: open or not, its text, the walk and its results (src/search.ts). */
+const search = new SearchSession(
+  (at, query, limit, onFound) => searchDir(at, query, prefs.showHidden, limit, onFound),
+  cancelSearch,
+  onSearchChange,
+);
 /** In a recursive search, the index in `shown` of the first "In Subfolders"
  * item; the ones before it are "In This Folder". -1 elsewhere. */
 let sectionStart = -1;
-/** Cap on recursive results, so a broad query can't build an endless view. */
-const SEARCH_LIMIT = 1000;
 
-const counts = new Map<string, number | null>();
-/** Bumped whenever `counts` changes; sorting by size depends on it. */
-let countsVersion = 0;
-/** Folders whose summary said they keep versions; drives the version badge. */
-const versionedFolders = new Set<string>();
+/** Folder item counts and version badges for the view (src/folder-summaries.ts). */
+const summaries = new FolderSummaries(itemCounts, () => location, ({ badges, recounted }) => {
+  badges.forEach(patchIcon);
+  patchCounts();
+  itemIcons.recounted(recounted);
+});
 let backStack: string[] = [];
 let forwardStack: string[] = [];
 
@@ -146,8 +144,8 @@ interface TabState {
   selected: string[];
   anchorIndex: number;
   cursorIndex: number;
-  searchQuery: string | null;
-  searchText: string;
+  /** The search's text, null when it was closed. */
+  search: string | null;
   scrollTop: number;
 }
 
@@ -188,6 +186,16 @@ const folderKinds = new Map<string, FolderKind>();
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
 const currentTheme: Theme = platformTheme(isMac);
 const MOD = isMac ? "⌘" : "Ctrl+";
+
+/** Which picture each item shows, and when it's asked for (src/item-icons.ts). */
+const itemIcons = new ItemIcons({
+  followsContents: isMac,
+  location: () => location,
+  view: () => prefs,
+  folderKind,
+  compare: compareEntries,
+  redraw: patchIcon,
+});
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -291,7 +299,7 @@ function hasEntries(loc: string): boolean {
 
 /** Views of items from many folders, which get a Location column. */
 function showsWhere(): boolean {
-  return location === RECENT || location === STARRED || location === trashPath || searchQuery !== null;
+  return location === RECENT || location === STARRED || location === trashPath || search.isOpen;
 }
 
 /** The entries shown at `loc`. */
@@ -329,7 +337,7 @@ const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "bas
 
 function sortValue(e: Entry): number {
   if (prefs.sortKey === "modified") return e.trashed ?? e.modified;
-  if (e.is_dir) return counts.get(e.path) ?? -1;
+  if (e.is_dir) return summaries.count(e.path) ?? -1;
   return e.size;
 }
 
@@ -355,61 +363,22 @@ function compareEntries(a: Entry, b: Entry): number {
   return prefs.sortReversed ? -r : r;
 }
 
-function fold(s: string): string {
-  // Strips combining marks exactly as the backend's search does.
-  return s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-}
-
 /** What `shown` was last built from: a presentation-only render (grid ↔ list,
  * thumbnails) reuses it instead of sorting a huge folder again. */
 let shownFrom: unknown[] = [];
 
 function computeShown(): void {
-  const q = searchQuery ? fold(searchQuery.trim()) : "";
-  const from = [entries, searchResults, q, location, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && countsVersion];
+  const { text, results } = search;
+  // Keyed on the folded text: "Cafe" and "café " show the same items.
+  const from = [entries, results, fold(text.trim()), location, prefs.sortKey, prefs.sortReversed, prefs.sortKey === "size" && summaries.version];
   if (from.every((value, i) => value === shownFrom[i])) return;
   shownFrom = from;
-  sectionStart = -1;
-  if (q && canSearchRecursively()) {
-    showSearchSections(q);
-    return;
-  }
-  const fromResults = q && searchResults !== null;
-  const list = !q ? entries : fromResults ? searchResults! : entries.filter((e) => fold(e.name).includes(q));
-  shown = [...list].sort(compareEntries);
+  ({ items: shown, sectionStart } = arrangeSearch(entries, results, text, location, compareEntries, canSearchRecursively()));
 }
 
-/** A recursive search: "In This Folder" at once from the listing in memory,
- * then "In Subfolders" from the backend, nearest folders first. */
-function showSearchSections(q: string): void {
-  const here = entries.filter((e) => fold(e.name).includes(q)).sort(compareEntries);
-  const prefix = location.endsWith("/") ? location : `${location}/`;
-  const depth = (e: Entry) => e.path.slice(prefix.length).split("/").length;
-  const deeper = (searchResults ?? [])
-    .filter((e) => parentOf(e.path) !== location)
-    .sort((a, b) => depth(a) - depth(b) || compareEntries(a, b));
-  shown = [...here, ...deeper];
-  sectionStart = here.length;
-}
-
-interface SearchSection {
-  label: string;
-  start: number;
-  count: number;
-  busy: boolean;
-}
-
-/** The headed sections of a recursive search; none elsewhere. "In
- * Subfolders" shows while the search runs, and afterwards only with matches. */
+/** The headed sections of a recursive search; none elsewhere. */
 function searchSections(): SearchSection[] {
-  if (sectionStart < 0) return [];
-  const deeper = shown.length - sectionStart;
-  const out: SearchSection[] = [];
-  if (sectionStart > 0) out.push({ label: "In This Folder", start: 0, count: sectionStart, busy: false });
-  if (deeper > 0 || (searching && sectionStart > 0)) {
-    out.push({ label: "In Subfolders", start: sectionStart, count: deeper, busy: searching });
-  }
-  return out;
+  return arrangedSections(sectionStart, shown.length, search.busy);
 }
 
 /** Whether item `i` is one of "In This Folder", which needs no folder line. */
@@ -429,8 +398,7 @@ function tabSnapshot(): TabState {
     selected: selection.paths(),
     anchorIndex: selection.anchor,
     cursorIndex: selection.cursor,
-    searchQuery,
-    searchText: searchEntry?.value ?? "",
+    search: search.saved,
     scrollTop: scrollEl?.scrollTop ?? 0,
   };
 }
@@ -501,11 +469,11 @@ async function restoreTab(tab: TabState): Promise<boolean> {
   if (!ok) return false;
   backStack = [...tab.back];
   forwardStack = [...tab.forward];
-  if (tab.searchQuery !== null) {
+  if (tab.search !== null) {
     // navigate() closed the search; open it again the way the search button
     // does, so the placeholder names this folder and the recursive search runs.
     showSearchBar();
-    searchEntry.value = tab.searchText;
+    searchEntry.value = tab.search;
     onSearchInput();
   }
   selection.retain(tab.selected, entries);
@@ -545,12 +513,11 @@ async function newTab(): Promise<void> {
     selected: [],
     anchorIndex: -1,
     cursorIndex: -1,
-    searchQuery: null,
-    searchText: "",
+    search: null,
     scrollTop: 0,
   });
   activeTab = tabs.length - 1;
-  if (searchQuery !== null) closeSearch(false);
+  if (search.isOpen) closeSearch(false);
   backStack = [];
   forwardStack = [];
   selection.reset();
@@ -603,7 +570,7 @@ function openNewWindow(): void {
  * can't be read leaves the current view intact and shows a toast instead.
  */
 async function navigate(loc: string, opts: { history?: "push" | "none"; select?: string } = {}): Promise<boolean> {
-  if (searchQuery !== null) closeSearch(false);
+  if (search.isOpen) closeSearch(false);
   closePreview();
 
   // Started now so it runs alongside the listing instead of after it.
@@ -619,19 +586,16 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
     try {
       next = await listLocation(loc);
     } catch (err) {
-      if (isSharePath(loc)) {
-        page = receivedFor(loc)?.status === "no-access" ? "no-access" : "offline";
-      } else if (location) {
-        showAccessError(basename(loc), cleanError(err));
+      const failed = listingReaction(loc, err, listingContext(loc, location ? "navigate" : "first"));
+      if (failed.kind === "sharePage") page = failed.status;
+      else if (failed.kind === "toast") {
+        showListingToast(failed);
         return false;
-      } else {
-        error = cleanError(err);
-      }
+      } else error = failed.message;
     }
   }
 
-  folderIconsChecked.clear();
-  await nativeIconsBeforeShowing(loc, next);
+  await itemIcons.listingStarted(loc, next);
 
   if (opts.history !== "none" && location && loc !== location) {
     backStack.push(location);
@@ -643,11 +607,9 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   versionedRootPath = await rootLookup;
   entries = next;
   listingError = error;
-  counts.clear();
-  countsVersion++;
-  countsInFlight.clear();
-  versionedFolders.clear();
+  summaries.reset();
   selection.reset(opts.select);
+  if (search.isOpen) moveSearchHere();
 
   document.title = locationName(loc);
   if (activeTab >= 0 && tabs[activeTab]) tabs[activeTab].location = loc;
@@ -679,7 +641,7 @@ async function reload(select?: string[]): Promise<void> {
     entries = await listLocation(location);
     listingError = null;
     sharePage = null;
-    folderIconsChecked.clear();
+    itemIcons.listingReloaded();
   } catch (err) {
     if (await listingFailed(err)) return;
   }
@@ -692,7 +654,7 @@ async function reload(select?: string[]): Promise<void> {
   else followCursor(mark);
   versionedRootPath = await lookupVersionedRoot(location);
   updateShareSubtitle();
-  if (searchQuery !== null) onSearchInput();
+  search.rerun();
 }
 
 /** After a reload, keep the cursor and anchor on the same items: new ones
@@ -715,18 +677,20 @@ function showShareStatusPage(): boolean {
 /** Show why `reload` couldn't list the folder. True when it navigated away instead. */
 async function listingFailed(err: unknown): Promise<boolean> {
   entries = [];
-  if (isSharePath(location)) {
-    sharePage = "offline";
+  const failed = listingReaction(location, err, listingContext(location, "reload"));
+  if (failed.kind === "sharePage") {
+    sharePage = failed.status;
     return false;
   }
-  if (isLocalLocation(location) && isMissingPathError(err)) {
-    // The folder went away under us: a cancelled copy deletes the folder it
-    // was writing, and the view can still be showing it. Go to its parent
-    // rather than stranding the view on an error page.
-    if (await navigate(parentOf(location), { history: "none" })) return true;
-  }
-  listingError = cleanError(err);
+  // A folder that went away goes to its parent, or shows the error page if that fails too.
+  if (failed.kind === "goTo" && (await navigate(failed.parent, { history: "none" }))) return true;
+  listingError = failed.message;
   return false;
+}
+
+/** What listingReaction needs to know about `loc` (src/listing-failure.ts). */
+function listingContext(loc: string, phase: ListingPhase): ListingContext {
+  return { phase, isMac, share: isSharePath(loc) ? receivedFor(loc)?.status : undefined, nameOf: basename, parentOf };
 }
 
 /** "Shared by Ahmed · Read only" under the path bar. */
@@ -764,18 +728,12 @@ function lookupVersionedRoot(loc: string): Promise<string | null> {
 }
 
 /** A failed folder open; macOS privacy blocks get a shortcut to the setting. */
-function showAccessError(name: string, message: string): void {
-  const blocked = isMac && /not permitted/i.test(message);
-  showToast(`Unable to access “${name}”: ${message}`, blocked ? { button: { label: "Grant Access", onClick: openSettingsSafely } } : {});
+function showListingToast(failed: { text: string; grantAccess: boolean }): void {
+  showToast(failed.text, failed.grantAccess ? { button: { label: "Grant Access", onClick: openSettingsSafely } } : {});
 }
 
 function openSettingsSafely(): void {
   openFullDiskAccessSettings().catch((err) => showToast(`Could not open System Settings: ${cleanError(err)}`));
-}
-
-/** True for ENOENT: the path was removed, not merely unreadable. */
-function isMissingPathError(err: unknown): boolean {
-  return /no such file or directory/i.test(String(err));
 }
 
 function goBack(): void {
@@ -890,7 +848,7 @@ function buildPathbar(): void {
 }
 
 function openPathEntry(prefill?: string): void {
-  if (searchQuery !== null) closeSearch(false);
+  if (search.isOpen) closeSearch(false);
   pathbarEl.classList.add("editing");
   crumbsEl.hidden = true;
   pathEntry.hidden = false;
@@ -934,14 +892,13 @@ async function submitPathEntry(): Promise<void> {
   try {
     await listDir(typed, prefs.showHidden);
   } catch (err) {
-    const message = cleanError(err);
-    if (isSftpPath(typed) && /Connect to this server first/.test(message)) {
+    const failed = listingReaction(typed, err, listingContext(typed, "entry"));
+    if (failed.kind === "connect") {
       closePathEntry();
-      showConnectServerDialog(typed);
+      showConnectServerDialog(failed.url);
       return;
     }
-    if (/not permitted/i.test(message)) showAccessError(typed, message);
-    else showToast(`Unable to find “${typed}”: ${message}`);
+    if (failed.kind === "toast") showListingToast(failed);
     pathEntry.focus();
     return;
   }
@@ -956,7 +913,7 @@ async function submitPathEntry(): Promise<void> {
 function openSearch(initial = ""): void {
   if (!hasEntries(location)) return;
   closePathEntry();
-  if (searchQuery === null) showSearchBar();
+  if (!search.isOpen) showSearchBar();
   if (initial) searchEntry.value = initial;
   searchEntry.focus();
   onSearchInput();
@@ -964,21 +921,24 @@ function openSearch(initial = ""): void {
 
 /** Put the search bar in the path bar's place, for the current folder. */
 function showSearchBar(): void {
-  searchQuery = "";
+  search.open(location, canSearchRecursively());
   pathbarEl.hidden = true;
   searchbarEl.hidden = false;
   $("#btn-search").classList.add("open");
   searchEntry.placeholder = `Search ${locationName(location)}`;
 }
 
+/** A key typed while a navigation waited opened the search on the folder
+ *  being left; once the view has moved, the search goes with it. */
+function moveSearchHere(): void {
+  searchEntry.placeholder = `Search ${locationName(location)}`;
+  search.moveTo(location, canSearchRecursively());
+}
+
 function closeSearch(rerender = true): void {
-  if (searchQuery === null) return;
-  searchQuery = null;
-  searchResults = null;
-  searchSeq += 1;
-  clearTimeout(searchTimer);
-  if (searching) void cancelSearch().catch(() => {});
-  setSearching(false);
+  if (!search.isOpen) return;
+  search.close();
+  showSearchBusy();
   showSearchStop(null);
   searchEntry.value = "";
   searchbarEl.hidden = true;
@@ -996,63 +956,46 @@ function canSearchRecursively(): boolean {
 }
 
 function selectFirstMatch(): void {
-  if (!searchQuery || shown.length === 0) return;
+  if (!search.text || shown.length === 0) return;
   selection.selectFirst();
   updateSelection();
 }
 
 function onSearchInput(): void {
-  searchQuery = searchEntry.value;
-  selection.dropCursor();
-  searchResults = null;
-  searchSeq += 1;
-  clearTimeout(searchTimer);
-  showSearchStop(null);
-  const query = searchQuery.trim();
-  const recursive = !!query && canSearchRecursively();
-  if (searching && !recursive) void cancelSearch().catch(() => {});
-  setSearching(recursive);
-  if (recursive) {
-    // Wait for a pause, then replace the quick local matches with the
-    // recursive backend results as they arrive.
-    const seq = searchSeq;
-    searchTimer = window.setTimeout(() => runSearch(seq, query), 160);
-  }
-  renderView();
-  // Like GNOME Files, the first local match is selected while search runs.
-  selectFirstMatch();
+  search.setText(searchEntry.value);
 }
 
-function runSearch(seq: number, query: string): void {
-  const at = location;
-  const current = () => seq === searchSeq && searchQuery !== null && location === at;
-  if (!current()) return;
-  searchDir(at, query, prefs.showHidden, SEARCH_LIMIT, (batch) => {
-    if (current()) addSearchResults(batch);
-  })
-    .then((summary) => {
-      if (!current()) return;
-      setSearching(false);
-      if (searchResults === null) addSearchResults([]);
-      else renderViewKeepingScroll(); // "Searching…" becomes "No Results Found"
-      showSearchStop(summary);
-    })
-    .catch((err) => {
-      if (!current()) return;
-      setSearching(false);
-      searchResults = [];
+/** Draw what the search says has changed. The selection rules live here:
+ *  a new text selects its first match, as GNOME Files does while the
+ *  search runs, and results arriving later don't move the cursor. */
+function onSearchChange(change: SearchChange, error?: unknown): void {
+  showSearchBusy();
+  switch (change) {
+    case "restarted":
+      selection.dropCursor();
+      showSearchStop(null);
       renderView();
-      showToast(`Could not search: ${cleanError(err)}`);
-    });
+      selectFirstMatch();
+      break;
+    case "grew":
+      showSearchResults();
+      break;
+    case "ended":
+      renderViewKeepingScroll(); // "Searching…" becomes "No Results Found"
+      showSearchStop(search.stop);
+      break;
+    case "failed":
+      renderView();
+      showToast(`Could not search: ${cleanError(error)}`);
+      break;
+  }
 }
 
-/** Add streamed results. The first batch replaces the quick local matches;
- *  later ones keep the cursor and anchor on the same items as the list grows. */
-function addSearchResults(batch: Entry[]): void {
-  // "In This Folder" is already shown and never moves; only an empty view
-  // gets its first match selected.
+/** Show streamed results. "In This Folder" is already shown and never
+ *  moves: later results keep the cursor and anchor on the same items as the
+ *  list grows, and only an empty view gets its first match selected. */
+function showSearchResults(): void {
   const hadItems = shown.length > 0;
-  searchResults = (searchResults ?? []).concat(batch);
   if (!hadItems) {
     renderView();
     selectFirstMatch();
@@ -1064,9 +1007,8 @@ function addSearchResults(batch: Entry[]): void {
   updateSelection();
 }
 
-function setSearching(on: boolean): void {
-  searching = on;
-  searchbarEl.classList.toggle("busy", on);
+function showSearchBusy(): void {
+  searchbarEl.classList.toggle("busy", search.busy);
 }
 
 /** Say when a search stopped before looking everywhere, so a short list isn't
@@ -1090,7 +1032,7 @@ function folderKind(entry: Entry): FolderKind {
 
 function sizeText(entry: Entry): string {
   if (!entry.is_dir) return formatSize(entry.size);
-  const n = counts.get(entry.path);
+  const n = summaries.count(entry.path);
   return n === undefined || n === null ? "" : formatItemCount(n);
 }
 
@@ -1103,13 +1045,13 @@ function renderView(): void {
 
   if (sharePage) {
     viewEl.innerHTML = shareStatusPage(sharePage);
-  } else if (pseudo && (!hasEntries(location) || (shown.length === 0 && !searchQuery))) {
+  } else if (pseudo && (!hasEntries(location) || (shown.length === 0 && !search.text))) {
     viewEl.innerHTML = statusPage(pseudo.icon, pseudo.title, pseudo.text);
   } else if (listingError !== null) {
     viewEl.innerHTML = statusPage("dialog-error", "Unable to Access Location", listingError);
-  } else if (shown.length === 0 && searchQuery && searching) {
+  } else if (shown.length === 0 && search.text && search.busy) {
     viewEl.innerHTML = statusPage("system-search", "Searching…", "");
-  } else if (shown.length === 0 && searchQuery) {
+  } else if (shown.length === 0 && search.text) {
     viewEl.innerHTML = statusPage("system-search", "No Results Found", "Try a different search.");
   } else if (shown.length === 0 && location === trashPath) {
     viewEl.innerHTML = statusPage("user-trash", "Trash is Empty", "");
@@ -1122,7 +1064,7 @@ function renderView(): void {
     viewEl.innerHTML = `<div class="list">${listHeaderHtml()}<div class="list-body"></div></div>`;
     itemsLayer = viewEl.querySelector<HTMLElement>(".list-body");
     // Sorting by size needs every folder's count; otherwise only visible rows ask.
-    if (prefs.sortKey === "size") requestCounts(shown.filter((e) => e.is_dir).map((e) => e.path), true);
+    if (prefs.sortKey === "size") void requestCounts(shown.filter((e) => e.is_dir).map((e) => e.path), true);
   }
   const overlay = viewEl.closest(".view-overlay") ?? viewEl;
   overlay.querySelector(".network-paste")?.remove();
@@ -1404,7 +1346,7 @@ function itemHtml(i: number, stars: boolean): string {
     const detail = location === NETWORK ? networkDetail(e) : "";
     const shared = detail ? `<div class="shared-by">${escapeHtml(detail)}</div>`
       : inThisFolderSection(i) ? `<div class="shared-by where"></div>`
-      : searchQuery !== null ? `<div class="shared-by where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</div>` : "";
+      : search.isOpen ? `<div class="shared-by where" title="${escapeHtml(parentOf(e.path))}">${escapeHtml(whereText(e.path))}</div>` : "";
     return `<div class="grid-item item${cls}" data-index="${i}" role="option" aria-selected="${sel}" title="${escapeHtml(e.name)}" ${pos}>` +
       `<div class="icon">${iconHtml(e)}</div>` +
       `<div class="name">${escapeHtml(e.name)}</div>${shared}</div>`;
@@ -1445,154 +1387,16 @@ function whereText(path: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Thumbnails (images, video, PDF and documents, via Quick Look on macOS)
+// Item icons: src/item-icons.ts picks the picture, this draws it
 // ---------------------------------------------------------------------------
-
-const THUMB_KINDS = new Set<FileKind>(["image", "video", "pdf", "document", "spreadsheet", "presentation"]);
-
-function wantsThumb(e: Entry): boolean {
-  return prefs.showThumbnails && !e.is_dir && THUMB_KINDS.has(fileKind(e.name));
-}
-
-/** The size items' icons are shown at, in CSS pixels, in this view and zoom. */
-function shownIconPx(): number {
-  return prefs.view === "grid" ? GRID_SIZES[prefs.gridZoom] : LIST_SIZES[prefs.listZoom];
-}
-
-/** Pixel size to request: the displayed icon size at screen resolution, in a few steps. */
-function thumbSize(): number {
-  const px = shownIconPx() * devicePixelRatio;
-  return px <= 128 ? 128 : px <= 256 ? 256 : 512;
-}
-
-function thumbKeyFor(e: Entry, size = thumbSize()): string {
-  return thumbKey(e.path, e.modified, e.size, size);
-}
 
 /** An item's icon, with the emblems icons.ts puts on it. */
 function iconHtml(e: Entry): string {
-  return itemIcon(e, iconBase(e), {
+  return itemIcon(e, itemIcons.base(e), {
     link: e.is_symlink,
-    versions: versionedFolders.has(e.path),
+    versions: summaries.versioned(e.path),
     shared: location === NETWORK || sharedFolders.some((share) => share.path === e.path),
   });
-}
-
-/** The thumbnail if it's loaded, an SSH server's glyph in Network, the OS
- *  icon if it's loaded, otherwise the app's drawing. */
-function iconBase(e: Entry): IconBase {
-  const thumb = wantsThumb(e) ? cachedThumb(thumbKeyFor(e)) : null;
-  if (thumb) return { thumb };
-  if (location === NETWORK && isSftpPath(e.path)) return { glyph: "network-server" };
-  const native = wantsNativeIcon(e) ? nativeIconUrl(e.path, nativeIconPx()) : null;
-  return native ? { native } : { drawn: folderKind(e) };
-}
-
-// ---------------------------------------------------------------------------
-// Icons from the operating system (src/native-icons.ts), drawn in place of
-// the app's own once loaded
-// ---------------------------------------------------------------------------
-
-function wantsNativeIcon(e: Entry): boolean {
-  return location !== NETWORK && !isRemotePath(e.path);
-}
-
-function nativeIconPx(): number {
-  return nativeIconSize(shownIconPx());
-}
-
-/** Draw `entry` in a dialog's icon, then swap in the OS icon for `key` (its
- *  path, or an `appIconKey`) once it loads; the app's drawing stays meanwhile,
- *  and wherever the OS has none. The link emblem shows on both. */
-function dialogIcon(icon: HTMLElement, entry: Entry, shownAt: number, key = entry.path): void {
-  const emblems = { link: entry.is_symlink, versions: false, shared: false };
-  icon.innerHTML = itemIcon(entry, { drawn: folderKind(entry) }, emblems);
-  if (isRemotePath(key)) return;
-  void nativeIcon(key, nativeIconSize(shownAt)).then((url) => {
-    if (url) icon.innerHTML = itemIcon(entry, { native: url }, emblems);
-  });
-}
-
-/** The OS icons usually arrive a few milliseconds after the listing. Wait
- *  for those of the first items, briefly, so a folder appears with them
- *  instead of with the app's drawings swapped for them a moment later. */
-const ICON_WAIT_MS = 100;
-/** About a screenful: the items sorted first are the ones shown. */
-const ICON_WAIT_ITEMS = 200;
-/** Past this, sorting a copy just to find the first screenful costs more than it saves. */
-const ICON_WAIT_SORT_MAX = 5000;
-
-function nativeIconsBeforeShowing(loc: string, next: Entry[]): Promise<void> {
-  if (loc === NETWORK || next.length > ICON_WAIT_SORT_MAX) return Promise.resolve();
-  const first = next.length <= ICON_WAIT_ITEMS ? next : [...next].sort(compareEntries).slice(0, ICON_WAIT_ITEMS);
-  const local = first.filter((e) => !isRemotePath(e.path));
-  if (!local.length) return Promise.resolve();
-  const px = nativeIconPx();
-  // The folders' icons cached on an earlier visit are asked for again in the
-  // same wait, so going back shows them as they are now, not swapped later.
-  const folders = isMac ? local.filter((e) => e.is_dir).map((e) => e.path) : [];
-  for (const path of folders) folderIconsChecked.add(path);
-  const recheck = recheckNativeIcons(folders, px, refreshItemIcons);
-  return Promise.all([
-    preloadNativeIcons(local.map((e) => e.path), px, ICON_WAIT_MS),
-    Promise.race([recheck, new Promise<void>((resolve) => setTimeout(resolve, ICON_WAIT_MS))]),
-  ]).then(() => {});
-}
-
-/** Redraw items whose OS icon changed, loading it at the current size too:
- *  a zoom may have come while it was asked for. */
-function refreshItemIcons(paths: string[]): void {
-  paths.forEach(patchIcon);
-  loadNativeIcons(paths, nativeIconPx(), (ready) => ready.forEach(patchIcon));
-}
-
-/** Ask for the OS icons of the rendered items. */
-function loadItemIcons(start: number, end: number): void {
-  const paths: string[] = [];
-  for (let i = start; i <= end; i++) if (wantsNativeIcon(shown[i])) paths.push(shown[i].path);
-  if (paths.length) loadNativeIcons(paths, nativeIconPx(), (ready) => ready.forEach(patchIcon));
-  recheckFolderIcons(start, end);
-}
-
-/** Rendered folders whose OS icon was asked for again since the listing loaded. */
-const folderIconsChecked = new Set<string>();
-
-/** On macOS a folder's icon shows whether it holds anything (Finder's full
- *  folder), so an icon cached on an earlier visit is asked for again, once
- *  per listing, for the folders rendered. */
-function recheckFolderIcons(start: number, end: number): void {
-  if (!isMac) return;
-  const folders: string[] = [];
-  for (let i = start; i <= end; i++) {
-    const e = shown[i];
-    if (e?.is_dir && wantsNativeIcon(e) && !folderIconsChecked.has(e.path)) {
-      folderIconsChecked.add(e.path);
-      folders.push(e.path);
-    }
-  }
-  if (folders.length) void recheckNativeIcons(folders, nativeIconPx(), refreshItemIcons);
-}
-
-/** Request thumbnails for the rendered items; queued ones scrolled away are dropped. */
-function loadThumbs(start: number, end: number, visible: { start: number; end: number }): void {
-  if (!prefs.showThumbnails) return;
-  const size = thumbSize();
-  const keys = new Set<string>();
-  // Visible rows first, then the overscan around them: the order is the
-  // queue's priority (see keepOnly).
-  const order: number[] = [];
-  for (let i = visible.start; i <= visible.end; i++) order.push(i);
-  for (let i = start; i <= end; i++) if (i < visible.start || i > visible.end) order.push(i);
-  for (const i of order) {
-    const e = shown[i];
-    if (!wantsThumb(e)) continue;
-    const key = thumbKeyFor(e, size);
-    keys.add(key);
-    if (cachedThumb(key) === undefined) {
-      requestThumb(key, e.path, size, (url) => url && patchIcon(e.path));
-    }
-  }
-  keepOnly(keys);
 }
 
 function patchIcon(path: string): void {
@@ -1637,7 +1441,7 @@ function computeLayout(): void {
     const itemW = Math.floor((inner - sizes.gridGap * (cols - 1)) / cols);
     // icon + gap + two lines of label + padding. Network adds one line for
     // "Shared by …", search one for the folder each result is in.
-    const extraLine = location === NETWORK || searchQuery !== null;
+    const extraLine = location === NETWORK || search.isOpen;
     const itemH = Math.ceil(6 + icon + 6 + 2 * lineH + 9 + (extraLine ? lineH : 0));
     layout = { cols, itemW, itemH, gap: sizes.gridGap, padX: sizes.gridPad, padY: sizes.gridPad, bodyTop: 0, ...viewSections() };
   } else {
@@ -1696,13 +1500,12 @@ function renderWindow(force = false): void {
   const stars = allows("star", hereFor([]));
   for (let i = start; i <= end; i++) html.push(itemHtml(i, stars));
   itemsLayer.innerHTML = html.join("");
-  loadItemIcons(start, end);
-  loadThumbs(start, end, visible);
+  itemIcons.rendered(shown.slice(start, end + 1), { start: visible.start - start, end: visible.end - start });
   // Both views: list view shows the counts, and either view shows the
   // version badge that comes with them. Only rendered folders are asked.
   const dirs: string[] = [];
   for (let i = start; i <= end; i++) if (shown[i].is_dir) dirs.push(shown[i].path);
-  requestCounts(dirs, false);
+  void requestCounts(dirs, false);
 }
 
 /** Scroll just enough to show item `i`, then render it. */
@@ -1872,39 +1675,11 @@ function updateViewButtons(): void {
   toggle.title = target === "list" ? `List View (${MOD}1)` : `Grid View (${MOD}2)`;
 }
 
-/** Fetch "N items" for `paths`, then patch the visible cells. */
-const countsInFlight = new Set<string>();
+/** Fetch "N items" for `paths`; `summaries` patches the visible cells as they land.
+ *  Sorting by size sorts again once every folder is counted. */
 async function requestCounts(paths: string[], resortWhenDone: boolean): Promise<void> {
-  const loc = location;
-  // Remote items have no local item count; Drive returns null, Network has no size cell.
-  const pending = paths.filter((p) => !isRemotePath(p) && !counts.has(p) && !countsInFlight.has(p));
-  if (pending.length === 0) return;
-  pending.forEach((p) => countsInFlight.add(p));
-  for (let i = 0; i < pending.length; i += 400) {
-    const batch = pending.slice(i, i + 400);
-    let result: (FolderSummary | null)[] = [];
-    try {
-      result = await itemCounts(batch, prefs.showHidden);
-    } catch {
-      /* leave those cells blank */
-    }
-    batch.forEach((p) => countsInFlight.delete(p));
-    if (loc !== location) return;
-    batch.forEach((p, j) => rememberSummary(p, result[j] ?? null));
-    patchCounts();
-  }
-  if (resortWhenDone && prefs.sortKey === "size") renderViewKeepingScroll();
-}
-
-/** Store a folder's count, and redraw its icon if its version badge changed. */
-function rememberSummary(path: string, summary: FolderSummary | null): void {
-  counts.set(path, summary?.count ?? null);
-  countsVersion++;
-  const versioned = !!summary?.versioned;
-  if (versioned === versionedFolders.has(path)) return;
-  if (versioned) versionedFolders.add(path);
-  else versionedFolders.delete(path);
-  patchIcon(path);
+  const landed = await summaries.request(paths, prefs.showHidden);
+  if (landed && resortWhenDone && prefs.sortKey === "size") renderViewKeepingScroll();
 }
 
 function patchCounts(): void {
@@ -1983,7 +1758,7 @@ function updateFloatingBar(): void {
     if (isAppBundle(e)) {
       text = `“${e.name}” selected`;
     } else if (e.is_dir) {
-      const n = counts.get(e.path);
+      const n = summaries.count(e.path);
       if (n === undefined) fetchCount(e.path);
       text = `“${e.name}” selected` + (n === undefined || n === null ? "" : ` (containing ${n === 1 ? "1 item" : `${n.toLocaleString()} items`})`);
     } else {
@@ -2004,14 +1779,10 @@ function updateFloatingBar(): void {
   floatingBar.hidden = false;
 }
 
+/** The selected folder's count, for the floating bar, which `summaries` updates when it lands
+ *  (on macOS its icon is asked for again then: see `itemIcons.recounted`). */
 function fetchCount(path: string): void {
-  counts.set(path, null);
-  countsVersion++;
-  if (isMac && !isRemotePath(path)) void recheckNativeIcons([path], nativeIconPx(), refreshItemIcons);
-  itemCounts([path], prefs.showHidden).then(([summary]) => {
-    rememberSummary(path, summary);
-    updateFloatingBar();
-  }).catch(() => {});
+  summaries.one(path, prefs.showHidden);
 }
 
 // ---------------------------------------------------------------------------
@@ -2897,7 +2668,7 @@ async function showProperties(entry: Entry): Promise<void> {
   header.className = "properties-header";
   const icon = document.createElement("div");
   icon.className = "properties-icon";
-  dialogIcon(icon, entry, 64);
+  itemIcons.dialogIcon(icon, entry, 64);
   const name = document.createElement("div");
   name.className = "properties-name";
   name.textContent = info.name;
@@ -4296,7 +4067,7 @@ function previewEmpty(entry: Entry, text: string): void {
   box.className = "preview-empty";
   const icon = document.createElement("div");
   icon.className = "preview-empty-icon";
-  dialogIcon(icon, entry, 192);
+  itemIcons.dialogIcon(icon, entry, 192);
   const label = document.createElement("p");
   label.textContent = text;
   box.append(icon, label);
@@ -4391,7 +4162,7 @@ const PREVIEW_RUN: Record<PreviewAction, (entry: Entry) => void> = {
 };
 
 function renderPreviewActions(entry: Entry): void {
-  const elsewhere = searchQuery !== null || parentOf(entry.path) !== location;
+  const elsewhere = search.isOpen || parentOf(entry.path) !== location;
   const actions = previewActions(previewPlace(hereFor([entry.path], elsewhere)));
   const buttons: HTMLElement[] = actions.map((action) => {
     const button = document.createElement("button");
@@ -4481,7 +4252,7 @@ function showOpenWith(entry: Entry): void {
   showOpenWithDialog(entry, {
     icon(span, app) {
       const bundle = { name: `${app.name}.app`, path: "", is_dir: true, size: 0, modified: 0, is_hidden: false, is_symlink: false };
-      dialogIcon(span, bundle, 28, appIconKey(app.id));
+      itemIcons.dialogIcon(span, bundle, 28, appIconKey(app.id));
     },
     errorText: cleanError,
     opened(file) {
@@ -4618,7 +4389,7 @@ const VIEW_KEYS: Record<string, (k: ViewKey) => boolean> = {
   },
   Escape: () => {
     if (!previewLayer?.hidden) closePreview();
-    else if (searchQuery !== null) closeSearch();
+    else if (search.isOpen) closeSearch();
     else if (!cancelCut()) clearSelection();
     return true;
   },
@@ -5397,7 +5168,7 @@ async function init(): Promise<void> {
   // Headerbar
   $("#btn-back").addEventListener("click", goBack);
   $("#btn-forward").addEventListener("click", goForward);
-  $("#btn-search").addEventListener("click", () => (searchQuery === null ? openSearch() : closeSearch()));
+  $("#btn-search").addEventListener("click", () => (search.isOpen ? closeSearch() : openSearch()));
   $("#btn-main-menu").addEventListener("click", (e) => openMainMenu(e.currentTarget as HTMLElement));
   $("#btn-location-menu").addEventListener("click", (e) => openLocationMenu(e.currentTarget as HTMLElement));
   $("#btn-new-folder").addEventListener("click", promptNewFolder);
@@ -5487,7 +5258,7 @@ async function init(): Promise<void> {
   // Files saved or created in other apps meanwhile show up when the window
   // comes back. Recent also changes while it is open, so refresh it too.
   window.addEventListener("focus", () => {
-    if (hasOpenOverlay() || searchQuery !== null) return;
+    if (hasOpenOverlay() || search.isOpen) return;
     if (location === RECENT) void reload();
     else if (!isPseudo(location) && location !== trashPath) void reload();
   });
