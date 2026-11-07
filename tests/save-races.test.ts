@@ -20,7 +20,7 @@ const calls = () => (globalThis as unknown as { __mockCalls: MockCalls }).__mock
 const DENIED = "Failed to read directory: Permission denied (os error 13)";
 
 beforeAll(async () => {
-  for (const dir of ["", "/Stars", "/Marks", "/Marks/Old", "/Marks/Book", "/Marks/One", "/Marks/Two", "/Marks/Book 2", "/Tabs", "/Tabs/H", "/Tabs/T", "/Kept", "/Kept/K", "/Kept/T", "/Back", "/Back/G"]) {
+  for (const dir of ["", "/Stars", "/Marks", "/Marks/Old", "/Marks/Book", "/Marks/One", "/Marks/Two", "/Marks/Book 2", "/Marks/Mark 1", "/Marks/Mark 2", "/Tabs", "/Tabs/H", "/Tabs/T", "/Kept", "/Kept/K", "/Kept/T", "/Back", "/Back/G", "/Twice", "/Twice/G", "/Close", "/Close/C"]) {
     await invoke("make_dir", { path: ROOT + dir });
   }
   for (const file of ["/Stars/a.txt", "/Stars/b.txt"]) await invoke("create_file", { path: ROOT + file });
@@ -123,6 +123,11 @@ test("a bookmark added while a bookmarked folder is renamed: both are kept, show
 
 test("a bookmark that couldn't be saved is taken back; so is a removal, in its place", async () => {
   await goTo(`${ROOT}/Marks`);
+  // Two bookmarks of its own, so the removal below has a place to come back to
+  // when this test runs alone.
+  await addBookmark("Mark 1");
+  await addBookmark("Mark 2");
+  await settle(20);
   const before = await savedPins();
   calls().failNext("save_pins", "Permission denied (os error 13)");
   await addBookmark("Book 2");
@@ -204,4 +209,44 @@ test("the tab a failed switch comes back to goes Back to a folder renamed meanwh
   expect($$(".tab")[1].classList.contains("active")).toBe(true);
   expect(title()).toBe("Back");
   expect(await back()).toBe("G 2");
+});
+
+test("a switch whose way back fails too: the tab still shown goes Back to a folder renamed meanwhile", async () => {
+  // The second tab came from G to Twice.
+  await goTo(`${ROOT}/Twice`);
+  await key("t", { mod: true });
+  await settle(10);
+  await goTo(`${ROOT}/Twice/G`);
+  await goTo(`${ROOT}/Twice`);
+
+  calls().hold("list_dir");
+  calls().failNext("list_dir", DENIED);
+  await click($$(".tab")[0]); // the first tab's folder can't be listed this time
+  await rename("G", "G 2");
+  calls().release("list_dir");
+  calls().hold("list_dir"); // the second tab comes back, waiting on its listing
+  await settle(20);
+  calls().failNext("list_dir", DENIED);
+  calls().release("list_dir"); // and can't be listed either: the view stays as it was
+  await settle(20);
+  expect(title()).toBe("Twice");
+  expect(await back()).toBe("G 2");
+});
+
+test("the tab on screen closed while the next one can't be listed: Back goes to a folder renamed meanwhile", async () => {
+  // The second tab came from C to Close; closing it leaves the first.
+  await goTo(`${ROOT}/Close`);
+  await key("t", { mod: true });
+  await settle(10);
+  await goTo(`${ROOT}/Close/C`);
+  await goTo(`${ROOT}/Close`);
+
+  calls().hold("list_dir");
+  calls().failNext("list_dir", DENIED);
+  await key("w", { mod: true }); // the first tab's folder can't be listed this time
+  await rename("C", "C 2");
+  calls().release("list_dir");
+  await settle(20);
+  expect(title()).toBe("Close");
+  expect(await back()).toBe("C 2");
 });

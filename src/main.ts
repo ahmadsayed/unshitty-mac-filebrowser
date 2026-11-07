@@ -207,16 +207,19 @@ const pathRefs = new PathRefs<TabState>({
     },
   },
   tabs: {
-    // While a tab is switched to, the live history is the one it brings
-    // (`historyNow`), taken as its folder shows: a move that lands meanwhile
-    // follows that one, not the history of the tab being left (#172).
-    get: () => {
-      const { back, forward } = historyNow();
-      return { list: tabs, active: activeTab, back, forward };
-    },
+    // While a tab is switched to, a move that lands meanwhile follows both
+    // the history it brings, which the view takes as its folder shows, and
+    // the view's own, which stays if the switch fails (#172).
+    get: () => ({ list: tabs, active: activeTab, back: backStack, forward: forwardStack, arriving: arrivingTab }),
     set: (next) => {
       tabs = next.list;
-      setHistory(next.back, next.forward);
+      backStack = next.back;
+      forwardStack = next.forward;
+      if (arrivingTab && next.arriving) {
+        // In place: the switch holds this tab and takes its history from it.
+        arrivingTab.back = next.arriving.back;
+        arrivingTab.forward = next.arriving.forward;
+      }
       renderTabbar();
     },
   },
@@ -751,18 +754,6 @@ function showLocation(loc: string, arrival: Arrival, root: string | null, opts: 
   scrollEl.scrollTop = 0;
   if (arrival.select) revealPath(arrival.select);
   viewEl.focus({ preventScroll: true });
-}
-
-/** Replace the live history (`historyNow`'s): the arriving tab's, in place,
- *  while a tab is switched to, so the view takes it as the tab shows. */
-function setHistory(back: string[], forward: string[]): void {
-  if (arrivingTab) {
-    arrivingTab.back = back;
-    arrivingTab.forward = forward;
-    return;
-  }
-  backStack = back;
-  forwardStack = forward;
 }
 
 /** The tab being switched to shows now, or a later navigation does in its
