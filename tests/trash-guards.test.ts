@@ -87,13 +87,13 @@ test("the Trash's own menus are unchanged", async () => {
   await closeOverlays();
 });
 
-test("a folder inside the Trash offers nothing that adds to it", async () => {
+test("a folder inside the Trash offers nothing that adds to it, but keeps Open With…", async () => {
   await goTo(`${TRASH}/Old`);
   await rightClick($("#view"));
-  expect(menuLabels()).toEqual(["Select All"]);
+  expect(menuLabels()).toEqual(["Open With…", "Select All"]);
   await closeOverlays();
   await click($("#btn-location-menu"));
-  expect(menuLabels()).toEqual(["Copy Location", "Select All"]);
+  expect(menuLabels()).toEqual(["Open With…", "Copy Location", "Select All"]);
   await closeOverlays();
 });
 

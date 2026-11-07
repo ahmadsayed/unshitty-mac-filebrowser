@@ -2715,7 +2715,8 @@ function folderItemMenu(sel: Entry[], single: Entry | null): MenuItem[] {
 /**
  * The background and location menus in the Trash and the folders inside it:
  * nothing that adds to them, since only Move to Trash records where an item
- * came from. `withCopyLocation` adds Copy Location for a folder inside the Trash.
+ * came from. A folder inside the Trash keeps Open With…, as trashed items do;
+ * `withCopyLocation` adds Copy Location for its location menu.
  */
 function trashFolderMenu(withCopyLocation: boolean): MenuItem[] {
   if (location === trashPath) {
@@ -2725,7 +2726,12 @@ function trashFolderMenu(withCopyLocation: boolean): MenuItem[] {
       { label: "Select All", action: selectAll },
     ];
   }
-  return [...(withCopyLocation ? [{ label: "Copy Location", action: copyLocation }] : []), { label: "Select All", action: selectAll }];
+  return [
+    openCurrentFolderWithItem(),
+    { separator: true },
+    ...(withCopyLocation ? [{ label: "Copy Location", action: copyLocation }] : []),
+    { label: "Select All", action: selectAll },
+  ];
 }
 
 function openBackgroundMenu(at: Anchor): void {
