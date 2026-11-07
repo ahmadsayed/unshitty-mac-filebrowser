@@ -20,6 +20,12 @@
 //!
 //! Permanent deletion is the one place this app removes files for good, and
 //! only for items inside a Trash folder.
+//!
+//! lib.rs keeps one `Trash`, which owns the log (its file and lock), the
+//! order origins are looked up in, Restore, Delete Permanently, Empty Trash
+//! and what counts as inside the Trash. Trashing goes through the free
+//! functions `trash_many`, `trash_routed` and `trash_and_locate`, whose
+//! moves are then handed to `Trash::record`.
 
 use crate::progress::Progress;
 use std::collections::{HashMap, HashSet};
@@ -58,7 +64,7 @@ pub struct TrashInfo {
     pub trashed: i64,
 }
 
-pub fn read_log(path: &Path) -> TrashLog {
+fn read_log(path: &Path) -> TrashLog {
     fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -67,7 +73,7 @@ pub fn read_log(path: &Path) -> TrashLog {
 
 /// Remember where each `(trashed, origin)` item now lives, forgetting items
 /// that have since left the Trash.
-pub fn record(log: &mut TrashLog, moves: &[(PathBuf, PathBuf)], now: i64) {
+fn record(log: &mut TrashLog, moves: &[(PathBuf, PathBuf)], now: i64) {
     log.items.retain(|p, _| fs::symlink_metadata(p).is_ok());
     for (trashed, origin) in moves {
         log.items.insert(
@@ -111,7 +117,7 @@ fn mount_root(path: &Path) -> PathBuf {
 }
 
 /// The Trash folder an item at `path` goes to when trashed.
-pub fn trash_dir_for(path: &Path, home: &Path) -> PathBuf {
+fn trash_dir_for(path: &Path, home: &Path) -> PathBuf {
     trash_dir_from(path, home, &home_trash(home))
 }
 
@@ -145,7 +151,7 @@ fn uid(_: &Path) -> u32 {
 /// The Trash that items on the home filesystem go to, as the *root*: on macOS
 /// the folder holding the items, on Linux the folder holding `files/` and
 /// `info/`.
-pub fn home_trash(home: &Path) -> PathBuf {
+fn home_trash(home: &Path) -> PathBuf {
     if cfg!(target_os = "macos") {
         home.join(".Trash")
     } else {
@@ -164,16 +170,11 @@ fn items_in(root: &Path) -> PathBuf {
     }
 }
 
-/// The home Trash's items folder, created first on Linux: a fresh account has no
-/// `Trash/files` until something is trashed, and the Trash view must show
-/// "Trash is Empty" rather than an error. Creating `files/` and `info/` is
-/// what any freedesktop implementation does on first use. `~/.Trash` is left
-/// to macOS.
-pub fn ensure_items_root(home: &Path) -> PathBuf {
-    ensure_items_in(&home_trash(home))
-}
-
-/// `items_in`, with `files/` and `info/` created first on Linux.
+/// `items_in`, created first on Linux: a fresh account has no `Trash/files`
+/// until something is trashed, and the Trash view must show "Trash is
+/// Empty" rather than an error. Creating `files/` and `info/` is what any
+/// freedesktop implementation does on first use. `~/.Trash` is left to
+/// macOS.
 fn ensure_items_in(root: &Path) -> PathBuf {
     if !cfg!(target_os = "macos") {
         create_freedesktop_trash(root);
@@ -247,7 +248,7 @@ fn parse_trashinfo(text: &str) -> Option<PathBuf> {
 }
 
 /// Where a trashed item came from, according to its `.trashinfo` sidecar.
-pub fn sidecar_origin(trashed: &Path, trash_dir: &Path) -> Option<PathBuf> {
+fn sidecar_origin(trashed: &Path, trash_dir: &Path) -> Option<PathBuf> {
     let text = fs::read_to_string(sidecar_of(trashed, trash_dir)?).ok()?;
     parse_trashinfo(&text)
 }
@@ -566,7 +567,7 @@ fn delete_counted(
 /// a log entry can outlive its item (restored by another app) and then
 /// describe a later one that reused the name.
 /// `trash_dir` is the Trash folder `trashed` sits in (see `trash_dir_for`).
-pub fn origin_of(
+fn origin_of(
     trashed: &Path,
     trash_dir: &Path,
     log: &TrashLog,
@@ -582,17 +583,8 @@ pub fn origin_of(
     put_back.get(&*name).cloned()
 }
 
-/// Origin and trash date for each path in the Trash.
-pub fn info(
-    paths: &[String],
-    home: &Path,
-    log: &TrashLog,
-    put_back: &HashMap<String, PathBuf>,
-) -> Vec<TrashInfo> {
-    info_with(paths, |path| trash_dir_for(path, home), log, put_back)
-}
-
-/// `info`, with the Trash folder each path sits in given by `dir_for`.
+/// Origin and trash date for each path in the Trash, which `dir_for` gives
+/// the Trash folder of.
 fn info_with(
     paths: &[String],
     dir_for: impl Fn(&Path) -> PathBuf,
@@ -634,7 +626,7 @@ fn changed_time(_: &Path) -> i64 {
 /// Move `trashed`, which sits in `trash_dir`, back to `origin`, recreating
 /// missing parent folders. Never overwrites: an existing item at `origin` is
 /// an error.
-pub fn restore(trashed: &Path, origin: &Path, trash_dir: &Path) -> Result<(), String> {
+fn restore(trashed: &Path, origin: &Path, trash_dir: &Path) -> Result<(), String> {
     if fs::symlink_metadata(trashed).is_err() {
         return Err(format!("“{}” is no longer in the Trash", trashed.display()));
     }
@@ -672,7 +664,7 @@ fn remove_tree(path: &Path) -> std::io::Result<()> {
 }
 
 /// Delete `path` for good. Refused unless it lies inside `trash_dir`.
-pub fn delete_permanently(path: &Path, trash_dir: &Path) -> Result<(), String> {
+fn delete_permanently(path: &Path, trash_dir: &Path) -> Result<(), String> {
     if fs::symlink_metadata(path).is_err() {
         return Err(format!("“{}” no longer exists", path.display()));
     }
@@ -691,7 +683,7 @@ pub fn delete_permanently(path: &Path, trash_dir: &Path) -> Result<(), String> {
 /// returns, so on Linux both `files/` and `info/` are emptied.
 /// Returns the error for the first item that couldn't be deleted, after
 /// trying all of them.
-pub fn empty(trash_root: &Path, progress: &Progress) -> Result<(), String> {
+fn empty(trash_root: &Path, progress: &Progress) -> Result<(), String> {
     let files = trash_root.join("files");
     // The layout is the one on disk: a Trash without `files/` keeps its
     // items directly inside, as macOS does.
@@ -865,7 +857,7 @@ fn home_put_back(home: &Path) -> HashMap<String, PathBuf> {
 // ---------------------------------------------------------------------------
 
 /// Name in the Trash → original path, from `ds_store` on a volume mounted at `volume_root`.
-pub fn read_put_back(ds_store: &Path, volume_root: &Path) -> HashMap<String, PathBuf> {
+fn read_put_back(ds_store: &Path, volume_root: &Path) -> HashMap<String, PathBuf> {
     let Ok(data) = fs::read(ds_store) else {
         return HashMap::new();
     };
@@ -995,7 +987,7 @@ fn read_record(d: &[u8], mut p: usize, out: &mut Vec<(String, [u8; 4], String)>)
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use crate::progress::Progress;
     use tempfile::tempdir;
@@ -1156,9 +1148,9 @@ pub(crate) mod tests {
         record(&mut log, &[(a.clone(), "/Users/me/a".into())], 102);
         assert_eq!(log.items.len(), 1, "the missing item is dropped");
 
-        let info = info(
+        let info = info_with(
             &[a.to_string_lossy().to_string()],
-            dir.path(),
+            |p| trash_dir_for(p, dir.path()),
             &log,
             &HashMap::new(),
         );
@@ -1419,7 +1411,7 @@ pub(crate) mod tests {
         s.encode_utf16().flat_map(|u| u.to_be_bytes()).collect()
     }
 
-    pub(crate) fn ustr_record(file: &str, code: &[u8; 4], value: &str) -> Vec<u8> {
+    fn ustr_record(file: &str, code: &[u8; 4], value: &str) -> Vec<u8> {
         let mut r = (file.encode_utf16().count() as u32).to_be_bytes().to_vec();
         r.extend(utf16(file));
         r.extend(code);
@@ -1438,7 +1430,7 @@ pub(crate) mod tests {
         r
     }
 
-    pub(crate) fn node(rightmost: u32, items: &[(Option<u32>, Vec<u8>)]) -> Vec<u8> {
+    fn node(rightmost: u32, items: &[(Option<u32>, Vec<u8>)]) -> Vec<u8> {
         let mut n = rightmost.to_be_bytes().to_vec();
         n.extend((items.len() as u32).to_be_bytes());
         for (child, rec) in items {
@@ -1452,7 +1444,7 @@ pub(crate) mod tests {
 
     /// A .DS_Store in the layout Finder writes: blocks at 32-byte-aligned
     /// offsets, block 0 the master record, the rest B-tree nodes.
-    pub(crate) fn ds_store(nodes: &[Vec<u8>], root: u32) -> Vec<u8> {
+    fn ds_store(nodes: &[Vec<u8>], root: u32) -> Vec<u8> {
         let mut d = vec![0u8; 0x8000];
         let put = |d: &mut Vec<u8>, at: usize, bytes: &[u8]| {
             d[at..at + bytes.len()].copy_from_slice(bytes)
