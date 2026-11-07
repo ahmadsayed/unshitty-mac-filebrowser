@@ -212,18 +212,32 @@ test("run() is the action in flight for work started outside onResponse", async 
   expect(status.textContent).toBe(cleanError("Failed: Connection refused (os error 111)"));
 });
 
-test("a control that lost focus when it was disabled gets it back", async () => {
+test("a control that dropped focus when it was disabled gets it back", async () => {
   const work = pending();
   const { name } = open(() => work.promise);
   name.focus();
   press("Enter");
-  // A browser moves focus off a control when it is disabled; jsdom doesn't.
+  // A browser drops focus to the page when a focused control is disabled;
+  // jsdom doesn't, so drop it the way removing the focused element does.
   const outside = document.createElement("button");
   document.body.appendChild(outside);
   outside.focus();
-  expect(document.activeElement).toBe(outside);
+  outside.remove();
+  expect(document.activeElement).toBe(document.body);
   work.resolve(false);
   await settle();
   expect(document.activeElement).toBe(name);
-  outside.remove();
+});
+
+test("focus that moved on to a prompt the work opened stays there", async () => {
+  const { dialog, name } = open(() => false);
+  name.focus();
+  let prompt!: HTMLInputElement;
+  await dialog.run(async () => {
+    const extra = document.createElement("div");
+    extra.innerHTML = `<input id="prompt" />`;
+    openDialog({ heading: "Prompt", extra, responses: [{ id: "cancel", label: "Cancel" }] });
+    prompt = extra.querySelector<HTMLInputElement>("#prompt")!;
+  });
+  expect(document.activeElement).toBe(prompt);
 });

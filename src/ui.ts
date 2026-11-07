@@ -364,10 +364,12 @@ class InFlight {
     for (const c of this.paused) c.disabled = false;
     this.paused = [];
     for (const id of this.buttons.keys()) this.apply(id);
-    // A control that had focus loses it when disabled; give it back.
+    // A control that had focus drops it to the page when disabled; give it
+    // back, unless focus has moved on (to a prompt the work opened).
     const focused = this.focused;
     this.focused = null;
-    if (focused?.isConnected && !this.dialog.contains(document.activeElement)) focused.focus({ preventScroll: true });
+    const dropped = !document.activeElement || document.activeElement === document.body;
+    if (focused?.isConnected && dropped) focused.focus({ preventScroll: true });
   }
 }
 
