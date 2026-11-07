@@ -93,7 +93,7 @@ test("nothing is in the Trash before its path is known", () => {
 
 test("the kind of each place, in one precedence", () => {
   expect(locationKind("pseudo:starred", TRASH)).toBe("starred");
-  // A hand-made ?path= can name a pseudo place that doesn't exist; it lists nothing, as Recent would.
+  // No window opens a pseudo place that doesn't exist (isKnownPath refuses it); one is taken as Recent.
   expect(locationKind("pseudo:elsewhere", TRASH)).toBe("recent");
   expect(locationKind("pseudo:constructor", TRASH)).toBe("recent");
   // Nothing is in the Trash until its path is known.

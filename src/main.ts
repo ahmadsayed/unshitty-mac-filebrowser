@@ -50,7 +50,7 @@ import { listingReaction, type ListingContext, type ListingPhase } from "./listi
 import { PathRefs, type Clip } from "./path-refs";
 import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
-import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, type Place } from "./paths";
+import { childPath, cloudAccountKey, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -298,6 +298,21 @@ function networkEntries(): Entry[] {
 /** The SSH server a Network entry stands for. */
 function serverFor(entry: Entry): SftpServer | undefined {
   return isSftpPath(entry.path) ? sftpServerList.find((server) => server.url === entry.path) : undefined;
+}
+
+/** The Network entry that stands for `path`: on an SSH server, the server's
+ *  entry, whose path is where the server starts (the home on it, or the
+ *  path typed), not its root. Any other path stands for itself. */
+function networkEntryFor(path: string): string {
+  if (!isSftpPath(path)) return path;
+  const authority = sftpAuthority(path);
+  return sftpServerList.find((server) => sftpAuthority(server.url) === authority)?.url ?? path;
+}
+
+/** What to select on arriving in `loc`: in Network, a server's root
+ *  selects the server (Up from its root). */
+function selectionOn(loc: string, select: string | undefined): string | undefined {
+  return loc === NETWORK && select ? networkEntryFor(select) : select;
 }
 
 /** Network's second line: who shared a folder, or what kind of server it is. */
@@ -617,6 +632,8 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   let error: string | null = null;
   let page: typeof sharePage = null;
   if (loc === NETWORK) await Promise.all([refreshShares(), refreshSftpServers()]);
+  // Asked after the refresh: the server list says which entry is whose.
+  const select = selectionOn(loc, opts.select);
   const shared = isSharePath(loc) ? receivedFor(loc) : undefined;
   if (shared && shared.status !== "online") {
     page = shared.status;
@@ -646,7 +663,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   entries = next;
   listingError = error;
   summaries.reset();
-  selection.reset(opts.select);
+  selection.reset(select);
   if (search.isOpen) moveSearchHere();
 
   document.title = locationName(loc);
@@ -658,7 +675,7 @@ async function navigate(loc: string, opts: { history?: "push" | "none"; select?:
   updateShareSubtitle();
   renderView();
   scrollEl.scrollTop = 0;
-  if (opts.select) revealPath(opts.select);
+  if (select) revealPath(select);
   viewEl.focus({ preventScroll: true });
   return true;
 }
@@ -4183,9 +4200,15 @@ const PREVIEW_RUN: Record<PreviewAction, (entry: Entry) => void> = {
   },
 };
 
+/** Whether `entry` is shown away from its folder: a search result, or an item
+ *  in Recent or Starred. Network's entries are its own, though a server's
+ *  path is where it starts on the server, so its parent isn't Network. */
+function shownElsewhere(entry: Entry): boolean {
+  return search.isOpen || (location !== NETWORK && parentOf(entry.path) !== location);
+}
+
 function renderPreviewActions(entry: Entry): void {
-  const elsewhere = search.isOpen || parentOf(entry.path) !== location;
-  const actions = previewActions(previewPlace(hereFor([entry.path], elsewhere)));
+  const actions = previewActions(previewPlace(hereFor([entry.path], shownElsewhere(entry))));
   const buttons: HTMLElement[] = actions.map((action) => {
     const button = document.createElement("button");
     button.className = action === "open" ? "btn suggested" : "btn";
