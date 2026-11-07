@@ -24,7 +24,7 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | Path | What it holds |
 | --- | --- |
 | `src/main.ts` | App state, navigation, path bar, search, virtualized grid/list views, selection, menus, clipboard + paste, drag and drop, bookmarks, keyboard shortcuts, sidebar, init |
-| `src/ui.ts` | libadwaita-style widgets: popovers, popover menus, dialogs, toasts |
+| `src/ui.ts` | libadwaita-style widgets: popovers, popover menus, dialogs, toasts; a dialog's busy mode (one action in flight, what stays live, the status line, failures in words, the buttons put back) and `cleanError` |
 | `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), drawn for the theme; file-kind detection; `itemIcon`, every item icon's markup: its picture (drawing, OS icon, thumbnail, glyph) and which emblems (link, versions, shared) go on it, in what order |
 | `src/icons-macos.ts` | The macOS theme's drawings under the same symbol ids: folders, file pages, line icons |
 | `src/thumbnails.ts` | Thumbnail request queue (4 concurrent) and bounded blob-URL cache |
@@ -249,7 +249,11 @@ GPL-3.0-or-later).
 - Use GNOME's wording for labels, menus and messages ("Folder is Empty",
   "Move to Trash", "A folder with that name already exists.").
 - Widgets: reuse `openMenu`, `openPopover`, `openDialog`, `showToast` from
-  `ui.ts` rather than new ad-hoc overlays.
+  `ui.ts` rather than new ad-hoc overlays. A dialog whose response waits on
+  the backend uses `openDialog`'s `busy` option (return the promise from
+  `onResponse`, or `dialog.run()` for work started elsewhere) rather than
+  its own busy flag: it ignores a second Enter, disables the rest except
+  `liveWhileBusy`, and puts back what validation wants.
 - Shortcuts accept ⌘ on macOS and Ctrl elsewhere (`isMac ? metaKey : ctrlKey`).
 
 **Security.** Escape every file name or path inserted with `innerHTML` via
