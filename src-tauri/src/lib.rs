@@ -4,6 +4,7 @@ mod config_store;
 mod downloads;
 mod file_icons;
 mod fs_ops;
+mod placement;
 mod platform;
 mod progress;
 mod properties;

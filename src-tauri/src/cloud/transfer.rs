@@ -251,7 +251,7 @@ pub(crate) fn download_in(
     to: &Path,
     overwrite: bool,
 ) -> Result<String, String> {
-    let remove = |path: &Path| crate::fs_ops::remove_any(path).map_err(|e| e.to_string());
+    let remove = |path: &Path| crate::placement::remove_any(path).map_err(|e| e.to_string());
     download_into(c, from, to, overwrite, &remove)
 }
 
@@ -266,7 +266,7 @@ pub(crate) fn download_into(
     overwrite: bool,
     discard: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<String, String> {
-    download_into_with(c, from, to, overwrite, discard, &crate::fs_ops::to_trash)
+    download_into_with(c, from, to, overwrite, discard, &crate::placement::to_trash)
 }
 
 /// `download_into` with the Trash a Replace uses, so tests can see it.
@@ -313,7 +313,7 @@ fn download_into_with(
     let staging = if in_place {
         to.to_path_buf()
     } else {
-        crate::fs_ops::staging_path(to)
+        crate::placement::staging_path(to)
     };
     let mut skipped = Vec::new();
     let result = if file.is_dir() {
@@ -334,21 +334,21 @@ fn download_into_with(
     };
     if let Err(error) = result {
         if !in_place {
-            let _ = crate::fs_ops::remove_any(&staging);
+            let _ = crate::placement::remove_any(&staging);
         }
         return Err(error);
     }
     if in_place {
         // Already in place.
     } else if replacing {
-        crate::fs_ops::replace_with_staged(
+        crate::placement::replace_with_staged(
             &staging,
             to,
-            crate::fs_ops::Staged::Copy,
+            crate::placement::Staged::Copy,
             trash,
         )?;
     } else if let Err(error) = std::fs::rename(&staging, to) {
-        let _ = crate::fs_ops::remove_any(&staging);
+        let _ = crate::placement::remove_any(&staging);
         return Err(format!("Failed to copy: {error}"));
     }
     match skipped.first() {
