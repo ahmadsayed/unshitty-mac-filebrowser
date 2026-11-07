@@ -44,6 +44,7 @@ import { qrShareItems } from "./qr-share";
 import { PREVIEW_ACTION_LABELS, previewActions, type PreviewAction, type PreviewPlace } from "./preview-actions";
 import { createShareProtection, promptSharePassphrase } from "./share-passphrase";
 import { Selection, type Mark } from "./selection";
+import { fold } from "./search";
 import { acceptsNewItems, canRename, hasProperties, isInTrash, isLocalLocation, isPseudo, isReadOnlyLocation, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type Pseudo } from "./locations";
 import { CLOUD_PREFIX, cloudAccountKey, isCloudPath as isCloud, isRemotePath, isShareLink, shareTicket, joinCloudPath, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, SFTP_PREFIX, isSftpPath, joinSftpPath } from "./paths";
 
@@ -409,11 +410,6 @@ function compareEntries(a: Entry, b: Entry): number {
       break;
   }
   return prefs.sortReversed ? -r : r;
-}
-
-function fold(s: string): string {
-  // Strips combining marks exactly as the backend's search does.
-  return s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 }
 
 /** What `shown` was last built from: a presentation-only render (grid ↔ list,

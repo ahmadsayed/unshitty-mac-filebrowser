@@ -1,4 +1,5 @@
 import { encodeCloudName } from "../../src/paths";
+import { fold } from "../../src/search";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
 // It serves a fake, in-memory home folder.
@@ -691,17 +692,12 @@ function list(path: string, showHidden: boolean): Entry[] {
     }));
 }
 
-/** Recursive name search, bounded like the Rust command. */
-/** Lowercase without accents, like the backend's `fold`. */
-function fold(s: string): string {
-  return s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-}
-
 /** How many items one search looks at before giving up (the backend's `MAX_SEARCH_SCANNED`). */
 const MAX_SEARCH_SCANNED = 100_000;
 /** The mock sends matches in batches of this many, so the app sees results stream in. */
 const SEARCH_BATCH = 50;
 
+/** Recursive name search, bounded like the Rust command. */
 function search(path: string, query: string, showHidden: boolean, limit: number, channel?: Channel<Entry[]>) {
   const node = lookup(path);
   if (!node || !node.dir) throw `Failed to read directory: No such file or directory (os error 2)`;
