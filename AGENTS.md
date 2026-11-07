@@ -36,10 +36,11 @@ in `docs/superpowers/plans/`. Read the spec before changing behaviour.
 | `src/themes/gnome.css`, `src/themes/macos.css` | The two themes' tokens (colours, font, sizes, radii, glass), light + dark; macOS also has a few scoped rules |
 | `src/theme.ts` | The platform's theme (macOS on a Mac, GNOME elsewhere) and the per-theme layout sizes the virtualized views use |
 | `src/qr-share.ts` | Send with QR Code…: the menu item and the dialog (code, link, progress, downloads) |
-| `src/preview-actions.ts` | Which actions the Space preview offers (Open, Rename…, Move to Trash, Open Item Location) for where the item is |
+| `src/preview-actions.ts` | Which actions the Space preview offers (Open, Rename…, Move to Trash, Open Item Location) for where the item is, from `item-actions.ts`'s rules plus the preview's kept exceptions |
 | `src/selection.ts` | The view's selection, cursor and anchor, and the user's intent counter a paste checks before selecting what it made (#50) |
 | `src/search.ts` | The search without the DOM: `SearchSession` (open or not, the text, the walk after a 160 ms pause, at most 1000 results, late answers dropped, what a tab saves), `arrangeSearch` / `searchSections` (what the view shows and its "In This Folder" / "In Subfolders" headers), and `fold`, tested against the backend's `fs_ops::fold` with `tests/fold-cases.json` |
-| `src/locations.ts` | What each kind of location allows (Recent/Starred/Network, Drive, shares, SSH servers, the Trash): read only, local, recursive search, versions, new items |
+| `src/locations.ts` | Which kind of place a path is (`locationKind`: Recent, Starred, Network, the Trash, a folder in it, a share, an SSH server, Drive, a folder), in one precedence built on `paths.ts`'s `placeOf`, and what each kind allows: read only, local, recursive search, versions, new items; the copy-out refusal's wording; which items are local files (`isLocalFile`, `isLocalRegularFile`) |
+| `src/item-actions.ts` | Whether an action several surfaces reach (cut, copy, paste, rename, trash, delete permanently, star, bookmark, properties, open location) may run in a kind of place, and the toast that says why not: a `Record<LocationKind, …>` per action, or a rule over `locations.ts`'s kind predicates (cut, copy, paste, open location); differences between surfaces kept on purpose are marked "Kept:" |
 | `src/paths.ts` | Each kind of path's layout (`gdrive://`, `share://`, `sftp://`, local) as one row: its kind (`placeOf`), name, parent, child join (encoded as the backend decodes it) and crumbs; containment (`isUnder`), which paths a window may open, share links, what the path bar resolves typed text to |
 | `src/folder-summaries.ts` | Folder item counts and version badges for the view: batches of 400, skips remote, known and in-flight folders, drops late answers, forgets counts on a new location or Show Hidden setting; says which answers were asked for one by one (`recounted`) |
 | `src/listing-failure.ts` | What a folder that couldn't be listed turns into, one table row per kind and phase (first view, navigate, reload, path entry): share status page, Connect to Server, go to the parent, toast with Grant Access, error page |
@@ -277,7 +278,16 @@ GPL-3.0-or-later).
 - Ask `src/locations.ts` (or `isRemotePath`) what a location allows rather
   than combining `isCloud`, `isSharePath`, `isSftpPath` and the Trash checks
   at the call site; a new kind of location or rule is a row in
-  `tests/locations.test.ts`.
+  `tests/locations.test.ts`. Code that picks something per kind of place (a
+  menu, a rule) is a `Record<LocationKind, …>`, so a new kind can't be
+  forgotten.
+- An action that menus, shortcuts, the preview, the row star or a drag can
+  all reach asks `src/item-actions.ts` inside the action function itself
+  (`refuse(action, hereFor(paths))` in `main.ts`), not at each surface; a
+  changed rule is a cell in its table and in `tests/item-actions.test.ts`.
+  Menus keep their own per-place layouts and may leave an allowed action
+  out. `tests/item-actions-matrix.test.ts` pins what every place offers
+  through every surface: update it when that changes on purpose.
 - Ask `src/paths.ts` how a path breaks up (`pathName`, `parentPath`,
   `childPath`, `pathSegments`, `isUnder`) rather than slicing a scheme's
   prefix or writing `p === dir || p.startsWith(dir + "/")` at the call site;

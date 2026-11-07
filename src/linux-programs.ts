@@ -1,9 +1,10 @@
 // Viewing a menu never changes permissions or executes a program.
 import { installAppImage, runShellScript, type Entry } from "./api";
+import { isLocalRegularFile } from "./locations";
 import { openDialog, showToast, type MenuItem } from "./ui";
 
 export function linuxProgramItems(entry: Entry | null, enabled: boolean): MenuItem[] {
-  if (!enabled || !entry || entry.is_dir || entry.is_symlink || !entry.path.startsWith("/")) return [];
+  if (!enabled || !entry || !isLocalRegularFile(entry)) return [];
   if (entry.path.split("/").includes(".versions")) return [];
   if (/\.appimage$/i.test(entry.name)) return [{ label: "Install Application…", action: () => installDialog(entry) }];
   if (/\.(sh|bash)$/i.test(entry.name)) return [{ label: "Run in Terminal…", action: () => runDialog(entry) }];

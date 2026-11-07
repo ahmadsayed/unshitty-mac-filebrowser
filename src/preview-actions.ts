@@ -1,20 +1,18 @@
-// Actions in the Space preview (#48), in the order the buttons show.
+// Actions in the Space preview (#48), in the order the buttons show, from
+// the rules every surface shares (src/item-actions.ts).
+
+import { allows, type Here } from "./item-actions";
+import { isPseudoKind, isTrashKind } from "./locations";
 
 export type PreviewAction = "location" | "rename" | "trash" | "open";
 
-/** Where the previewed item is, as far as its actions are concerned. */
+/** Which actions the previewed item gets, as far as its place allows. */
 export interface PreviewPlace {
-  /** On this computer or a mounted volume: not Drive, a share or SFTP. */
-  local: boolean;
-  /** In the Trash, where Restore and Delete Permanently are the menu's job. */
+  /** In the Trash, where Restore and Delete Permanently are the menu's job: Open only. */
   inTrash: boolean;
-  /** Not in the folder on screen: a search result, Recent or Starred. */
-  elsewhere: boolean;
-  /**
-   * Shown from a folder (or a search in one), not Recent or Starred: their
-   * menus have no Rename either, and Recent wouldn't follow the new name.
-   */
-  inFolder: boolean;
+  location: boolean;
+  rename: boolean;
+  trash: boolean;
 }
 
 export const PREVIEW_ACTION_LABELS: Record<PreviewAction, string> = {
@@ -24,13 +22,32 @@ export const PREVIEW_ACTION_LABELS: Record<PreviewAction, string> = {
   open: "Open",
 };
 
+/**
+ * What the preview offers for the one item in `here`. Kept as they were:
+ * only items on this computer get Rename… and Move to Trash, so a Drive
+ * item's preview lacks the two its menu offers; and the Trash folder itself
+ * (shown with hidden files) gets Rename…, which F2 refuses and the item
+ * menu's Rename… quietly ignores.
+ */
+export function previewPlace(here: Here): PreviewPlace {
+  const item = here.items[0];
+  const local = item === "folder" || isTrashKind(item);
+  const trashFolder = item === "trash" && !isPseudoKind(here.kind);
+  return {
+    inTrash: item === "in-trash" || isTrashKind(here.kind),
+    location: allows("openLocation", here),
+    rename: local && (allows("rename", here) || trashFolder),
+    trash: local && allows("trash", here),
+  };
+}
+
 /** The actions the preview offers for an item in `place`. */
 export function previewActions(place: PreviewPlace): PreviewAction[] {
   if (place.inTrash) return ["open"];
   return [
-    ...(place.elsewhere ? (["location"] as const) : []),
-    ...(place.local && place.inFolder ? (["rename"] as const) : []),
-    ...(place.local ? (["trash"] as const) : []),
+    ...(place.location ? (["location"] as const) : []),
+    ...(place.rename ? (["rename"] as const) : []),
+    ...(place.trash ? (["trash"] as const) : []),
     "open",
   ];
 }

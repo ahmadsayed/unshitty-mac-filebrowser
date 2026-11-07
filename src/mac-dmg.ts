@@ -1,10 +1,11 @@
 // DMG inspection always ejects before returning. No mounted resource belongs
 // to a dialog, and no application is opened until the user explicitly asks.
 import { inspectDmg, installDmg, openFile, type DmgInspection, type DmgInstallMode, type Entry } from "./api";
+import { isLocalRegularFile } from "./locations";
 import { openDialog, showToast, type MenuItem } from "./ui";
 
 export function macDmgItems(entry: Entry | null, enabled: boolean): MenuItem[] {
-  if (!enabled || !entry || entry.is_dir || entry.is_symlink || !entry.path.startsWith("/")) return [];
+  if (!enabled || !entry || !isLocalRegularFile(entry)) return [];
   if (entry.path.split("/").includes(".versions")) return [];
   return /\.dmg$/i.test(entry.name) ? [{ label: "Install Application…", action: () => void prepare(entry) }] : [];
 }

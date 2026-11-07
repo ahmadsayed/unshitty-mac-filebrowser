@@ -3,7 +3,8 @@
 // search results that live in subfolders.
 import { beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { previewActions } from "../src/preview-actions";
+import type { LocationKind } from "../src/locations";
+import { previewActions, previewPlace } from "../src/preview-actions";
 import { $, $$, boot, click, dialogHeading, goTo, hit, key, names, respond, selectedNames, settle, toasts, type } from "./app";
 
 const ROOT = "/Users/me/PreviewActions";
@@ -43,16 +44,25 @@ async function search(query: string): Promise<void> {
 }
 
 test("which actions a place offers", () => {
-  const here = { local: true, inTrash: false, elsewhere: false, inFolder: true };
-  expect(previewActions(here)).toEqual(["rename", "trash", "open"]);
-  expect(previewActions({ ...here, elsewhere: true })).toEqual(["location", "rename", "trash", "open"]);
-  // Read-only shares, SFTP and Drive: nothing that changes the item.
-  expect(previewActions({ ...here, local: false })).toEqual(["open"]);
-  expect(previewActions({ ...here, local: false, elsewhere: true })).toEqual(["location", "open"]);
+  const offers = (kind: LocationKind, item: LocationKind, elsewhere = false) =>
+    previewActions(previewPlace({ kind, items: [item], elsewhere }));
+  expect(offers("folder", "folder")).toEqual(["rename", "trash", "open"]);
+  expect(offers("folder", "folder", true)).toEqual(["location", "rename", "trash", "open"]);
+  // Read-only shares and SFTP: nothing that changes the item.
+  expect(offers("share", "share")).toEqual(["open"]);
+  expect(offers("sftp", "sftp", true)).toEqual(["location", "open"]);
   // Recent and Starred: no Rename, as in their menus.
-  expect(previewActions({ ...here, elsewhere: true, inFolder: false })).toEqual(["location", "trash", "open"]);
+  expect(offers("recent", "folder", true)).toEqual(["location", "trash", "open"]);
+  expect(offers("starred", "folder", true)).toEqual(["location", "trash", "open"]);
   // In the Trash: Restore and Delete Permanently stay in the menu.
-  expect(previewActions({ ...here, inTrash: true, elsewhere: true })).toEqual(["open"]);
+  expect(offers("trash", "in-trash", true)).toEqual(["open"]);
+  expect(offers("in-trash", "in-trash")).toEqual(["open"]);
+  expect(offers("recent", "in-trash", true)).toEqual(["open"]);
+  // Kept: a Drive item's preview has neither Rename… nor Move to Trash, which its menu offers.
+  expect(offers("drive", "drive")).toEqual(["open"]);
+  // Kept: the Trash folder itself, shown with hidden files, gets Rename…, which F2 refuses.
+  expect(offers("folder", "trash")).toEqual(["rename", "trash", "open"]);
+  expect(offers("starred", "trash", true)).toEqual(["location", "trash", "open"]);
 });
 
 test("a file in this folder offers Rename…, Move to Trash and Open", async () => {
