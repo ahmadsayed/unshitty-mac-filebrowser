@@ -19,6 +19,9 @@ Everything else must stay platform-neutral.
 
 Design intent and decisions live in `docs/superpowers/specs/` and the task plan
 in `docs/superpowers/plans/`. Read the spec before changing behaviour.
+[docs/architecture.md](docs/architecture.md) shows how the modules fit
+together and where each kind of change lands; keep it and its diagram in
+step when a module's role changes.
 
 ## Layout
 
