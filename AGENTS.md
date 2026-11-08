@@ -234,6 +234,10 @@ GPL-3.0-or-later).
   don't build the sequence again at a call site.
 - Placing renames with `placement::rename_new`, never `std::fs::rename`:
   on Unix that replaces a file that took the name after it was checked free.
+  Rename and Batch Rename use `placement::rename_in_place`, which also
+  changes only the case on a disk that ignores it. A test in `placement.rs`
+  lists the modules that may call `std::fs::rename` (the app's own saves
+  and caches).
 - A new file a copy makes is staged too and appears only whole; a new
   folder fills in place (`Stage::by_kind`) and counts as a partial copy to
   clean up only once the fill has created it, so a failure never removes

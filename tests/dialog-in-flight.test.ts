@@ -120,6 +120,20 @@ test("Batch Rename: a failure stays in the dialog, cleaned, with everything enab
   expect(names()).toEqual(expect.arrayContaining(["a.txt", "b.txt"]));
 });
 
+test("Batch Rename: after a failure the view shows the folder as it is now", async () => {
+  // A rollback the backend refused leaves an item renamed (#192); here the
+  // folder changes as the batch fails, and the view must not keep old names.
+  const dir = await folder("batch-partial");
+  await openBatchRename();
+  await invoke("rename_entry", { from: `${dir}/a.txt`, to: `${dir}/kept.txt` });
+  calls().failNext("rename_many", "Failed to rename: Permission denied (os error 13)");
+  await respond("Rename");
+  await settle(30);
+  expect(dialogHeading()).toBe("Rename 2 Items");
+  expect(names()).toEqual(expect.arrayContaining(["kept.txt", "b.txt"]));
+  expect(names()).not.toContain("a.txt");
+});
+
 // ----- New Folder -----
 
 async function openNewFolder(name: string): Promise<HTMLInputElement> {
