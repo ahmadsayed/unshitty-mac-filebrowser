@@ -67,8 +67,8 @@ exchange stay Google's).
 
 **D3. No credential is kept, so access never expires.** Reading needs only
 the wallet address, so the 24-hour session is not needed after D2's check.
-There is no Sign In Again for Arbesk; `ProviderActions.signIn` reconnects
-with the stored email. If Arbesk later requires a session for reads, this
+There is no Sign In Again for Arbesk; `ProviderActions.signIn` opens the
+Connect dialog ("Sign In to Arbesk") with the stored email filled in. If Arbesk later requires a session for reads, this
 decision is revisited.
 
 **D4. Paths carry ids; names are only for display.** Like Drive's
@@ -91,26 +91,39 @@ the ids.
 row (`placeOf`, `SCHEMES`, crumbs: the account itself is one crumb, "Arbesk", like "Google Drive"), and
 `isRemotePath` includes it. `locations.ts` gains `LocationKind` `"arbesk"`:
 read-only, remote, no recursive search, no versions, no new items.
-`item-actions.ts` gives it the SSH server's answers (cut, copy, paste,
-rename, trash, delete and star refused; `copyOutRefusalOf` says "Copying
-from Arbesk comes next."), and `tests/item-actions-matrix.test.ts`
+`item-actions.ts` refuses cut, copy, paste, rename, trash, delete, star
+and properties there (`copyOutRefusalOf` says "Copying from Arbesk comes
+next."; Paste says "Arbesk is read only."); ⌘D may bookmark a collection,
+as on an SSH server, and `tests/item-actions-matrix.test.ts`
 pins what each surface offers there. `place.rs` gains `Kind::Arbesk`:
 `writable` and `transfer` refuse it as a target, `local_only` skips it.
 
-**D6. Listing.** Arbesk's manifests carry no date and an asset's size is
-known only once it is built, so an asset's size and date columns are empty,
-as a remote folder's item count already is (`locations.ts` gains
-`knowsSizes(kind)`, false for `"arbesk"`; the status bar then says
-"“name” selected" without a size). Manifests are
+**D6. Listing.** An asset's size is known only once it is built, so its
+size column is empty, as a remote folder's item count already is
+(`locations.ts` gains `knowsSizes(kind)`, false for `"arbesk"`; the status
+bar then says "“name” selected" without a size). The date column shows the
+manifest's `timestamp` (milliseconds) when it has one. An asset's extension
+comes from its stored source's format, not from the manifest that wraps it;
+a live link (`child_ref`) lists as `.gltf` and an unknown format without an
+extension (both open with D9's message). Manifests are
 content-addressed, so they are cached on disk by CID without expiry (capped
 by bytes, oldest dropped first); `tokenURI` and the indexer are asked again
 on every listing and on Reload. Requests run at most 8 at a time.
 
 **D7. Open and preview share one built file.** An asset's built
-file goes to the app cache, named by its asset manifest CID (a new version
-has a new CID). `open_target` and `preview_bytes` both ask for it,
-so Space then double-click downloads once. The copy is pruned by
-`downloads.rs` like other remote downloads (edited copies go to the Trash).
+file goes to the app cache (`arbesk/<asset manifest CID>/<name>`; a new
+version has a new CID), written under a `.part` name and renamed in with
+`placement::rename_new`. `open_target` and `preview_bytes` both ask for it,
+so Space then double-click downloads once. It is reused only while
+`downloads.rs` says it is unchanged: an edited copy stays where it is and a
+fresh one is built beside it, so an edit is never shown as Arbesk's
+content. The copy is pruned by `downloads.rs` like other remote downloads
+(edited copies go to the Trash). Cached manifests live apart, in
+`arbesk-manifests/`, outside the folders pruning walks.
+
+Typed into the path bar, an `arbesk://` location opens as typed; a bare
+name typed inside Arbesk, which has no id, asks for "an Arbesk location or
+a full path", as Drive does.
 
 **D8. The 3D preview opens remote items of this kind only.** `showPreview`'s
 "Preview isn't available for remote items." becomes a `locations.ts` rule,
