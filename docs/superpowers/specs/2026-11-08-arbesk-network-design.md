@@ -54,7 +54,11 @@ Connect an Account → Arbesk asks for the email in a dialog, then:
    `POST {origin}/api/v1/users/resolve-email` with `Authorization: Session
    <token>` must return that same address. Arbesk's page sends no `state`, so
    this check is what stops another page from handing the app a wrong
-   account. A 401 or a different address fails the sign-in; a 502/503 fails
+   account: the session must be one Arbesk accepts, and only the typed
+   email's own address can be kept. It does not prove the session came from
+   this sign-in (`resolve-email` answers for any email, given any session),
+   which is enough for reading; anything acting with a session would need
+   more from Arbesk. A 401 or a different address fails the sign-in; a 502/503 fails
    it with "Arbesk could not confirm this account. Try again later."
 4. The app ends the session at once (`DELETE {origin}/api/v1/sessions`) and
    stores only `{ id, email, address, origin, chain_id }` in
