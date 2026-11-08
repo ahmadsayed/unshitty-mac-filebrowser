@@ -165,7 +165,10 @@ fn manifest_cache(cache_dir: &Path) -> ManifestCache {
 /// Where Arbesk's Studio opens the asset at `path`: the deep link
 /// `besk show` opens, `{origin}/studio?asset=<token>&assetId=<id>`.
 pub fn studio_url(site: &Site, path: &str) -> Result<String, String> {
-    let ArbeskPath::Asset { token_id, asset_id, .. } = parse(path)? else {
+    let ArbeskPath::Asset {
+        token_id, asset_id, ..
+    } = parse(path)?
+    else {
         return Err(format!("“{path}” is a folder, not a file."));
     };
     let query = url::form_urlencoded::Serializer::new(String::new())
@@ -620,7 +623,10 @@ mod tests {
         let picture = image::DynamicImage::new_rgb8(width, height);
         let mut bytes = Vec::new();
         picture
-            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::WebP)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::WebP,
+            )
             .unwrap();
         bytes
     }
@@ -651,7 +657,14 @@ mod tests {
     fn an_account_lists_its_readable_collections() {
         let cache = tempfile::tempdir().unwrap();
         let http = arbesk(Arc::new(Mutex::new(world())));
-        let entries = list(&http, &site(), &format!("arbesk://{ADDRESS}"), cache.path(), &Thumbnails::default()).unwrap();
+        let entries = list(
+            &http,
+            &site(),
+            &format!("arbesk://{ADDRESS}"),
+            cache.path(),
+            &Thumbnails::default(),
+        )
+        .unwrap();
         assert_eq!(names(&entries), ["Shapes", "Untitled Collection"]);
         let shapes_entry = entries.iter().find(|entry| entry.name == "Shapes").unwrap();
         assert!(shapes_entry.is_dir);
@@ -668,7 +681,14 @@ mod tests {
     fn a_collection_lists_its_assets_as_files() {
         let cache = tempfile::tempdir().unwrap();
         let http = arbesk(Arc::new(Mutex::new(world())));
-        let entries = list(&http, &site(), &shapes(), cache.path(), &Thumbnails::default()).unwrap();
+        let entries = list(
+            &http,
+            &site(),
+            &shapes(),
+            cache.path(),
+            &Thumbnails::default(),
+        )
+        .unwrap();
         assert_eq!(
             names(&entries),
             ["Box.3mf", "Box.gltf", "Linked.gltf", "Odd"]
@@ -694,12 +714,24 @@ mod tests {
         let world = Arc::new(Mutex::new(world()));
         world.lock().unwrap().rpc_down = true;
         let http = arbesk(world);
-        let account = list(&http, &site(), &format!("arbesk://{ADDRESS}"), cache.path(), &Thumbnails::default());
+        let account = list(
+            &http,
+            &site(),
+            &format!("arbesk://{ADDRESS}"),
+            cache.path(),
+            &Thumbnails::default(),
+        );
         assert!(account.unwrap_err().starts_with(CHAIN_UNREACHABLE));
         assert!(
-            list(&http, &site(), &shapes(), cache.path(), &Thumbnails::default())
-                .unwrap_err()
-                .starts_with(CHAIN_UNREACHABLE)
+            list(
+                &http,
+                &site(),
+                &shapes(),
+                cache.path(),
+                &Thumbnails::default()
+            )
+            .unwrap_err()
+            .starts_with(CHAIN_UNREACHABLE)
         );
     }
 
@@ -713,29 +745,51 @@ mod tests {
             .failing
             .extend(["bafyC1", "bafyC2", "bafyA1"].map(String::from));
         let http = arbesk(world.clone());
-        let account = list(&http, &site(), &format!("arbesk://{ADDRESS}"), cache.path(), &Thumbnails::default());
+        let account = list(
+            &http,
+            &site(),
+            &format!("arbesk://{ADDRESS}"),
+            cache.path(),
+            &Thumbnails::default(),
+        );
         assert!(account.unwrap_err().starts_with(STORAGE_UNREACHABLE));
         // One asset unreachable fails the collection too: Reload tries again.
         world.lock().unwrap().failing = ["bafyA1".to_string()].into();
         assert!(
-            list(&http, &site(), &shapes(), cache.path(), &Thumbnails::default())
-                .unwrap_err()
-                .starts_with(STORAGE_UNREACHABLE)
+            list(
+                &http,
+                &site(),
+                &shapes(),
+                cache.path(),
+                &Thumbnails::default()
+            )
+            .unwrap_err()
+            .starts_with(STORAGE_UNREACHABLE)
         );
     }
 
     #[test]
     fn an_asset_opens_at_its_studio_link() {
         let asset = asset_path(&shapes(), "a1", "Box", "gltf");
-        assert_eq!(studio_url(&site(), &asset).unwrap(), format!("{ORIGIN}/studio?asset=1&assetId=a1"));
+        assert_eq!(
+            studio_url(&site(), &asset).unwrap(),
+            format!("{ORIGIN}/studio?asset=1&assetId=a1")
+        );
         // Ids are query values, encoded as the Studio's URLSearchParams reads them.
         let odd = asset_path(&shapes(), "a/b~c d", "Box", "gltf");
-        assert_eq!(studio_url(&site(), &odd).unwrap(), format!("{ORIGIN}/studio?asset=1&assetId=a%2Fb%7Ec+d"));
+        assert_eq!(
+            studio_url(&site(), &odd).unwrap(),
+            format!("{ORIGIN}/studio?asset=1&assetId=a%2Fb%7Ec+d")
+        );
     }
 
     #[test]
     fn only_an_asset_has_a_studio_link() {
-        for path in [shapes(), format!("arbesk://{ADDRESS}"), "arbesk://bad".to_string()] {
+        for path in [
+            shapes(),
+            format!("arbesk://{ADDRESS}"),
+            "arbesk://bad".to_string(),
+        ] {
             assert!(studio_url(&site(), &path).is_err(), "{path}");
         }
     }
@@ -1035,11 +1089,22 @@ mod tests {
         let thumbs = Thumbnails::default();
         list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
         let before = http.requests().len();
-        let png = thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| false)
-            .expect("Box.gltf was saved with a thumbnail");
+        let png = thumbnail(
+            &http,
+            &site(),
+            &box_gltf(),
+            256,
+            cache.path(),
+            &thumbs,
+            &|| false,
+        )
+        .expect("Box.gltf was saved with a thumbnail");
         assert_eq!(png_size(&png), (256, 192));
         // Neither the backend nor the chain: the listing found where it is.
-        assert_eq!(asked_since(&http, before), ["https://gw.test/ipfs/bafyThumb"]);
+        assert_eq!(
+            asked_since(&http, before),
+            ["https://gw.test/ipfs/bafyThumb"]
+        );
     }
 
     #[test]
@@ -1049,7 +1114,18 @@ mod tests {
         let thumbs = Thumbnails::default();
         list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
         let before = http.requests().len();
-        assert!(thumbnail(&http, &site(), &box_3mf(), 256, cache.path(), &thumbs, &|| false).is_none());
+        assert!(
+            thumbnail(
+                &http,
+                &site(),
+                &box_3mf(),
+                256,
+                cache.path(),
+                &thumbs,
+                &|| false
+            )
+            .is_none()
+        );
         assert!(asked_since(&http, before).is_empty());
     }
 
@@ -1058,13 +1134,35 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let http = arbesk(Arc::new(Mutex::new(world())));
         let thumbs = Thumbnails::default();
-        let png = thumbnail(&http, &site(), &box_gltf(), 128, cache.path(), &thumbs, &|| false)
-            .expect("found through the chain");
+        let png = thumbnail(
+            &http,
+            &site(),
+            &box_gltf(),
+            128,
+            cache.path(),
+            &thumbs,
+            &|| false,
+        )
+        .expect("found through the chain");
         assert_eq!(png_size(&png), (128, 96));
         // Found once, remembered: the next one goes straight to the picture.
         let before = http.requests().len();
-        assert!(thumbnail(&http, &site(), &box_gltf(), 128, cache.path(), &thumbs, &|| false).is_some());
-        assert_eq!(asked_since(&http, before), ["https://gw.test/ipfs/bafyThumb"]);
+        assert!(
+            thumbnail(
+                &http,
+                &site(),
+                &box_gltf(),
+                128,
+                cache.path(),
+                &thumbs,
+                &|| false
+            )
+            .is_some()
+        );
+        assert_eq!(
+            asked_since(&http, before),
+            ["https://gw.test/ipfs/bafyThumb"]
+        );
     }
 
     #[test]
@@ -1074,7 +1172,18 @@ mod tests {
         let http = arbesk(world.clone());
         let thumbs = Thumbnails::default();
         list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
-        assert!(thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| false).is_some());
+        assert!(
+            thumbnail(
+                &http,
+                &site(),
+                &box_gltf(),
+                256,
+                cache.path(),
+                &thumbs,
+                &|| false
+            )
+            .is_some()
+        );
         {
             let mut w = world.lock().unwrap();
             w.put_asset("bafyA1v2", Some("Box"), "bafySrcGltf");
@@ -1084,7 +1193,18 @@ mod tests {
             w.tokens.insert(1, "bafyC1v2".into());
         }
         list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
-        assert!(thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| false).is_none());
+        assert!(
+            thumbnail(
+                &http,
+                &site(),
+                &box_gltf(),
+                256,
+                cache.path(),
+                &thumbs,
+                &|| false
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -1095,20 +1215,45 @@ mod tests {
         let thumbs = Thumbnails::default();
         list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
         world.lock().unwrap().failing.insert("bafyThumb".into());
-        assert!(thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| false).is_none());
+        assert!(
+            thumbnail(
+                &http,
+                &site(),
+                &box_gltf(),
+                256,
+                cache.path(),
+                &thumbs,
+                &|| false
+            )
+            .is_none()
+        );
         {
             let mut w = world.lock().unwrap();
             w.failing.clear();
             w.put("bafyThumb", json!({ "not": "a picture" }));
         }
-        assert!(thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| false).is_none());
+        assert!(
+            thumbnail(
+                &http,
+                &site(),
+                &box_gltf(),
+                256,
+                cache.path(),
+                &thumbs,
+                &|| false
+            )
+            .is_none()
+        );
         // Folders, assets gone from the collection and other accounts' paths have none either.
         for path in [
             shapes(),
             asset_path(&shapes(), "a9", "Gone", "gltf"),
             "arbesk://not-an-address/1~x/a1~y.gltf".to_string(),
         ] {
-            assert!(thumbnail(&http, &site(), &path, 256, cache.path(), &thumbs, &|| false).is_none(), "{path}");
+            assert!(
+                thumbnail(&http, &site(), &path, 256, cache.path(), &thumbs, &|| false).is_none(),
+                "{path}"
+            );
         }
     }
 
@@ -1119,7 +1264,18 @@ mod tests {
         let thumbs = Thumbnails::default();
         list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
         let before = http.requests().len();
-        assert!(thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| true).is_none());
+        assert!(
+            thumbnail(
+                &http,
+                &site(),
+                &box_gltf(),
+                256,
+                cache.path(),
+                &thumbs,
+                &|| true
+            )
+            .is_none()
+        );
         assert!(asked_since(&http, before).is_empty());
     }
 
@@ -1130,9 +1286,28 @@ mod tests {
         let thumbs = Thumbnails::default();
         list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
         let before = http.requests().len();
-        let renamed = asset_path(&collection_path(ADDRESS, "1", "Old name"), "a1", "Crate", "gltf");
-        assert!(thumbnail(&http, &site(), &renamed, 128, cache.path(), &thumbs, &|| false).is_some());
-        assert_eq!(asked_since(&http, before), ["https://gw.test/ipfs/bafyThumb"]);
+        let renamed = asset_path(
+            &collection_path(ADDRESS, "1", "Old name"),
+            "a1",
+            "Crate",
+            "gltf",
+        );
+        assert!(
+            thumbnail(
+                &http,
+                &site(),
+                &renamed,
+                128,
+                cache.path(),
+                &thumbs,
+                &|| false
+            )
+            .is_some()
+        );
+        assert_eq!(
+            asked_since(&http, before),
+            ["https://gw.test/ipfs/bafyThumb"]
+        );
     }
 
     #[test]
@@ -1151,7 +1326,18 @@ mod tests {
         }
         list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
         // Not the remembered picture: Box.gltf left the collection.
-        assert!(thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| false).is_none());
+        assert!(
+            thumbnail(
+                &http,
+                &site(),
+                &box_gltf(),
+                256,
+                cache.path(),
+                &thumbs,
+                &|| false
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -1169,8 +1355,14 @@ mod tests {
     #[test]
     fn the_thumbnail_cid_reads_every_shape_arbesk_has_saved() {
         // Today an object; older manifests kept a bare CID or a `source`.
-        assert_eq!(thumbnail_cid(&json!({ "thumbnail": { "cid": "bafyT" } })), Some("bafyT"));
-        assert_eq!(thumbnail_cid(&json!({ "thumbnail": "bafyT" })), Some("bafyT"));
+        assert_eq!(
+            thumbnail_cid(&json!({ "thumbnail": { "cid": "bafyT" } })),
+            Some("bafyT")
+        );
+        assert_eq!(
+            thumbnail_cid(&json!({ "thumbnail": "bafyT" })),
+            Some("bafyT")
+        );
         assert_eq!(
             thumbnail_cid(&json!({ "thumbnail": { "source": { "cid": "bafyT" } } })),
             Some("bafyT")
