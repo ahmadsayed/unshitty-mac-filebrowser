@@ -1,5 +1,6 @@
 // Turning and zooming the 3D preview with a pointer, without three.js: a
-// drag turns the model; the wheel and a pinch zoom it. A pinch arrives three
+// drag turns the model; the wheel and a pinch zoom it; a double-click picks
+// the point to turn around. A pinch arrives three
 // ways: two touch points, a trackpad's Ctrl/⌘ + wheel (Chromium, WebKitGTK),
 // or WebKit's own gesture events on a Mac. Each is kept from also zooming the
 // page.
@@ -9,6 +10,8 @@ export interface GestureHandlers {
   turn(dx: number, dy: number): void;
   /** Zoom by `factor`: above 1 closer, below 1 farther. */
   zoom(factor: number): void;
+  /** A double-click (or double tap) at this point of the canvas, in CSS pixels. */
+  pick?(x: number, y: number): void;
 }
 
 type WheelLike = Pick<WheelEvent, "deltaY" | "deltaMode" | "ctrlKey" | "metaKey">;
@@ -74,6 +77,7 @@ export function attachGestures(el: HTMLElement, handlers: GestureHandlers): () =
     if (scale > 0) handlers.zoom(scale / gestureScale);
     gestureScale = scale;
   };
+  const doubleClick = (e: MouseEvent) => handlers.pick?.(e.offsetX, e.offsetY);
   const gestureEnd = (e: GestureLike) => {
     e.preventDefault();
     gesturing = false;
@@ -88,6 +92,7 @@ export function attachGestures(el: HTMLElement, handlers: GestureHandlers): () =
     ["gesturestart", gestureStart],
     ["gesturechange", gestureChange],
     ["gestureend", gestureEnd],
+    ["dblclick", doubleClick],
   ];
   for (const [type, listener, options] of listeners) el.addEventListener(type, listener as EventListener, options);
   return () => {

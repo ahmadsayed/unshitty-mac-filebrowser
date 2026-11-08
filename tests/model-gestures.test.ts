@@ -7,6 +7,7 @@ import { attachGestures, wheelZoom } from "../src/model-gestures";
 let el: HTMLElement;
 let turn: ReturnType<typeof vi.fn>;
 let zoom: ReturnType<typeof vi.fn>;
+let pick: ReturnType<typeof vi.fn>;
 let detach: () => void;
 
 /** jsdom has no PointerEvent: a mouse event carrying its fields. */
@@ -38,7 +39,8 @@ beforeEach(() => {
   document.body.appendChild(el);
   turn = vi.fn();
   zoom = vi.fn();
-  detach = attachGestures(el, { turn, zoom });
+  pick = vi.fn();
+  detach = attachGestures(el, { turn, zoom, pick });
 });
 
 test("a left-button drag turns by how far the pointer moved", () => {
@@ -90,13 +92,23 @@ test("WebKit's pinch gestures zoom by the change in scale, and the wheel waits u
   expect(zoom).toHaveBeenCalledTimes(3);
 });
 
+test("a double-click picks the point under the pointer, in the canvas's own pixels", () => {
+  const event = new MouseEvent("dblclick", { bubbles: true, cancelable: true });
+  Object.defineProperties(event, { offsetX: { value: 120 }, offsetY: { value: 45 } });
+  el.dispatchEvent(event);
+  expect(pick).toHaveBeenCalledWith(120, 45);
+  expect(turn).not.toHaveBeenCalled();
+});
+
 test("detaching stops listening", () => {
   detach();
   pointer("pointerdown", 1, 0, 0);
   pointer("pointermove", 1, 10, 0);
   wheel({ deltaY: -100 });
+  el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   expect(turn).not.toHaveBeenCalled();
   expect(zoom).not.toHaveBeenCalled();
+  expect(pick).not.toHaveBeenCalled();
 });
 
 test.each([

@@ -2,9 +2,10 @@
 // mock's sample box as STL (ASCII and binary), 3MF, GLB and glTF. Drawing
 // needs WebGL, which jsdom lacks, so showModel is checked to fail cleanly.
 import { expect, test, vi } from "vitest";
-import { Box3, Mesh, Quaternion, Vector3, type Object3D } from "three";
+import { Box3, BoxGeometry, Group, Mesh, Quaternion, Vector3, type Object3D } from "three";
 import {
-  dracoLoader, dragTurns, keyAction, loadModel, resourceUrl, modelControls, showModel, turned, turnForKey, zoomed, zoomForKey, type Turn,
+  dracoLoader, dragTurns, keyAction, loadModel, pickedPoint, recentred, resourceUrl, modelControls, shownBounds, showModel, turned, turnForKey,
+  zoomed, zoomForKey, type Turn,
 } from "../src/model-viewer";
 import {
   SAMPLE_TRIANGLES, sample3mf, sampleGlb, sampleGltf, sampleGltfBin, sampleGltfJson, sampleStlAscii, sampleStlBinary,
@@ -207,4 +208,109 @@ test("compressed meshes decode with three's glTF Draco build, one decoder for ev
   expect(paths.js).toMatch(/libs\/draco\/gltf\/draco_wasm_wrapper\.js$/);
   expect(paths.dep_js).toBeNull();
   expect((draco as unknown as { workerLimit: number }).workerLimit).toBe(2);
+});
+
+// ----- Where the model turns about -----
+
+const round = (v: Vector3) => v.toArray().map((x) => Math.round(x * 1000) / 1000 + 0);
+
+test("the pivot is the middle of what the model shows: its vertices, not its stored bounds", () => {
+  // A 2-unit cube whose stored bounds claim it reaches 10 units up, as
+  // geometry bounds after compression or from an exporter can.
+  const geometry = new BoxGeometry(2, 2, 2);
+  geometry.computeBoundingBox();
+  geometry.boundingBox!.max.y = 10;
+  const model = new Group().add(new Mesh(geometry));
+  expect(round(new Box3().setFromObject(model).getCenter(new Vector3()))).toEqual([0, 4.5, 0]);
+  const shown = shownBounds(model);
+  expect(round(shown.getCenter(new Vector3()))).toEqual([0, 0, 0]);
+  expect(round(shown.getSize(new Vector3()))).toEqual([2, 2, 2]);
+});
+
+test("hidden meshes don't count, and moved or turned parts count where they are", () => {
+  const model = new Group();
+  const part = new Mesh(new BoxGeometry(2, 2, 2));
+  part.position.set(10, 0, 0);
+  const hidden = new Mesh(new BoxGeometry(100, 100, 100));
+  hidden.visible = false;
+  const hiddenGroup = new Group().add(new Mesh(new BoxGeometry(50, 50, 50)));
+  hiddenGroup.visible = false;
+  model.add(part, hidden, hiddenGroup);
+  model.rotation.y = Math.PI / 2;
+  const shown = shownBounds(model);
+  // Turned a quarter about the vertical, the part at x = 10 is at z = -10.
+  expect(round(shown.getCenter(new Vector3()))).toEqual([0, 0, -10]);
+  expect(round(shown.getSize(new Vector3()))).toEqual([2, 2, 2]);
+});
+
+test("a model with nothing visible shows an empty box (centring then falls back to its stored bounds)", () => {
+  const mesh = new Mesh(new BoxGeometry(2, 2, 2));
+  mesh.visible = false;
+  const model = new Group().add(mesh);
+  expect(shownBounds(model).isEmpty()).toBe(true);
+});
+
+test("a double-clicked point becomes the centre: moving the model there brings that point to the pivot", () => {
+  // The model sits in a pivot at the origin, turned a quarter about the vertical.
+  const pivot = new Group();
+  const model = new Group();
+  model.position.set(1, 2, 3);
+  pivot.add(model);
+  pivot.quaternion.setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 2);
+  pivot.updateMatrixWorld(true);
+  // A point on the model, as the double-click's ray hit it, in world space.
+  const onModel = new Vector3(4, -1, 2);
+  const hit = model.localToWorld(onModel.clone());
+  model.position.copy(recentred(model.position, pivot.quaternion, hit));
+  pivot.updateMatrixWorld(true);
+  expect(round(model.localToWorld(onModel.clone()))).toEqual([0, 0, 0]);
+});
+
+test("recentring keeps the model's turn and leaves its inputs alone", () => {
+  const position = new Vector3(1, 1, 1);
+  const turn = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.3);
+  const point = new Vector3(0, 0, 0);
+  expect(round(recentred(position, turn, point))).toEqual([1, 1, 1]);
+  expect(round(position)).toEqual([1, 1, 1]);
+  expect(turn.equals(new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.3))).toBe(true);
+});
+
+/** A scene 20 units across: a floor, and a small figure made of a body and a hat. */
+function scene() {
+  const root = new Group();
+  const floor = new Mesh(new BoxGeometry(20, 0.1, 20));
+  const figure = new Group();
+  figure.position.set(5, 0, -3);
+  const body = new Mesh(new BoxGeometry(1, 1, 1));
+  body.position.y = 0.5;
+  const hat = new Mesh(new BoxGeometry(1, 0.4, 1));
+  hat.position.y = 1.2;
+  figure.add(body, hat);
+  root.add(floor, figure);
+  root.updateMatrixWorld(true);
+  const size = shownBounds(root).getSize(new Vector3()).length();
+  return { root, floor, figure, body, hat, size };
+}
+
+test("double-clicking part of a small object turns the model about the whole object, so it spins in place", () => {
+  const { root, body, hat, size } = scene();
+  const hitOnBody = new Vector3(5, 0.5, -2.5);
+  // The body and the hat belong to one figure: its middle, from its foot to the top of its hat.
+  expect(round(pickedPoint(hitOnBody, body, root, size))).toEqual([5, 0.7, -3]);
+  expect(round(pickedPoint(new Vector3(5, 1.3, -2.5), hat, root, size))).toEqual([5, 0.7, -3]);
+});
+
+test("double-clicking something as large as the scene keeps the point that was hit", () => {
+  const { root, floor, size } = scene();
+  // The floor's middle may be far from where you clicked.
+  const hit = new Vector3(7, 0.05, -6);
+  expect(round(pickedPoint(hit, floor, root, size))).toEqual([7, 0.05, -6]);
+});
+
+test("a whole single-part model picks its own middle only when it is small beside the model, which it never is", () => {
+  const model = new Group().add(new Mesh(new BoxGeometry(2, 2, 2)));
+  model.updateMatrixWorld(true);
+  const size = shownBounds(model).getSize(new Vector3()).length();
+  const hit = new Vector3(0.3, 1, 0.2);
+  expect(round(pickedPoint(hit, model.children[0], model, size))).toEqual([0.3, 1, 0.2]);
 });

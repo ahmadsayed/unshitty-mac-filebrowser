@@ -86,6 +86,24 @@ thumbnails yet.
   URL the file names that wasn't read for it stays empty
   (`resourceUrl`). Before this, textures stored in GLB files were dropped.
 
+- **D12. Where it turns (added 2026-11-08).** The user found the turn
+  felt off its pivot. Measured in Chromium with their models, the pivot was
+  the centre of the meshes' stored bounds, which sat up to about 4% of the
+  height above the visible middle (Howdy drew 8 px low at every angle), and
+  a scene's box centre can be far from the object you look at
+  (`intro.gltf`'s flower among scattered tiles). Now the model turns about
+  the middle of its visible meshes' own vertices (`shownBounds`, hidden
+  meshes left out, sampled to at most 400,000 vertices: 7 ms for 4 million
+  triangles). A double-click on the model picks a new pivot and glides it to
+  the centre (`recentred`): climbing from the mesh hit, the largest group
+  still under half the model's size is the object clicked (in
+  `intro.gltf`, the Suka figure of many meshes) and its middle is the
+  pivot, so it spins in place; when even the mesh is that large (a floor),
+  the point hit is the pivot, as in Sketchfab (`pickedPoint`). Turning the
+  surface point instead made the figure circle it by about 20 px. A
+  double-click on empty space goes back to the middle, and Reset View puts
+  back the pivot, the turn and the zoom.
+
 ## Not in this change
 
 - Thumbnails (3MF usually carries one; glTF and STL would need rendering).

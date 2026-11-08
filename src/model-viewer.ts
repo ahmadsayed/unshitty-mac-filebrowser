@@ -8,7 +8,7 @@
 
 import {
   Box3, DirectionalLight, Group, HemisphereLight, Loader, LoadingManager, Mesh, MeshStandardMaterial, NeutralToneMapping,
-  PerspectiveCamera, PMREMGenerator, Quaternion, Scene, Texture, Vector3, WebGLRenderer, type BufferGeometry,
+  PerspectiveCamera, PMREMGenerator, Quaternion, Raycaster, Scene, Texture, Vector2, Vector3, WebGLRenderer, type BufferGeometry,
   type Material, type Object3D,
 } from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
@@ -116,13 +116,89 @@ export async function loadModel(format: ModelFormat, bytes: ArrayBuffer, compani
   return object;
 }
 
-/** Centre the model at the origin, inside a pivot, and say how big it is. */
+/** The most vertices `shownBounds` reads; a bigger model is sampled evenly. */
+const BOUNDS_SAMPLES = 400_000;
+
+/**
+ * The box around what the model shows: the visible meshes' own vertices
+ * where they are, not the bounds their geometry stores, which can be larger
+ * (an exporter's or a compressed mesh's), and nothing hidden. A model of
+ * millions of vertices is sampled; for a pivot that is close enough.
+ */
+export function shownBounds(object: Object3D): Box3 {
+  object.updateMatrixWorld(true);
+  const meshes: Mesh[] = [];
+  object.traverseVisible((node) => node instanceof Mesh && meshes.push(node));
+  const total = meshes.reduce((sum, mesh) => sum + mesh.geometry.getAttribute("position").count, 0);
+  const stride = Math.max(1, Math.ceil(total / BOUNDS_SAMPLES));
+  const box = new Box3();
+  const point = new Vector3();
+  for (const mesh of meshes) {
+    const count = mesh.geometry.getAttribute("position").count;
+    for (let i = 0; i < count; i += stride) box.expandByPoint(mesh.getVertexPosition(i, point).applyMatrix4(mesh.matrixWorld));
+  }
+  return box;
+}
+
+/** Centre the model at the origin, inside a pivot, and say how big it is.
+ *  It turns about the middle of what it shows. */
 function centred(object: Object3D): { pivot: Group; size: number } {
-  const box = new Box3().setFromObject(object);
+  const shown = shownBounds(object);
+  const box = shown.isEmpty() ? new Box3().setFromObject(object) : shown;
   object.position.sub(box.getCenter(new Vector3()));
   const pivot = new Group();
   pivot.add(object);
   return { pivot, size: box.getSize(new Vector3()).length() || 1 };
+}
+
+/**
+ * Where the model goes so that it turns about `point` (world space, where a
+ * double-click's ray hit it), with that point at the centre of the view: the
+ * pivot sits at the origin, so the point's place in the pivot's own frame
+ * (undoing the pivot's turn `pivot`) is taken off the model's `position`.
+ */
+export function recentred(position: Vector3, pivot: Quaternion, point: Vector3): Vector3 {
+  return position.clone().sub(point.clone().applyQuaternion(pivot.clone().invert()));
+}
+
+/**
+ * The point a double-click makes the pivot. Climbing from the mesh it hit
+ * towards `root`, the largest group whose visible box is still under half
+ * the model's size is the object clicked (a figure of many meshes in a
+ * scene), and its middle is the pivot, so it spins in place. When even the
+ * mesh is that large (a floor), its middle can be far away: the point hit is
+ * the pivot instead.
+ */
+export function pickedPoint(hit: Vector3, mesh: Object3D, root: Object3D, modelSize: number): Vector3 {
+  let picked: Box3 | null = null;
+  for (let node: Object3D | null = mesh; node && node !== root; node = node.parent) {
+    const box = shownBounds(node);
+    if (box.isEmpty() || box.getSize(new Vector3()).length() >= modelSize / 2) break;
+    picked = box;
+  }
+  return picked ? picked.getCenter(new Vector3()) : hit.clone();
+}
+
+/** Moves `object` towards a position over TURN_MS (at once with reduced
+ *  motion), rendering every frame. */
+function glider(object: Object3D, render: () => void) {
+  let frame = 0;
+  return {
+    to(goal: Vector3) {
+      cancelAnimationFrame(frame);
+      const from = object.position.clone();
+      const start = performance.now();
+      const step = (now: number) => {
+        const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+        const t = still ? 1 : Math.min(1, (now - start) / TURN_MS);
+        object.position.lerpVectors(from, goal, ease(t));
+        render();
+        if (t < 1) frame = requestAnimationFrame(step);
+      };
+      frame = requestAnimationFrame(step);
+    },
+    stop: () => cancelAnimationFrame(frame),
+  };
 }
 
 /** Where the camera looks from: the front, a little above and to the right.
@@ -281,7 +357,10 @@ export function showModel(host: HTMLElement, object: Object3D): ModelView {
   canvas.className = "preview-model";
   // Focusable, so a drag keeps the keyboard in the preview (Escape, Space).
   canvas.tabIndex = -1;
-  canvas.setAttribute("aria-label", "3D model: drag or use the arrow keys to turn; scroll, pinch or use + and - to zoom");
+  canvas.setAttribute(
+    "aria-label",
+    "3D model: drag or use the arrow keys to turn; scroll, pinch or use + and - to zoom; double-click a point to turn around it",
+  );
   const wrap = document.createElement("div");
   wrap.className = "preview-model-wrap";
   wrap.appendChild(canvas);
@@ -313,12 +392,27 @@ export function showModel(host: HTMLElement, object: Object3D): ModelView {
   // Pitch tips the model about the view's own horizontal axis.
   const right = () => new Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
   const turns = turner(pivot, render);
+  const middle = object.position.clone();
+  const glide = glider(object, render);
   const turn = (t: Turn) => {
     turns.turn(t, right());
     if (t === "reset") {
       distance = home;
+      glide.to(middle);
       place();
     }
+  };
+  // A double-click turns the model about what is under the pointer from then
+  // on (the middle of the small object clicked, or the point on a large
+  // one), gliding it to the centre; on empty space, about the model's middle
+  // again.
+  const raycaster = new Raycaster();
+  const pick = (x: number, y: number) => {
+    pivot.updateMatrixWorld(true);
+    raycaster.setFromCamera(new Vector2((x / (canvas.clientWidth || 1)) * 2 - 1, 1 - (y / (canvas.clientHeight || 1)) * 2), camera);
+    const hit = raycaster.intersectObject(pivot, true)[0];
+    const point = hit && pickedPoint(hit.point, hit.object, pivot, size);
+    glide.to(point ? recentred(object.position, pivot.quaternion, point) : middle);
   };
   const zoom = (factor: number) => {
     distance = zoomed(distance, factor, size);
@@ -330,6 +424,7 @@ export function showModel(host: HTMLElement, object: Object3D): ModelView {
       render();
     },
     zoom,
+    pick,
   });
   wrap.appendChild(modelControls(turn));
   canvas.addEventListener("keydown", (event) => {
@@ -357,6 +452,7 @@ export function showModel(host: HTMLElement, object: Object3D): ModelView {
     dispose() {
       detach();
       turns.stop();
+      glide.stop();
       observer.disconnect();
       disposeScene(scene);
       scene.environment?.dispose();
