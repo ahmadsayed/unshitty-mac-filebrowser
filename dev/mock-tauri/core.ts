@@ -1615,8 +1615,10 @@ const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
     if (!driveFlows.delete(str(a, "flowId"))) {
       throw "This sign-in attempt is no longer active.";
     }
+    // Signing in again for the same account keeps its id and paths.
+    const reconnect = typeof a.account === "string" ? a.account : null;
     driveAccount = {
-      id: "mock-account",
+      id: reconnect === driveAccount?.id ? reconnect : "mock-account",
       email: "me@example.com",
       name: "Me",
       root_id: "mock-root",

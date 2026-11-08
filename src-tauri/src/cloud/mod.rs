@@ -24,8 +24,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 
-use accounts::Accounts;
+use accounts::{Accounts, DriveAccount};
 use client::{ClientStore, OAuthClient};
+use drive::AboutInfo;
 use oauth::PendingFlow;
 use token::{KeyringTokenStore, Token, TokenStore};
 
@@ -113,6 +114,55 @@ impl CloudState {
         self.client_store.delete()?;
         *self.client.lock().unwrap_or_else(|p| p.into_inner()) = None;
         Ok(())
+    }
+
+    /// Keep the account a finished sign-in produced. `reconnect` is the
+    /// account whose sign-in expired: its id stays, so paths, stars, tabs and
+    /// history that point at `gdrive://<id>/…` keep working, and only its
+    /// token and details are replaced.
+    pub fn record_sign_in(
+        &self,
+        about: AboutInfo,
+        token: &Token,
+        reconnect: Option<&str>,
+    ) -> Result<DriveAccount, String> {
+        if token.refresh_token.is_none() {
+            return Err("Google did not return a refresh token. Sign in again.".into());
+        }
+        let scopes = if token.scopes.is_empty() {
+            vec![oauth::SCOPE_FULL.to_string()]
+        } else {
+            token.scopes.clone()
+        };
+        let id = match reconnect {
+            Some(id) => self
+                .accounts
+                .lock()
+                .map_err(|_| "Google Drive state is unavailable.".to_string())?
+                .get(id)
+                .map(|account| account.id.clone())
+                .unwrap_or_else(accounts::new_account_id),
+            None => accounts::new_account_id(),
+        };
+        let account = DriveAccount::new(
+            id,
+            about.email,
+            about.name,
+            about.root_id,
+            scopes,
+            crate::recent::now(),
+        );
+        self.save_token(&account.id, token)?;
+        if let Err(error) = self
+            .accounts
+            .lock()
+            .map_err(|_| "Google Drive state is unavailable.".to_string())?
+            .upsert(account.clone())
+        {
+            let _ = self.delete_token(&account.id);
+            return Err(error);
+        }
+        Ok(account)
     }
 
     /// Tokens belong to the client that issued them and cannot be refreshed
@@ -313,6 +363,96 @@ mod tests {
             "Disconnect Google Drive first."
         );
         assert!(state.oauth_client().is_some());
+    }
+
+    fn sign_in_about() -> AboutInfo {
+        AboutInfo {
+            email: "me@example.com".into(),
+            name: "Me".into(),
+            root_id: "root".into(),
+        }
+    }
+
+    fn token(access: &str, refresh: &str, scopes: Vec<String>) -> Token {
+        Token::new(
+            access.into(),
+            Some(refresh.into()),
+            crate::recent::now() + 3600,
+            scopes,
+        )
+    }
+
+    #[test]
+    fn a_reconnect_keeps_the_account_id_and_replaces_its_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        let first = state
+            .record_sign_in(
+                sign_in_about(),
+                &token("access-1", "refresh-1", vec![]),
+                None,
+            )
+            .unwrap();
+        assert_eq!(first.scopes, vec![oauth::SCOPE_FULL.to_string()]);
+
+        let mut changed = sign_in_about();
+        changed.email = "new@example.com".into();
+        let again = state
+            .record_sign_in(
+                changed,
+                &token("access-2", "refresh-2", vec![oauth::SCOPE_READONLY.into()]),
+                Some(&first.id),
+            )
+            .unwrap();
+
+        assert_eq!(again.id, first.id);
+        assert_eq!(again.email, "new@example.com");
+        assert_eq!(
+            again.scopes,
+            vec![oauth::SCOPE_READONLY.to_string()],
+            "a sign-in's own scopes are kept instead of the full scope"
+        );
+        let accounts = state.accounts.lock().unwrap();
+        assert_eq!(accounts.items(), &[again.clone()]);
+        drop(accounts);
+        assert_eq!(
+            state.token(&first.id).unwrap().unwrap().access_token,
+            "access-2"
+        );
+    }
+
+    #[test]
+    fn a_reconnect_for_an_account_that_is_gone_adds_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        let account = state
+            .record_sign_in(
+                sign_in_about(),
+                &token("access", "refresh", vec![]),
+                Some("no-such-account"),
+            )
+            .unwrap();
+        assert_ne!(account.id, "no-such-account");
+        assert_eq!(state.accounts.lock().unwrap().items(), &[account]);
+    }
+
+    #[test]
+    fn signing_in_without_a_refresh_token_is_refused_and_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        let no_refresh = Token::new(
+            "access".into(),
+            None,
+            crate::recent::now() + 3600,
+            vec![],
+        );
+        assert_eq!(
+            state
+                .record_sign_in(sign_in_about(), &no_refresh, None)
+                .unwrap_err(),
+            "Google did not return a refresh token. Sign in again."
+        );
+        assert!(state.accounts.lock().unwrap().items().is_empty());
     }
 
     #[test]
