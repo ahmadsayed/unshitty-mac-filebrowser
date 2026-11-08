@@ -1630,6 +1630,7 @@ fn drive_connect_start(state: tauri::State<CloudState>) -> Result<DriveConnectSt
 async fn drive_connect_finish(
     app: tauri::AppHandle,
     flow_id: String,
+    account: Option<String>,
 ) -> Result<cloud::accounts::DriveAccount, String> {
     blocking(move || {
         let state = app.state::<CloudState>();
@@ -1645,29 +1646,9 @@ async fn drive_connect_finish(
                 &cloud::oauth::GoogleExchange::new(&state.require_oauth_client()?),
                 cloud::oauth::CALLBACK_TIMEOUT,
             )?;
-            if token.refresh_token.is_none() {
-                return Err("Google did not return a refresh token. Sign in again.".into());
-            }
             let about = cloud::service::about(&state, &token.access_token)?;
-            let scopes = if token.scopes.is_empty() {
-                vec![cloud::oauth::SCOPE_FULL.to_string()]
-            } else {
-                token.scopes.clone()
-            };
-            let account = cloud::accounts::DriveAccount::new(
-                cloud::accounts::new_account_id(),
-                about.email,
-                about.name,
-                about.root_id,
-                scopes,
-                recent::now(),
-            );
-            state.save_token(&account.id, &token)?;
-            if let Err(error) = lock_state(&state.accounts)?.upsert(account.clone()) {
-                let _ = state.delete_token(&account.id);
-                return Err(error);
-            }
-            Ok(account)
+            // Signing in for an account that lost its session keeps its id.
+            state.record_sign_in(about, &token, account.as_deref())
         })();
 
         let _ = lock_state(&state.flows).map(|mut flows| flows.remove(&flow_id));

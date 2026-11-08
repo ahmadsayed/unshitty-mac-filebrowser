@@ -241,8 +241,8 @@ export async function driveConnectStart(): Promise<DriveConnectStart> {
   return invoke<DriveConnectStart>("drive_connect_start");
 }
 
-export async function driveConnectFinish(flowId: string): Promise<DriveAccount> {
-  return invoke<DriveAccount>("drive_connect_finish", { flowId });
+export async function driveConnectFinish(flowId: string, account?: string): Promise<DriveAccount> {
+  return invoke<DriveAccount>("drive_connect_finish", { flowId, account: account ?? null });
 }
 
 export async function driveConnectCancel(flowId: string): Promise<void> {

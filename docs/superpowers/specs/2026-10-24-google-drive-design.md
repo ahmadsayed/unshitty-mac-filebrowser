@@ -355,6 +355,14 @@ Messages follow GNOME wording, e.g. "Google Drive is not connected.",
 temporarily unavailable. Try again." The frontend offers **Sign In** for auth
 errors and **Retry** for network errors.
 
+A listing that fails because the credential is gone opens **Sign In to Google
+Drive** (with the guide, and **Change Client…** for a client Google rejected);
+before any client is configured it opens **Add Your Google Client** instead.
+Signing in again asks `drive_connect_finish` for the account that failed, so
+its id — and every `gdrive://<id>/…` path, star, tab and history entry — stays
+the same. `src/drive-auth.ts` recognizes those failures from the backend's
+messages; `listing-failure.ts` attaches the answer to its reaction.
+
 **D19. Caches are bounded and disposable.**
 - `<app cache>/drive/` holds downloaded snapshots and Drive thumbnails.
 - The download cache is capped at 2 GB with least-recently-used eviction;
@@ -509,8 +517,8 @@ A new **Google Drive** row, above mounted volumes:
   navigates to the root. The context menu has **Disconnect…** (with a
   confirmation that explains the cache removal and that Drive files are not
   deleted).
-- Errors (expired token): a small warning emblem on the row; opening it offers
-  **Sign In Again**.
+- Errors (expired token): opening Google Drive offers **Sign In Again** in a
+  dialog with the guide, and the account keeps its place.
 
 ### Connect dialog
 

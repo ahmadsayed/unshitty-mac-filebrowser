@@ -47,6 +47,7 @@ import { Selection, type Mark } from "./selection";
 import { arrangeSearch, fold, SEARCH_LIMIT, SearchSession, searchSections as arrangedSections, type SearchChange, type SearchSection } from "./search";
 import { FolderSummaries } from "./folder-summaries";
 import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
+import type { DriveAuthNeed } from "./drive-auth";
 import { PathRefs, type Clip } from "./path-refs";
 import { LatestSave } from "./latest-save";
 import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
@@ -724,8 +725,9 @@ async function arrive(loc: string, overtaken: () => boolean, wanted: string | un
     } catch (err) {
       if (overtaken()) return null;
       const failed = listingReaction(loc, err, listingContext(loc, location ? "navigate" : "first"));
+      if (failed.driveAuth) void offerDriveSignIn(failed.driveAuth, loc);
       if (failed.kind === "toast") {
-        showListingToast(failed);
+        if (!failed.driveAuth) showListingToast(failed);
         return null;
       }
       if (failed.kind === "sharePage") arrival.page = failed.status;
@@ -855,6 +857,7 @@ function showShareStatusPage(): boolean {
 async function listingFailed(err: unknown): Promise<boolean> {
   entries = [];
   const failed = listingReaction(location, err, listingContext(location, "reload"));
+  if (failed.driveAuth) void offerDriveSignIn(failed.driveAuth, location);
   if (failed.kind === "sharePage") {
     sharePage = failed.status;
     return false;
@@ -1080,7 +1083,10 @@ async function submitPathEntry(): Promise<void> {
       showConnectServerDialog(failed.url);
       return;
     }
-    if (failed.kind === "toast") showListingToast(failed);
+    if (failed.kind === "toast") {
+      if (failed.driveAuth) void offerDriveSignIn(failed.driveAuth, typed);
+      else showListingToast(failed);
+    }
     pathEntry.focus();
     return;
   }
@@ -5022,6 +5028,43 @@ function promptPersonName(): Promise<string | null> {
   });
 }
 
+/** One sign-in prompt at a time, so a burst of failed listings opens one dialog. */
+let driveSignInPrompt = false;
+
+/**
+ * A Drive listing failed because the connection lost its credential: open the
+ * dialog that fixes it, and after signing in show the folder that failed.
+ * Without a client, that is the client setup dialog (with the guide) first.
+ */
+async function offerDriveSignIn(need: DriveAuthNeed, loc: string): Promise<void> {
+  if (driveSignInPrompt || document.querySelector(".dialog-layer")) return;
+  driveSignInPrompt = true;
+  const after = async (account: DriveAccount) => {
+    // The account may have been re-added under a new id; its root is where to
+    // go then, not the stale Drive path that failed.
+    if (cloudAccountKey(loc) !== account.id) await navigate(account.root_path);
+    else if (location === loc) await reload([]);
+    else await navigate(loc);
+  };
+  try {
+    const status = await driveClientStatus().catch(() => null);
+    if (!status?.configured) {
+      openClientSetup(after);
+      return;
+    }
+    let account = driveAccount;
+    if (!account || account.id !== cloudAccountKey(loc)) {
+      const accounts = await driveAccounts().catch(() => []);
+      account = accounts.find((item) => item.id === cloudAccountKey(loc)) ?? account ?? accounts[0] ?? null;
+    }
+    // No account to sign in again: connect one with the client already set.
+    if (account) openConnectDialog(account, after, need === "client");
+    else openConnectDialog(null, after);
+  } finally {
+    driveSignInPrompt = false;
+  }
+}
+
 async function connectDrive(): Promise<void> {
   const status = await driveClientStatus().catch(() => null);
   if (status?.configured) openConnectDialog();
@@ -5034,7 +5077,7 @@ async function connectDrive(): Promise<void> {
  * client in their own Google Cloud project and gives us its JSON file, by
  * choosing the downloaded file or pasting its contents.
  */
-function openClientSetup(): void {
+function openClientSetup(after?: (account: DriveAccount) => Promise<void>): void {
   const extra = document.createElement("div");
   const json = document.createElement("textarea");
   json.className = "client-json";
@@ -5055,7 +5098,7 @@ function openClientSetup(): void {
   const submit = async () => {
     await driveClientSet(json.value);
     dialog.close();
-    openConnectDialog();
+    openConnectDialog(null, after);
   };
   file.addEventListener("change", async () => {
     const chosen = file.files?.[0];
@@ -5086,7 +5129,16 @@ function openClientSetup(): void {
   json.focus();
 }
 
-function openConnectDialog(): void {
+/**
+ * The sign-in dialog. With `reconnect`, it signs the same account in again
+ * (its id stays, so its paths do), which is what an expired token needs;
+ * without it, it connects an account for the first time.
+ */
+function openConnectDialog(
+  reconnect: DriveAccount | null = null,
+  after?: (account: DriveAccount) => Promise<void>,
+  clientProblem = false
+): void {
   let flowId: string | null = null;
   const extra = document.createElement("div");
   const status = document.createElement("p");
@@ -5100,7 +5152,14 @@ function openConnectDialog(): void {
       label: "Change Client…",
       action: () => {
         if (dialog.busy) return;
-        driveClientClear()
+        // A token belongs to the client that issued it, so a connected
+        // account is disconnected before the client can change.
+        const disconnect = reconnect ? driveDisconnect(reconnect.id) : Promise.resolve();
+        disconnect
+          .then(() => {
+            driveAccount = null;
+            return driveClientClear();
+          })
           .then(() => {
             dialog.close();
             openClientSetup();
@@ -5111,12 +5170,16 @@ function openConnectDialog(): void {
   ]);
   extra.append(status, links);
   const dialog = openDialog({
-    heading: "Connect to Google Drive",
-    body: "Google opens in your browser. This app never sees your password.",
+    heading: reconnect ? "Sign In to Google Drive" : "Connect to Google Drive",
+    body: !reconnect
+      ? "Google opens in your browser. This app never sees your password."
+      : clientProblem
+        ? `Google no longer accepts the OAuth client for “${reconnect.email}”. Use Change Client… with a freshly downloaded JSON file, or sign in again.`
+        : `The Google Drive session for “${reconnect.email}” expired or was revoked. Sign in again to keep browsing its files.`,
     extra,
     responses: [
       { id: "cancel", label: "Cancel" },
-      { id: "connect", label: "Open Browser", style: "suggested" },
+      { id: "connect", label: reconnect ? "Sign In" : "Open Browser", style: "suggested" },
     ],
     defaultResponse: "cancel",
     closeResponse: "cancel",
@@ -5132,11 +5195,13 @@ function openConnectDialog(): void {
         flowId = start.flow_id;
         status.textContent = "Waiting for Google…";
         await openExternal(start.auth_url);
-        const account = await driveConnectFinish(start.flow_id);
+        const account = await driveConnectFinish(start.flow_id, reconnect?.id);
         driveAccount = account;
         dialog.close();
-        showToast(`Connected to ${account.email}`);
-        await navigate(account.root_path);
+        showToast(reconnect ? `Signed in to ${account.email}` : `Connected to ${account.email}`);
+        if (after) await after(account);
+        else if (reconnect) await reload([]);
+        else await navigate(account.root_path);
       } catch (err) {
         const message = cleanError(err);
         if (/cancelled/i.test(message)) {

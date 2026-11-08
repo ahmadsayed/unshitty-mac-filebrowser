@@ -19,7 +19,8 @@
 
 import { isLocalLocation } from "./locations";
 import { cleanError } from "./ui";
-import { isSftpPath, isSharePath } from "./paths";
+import { isCloudPath, isSftpPath, isSharePath } from "./paths";
+import { driveAuthNeed, type DriveAuthNeed } from "./drive-auth";
 
 export type ListingPhase = "first" | "navigate" | "reload" | "entry";
 
@@ -48,7 +49,11 @@ export type Reaction =
   | { kind: "errorPage" };
 
 /** A reaction, with the cleaned message for the error page to show or fall back on. */
-export type ListingReaction = Reaction & { message: string };
+export type ListingReaction = Reaction & {
+  message: string;
+  /** A Google Drive failure that needs a credential (src/drive-auth.ts). */
+  driveAuth?: DriveAuthNeed;
+};
 
 interface Failure {
   loc: string;
@@ -104,5 +109,8 @@ const ROWS: Row[] = [
 export function listingReaction(loc: string, err: unknown, ctx: ListingContext): ListingReaction {
   const failure: Failure = { loc, raw: String(err), message: cleanError(err), ctx };
   const row = ROWS.find((r) => r.when(failure))!;
-  return { ...row.then(failure), message: failure.message };
+  // A Drive path that can't be listed because the connection lost its
+  // credential: the view asks the dialog that fixes it (main.ts).
+  const driveAuth = isCloudPath(loc) ? driveAuthNeed(failure.raw) : null;
+  return { ...row.then(failure), message: failure.message, ...(driveAuth ? { driveAuth } : {}) };
 }

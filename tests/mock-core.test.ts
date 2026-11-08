@@ -495,6 +495,15 @@ test("Google Drive account commands connect, cancel and disconnect", async () =>
   });
   expect(await accounts()).toHaveLength(1);
 
+  // Signing in again for the same account keeps its id and leaves one entry.
+  const again = await invoke<{ flow_id: string }>("drive_connect_start");
+  const reconnected = await invoke<{ id: string }>("drive_connect_finish", {
+    flowId: again.flow_id,
+    account: account.id,
+  });
+  expect(reconnected.id).toBe(account.id);
+  expect(await accounts()).toHaveLength(1);
+
   await invoke("drive_disconnect", { account: account.id });
   expect(await accounts()).toEqual([]);
 
