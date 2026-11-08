@@ -149,7 +149,7 @@ fn confirm(
     let answer = http
         .post_json(&url, &json!({ "email": email }), Some(&callback.token))
         .map_err(|error| match error.status {
-            Some(status) if status < 500 => NOT_CONFIRMED.to_string(),
+            Some(status) if status < 500 && status != 429 => NOT_CONFIRMED.to_string(),
             _ => CANNOT_CHECK.to_string(),
         })?;
     let body: Value = serde_json::from_slice(&answer).map_err(|_| CANNOT_CHECK.to_string())?;
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn arbesk_unable_to_check_says_try_again() {
-        for status in [502, 503] {
+        for status in [429, 502, 503] {
             let http = backend(Err(status));
             let got = sign_in(&http, vec![callback("tok", ADDRESS, "me@example.com")]);
             assert_eq!(
