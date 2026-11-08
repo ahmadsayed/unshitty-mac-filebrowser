@@ -129,6 +129,13 @@ Typed into the path bar, an `arbesk://` location opens as typed; a bare
 name typed inside Arbesk, which has no id, asks for "an Arbesk location or
 a full path", as Drive does.
 
+Manifests are someone else's content (anyone can share a collection with
+an address), so nothing read from Arbesk is unbounded: a manifest unpacks
+to at most 16 MiB, a part to 512 MiB, an HTTP answer is read to 512 MiB,
+and an asset whose parts add up to more than 512 MiB says "This asset is
+too large to open." Two builds of one asset at once (Space, then Open)
+take turns: the second reuses the first's file.
+
 **D8. The 3D preview opens remote items of this kind only.** `showPreview`'s
 "Preview isn't available for remote items." becomes a `locations.ts` rule,
 `previewsRemotely(kind)`, true only for `"arbesk"`. Drive, shares and SSH

@@ -55,6 +55,10 @@ you later. File Browser itself never asks Arbesk to change anything.
 - Copy, Cut and dragging out say *Copying from Arbesk comes next.*; Paste
   into a collection says *Arbesk is read only.*
 
+An asset whose parts add up to more than 512 MB says *This asset is too
+large to open.*, and a collection that can't be reached (Arbesk, its chain
+or its storage offline) shows the reason instead of an empty folder.
+
 An asset stored in a way File Browser doesn't know yet, or one that is a
 live link to another collection's asset, says *This asset uses an Arbesk
 format File Browser can't read yet.* rather than showing a wrong file.
