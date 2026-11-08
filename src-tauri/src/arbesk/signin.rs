@@ -1,10 +1,15 @@
 //! Signing in to Arbesk as `besk login` does: Arbesk's own page
 //! (`/api/v1/cli-auth`) has the email's owner type the code Arbesk emails,
 //! then sends the browser to `http://127.0.0.1:<port>/?token=&address=&email=`.
-//! That page sends no `state`, so the callback proves nothing by itself:
-//! the session it carries must belong to the email typed here and resolve
-//! to the address it names. The session is then ended; reading an account
-//! needs only its address.
+//! That page sends no `state`, so the callback proves nothing by itself.
+//! Arbesk is then asked, with the session the callback carries, which
+//! address the email typed here has (`resolve-email`): the session must be
+//! one Arbesk accepts, and the address must be the callback's. So only the
+//! typed email's own address is ever kept. What this doesn't prove is that
+//! the session was made by this sign-in (Arbesk resolves any email for any
+//! session, and has no "who am I"): enough for reading, which needs only the
+//! address, not for anything that would act with the session. The session
+//! is then ended.
 
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -134,8 +139,8 @@ pub fn finish(
     confirmed.map(|address| (flow.email.clone(), address))
 }
 
-/// The callback's address, once Arbesk says its session belongs to `email`
-/// and resolves that email to the same address.
+/// The callback's address, once Arbesk accepts its session and resolves
+/// `email` to that same address.
 fn confirm(
     http: &dyn Http,
     site: &Site,

@@ -30,9 +30,17 @@ ended as soon as Arbesk has confirmed the account, so there is no password
 or token to leak and nothing expires. **Disconnect…** forgets the account;
 your collections on Arbesk don't change.
 
-Before File Browser keeps an account, Arbesk must confirm it: the session
-the browser hands back has to belong to the email you typed and resolve to
-the same wallet address. A web page can't slip in another account.
+Before File Browser keeps an account, Arbesk must confirm it: with the
+session the browser hands back, File Browser asks Arbesk which wallet
+address the email you typed has, and keeps the account only if Arbesk
+accepts the session and names the same address. So a web page can't slip
+in someone else's account. This shows the address is your email's; it
+doesn't show the session came from this sign-in, which is enough because
+browsing reads only public data and File Browser keeps no session.
+
+Arbesk's sign-in page is Arbesk's own, the one `besk login` opens; besides
+signing you in it may also set up what Arbesk needs to make changes for
+you later. File Browser itself never asks Arbesk to change anything.
 
 ## Browsing
 
