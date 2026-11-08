@@ -48,6 +48,9 @@ you later. File Browser itself never asks Arbesk to change anything.
   without a name shows its asset id.
 - Assets have no size in the list: an asset's file is only built when you
   open or preview it.
+- An asset saved with a thumbnail in Arbesk shows it in the grid and list
+  views (with **Show Thumbnails** on); one saved without keeps the model's
+  icon.
 - Opening an asset (double-click, or **Open** in the preview) builds the
   file into the app cache and opens it with your default app. A built file
   is reused while nobody has changed it; files left untouched for a week are

@@ -84,7 +84,8 @@ one out on its own platform.
 - **Arbesk (Experimental):** your [Arbesk](https://promptscad.com) account
   as a Network location: connect it from **Online Accounts…** with your
   email and the code Arbesk emails you, then browse your collections as
-  folders and press Space on a `.gltf` or `.3mf` asset to see the model
+  folders, each asset with the thumbnail it was saved with, and press Space
+  on a `.gltf` or `.3mf` asset to see the model
   ([details](docs/arbesk.md)).
 - **Trash done right:** Undo (⌘Z), Restore (also for items trashed in Finder),
   and nothing is ever deleted without asking.
@@ -160,8 +161,8 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 - Send with QR Code: files only, no folders (up to 1,000 files). The phone
   keeps the files in memory until they are saved, and downloads go through
   iroh's public relays, which are rate-limited.
-- Preview has no video or audio playback. 3D models: no thumbnails yet, files
-  up to 256 MB, shown still (animations don't play), and glTF with
+- Preview has no video or audio playback. 3D models: no thumbnails yet (an
+  Arbesk asset shows the one it was saved with), files up to 256 MB, shown still (animations don't play), and glTF with
   meshopt-compressed meshes or KTX2 textures isn't shown (Draco-compressed
   meshes are); it needs WebGL, which some Linux setups turn off.
 - Open With… lists every application, also for a folder, and has no Open in
