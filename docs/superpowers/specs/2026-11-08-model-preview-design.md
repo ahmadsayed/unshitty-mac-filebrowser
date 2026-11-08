@@ -72,10 +72,24 @@ thumbnails yet.
   zooming the page. The camera stays between 0.3 and 12 times the model's
   size away. `src/model-gestures.ts` holds this, without three.js.
 
+- **D10. Draco-compressed glTF (added 2026-11-08).** Blender's exporter
+  writes `KHR_draco_mesh_compression` when compression is on, and seven of
+  the eight glTF test models the user had required it. three.js ships
+  Google's Draco decoder (Apache-2.0); the glTF-only WebAssembly build
+  (192 kB plus a 58 kB wrapper) is set on one shared `DRACOLoader`, made on
+  first use with at most two workers, so later previews reuse it. Vite
+  bundles the decoder files from `DRACOLoader`'s own `new URL(…,
+  import.meta.url)` references; that also copies the general-purpose build
+  (about 1 MB) into the app, unused. Licences: `src/assets/licenses/`.
+- **D11. A glTF's own images.** GLTFLoader turns an image stored in the file
+  into a `blob:` URL itself; those pass, as data URIs do, while any other
+  URL the file names that wasn't read for it stays empty
+  (`resourceUrl`). Before this, textures stored in GLB files were dropped.
+
 ## Not in this change
 
 - Thumbnails (3MF usually carries one; glTF and STL would need rendering).
-- Compressed glTF (Draco, meshopt) and KTX2 textures: they need extra
-  decoders.
+- Playing animations: a scene shows its rest pose.
+- meshopt-compressed glTF and KTX2 textures: they need other decoders.
 - Remote items (Drive, shares, SSH) keep "Preview isn't available for
   remote items."

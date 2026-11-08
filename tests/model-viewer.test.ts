@@ -4,7 +4,7 @@
 import { expect, test, vi } from "vitest";
 import { Box3, Mesh, Quaternion, Vector3, type Object3D } from "three";
 import {
-  dragTurns, keyAction, loadModel, modelControls, showModel, turned, turnForKey, zoomed, zoomForKey, type Turn,
+  dracoLoader, dragTurns, keyAction, loadModel, resourceUrl, modelControls, showModel, turned, turnForKey, zoomed, zoomForKey, type Turn,
 } from "../src/model-viewer";
 import {
   SAMPLE_TRIANGLES, sample3mf, sampleGlb, sampleGltf, sampleGltfBin, sampleGltfJson, sampleStlAscii, sampleStlBinary,
@@ -186,4 +186,25 @@ test("keys on the model: arrows and Home turn, + and - zoom, and a modifier leav
   expect(key("ArrowLeft", { metaKey: true })).toBeNull();
   expect(key("Home", { altKey: true })).toBeNull();
   expect(zoomForKey("Enter")).toBeNull();
+});
+
+test("a glTF may fetch its companions, its own data URIs and the blob URLs made for its embedded images, nothing else", () => {
+  const urls = new Map([["lamp.bin", "blob:app/companion"]]);
+  expect(resourceUrl("lamp.bin", urls)).toBe("blob:app/companion");
+  expect(resourceUrl("data:image/png;base64,iVBOR", urls)).toBe("data:image/png;base64,iVBOR");
+  // GLTFLoader turns an image stored in the file into a blob URL itself.
+  expect(resourceUrl("blob:http://localhost/1d852c0a", urls)).toBe("blob:http://localhost/1d852c0a");
+  for (const other of ["textures/wood.png", "https://example.com/a.bin", "file:///etc/passwd", "/etc/passwd"]) {
+    expect(resourceUrl(other, urls)).toBe("data:application/octet-stream;base64,");
+  }
+});
+
+test("compressed meshes decode with three's glTF Draco build, one decoder for every preview", () => {
+  const draco = dracoLoader();
+  expect(dracoLoader()).toBe(draco);
+  const paths = (draco as unknown as { decoderPaths: Record<string, string | null> }).decoderPaths;
+  expect(paths.wasm).toMatch(/libs\/draco\/gltf\/draco_decoder\.wasm$/);
+  expect(paths.js).toMatch(/libs\/draco\/gltf\/draco_wasm_wrapper\.js$/);
+  expect(paths.dep_js).toBeNull();
+  expect((draco as unknown as { workerLimit: number }).workerLimit).toBe(2);
 });

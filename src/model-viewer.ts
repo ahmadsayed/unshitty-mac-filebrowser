@@ -12,6 +12,7 @@ import {
   type Material, type Object3D,
 } from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { DRACO_GLTF_CONFIG, DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
@@ -52,15 +53,40 @@ function neutralDefaults(object: Object3D): void {
   });
 }
 
+/**
+ * The Draco decoder for compressed glTF meshes (KHR_draco_mesh_compression,
+ * what Blender's exporter writes when compression is on). Its glTF-only
+ * WebAssembly build ships with three.js and is bundled with the viewer; one
+ * decoder, made on first use, serves every preview, so its workers (two at
+ * most) and WebAssembly load once.
+ */
+let draco: DRACOLoader | null = null;
+export function dracoLoader(): DRACOLoader {
+  draco ??= new DRACOLoader().setDecoderPath(DRACO_GLTF_CONFIG).setWorkerLimit(2);
+  return draco;
+}
+
+/** An empty resource, for a file a glTF names that wasn't read for it. */
+const NOTHING = "data:application/octet-stream;base64,";
+
+/**
+ * The URL the glTF loader may fetch for `url`: a companion read for it (its
+ * blob URL in `urls`), or a URL that is the file's own bytes (an embedded
+ * data URI, or the blob URL the loader makes for an image stored in the
+ * file). Anything else is empty, so nothing outside the file is fetched.
+ */
+export function resourceUrl(url: string, urls: ReadonlyMap<string, string>): string {
+  return urls.get(url) ?? (url.startsWith("data:") || url.startsWith("blob:") ? url : NOTHING);
+}
+
 /** Read a glTF; the companion files it names come from `companions`, and
  *  nothing else is fetched. */
 async function gltfScene(bytes: ArrayBuffer, companions: Companions): Promise<Object3D> {
   const urls = new Map([...companions].map(([uri, data]) => [uri, URL.createObjectURL(new Blob([data]))]));
   const manager = new LoadingManager();
-  // An embedded data URI loads as written; any other file not read for it is empty, so it fails here.
-  manager.setURLModifier((url) => urls.get(url) ?? (url.startsWith("data:") ? url : "data:application/octet-stream;base64,"));
+  manager.setURLModifier((url) => resourceUrl(url, urls));
   try {
-    const gltf = await new GLTFLoader(manager).parseAsync(bytes, "");
+    const gltf = await new GLTFLoader(manager).setDRACOLoader(dracoLoader()).parseAsync(bytes, "");
     // The loader's stand-in for a primitive with no material maps to none of
     // the file's (its flat-shaded copy is stored with an undefined mapping).
     gltf.scene.traverse((node) => {

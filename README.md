@@ -155,8 +155,9 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
   keeps the files in memory until they are saved, and downloads go through
   iroh's public relays, which are rate-limited.
 - Preview has no video or audio playback. 3D models: no thumbnails yet, files
-  up to 256 MB, and glTF without compressed meshes (Draco, meshopt) or KTX2
-  textures; it needs WebGL, which some Linux setups turn off.
+  up to 256 MB, shown still (animations don't play), and glTF with
+  meshopt-compressed meshes or KTX2 textures isn't shown (Draco-compressed
+  meshes are); it needs WebGL, which some Linux setups turn off.
 - Open With… lists every application, also for a folder, and has no Open in
   Terminal: most Linux terminals don't open at a folder passed this way.
 - Drag and drop with other apps carries files and folders only: a link or an
@@ -195,7 +196,10 @@ tries to bring their work to other desktops.
   (`src/assets/fonts/AdwaitaSans-LICENSE.txt`).
 - **[Tauri](https://tauri.app/)**, **[Iroh](https://www.iroh.computer/)** and the
   Rust crates this app builds on.
-- **[three.js](https://threejs.org/)** (MIT) draws the 3D preview.
+- **[three.js](https://threejs.org/)** (MIT) draws the 3D preview, and Google's
+  **[Draco](https://google.github.io/draco/)** decoder (Apache-2.0), as shipped
+  with three.js, reads compressed glTF meshes. Both are bundled unmodified;
+  their licences are in `src/assets/licenses/`.
 
 ## Trademarks
 
