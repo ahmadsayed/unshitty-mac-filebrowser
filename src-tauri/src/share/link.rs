@@ -122,9 +122,11 @@ impl ShareLink {
             let key = derive_key(&passphrase, &bytes[1..17])?;
             let cipher = XChaCha20Poly1305::new((&*key).into());
             let aad = authenticated_header(&bytes[..HEADER_LEN]);
+            let nonce =
+                XNonce::try_from(&bytes[17..HEADER_LEN]).map_err(|_| CANNOT_UNLOCK.to_string())?;
             let plain = cipher
                 .decrypt(
-                    XNonce::from_slice(&bytes[17..HEADER_LEN]),
+                    &nonce,
                     Payload { msg: &bytes[HEADER_LEN..], aad: &aad },
                 )
                 .map(Zeroizing::new)
@@ -149,9 +151,11 @@ impl ShareLink {
             let key = derive_key(&passphrase, &header[1..17])?;
             let cipher = XChaCha20Poly1305::new((&*key).into());
             let aad = authenticated_header(&header);
+            let nonce = XNonce::try_from(&header[17..])
+                .map_err(|_| "Could not protect the share link.".to_string())?;
             let encrypted = cipher
                 .encrypt(
-                    XNonce::from_slice(&header[17..]),
+                    &nonce,
                     Payload { msg: &plain, aad: &aad },
                 )
                 .map_err(|_| "Could not protect the share link.")?;
