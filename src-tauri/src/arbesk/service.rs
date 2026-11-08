@@ -336,13 +336,16 @@ mod tests {
         }
 
         /// A fixture's stored source and parts, under `cid` for the source.
+        /// A source that holds all its parts has no `cids/` (git keeps no
+        /// empty folder).
         fn put_fixture(&mut self, case: &str, cid: &str) {
             self.files.insert(
                 cid.into(),
                 std::fs::read(fixture(case).join("source.json")).unwrap(),
             );
             for part in std::fs::read_dir(fixture(case).join("cids"))
-                .unwrap()
+                .into_iter()
+                .flatten()
                 .flatten()
             {
                 let name = part.file_name().to_string_lossy().into_owned();
