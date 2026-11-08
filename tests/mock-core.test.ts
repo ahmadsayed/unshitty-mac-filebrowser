@@ -1367,3 +1367,45 @@ test("folder_size walks local folders only", async () => {
   await expect(invoke("folder_size", { path: "gdrive://acct/root~My%20Drive", walk: 1 })).rejects.toBe(DRIVE_NO);
   await expect(invoke("folder_size", { path: "Users/me", walk: 1 })).rejects.toBe("“Users/me” is not a local file.");
 });
+
+test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend's refusals", async () => {
+  const { ARBESK_MOCK_ADDRESS: address } = await import("../dev/mock-tauri/core");
+  const root = `arbesk://${address}`;
+  await expect(invoke("arbesk_connect_start", { email: "nope" })).rejects.toBe("Enter the email address you use with Arbesk.");
+  await expect(invoke("list_dir", { path: root, showHidden: false })).rejects.toBe("Connect this Arbesk account first.");
+
+  const cancelled = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  await invoke("arbesk_connect_cancel", { flowId: cancelled.flow_id });
+  await expect(invoke("arbesk_connect_finish", { flowId: cancelled.flow_id })).rejects.toBe("This sign-in attempt is no longer active.");
+
+  const start = await invoke<{ flow_id: string; sign_in_url: string }>("arbesk_connect_start", { email: " Me@Example.com" });
+  expect(start.sign_in_url).toMatch(/^https:\/\/promptscad\.com\/api\/v1\/cli-auth\?email=me%40example\.com&port=\d+$/);
+  const account = await invoke<{ id: string }>("arbesk_connect_finish", { flowId: start.flow_id });
+  expect(account).toMatchObject({ email: "me@example.com", address, root_path: root, origin: "https://promptscad.com", chain_id: 84532 });
+  await expect(invoke("arbesk_connect_finish", { flowId: start.flow_id })).rejects.toBe("This sign-in attempt is no longer active.");
+  expect(await invoke("arbesk_accounts", {})).toEqual([account]);
+
+  type Row = { name: string; path: string; is_dir: boolean; size: number };
+  const collections = await invoke<Row[]>("list_dir", { path: root, showHidden: false });
+  expect(collections.map((r) => [r.name, r.is_dir])).toEqual([["Shapes", true], ["Untitled Collection", true]]);
+  const shapes = collections[0].path;
+  expect(shapes).toBe(`${root}/1~Shapes`);
+  const assets = await invoke<Row[]>("list_dir", { path: shapes, showHidden: false });
+  expect(assets.map((r) => [r.name, r.is_dir, r.size])).toEqual([["Box.gltf", false, 0], ["Box.3mf", false, 0], ["Big.gltf", false, 0]]);
+  const [gltf, threeMf, big] = assets.map((r) => r.path);
+
+  expect(await invoke("open_target", { path: gltf, op: "" })).toEqual({ kind: "file", path: "/tmp/opencode/mock-arbesk/Box.gltf" });
+  const model = new Uint8Array(await invoke<ArrayBuffer>("preview_bytes", { path: threeMf, limit: 1 << 20 }));
+  expect([...model.slice(0, 2)]).toEqual([0x50, 0x4b]);
+  const json = JSON.parse(new TextDecoder().decode(await invoke<ArrayBuffer>("preview_bytes", { path: gltf, limit: 1 << 20 })));
+  expect(json.buffers.every((b: { uri: string }) => b.uri.startsWith("data:"))).toBe(true);
+  await expect(invoke("preview_bytes", { path: big, limit: 1 << 20 })).rejects.toBe("This file is too large to preview.");
+
+  await expect(invoke("make_dir", { path: `${shapes}/~New` })).rejects.toBe("Arbesk is read only.");
+  await expect(invoke("file_properties", { path: gltf, showHidden: false })).rejects.toBe("Properties aren't available for Arbesk yet.");
+  await expect(invoke("preview_text", { path: gltf, limit: 10 })).rejects.toBe("This action is not available for Arbesk.");
+
+  await invoke("arbesk_disconnect", { account: account.id });
+  expect(await invoke("arbesk_accounts", {})).toEqual([]);
+  await expect(invoke("list_dir", { path: shapes, showHidden: false })).rejects.toBe("Connect this Arbesk account first.");
+});

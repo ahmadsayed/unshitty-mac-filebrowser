@@ -30,6 +30,7 @@ export const MACOS_SYMBOLIC: Record<string, string> = {
   "starred": `<path d="m8 1.75 1.9 3.95 4.35.55-3.2 3 .82 4.3L8 11.45l-3.87 2.1.82-4.3-3.2-3 4.35-.55z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>`,
   // A globe: Mac sidebars show Network as one.
   cloud: `<path d="M4.75 12.75a3.25 3.25 0 0 1-.55-6.45 4.25 4.25 0 0 1 8.1-.95 3.3 3.3 0 0 1-.55 7.4z" ${LINE}/>`,
+  arbesk: `<path d="M8 2 13.5 5.1v5.8L8 14 2.5 10.9V5.1zM2.75 5.25 8 8.25l5.25-3M8 8.25V13.75" ${LINE}/>`,
   "object-rotate-left": `<path d="M12.5 9a4.5 4.5 0 0 0-9 0" ${LINE}/><path d="m1.5 7 2 2.5 2-2.5" ${LINE}/><path d="M5.5 13.25h5" ${LINE}/>`,
   "object-rotate-right": `<path d="M3.5 9a4.5 4.5 0 0 1 9 0" ${LINE}/><path d="m10.5 7 2 2.5 2-2.5" ${LINE}/><path d="M5.5 13.25h5" ${LINE}/>`,
   "view-reset": `<circle cx="8" cy="8" r="3.5" ${LINE}/><path d="M8 1.5v2.5M8 12v2.5M1.5 8H4M12 8h2.5" ${LINE}/>`,
