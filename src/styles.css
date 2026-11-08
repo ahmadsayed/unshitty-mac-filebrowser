@@ -946,6 +946,8 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   width: 100%;
   height: 100%;
   cursor: grab;
+  /* Touch drags and pinches turn and zoom the model, not the page. */
+  touch-action: none;
 }
 
 /* A drag focuses the canvas; only keyboard focus shows the ring. */

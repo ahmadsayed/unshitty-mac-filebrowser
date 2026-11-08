@@ -56,6 +56,21 @@ thumbnails yet.
   they don't move the folder's selection. Turns animate over 200 ms, at
   once when the user prefers reduced motion. The model area shrinks to the
   room the preview panel has, so the bar is never scrolled out of sight.
+- **D8. Dragging turns the model, like an object in the hand.** The camera
+  never orbits; it only moves in and out along one line, and every turn
+  (drag, buttons, keys) turns the model, so they all agree and Reset View
+  undoes them all. A drag turns at once, the front following the pointer:
+  across the whole canvas is a full turn, left and right about the
+  vertical (the model stays upright), up and down about the view's
+  horizontal axis, with no limit, so the underside can be seen. three.js's
+  OrbitControls was dropped: it orbited the camera with the tilt stopped at
+  the poles, which felt unlike the buttons.
+- **D9. Zoom: the wheel, a pinch, + and -.** A pinch arrives three ways and
+  each zooms: two touch points, a trackpad's Ctrl/⌘ + wheel (Chromium,
+  WebKitGTK; a finer rate than a wheel notch) and WebKit's `gesture*`
+  events on a Mac (the wheel waits while one runs). Each is kept from also
+  zooming the page. The camera stays between 0.3 and 12 times the model's
+  size away. `src/model-gestures.ts` holds this, without three.js.
 
 ## Not in this change
 

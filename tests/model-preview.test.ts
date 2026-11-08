@@ -41,10 +41,21 @@ function triangles(object: Object3D): number {
   return count;
 }
 
+/** Wait for `ok`, checking every 10 ms: the viewer (three.js) loads on the
+ *  first preview, which takes a while under the coverage run. */
+async function until(ok: () => boolean, ms = 10_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!ok()) {
+    if (Date.now() > end) throw new Error("timed out waiting for the preview");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 async function preview(name: string): Promise<void> {
   await click(hit(name));
   await key(" ");
-  await settle(40);
+  await until(() => $("#preview-body").childElementCount > 0);
+  await settle(10);
 }
 
 beforeAll(async () => {

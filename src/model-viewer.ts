@@ -1,7 +1,9 @@
 // The Space preview's 3D viewer, built on three.js and loaded only when a
 // model is previewed, so the app starts without it. `loadModel` turns a
 // file's bytes into a three.js object (no WebGL needed, so it is tested);
-// `showModel` draws it on a canvas you can turn and zoom, and its `dispose`
+// `showModel` draws it on a canvas you turn by dragging (src/model-gestures.ts),
+// with the buttons over it or the arrow keys, and zoom with the wheel, a
+// pinch or + and -; its `dispose`
 // gives the GPU memory back when the preview closes.
 
 import {
@@ -12,10 +14,10 @@ import {
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import type { ModelFormat } from "./models";
 import { sym } from "./icons";
+import { attachGestures } from "./model-gestures";
 
 /** A model on screen. */
 export interface ModelView {
@@ -97,15 +99,23 @@ function centred(object: Object3D): { pivot: Group; size: number } {
   return { pivot, size: box.getSize(new Vector3()).length() || 1 };
 }
 
-/** Look at the whole model from the front, a little above and to the right. */
-function frame(camera: PerspectiveCamera, controls: OrbitControls, size: number): void {
-  const distance = (size / 2 / Math.tan((camera.fov * Math.PI) / 360)) * 1.15;
-  camera.position.set(0.55, 0.45, 1).normalize().multiplyScalar(distance);
-  camera.near = size / 100;
-  camera.far = size * 100;
-  camera.updateProjectionMatrix();
-  controls.target.set(0, 0, 0);
-  controls.update();
+/** Where the camera looks from: the front, a little above and to the right.
+ *  It only ever moves along this line; the model turns instead. */
+const VIEW_DIRECTION = new Vector3(0.55, 0.45, 1).normalize();
+
+/** How far away the whole of a model `size` across fills the view. */
+function fitDistance(camera: PerspectiveCamera, size: number): number {
+  return (size / 2 / Math.tan((camera.fov * Math.PI) / 360)) * 1.15;
+}
+
+/** How close and how far the camera may go, as multiples of the model's size. */
+const NEAREST = 0.3;
+const FARTHEST = 12;
+
+/** The camera's distance after zooming by `factor` (above 1 closer), kept
+ *  within reach of a model `size` across. */
+export function zoomed(distance: number, factor: number, size: number): number {
+  return Math.min(size * FARTHEST, Math.max(size * NEAREST, distance / factor));
 }
 
 /** Free a scene's geometries, materials and textures. */
@@ -141,6 +151,31 @@ const KEY_TURNS: Record<string, Turn> = {
 
 export function turnForKey(key: string): Turn | null {
   return KEY_TURNS[key] ?? null;
+}
+
+/** + and - zoom in and out a step, as the wheel does. */
+const KEY_ZOOMS: Record<string, number> = { "+": 1.25, "=": 1.25, "-": 0.8 };
+
+export function zoomForKey(key: string): number | null {
+  return KEY_ZOOMS[key] ?? null;
+}
+
+/** What a key on the model does: a turn, a zoom factor, or nothing (with a
+ *  modifier held it is one of the app's own shortcuts). */
+export function keyAction(e: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey">): Turn | number | null {
+  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  return turnForKey(e.key) ?? zoomForKey(e.key);
+}
+
+/** The turns for a drag of (dx, dy) px on a canvas `width` px wide: a whole
+ *  turn across it. The front follows the pointer: right swings it right
+ *  about the vertical, down tips it down. */
+export function dragTurns(dx: number, dy: number, width: number): Turn[] {
+  const perPixel = 360 / Math.max(width, 1);
+  return [
+    { axis: "yaw", degrees: dx * perPixel },
+    { axis: "pitch", degrees: dy * perPixel },
+  ];
 }
 
 /** The buttons over the model, as GNOME's Image Viewer has for pictures. */
@@ -196,6 +231,12 @@ function turner(pivot: Object3D, render: () => void) {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(animate(pivot.quaternion.clone(), performance.now()));
     },
+    /** Turn at once, as a drag does, so the model never lags the pointer. */
+    nudge(t: Turn, right: Vector3) {
+      cancelAnimationFrame(frame);
+      goal = turned(goal, t, right);
+      pivot.quaternion.copy(goal);
+    },
     stop: () => cancelAnimationFrame(frame),
   };
 }
@@ -214,7 +255,7 @@ export function showModel(host: HTMLElement, object: Object3D): ModelView {
   canvas.className = "preview-model";
   // Focusable, so a drag keeps the keyboard in the preview (Escape, Space).
   canvas.tabIndex = -1;
-  canvas.setAttribute("aria-label", "3D model: drag or use the arrow keys to turn, scroll to zoom");
+  canvas.setAttribute("aria-label", "3D model: drag or use the arrow keys to turn; scroll, pinch or use + and - to zoom");
   const wrap = document.createElement("div");
   wrap.className = "preview-model-wrap";
   wrap.appendChild(canvas);
@@ -227,32 +268,51 @@ export function showModel(host: HTMLElement, object: Object3D): ModelView {
   pmrem.dispose();
   const { pivot, size } = centred(object);
   scene.add(pivot, new HemisphereLight(0xffffff, 0x50505a, 0.7));
-  const camera = new PerspectiveCamera(35, 1, 0.1, 1000);
+  const camera = new PerspectiveCamera(35, 1, size / 100, size * 100);
   // Up and to the left of the eye, so the faces you see are shaded apart.
   const key = new DirectionalLight(0xffffff, 1.6);
   key.position.set(-1, 1.5, 0.5);
   camera.add(key);
   scene.add(camera);
 
-  const controls = new OrbitControls(camera, canvas);
   const render = () => renderer.render(scene, camera);
-  controls.addEventListener("change", render);
-  frame(camera, controls, size);
-  controls.saveState();
-
+  const home = fitDistance(camera, size);
+  let distance = home;
+  const place = () => {
+    camera.position.copy(VIEW_DIRECTION).multiplyScalar(distance);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+    render();
+  };
+  // Pitch tips the model about the view's own horizontal axis.
+  const right = () => new Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
   const turns = turner(pivot, render);
   const turn = (t: Turn) => {
-    // Pitch tips the model about the view's own horizontal axis.
-    turns.turn(t, new Vector3().setFromMatrixColumn(camera.matrixWorld, 0));
-    if (t === "reset") controls.reset();
+    turns.turn(t, right());
+    if (t === "reset") {
+      distance = home;
+      place();
+    }
   };
+  const zoom = (factor: number) => {
+    distance = zoomed(distance, factor, size);
+    place();
+  };
+  const detach = attachGestures(canvas, {
+    turn: (dx, dy) => {
+      for (const t of dragTurns(dx, dy, canvas.clientWidth)) turns.nudge(t, right());
+      render();
+    },
+    zoom,
+  });
   wrap.appendChild(modelControls(turn));
   canvas.addEventListener("keydown", (event) => {
-    const t = turnForKey(event.key);
-    if (!t) return;
+    const action = keyAction(event);
+    if (action === null) return;
     event.preventDefault();
     event.stopPropagation();
-    turn(t);
+    if (typeof action === "number") zoom(action);
+    else turn(action);
   });
 
   const resize = () => {
@@ -261,7 +321,7 @@ export function showModel(host: HTMLElement, object: Object3D): ModelView {
     renderer.setSize(width, height, false);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
-    render();
+    place();
   };
   const observer = new ResizeObserver(resize);
   observer.observe(canvas);
@@ -269,9 +329,9 @@ export function showModel(host: HTMLElement, object: Object3D): ModelView {
 
   return {
     dispose() {
+      detach();
       turns.stop();
       observer.disconnect();
-      controls.dispose();
       disposeScene(scene);
       scene.environment?.dispose();
       renderer.dispose();

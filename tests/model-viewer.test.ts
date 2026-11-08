@@ -3,7 +3,9 @@
 // needs WebGL, which jsdom lacks, so showModel is checked to fail cleanly.
 import { expect, test, vi } from "vitest";
 import { Box3, Mesh, Quaternion, Vector3, type Object3D } from "three";
-import { loadModel, modelControls, showModel, turned, turnForKey, type Turn } from "../src/model-viewer";
+import {
+  dragTurns, keyAction, loadModel, modelControls, showModel, turned, turnForKey, zoomed, zoomForKey, type Turn,
+} from "../src/model-viewer";
 import {
   SAMPLE_TRIANGLES, sample3mf, sampleGlb, sampleGltf, sampleGltfBin, sampleGltfJson, sampleStlAscii, sampleStlBinary,
 } from "../dev/mock-tauri/models";
@@ -154,4 +156,34 @@ test("turns add up, pitch follows the view's own horizontal axis, and reset undo
   // Seen from the side (the view's right is world -Z), pitch turns about that axis.
   expect(front(turned(new Quaternion(), { axis: "pitch", degrees: -90 }, new Vector3(0, 0, -2)))).toEqual([0, 0, 1]);
   expect(turned(goal, "reset", RIGHT).equals(new Quaternion())).toBe(true);
+});
+
+test("a drag turns the model's front after the pointer, a whole turn across the canvas", () => {
+  const turnAll = (turns: Turn[]) => turns.reduce((goal, t) => turned(goal, t, RIGHT), new Quaternion());
+  // Half the width to the right: half a turn, the front now facing away.
+  expect(front(turnAll(dragTurns(300, 0, 600)))).toEqual([0, 0, -1]);
+  // A quarter of the width to the right swings the front right; down tips it down.
+  expect(front(turnAll(dragTurns(150, 0, 600)))).toEqual([1, 0, 0]);
+  expect(front(turnAll(dragTurns(0, 150, 600)))).toEqual([0, -1, 0]);
+  expect(dragTurns(10, 0, 0)[0]).toEqual({ axis: "yaw", degrees: 3600 });
+});
+
+test("zoom keeps the camera between close up and far away", () => {
+  expect(zoomed(100, 2, 50)).toBe(50);
+  expect(zoomed(100, 0.5, 50)).toBe(200);
+  expect(zoomed(20, 4, 50)).toBe(15);
+  expect(zoomed(500, 0.01, 50)).toBe(600);
+});
+
+test("keys on the model: arrows and Home turn, + and - zoom, and a modifier leaves them to the app", () => {
+  const key = (k: string, mods: Partial<Record<"ctrlKey" | "metaKey" | "altKey", boolean>> = {}) =>
+    keyAction({ key: k, ctrlKey: false, metaKey: false, altKey: false, ...mods });
+  expect(key("ArrowLeft")).toEqual({ axis: "yaw", degrees: -15 });
+  expect(key("Home")).toBe("reset");
+  expect([key("+"), key("="), key("-")]).toEqual([1.25, 1.25, 0.8]);
+  expect(key("x")).toBeNull();
+  expect(key("+", { ctrlKey: true })).toBeNull();
+  expect(key("ArrowLeft", { metaKey: true })).toBeNull();
+  expect(key("Home", { altKey: true })).toBeNull();
+  expect(zoomForKey("Enter")).toBeNull();
 });
