@@ -84,9 +84,9 @@ one out on its own platform.
 - **Arbesk (Experimental):** your [Arbesk](https://promptscad.com) account
   as a Network location: connect it from **Online Accounts…** with your
   email and the code Arbesk emails you, then browse your collections as
-  folders, each asset with the thumbnail it was saved with, and press Space
-  on a `.gltf` or `.3mf` asset to see the model
-  ([details](docs/arbesk.md)).
+  folders, each asset with the thumbnail it was saved with; press Space on
+  a `.gltf` or `.3mf` asset to see the model, and open it to edit it in
+  Arbesk's Studio in your browser ([details](docs/arbesk.md)).
 - **Trash done right:** Undo (⌘Z), Restore (also for items trashed in Finder),
   and nothing is ever deleted without asking.
 - **Check for Updates** (main menu): the AppImage and the Mac app download,
@@ -171,9 +171,9 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
   image dragged from a web page isn't downloaded. Files dropped from another
   app are copied, never moved; Google Drive items can't be dragged out.
 - Google Drive: no Shared Drives, "Shared with me" or Drive-wide search.
-- Arbesk: read only (no upload, rename or delete); assets can't be copied or
-  dragged out yet (open one, or save it from the app that opens it); no
-  sizes in listings; live links to another collection's asset don't open.
+- Arbesk: read only (no upload, rename or delete); assets open in the
+  Studio, and can't be opened, copied or dragged out as files yet; no sizes
+  in listings; live links to another collection's asset don't preview.
 - Keep Versions may miss changes made while the app is closed.
 - Linux: image thumbnails only (no Quick Look).
 - DMG installation supports application bundles, not `.pkg` installers or

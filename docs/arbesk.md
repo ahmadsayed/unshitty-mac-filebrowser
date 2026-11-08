@@ -51,10 +51,14 @@ you later. File Browser itself never asks Arbesk to change anything.
 - An asset saved with a thumbnail in Arbesk shows it in the grid and list
   views (with **Show Thumbnails** on); one saved without keeps the model's
   icon.
-- Opening an asset (double-click, or **Open** in the preview) builds the
-  file into the app cache and opens it with your default app. A built file
-  is reused while nobody has changed it; files left untouched for a week are
-  pruned, and one you edited goes to the Trash instead.
+- Opening an asset (double-click, **Open** in its menu or in the preview)
+  opens it in Arbesk's Studio, in your browser, on the deployment you signed
+  in to (`/studio?asset=<collection>&assetId=<asset>`, the link `besk show`
+  opens). Space builds the asset's file into the app cache for the 3D
+  preview; a built file is reused while nobody has changed it, and files
+  left untouched for a week are pruned.
+- There is no Copy Location: an `arbesk://` address means nothing outside
+  File Browser.
 - Copy, Cut and dragging out say *Copying from Arbesk comes next.*; Paste
   into a collection says *Arbesk is read only.*
 

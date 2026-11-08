@@ -115,6 +115,11 @@ impl ArbeskState {
             .unwrap_or_default()
     }
 
+    /// The Studio link of the asset at `path`, on its account's deployment.
+    pub fn studio_url(&self, path: &str) -> Result<String, String> {
+        service::studio_url(&self.site_for(parse(path)?.address())?, path)
+    }
+
     /// `service::build` for the account `path` belongs to.
     pub fn build(&self, path: &str, progress: &Progress) -> Result<PathBuf, String> {
         let site = self.site_for(parse(path)?.address())?;
@@ -233,6 +238,8 @@ mod tests {
         );
         assert_eq!(state.accounts(), [account.clone()]);
         assert_eq!(state.site_for(ADDRESS).unwrap(), account.site());
+        let asset = format!("arbesk://{ADDRESS}/1~Set/a1~Box.gltf");
+        assert_eq!(state.studio_url(&asset).unwrap(), format!("{ORIGIN}/studio?asset=1&assetId=a1"));
         assert_eq!(
             state.connect_finish(&flow_id).unwrap_err(),
             "This sign-in attempt is no longer active."

@@ -557,10 +557,11 @@ fn drive_target(app: &tauri::AppHandle, path: &str, progress: &progress::Progres
     cloud::service::open(&app.state::<CloudState>(), path, &cache, progress)
 }
 
-/// An Arbesk asset, built into the app cache.
-fn arbesk_target(app: &tauri::AppHandle, path: &str, progress: &progress::Progress) -> Result<OpenTarget, String> {
-    let file = app.state::<arbesk::ArbeskState>().build(path, progress)?;
-    Ok(OpenTarget::File { path: file.to_string_lossy().into_owned() })
+/// An Arbesk asset opens in Arbesk's Studio, in the browser; the preview
+/// still builds its file (`preview_bytes`).
+fn arbesk_target(app: &tauri::AppHandle, path: &str, _progress: &progress::Progress) -> Result<OpenTarget, String> {
+    let url = app.state::<arbesk::ArbeskState>().studio_url(path)?;
+    Ok(OpenTarget::Url { url })
 }
 
 /// An SSH server's file, downloaded into the app cache.

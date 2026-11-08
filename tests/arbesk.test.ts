@@ -1,7 +1,7 @@
 // Arbesk in Network: connect with an email through the mock, browse the
 // account's collections and assets read only, and keep its row when the
 // backend can't answer for a moment.
-import { beforeAll, expect, test } from "vitest";
+import { beforeAll, expect, test, vi } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
 import { $, $$, accountGroups, boot, chooseAccountRow, click, closeOverlays, dialogHeading, goTo, installFakeCanvas, key, menuLabels, mouse, names, open, openOnlineAccounts, respond, settle, toasts, type } from "./app";
 
@@ -52,6 +52,10 @@ test("Network lists the account as Arbesk, and Online Accounts lists it with its
   await openOnlineAccounts();
   expect(accountGroups()[0]).toEqual({ title: "Your Accounts", rows: ["Arbesk · me@example.com"] });
   await closeOverlays();
+  // An arbesk:// address means nothing outside the app: no Copy Location.
+  await rightClick(row("Arbesk"));
+  expect(menuLabels()).toEqual(["Open", "Disconnect…"]);
+  await closeOverlays();
 });
 
 test("a collection lists its assets as files, without sizes", async () => {
@@ -78,7 +82,7 @@ test("an asset shows the thumbnail it was saved with, and one saved without keep
 test("nothing in Arbesk can be written, renamed or copied out", async () => {
   await click(row("Box.gltf"));
   await rightClick(row("Box.gltf"));
-  expect(menuLabels()).toEqual(["Open", "Copy", "Copy Location"]);
+  expect(menuLabels()).toEqual(["Open", "Copy"]);
   expect($$(".popover .menu-item").find((el) => el.textContent?.trim() === "Copy")?.hasAttribute("disabled")).toBe(true);
   await closeOverlays();
 
@@ -100,6 +104,23 @@ test("nothing in Arbesk can be written, renamed or copied out", async () => {
   await settle();
   expect(toasts()).toContain("Arbesk is read only.");
   expect(names().sort()).toEqual(["Big.gltf", "Box.3mf", "Box.gltf"]);
+});
+
+test("Open on an asset opens it in Arbesk's Studio, in the browser", async () => {
+  await openNetwork();
+  await open("Arbesk");
+  await settle(20);
+  await open("Shapes");
+  await settle(20);
+  await click($("#btn-location-menu"));
+  expect(menuLabels()).not.toContain("Copy Location");
+  await closeOverlays();
+
+  const log = vi.spyOn(console, "log");
+  await open("Box.gltf");
+  await settle(20);
+  expect(log).toHaveBeenCalledWith("mock open_url", "https://promptscad.com/studio?asset=1&assetId=box-g");
+  log.mockRestore();
 });
 
 test("a failed accounts answer keeps the Arbesk row in Network", async () => {

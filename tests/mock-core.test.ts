@@ -1394,7 +1394,7 @@ test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend'
   expect(assets.map((r) => [r.name, r.is_dir, r.size])).toEqual([["Box.gltf", false, 0], ["Box.3mf", false, 0], ["Big.gltf", false, 0]]);
   const [gltf, threeMf, big] = assets.map((r) => r.path);
 
-  expect(await invoke("open_target", { path: gltf, op: "" })).toEqual({ kind: "file", path: "/tmp/opencode/mock-arbesk/Box.gltf" });
+  expect(await invoke("open_target", { path: gltf, op: "" })).toEqual({ kind: "url", url: "https://promptscad.com/studio?asset=1&assetId=box-g" });
   const model = new Uint8Array(await invoke<ArrayBuffer>("preview_bytes", { path: threeMf, limit: 1 << 20 }));
   expect([...model.slice(0, 2)]).toEqual([0x50, 0x4b]);
   const json = JSON.parse(new TextDecoder().decode(await invoke<ArrayBuffer>("preview_bytes", { path: gltf, limit: 1 << 20 })));
