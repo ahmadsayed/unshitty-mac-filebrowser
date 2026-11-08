@@ -137,6 +137,10 @@ impl ArbeskState {
         let signed_in = signin::finish(&flow, self.http()?, &site, CALLBACK_TIMEOUT);
         lock(&self.flows).remove(flow_id);
         let (email, address) = signed_in?;
+        // Cancel may have come while Arbesk was confirming: it still cancels.
+        if flow.is_cancelled() {
+            return Err("Sign-in was cancelled.".into());
+        }
         lock(&self.accounts).connect(&email, &address, &site)
     }
 
@@ -224,6 +228,38 @@ mod tests {
             state.site_for(ADDRESS).unwrap_err(),
             "Connect this Arbesk account first."
         );
+    }
+
+    #[test]
+    fn cancelling_while_arbesk_confirms_connects_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        // Cancel arrives while Arbesk is being asked to confirm the account.
+        let cancel: Arc<std::sync::OnceLock<(Arc<ArbeskState>, String)>> = Arc::default();
+        let on_confirm = cancel.clone();
+        let http = Arc::new(FakeHttp::new(move |request| {
+            if request.method == "POST" {
+                let (state, flow_id) = on_confirm.get().unwrap();
+                state.connect_cancel(flow_id);
+                return Ok(serde_json::json!({ "exists": true, "address": ADDRESS })
+                    .to_string()
+                    .into_bytes());
+            }
+            Ok(b"{}".to_vec())
+        }));
+        let state = Arc::new(ArbeskState::with_http(
+            http,
+            dir.path().join("cache"),
+            dir.path().join("a.json"),
+        ));
+        let (flow_id, url) = state.connect_start("me@example.com").unwrap();
+        cancel.set((state.clone(), flow_id.clone())).ok().unwrap();
+        let browser = browser_returns(&url, "me%40example.com");
+        assert_eq!(
+            state.connect_finish(&flow_id).unwrap_err(),
+            "Sign-in was cancelled."
+        );
+        browser.join().unwrap();
+        assert!(state.accounts().is_empty());
     }
 
     #[test]
