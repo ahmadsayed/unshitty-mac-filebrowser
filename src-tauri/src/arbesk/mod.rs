@@ -8,3 +8,4 @@ pub mod chain;
 pub mod http;
 pub mod ipfs;
 pub mod location;
+pub mod compose;
