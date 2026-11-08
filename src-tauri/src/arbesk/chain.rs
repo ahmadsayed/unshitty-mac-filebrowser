@@ -148,8 +148,26 @@ fn decode_abi_string(hex: &str) -> Result<String, String> {
     String::from_utf8(text.to_vec()).map_err(|_| refused())
 }
 
+/// Test helpers other modules' tests share.
+#[cfg(test)]
+pub(crate) mod testing {
+    /// The ABI encoding of one string return value, as hex with `0x`.
+    pub fn abi_string(text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut out = format!("0x{:064x}{:064x}", 32, bytes.len());
+        for byte in bytes {
+            out.push_str(&format!("{byte:02x}"));
+        }
+        while (out.len() - 2) % 64 != 0 {
+            out.push('0');
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::testing::abi_string;
     use super::*;
     use crate::arbesk::http::HttpError;
     use crate::arbesk::http::fake::{FakeHttp, Request, not_found};
@@ -170,19 +188,6 @@ mod tests {
             rpc_url: "https://rpc.test".into(),
             gateway: "https://gw.test/ipfs".into(),
         }
-    }
-
-    /// The ABI encoding of one string return value, as hex with `0x`.
-    fn abi_string(text: &str) -> String {
-        let bytes = text.as_bytes();
-        let mut out = format!("0x{:064x}{:064x}", 32, bytes.len());
-        for byte in bytes {
-            out.push_str(&format!("{byte:02x}"));
-        }
-        while (out.len() - 2) % 64 != 0 {
-            out.push('0');
-        }
-        out
     }
 
     #[test]

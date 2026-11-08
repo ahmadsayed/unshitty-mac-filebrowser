@@ -291,6 +291,7 @@ fn list_remote(
     match kind {
         Kind::Sftp => app.state::<sftp::SftpState>().list(path, show_hidden),
         Kind::Drive => cloud::service::list_dir(&app.state::<CloudState>(), path, show_hidden),
+        Kind::Arbesk => app.state::<arbesk::ArbeskState>().list(path),
         other => Err(format!("{other:?} paths are not handled here.")),
     }
 }
@@ -545,6 +546,7 @@ fn cached_target(
     match kind {
         Kind::Drive => drive_target(app, path, progress),
         Kind::Sftp => sftp_target(app, path, progress),
+        Kind::Arbesk => arbesk_target(app, path, progress),
         other => Err(format!("{other:?} paths are not handled here.")),
     }
 }
@@ -553,6 +555,12 @@ fn cached_target(
 fn drive_target(app: &tauri::AppHandle, path: &str, progress: &progress::Progress) -> Result<OpenTarget, String> {
     let cache = app.path().app_cache_dir().map_err(|error| error.to_string())?;
     cloud::service::open(&app.state::<CloudState>(), path, &cache, progress)
+}
+
+/// An Arbesk asset, built into the app cache.
+fn arbesk_target(app: &tauri::AppHandle, path: &str, progress: &progress::Progress) -> Result<OpenTarget, String> {
+    let file = app.state::<arbesk::ArbeskState>().build(path, progress)?;
+    Ok(OpenTarget::File { path: file.to_string_lossy().into_owned() })
 }
 
 /// An SSH server's file, downloaded into the app cache.
@@ -600,11 +608,25 @@ async fn preview_text(path: String, limit: usize) -> Result<fs_ops::TextPreview,
 /// A local file's bytes for the 3D preview, at most 512 MiB. Raw bytes
 /// avoid JSON-encoding them.
 #[tauri::command]
-async fn preview_bytes(path: String, limit: u64) -> Result<tauri::ipc::Response, String> {
-    place::local(&path)?;
+async fn preview_bytes(app: tauri::AppHandle, path: String, limit: u64) -> Result<tauri::ipc::Response, String> {
     let limit = limit.clamp(1, 512 * 1024 * 1024);
-    let bytes = blocking(move || fs_ops::preview_bytes(path, limit)).await??;
+    let bytes = blocking(move || fs_ops::preview_bytes(preview_file(&app, &path)?, limit)).await??;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// `preview_file_with` the app's Arbesk builds.
+fn preview_file(app: &tauri::AppHandle, path: &str) -> Result<String, String> {
+    preview_file_with(path, |path| app.state::<arbesk::ArbeskState>().build(path, &progress::Progress::default()))
+}
+
+/// The file on this computer whose bytes preview `path`: the file itself, or
+/// an Arbesk asset's copy in the app cache, made by `build`. Every other
+/// path is refused.
+fn preview_file_with(path: &str, build: impl FnOnce(&str) -> Result<PathBuf, String>) -> Result<String, String> {
+    if place::kind(path) == Kind::Arbesk {
+        return build(path).map(|file| file.to_string_lossy().into_owned());
+    }
+    place::local(path).map(|_| path.to_string())
 }
 
 #[tauri::command]
@@ -677,8 +699,10 @@ fn path_infos(
 ) -> Vec<Option<fs_ops::PathInfo>> {
     let mut out = place::local_only(paths, fs_ops::path_info);
     for (info, path) in out.iter_mut().zip(paths) {
-        if place::kind(path) == Kind::Drive {
-            *info = drive(path);
+        match place::kind(path) {
+            Kind::Drive => *info = drive(path),
+            Kind::Arbesk => *info = arbesk::location::is_folder(path).map(|is_dir| fs_ops::PathInfo { is_dir, device: 0 }),
+            _ => {}
         }
     }
     out
@@ -2086,6 +2110,7 @@ pub fn run() {
                 std::env::var("FILEBROWSER_RELAY").ok(),
             ));
             app.manage(CloudState::new(&config_dir));
+            app.manage(arbesk::ArbeskState::new(cache_dir.clone()));
             app.manage(sftp::SftpState::new(
                 config_dir.join("sftp_known_hosts"),
                 home,
@@ -2345,6 +2370,15 @@ mod dispatch_tests {
             vec![Some((true, false)), Some((false, false)), Some((true, true)), Some((true, true)), None, None, None, None]
         );
         assert_eq!(path_infos(&strings(&[RELATIVE]), |_| panic!("not Drive")), vec![None]);
+    }
+
+    #[test]
+    fn path_info_knows_arbesk_folders_and_files() {
+        let account = "arbesk://0x00000000000000000000000000000000000000ab";
+        let paths = strings(&[account, &format!("{account}/1~Set"), &format!("{account}/1~Set/a1~Box.gltf"), "arbesk://bad"]);
+        let out = path_infos(&paths, |_| panic!("not Drive"));
+        let kinds: Vec<Option<bool>> = out.iter().map(|o| o.as_ref().map(|i| i.is_dir)).collect();
+        assert_eq!(kinds, vec![Some(true), Some(true), Some(false), None]);
     }
 
     #[test]
@@ -2673,8 +2707,14 @@ mod read_gate_tests {
         // crate root), so their refusal isn't a missing file.
         for (path, refusal) in refused("Cargo.toml") {
             assert_eq!(block_on(preview_text(path.into(), 100)).unwrap_err(), refusal, "{path}");
-            assert_eq!(block_on(preview_bytes(path.into(), 100)).err(), Some(refusal), "{path}");
+            assert_eq!(preview_file_with(path, |_| panic!("not Arbesk")).err(), Some(refusal), "{path}");
         }
+        let asset = "arbesk://0x00000000000000000000000000000000000000ab/1~Set/a1~Box.gltf";
+        let built = preview_file_with(asset, |path| {
+            assert_eq!(path, asset);
+            Ok(PathBuf::from("/cache/arbesk/bafyA/Box.gltf"))
+        });
+        assert_eq!(built.unwrap(), "/cache/arbesk/bafyA/Box.gltf");
         for (path, refusal) in refused("src") {
             let found = search_local(path, "lib", false, 10, &mut |_| panic!("searched {path}"), &|| false);
             assert_eq!(found.unwrap_err(), refusal, "{path}");

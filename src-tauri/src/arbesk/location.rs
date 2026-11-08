@@ -34,6 +34,25 @@ pub enum ArbeskPath {
     },
 }
 
+impl ArbeskPath {
+    /// The wallet address of the account the path belongs to.
+    pub fn address(&self) -> &str {
+        match self {
+            Self::Account { address }
+            | Self::Collection { address, .. }
+            | Self::Asset { address, .. } => address,
+        }
+    }
+}
+
+/// Whether `path` names a folder (an account or collection) or a file (an
+/// asset); `None` when it isn't an Arbesk location.
+pub fn is_folder(path: &str) -> Option<bool> {
+    parse(path)
+        .ok()
+        .map(|parsed| !matches!(parsed, ArbeskPath::Asset { .. }))
+}
+
 pub fn is_arbesk(path: &str) -> bool {
     path.starts_with(PREFIX)
 }
@@ -48,10 +67,15 @@ pub fn collection_path(address: &str, token_id: &str, name: &str) -> String {
 
 /// An asset in `collection_path`, named `<name>.<ext>`.
 pub fn asset_path(collection_path: &str, asset_id: &str, name: &str, ext: &str) -> String {
+    asset_path_named(collection_path, asset_id, &format!("{name}.{ext}"))
+}
+
+/// An asset in `collection_path` shown as `file_name` as it is.
+pub fn asset_path_named(collection_path: &str, asset_id: &str, file_name: &str) -> String {
     format!(
         "{}/{}",
         collection_path.trim_end_matches('/'),
-        segment(asset_id, &format!("{name}.{ext}"))
+        segment(asset_id, file_name)
     )
 }
 
