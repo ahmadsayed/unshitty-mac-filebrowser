@@ -79,8 +79,8 @@ the JSON again.
 
 ## Part 2: Connect File Browser
 
-1. In File Browser's sidebar, click **Network**, then click **Connect to
-   Google Drive…** at the bottom of the view.
+1. In File Browser's sidebar, click **Network**, then click **Add…** at the
+   bottom of the view and choose **Google Drive…**.
 2. The **Add Your Google Client** dialog opens. Click **Choose File…** and pick
    the JSON file you downloaded. You can also open the file in a text editor,
    copy all of it, paste it into the box, and click **Add Client**.
@@ -135,8 +135,8 @@ The "unverified app" warning still appears when you sign in. That's normal.
 ## Using a different client
 
 Disconnect Google Drive first: in **Network**, right-click **Google Drive**
-and choose **Disconnect…**. Then click **Connect to Google Drive…** and choose
-**Change Client…** in the Connect dialog.
+and choose **Disconnect…**. Then click **Add…**, choose **Google Drive…** and
+choose **Change Client…** in the Connect dialog.
 
 ## Troubleshooting
 
