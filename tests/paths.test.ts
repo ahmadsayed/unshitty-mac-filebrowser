@@ -266,6 +266,8 @@ test("a typed Arbesk location stays one, and a bare name inside Arbesk is refuse
   expect(resolveTypedPath(collection, "pseudo:network", HOME)).toEqual({ path: collection });
   expect(resolveTypedPath("Box.gltf", collection, HOME)).toEqual({ error: "Enter an Arbesk location or a full path." });
   expect(resolveTypedPath("/tmp", collection, HOME)).toEqual({ path: "/tmp" });
+  expect(resolveTypedPath(CLOUD, collection, HOME)).toEqual({ path: CLOUD });
+  expect(resolveTypedPath("sftp://me@host/docs", collection, HOME)).toEqual({ path: "sftp://me@host/docs" });
   expect(resolveTypedPath("~/Notes", collection, HOME)).toEqual({ path: `${HOME}/Notes` });
 });
 
