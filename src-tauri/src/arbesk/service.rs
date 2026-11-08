@@ -1,7 +1,9 @@
 //! An Arbesk account as folders and files: its collections, a collection's
 //! assets, and an asset built into the app cache to open or preview.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex};
 
 use serde_json::Value;
 
@@ -43,6 +45,7 @@ pub fn build(
     path: &str,
     cache_dir: &Path,
     progress: &Progress,
+    builds: &Builds,
 ) -> Result<PathBuf, String> {
     progress.check()?;
     let ArbeskPath::Asset {
@@ -67,6 +70,8 @@ pub fn build(
     );
     let dir = cache_dir.join("arbesk").join(cid);
     let target = dir.join(&name);
+    // Space then Open asks twice at once: the second waits, then reuses the file.
+    let _held = builds.hold(dir.clone());
     if crate::downloads::is_unchanged(&target) {
         return Ok(target);
     }
@@ -80,6 +85,42 @@ pub fn build(
     progress.check()?;
     save(&target, &bytes)?;
     Ok(target)
+}
+
+/// The builds under way, by the folder they build into: a second build of
+/// one asset waits for the first, then finds its file.
+#[derive(Default)]
+pub struct Builds {
+    busy: Mutex<HashSet<PathBuf>>,
+    done: Condvar,
+}
+
+/// One build's hold on its folder, let go when dropped.
+struct Held<'a> {
+    builds: &'a Builds,
+    folder: PathBuf,
+}
+
+impl Builds {
+    fn hold(&self, folder: PathBuf) -> Held<'_> {
+        let mut busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+        while busy.contains(&folder) {
+            busy = self.done.wait(busy).unwrap_or_else(|e| e.into_inner());
+        }
+        busy.insert(folder.clone());
+        Held {
+            builds: self,
+            folder,
+        }
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        let mut busy = self.builds.busy.lock().unwrap_or_else(|e| e.into_inner());
+        busy.remove(&self.folder);
+        self.builds.done.notify_all();
+    }
 }
 
 /// What an account's chain and gateway say, read through one manifest cache.
@@ -207,11 +248,18 @@ fn save(target: &Path, bytes: &[u8]) -> Result<(), String> {
     let dir = target.parent().ok_or("The file has no folder.")?;
     std::fs::create_dir_all(dir).map_err(failed)?;
     let name = target.file_name().unwrap_or_default().to_string_lossy();
-    let part = dir.join(format!(".{name}.part"));
+    // Its own staging name, so no other writer can truncate it.
+    let part = dir.join(format!(".{name}.{}.part", unique_folder()));
     let written =
         std::fs::write(&part, bytes).and_then(|()| crate::placement::rename_new(&part, target));
     if let Err(error) = written {
         let _ = std::fs::remove_file(&part);
+        // Another build placed the same file first: it is the one to open.
+        if error.kind() == std::io::ErrorKind::AlreadyExists
+            && crate::downloads::is_unchanged(target)
+        {
+            return Ok(());
+        }
         return Err(failed(error));
     }
     crate::downloads::mark(target);
@@ -437,7 +485,15 @@ mod tests {
         let world = Arc::new(Mutex::new(world()));
         let http = arbesk(world.clone());
         let asset = asset_path(&shapes(), "a1", "Box", "gltf");
-        let built = build(&http, &site(), &asset, cache.path(), &Progress::default()).unwrap();
+        let built = build(
+            &http,
+            &site(),
+            &asset,
+            cache.path(),
+            &Progress::default(),
+            &Builds::default(),
+        )
+        .unwrap();
         assert!(built.starts_with(cache.path().join("arbesk")));
         assert_eq!(built.file_name().unwrap(), "Box.gltf");
         let ours: Value = serde_json::from_slice(&std::fs::read(&built).unwrap()).unwrap();
@@ -455,7 +511,15 @@ mod tests {
                 .count()
         };
         let before = part_fetches(&http);
-        let again = build(&http, &site(), &asset, cache.path(), &Progress::default()).unwrap();
+        let again = build(
+            &http,
+            &site(),
+            &asset,
+            cache.path(),
+            &Progress::default(),
+            &Builds::default(),
+        )
+        .unwrap();
         assert_eq!(again, built);
         assert_eq!(part_fetches(&http), before);
     }
@@ -465,9 +529,25 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let http = arbesk(Arc::new(Mutex::new(world())));
         let asset = asset_path(&shapes(), "a1", "Box", "gltf");
-        let built = build(&http, &site(), &asset, cache.path(), &Progress::default()).unwrap();
+        let built = build(
+            &http,
+            &site(),
+            &asset,
+            cache.path(),
+            &Progress::default(),
+            &Builds::default(),
+        )
+        .unwrap();
         std::fs::write(&built, b"{\"edited\":true}").unwrap();
-        let fresh = build(&http, &site(), &asset, cache.path(), &Progress::default()).unwrap();
+        let fresh = build(
+            &http,
+            &site(),
+            &asset,
+            cache.path(),
+            &Progress::default(),
+            &Builds::default(),
+        )
+        .unwrap();
         assert_ne!(fresh, built);
         assert_eq!(std::fs::read(&built).unwrap(), b"{\"edited\":true}");
         assert_ne!(std::fs::read(&fresh).unwrap(), b"{\"edited\":true}");
@@ -484,14 +564,32 @@ mod tests {
             .insert("bafymem00000000".into());
         let http = arbesk(world.clone());
         let asset = asset_path(&shapes(), "a1", "Box", "gltf");
-        assert!(build(&http, &site(), &asset, cache.path(), &Progress::default()).is_err());
+        assert!(
+            build(
+                &http,
+                &site(),
+                &asset,
+                cache.path(),
+                &Progress::default(),
+                &Builds::default()
+            )
+            .is_err()
+        );
         assert_eq!(
             files_under(&cache.path().join("arbesk")),
             Vec::<std::path::PathBuf>::new()
         );
 
         world.lock().unwrap().failing.clear();
-        let built = build(&http, &site(), &asset, cache.path(), &Progress::default()).unwrap();
+        let built = build(
+            &http,
+            &site(),
+            &asset,
+            cache.path(),
+            &Progress::default(),
+            &Builds::default(),
+        )
+        .unwrap();
         assert!(built.exists());
     }
 
@@ -500,7 +598,15 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let http = arbesk(Arc::new(Mutex::new(world())));
         let asset = asset_path(&shapes(), "a2", "Box", "3mf");
-        let built = build(&http, &site(), &asset, cache.path(), &Progress::default()).unwrap();
+        let built = build(
+            &http,
+            &site(),
+            &asset,
+            cache.path(),
+            &Progress::default(),
+            &Builds::default(),
+        )
+        .unwrap();
         assert_eq!(built.file_name().unwrap(), "Box.3mf");
         assert!(std::fs::read(&built).unwrap().starts_with(b"PK"));
     }
@@ -512,7 +618,15 @@ mod tests {
         for (id, name) in [("a3", "Linked.gltf"), ("a4", "Odd")] {
             let asset = format!("{}/{id}~{name}", shapes());
             assert_eq!(
-                build(&http, &site(), &asset, cache.path(), &Progress::default()).unwrap_err(),
+                build(
+                    &http,
+                    &site(),
+                    &asset,
+                    cache.path(),
+                    &Progress::default(),
+                    &Builds::default()
+                )
+                .unwrap_err(),
                 UNKNOWN_FORMAT
             );
         }
@@ -523,7 +637,15 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let http = arbesk(Arc::new(Mutex::new(world())));
         let asset = asset_path(&shapes(), "nope", "Box", "gltf");
-        let error = build(&http, &site(), &asset, cache.path(), &Progress::default()).unwrap_err();
+        let error = build(
+            &http,
+            &site(),
+            &asset,
+            cache.path(),
+            &Progress::default(),
+            &Builds::default(),
+        )
+        .unwrap_err();
         assert_eq!(error, "This asset is no longer in the collection.");
     }
 
@@ -534,11 +656,78 @@ mod tests {
         let progress = Progress::default();
         progress.cancel();
         let asset = asset_path(&shapes(), "a1", "Box", "gltf");
-        assert!(build(&http, &site(), &asset, cache.path(), &progress).is_err());
+        assert!(
+            build(
+                &http,
+                &site(),
+                &asset,
+                cache.path(),
+                &progress,
+                &Builds::default()
+            )
+            .is_err()
+        );
         assert_eq!(
             files_under(&cache.path().join("arbesk")),
             Vec::<std::path::PathBuf>::new()
         );
+    }
+
+    #[test]
+    fn two_builds_of_one_asset_at_once_make_one_file() {
+        let cache = tempfile::tempdir().unwrap();
+        let world = Arc::new(Mutex::new(world()));
+        let slow = arbesk(world);
+        // The part arrives slowly, so both builds are under way together.
+        let http = FakeHttp::new(move |request| {
+            if request.url.ends_with("bafymem00000000") {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+            match &request.body {
+                Some(body) => crate::arbesk::http::Http::post_json(&slow, &request.url, body, None),
+                None => crate::arbesk::http::Http::get(&slow, &request.url),
+            }
+        });
+        let builds = Builds::default();
+        let asset = asset_path(&shapes(), "a1", "Box", "gltf");
+        let (first, second) = std::thread::scope(|scope| {
+            let one = scope.spawn(|| {
+                build(
+                    &http,
+                    &site(),
+                    &asset,
+                    cache.path(),
+                    &Progress::default(),
+                    &builds,
+                )
+            });
+            let two = scope.spawn(|| {
+                build(
+                    &http,
+                    &site(),
+                    &asset,
+                    cache.path(),
+                    &Progress::default(),
+                    &builds,
+                )
+            });
+            (one.join().unwrap(), two.join().unwrap())
+        });
+        assert_eq!(first.as_ref().unwrap(), second.as_ref().unwrap());
+        let parts = http
+            .requests()
+            .iter()
+            .filter(|r| r.url.ends_with("bafymem00000000"))
+            .count();
+        assert_eq!(parts, 1);
+        assert_eq!(
+            files_under(&cache.path().join("arbesk"))
+                .iter()
+                .filter(|f| !f.to_string_lossy().contains(".downloaded"))
+                .count(),
+            1
+        );
+        assert!(crate::downloads::is_unchanged(first.as_ref().unwrap()));
     }
 
     #[test]

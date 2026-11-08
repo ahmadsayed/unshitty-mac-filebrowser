@@ -44,6 +44,7 @@ pub struct ArbeskState {
     cache_dir: PathBuf,
     accounts: Mutex<Accounts>,
     flows: Mutex<HashMap<String, Arc<Flow>>>,
+    builds: service::Builds,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -74,6 +75,7 @@ impl ArbeskState {
             cache_dir,
             accounts,
             flows: Mutex::new(HashMap::new()),
+            builds: service::Builds::default(),
         }
     }
 
@@ -103,7 +105,14 @@ impl ArbeskState {
     /// `service::build` for the account `path` belongs to.
     pub fn build(&self, path: &str, progress: &Progress) -> Result<PathBuf, String> {
         let site = self.site_for(parse(path)?.address())?;
-        service::build(self.http()?, &site, path, &self.cache_dir, progress)
+        service::build(
+            self.http()?,
+            &site,
+            path,
+            &self.cache_dir,
+            progress,
+            &self.builds,
+        )
     }
 
     /// Start a sign-in for `email`: its id and the page to open in the browser.
