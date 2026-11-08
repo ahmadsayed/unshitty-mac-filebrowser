@@ -26,6 +26,10 @@ pub struct ChainConfig {
     pub gateway: String,
 }
 
+/// How an error starts when the chain didn't answer: a listing fails with it
+/// rather than leaving the collection out.
+pub const CHAIN_UNREACHABLE: &str = "The chain could not be reached";
+
 /// `tokenURI(uint256)`'s selector.
 const TOKEN_URI: &str = "0xc87b56dd";
 
@@ -83,7 +87,7 @@ pub fn token_uri(http: &dyn Http, chain: &ChainConfig, token_id: &str) -> Result
     });
     let bytes = http
         .post_json(&chain.rpc_url, &call, None)
-        .map_err(|error| format!("The chain could not be reached: {}", error.message))?;
+        .map_err(|error| format!("{CHAIN_UNREACHABLE}: {}", error.message))?;
     let body: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "The chain sent an answer File Browser can't read.".to_string())?;
     if let Some(message) = body["error"]["message"].as_str() {

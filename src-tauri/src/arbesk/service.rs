@@ -7,10 +7,10 @@ use std::sync::{Condvar, Mutex};
 
 use serde_json::Value;
 
-use crate::arbesk::chain::{self, ChainConfig, Site};
+use crate::arbesk::chain::{self, CHAIN_UNREACHABLE, ChainConfig, Site};
 use crate::arbesk::compose::{UNKNOWN_FORMAT, compose, format_of, is_child_ref, source_cid};
 use crate::arbesk::http::Http;
-use crate::arbesk::ipfs::{Gateway, ManifestCache, in_parallel};
+use crate::arbesk::ipfs::{Gateway, ManifestCache, STORAGE_UNREACHABLE, in_parallel};
 use crate::arbesk::location::{ArbeskPath, asset_path_named, collection_path, parse};
 use crate::fs_ops::Entry;
 use crate::progress::Progress;
@@ -151,8 +151,9 @@ impl<'a> Reader<'a> {
 
     fn collections(&self, address: &str) -> Result<Vec<Entry>, String> {
         let ids = chain::collection_ids(self.http, self.site, address)?;
-        let rows = in_parallel(&ids, PARALLEL, |id| self.collection_entry(address, id).ok());
-        Ok(rows.into_iter().flatten().collect())
+        readable(in_parallel(&ids, PARALLEL, |id| {
+            self.collection_entry(address, id)
+        }))
     }
 
     fn collection_entry(&self, address: &str, token_id: &str) -> Result<Entry, String> {
@@ -172,10 +173,9 @@ impl<'a> Reader<'a> {
             .flatten()
             .filter_map(|(id, cid)| Some((id.clone(), cid.as_str()?.to_string())))
             .collect();
-        let rows = in_parallel(&assets, PARALLEL, |(id, cid)| {
-            self.asset_entry(path, id, cid).ok()
-        });
-        Ok(rows.into_iter().flatten().collect())
+        readable(in_parallel(&assets, PARALLEL, |(id, cid)| {
+            self.asset_entry(path, id, cid)
+        }))
     }
 
     /// An asset's row: its name with its format's extension; a live link
@@ -194,6 +194,26 @@ impl<'a> Reader<'a> {
         let path = asset_path_named(collection, asset_id, &name);
         Ok(entry(name, path, false, &manifest))
     }
+}
+
+/// The rows that could be read. A row that can't be read is left out, but
+/// one the chain or the storage didn't answer fails the listing: an account
+/// offline would otherwise look empty.
+fn readable(rows: Vec<Result<Entry, String>>) -> Result<Vec<Entry>, String> {
+    let mut entries = Vec::new();
+    for row in rows {
+        match row {
+            Ok(entry) => entries.push(entry),
+            Err(error)
+                if error.starts_with(CHAIN_UNREACHABLE)
+                    || error.starts_with(STORAGE_UNREACHABLE) =>
+            {
+                return Err(error);
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(entries)
 }
 
 fn text(value: &Value) -> Option<&str> {
@@ -269,10 +289,12 @@ fn save(target: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arbesk::chain::CHAIN_UNREACHABLE;
     use crate::arbesk::chain::testing::abi_string;
     use crate::arbesk::compose::UNKNOWN_FORMAT;
     use crate::arbesk::http::HttpError;
     use crate::arbesk::http::fake::{FakeHttp, not_found};
+    use crate::arbesk::ipfs::STORAGE_UNREACHABLE;
     use crate::arbesk::location::{asset_path, collection_path};
     use serde_json::{Value, json};
     use std::collections::{HashMap, HashSet};
@@ -298,6 +320,7 @@ mod tests {
         tokens: HashMap<u64, String>,
         owned: Vec<String>,
         failing: HashSet<String>,
+        rpc_down: bool,
     }
 
     fn fixture(case: &str) -> std::path::PathBuf {
@@ -386,6 +409,9 @@ mod tests {
             if url.starts_with(&format!("{ORIGIN}/api/v1/indexer/shared")) {
                 return Ok(json!({ "shared": [] }).to_string().into_bytes());
             }
+            if url == "https://rpc.test" && w.rpc_down {
+                return Err(HttpError::new(None, "connection refused"));
+            }
             if url == "https://rpc.test" {
                 let data = request.body.as_ref().unwrap()["params"][0]["data"]
                     .as_str()
@@ -469,6 +495,42 @@ mod tests {
         assert_eq!(gltf.modified, STAMP_MS / 1000);
         let paths: HashSet<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
         assert_eq!(paths.len(), entries.len());
+    }
+
+    #[test]
+    fn an_unreachable_chain_fails_the_listing_instead_of_emptying_it() {
+        let cache = tempfile::tempdir().unwrap();
+        let world = Arc::new(Mutex::new(world()));
+        world.lock().unwrap().rpc_down = true;
+        let http = arbesk(world);
+        let account = list(&http, &site(), &format!("arbesk://{ADDRESS}"), cache.path());
+        assert!(account.unwrap_err().starts_with(CHAIN_UNREACHABLE));
+        assert!(
+            list(&http, &site(), &shapes(), cache.path())
+                .unwrap_err()
+                .starts_with(CHAIN_UNREACHABLE)
+        );
+    }
+
+    #[test]
+    fn an_unreachable_gateway_fails_the_listing_instead_of_emptying_it() {
+        let cache = tempfile::tempdir().unwrap();
+        let world = Arc::new(Mutex::new(world()));
+        world
+            .lock()
+            .unwrap()
+            .failing
+            .extend(["bafyC1", "bafyC2", "bafyA1"].map(String::from));
+        let http = arbesk(world.clone());
+        let account = list(&http, &site(), &format!("arbesk://{ADDRESS}"), cache.path());
+        assert!(account.unwrap_err().starts_with(STORAGE_UNREACHABLE));
+        // One asset unreachable fails the collection too: Reload tries again.
+        world.lock().unwrap().failing = ["bafyA1".to_string()].into();
+        assert!(
+            list(&http, &site(), &shapes(), cache.path())
+                .unwrap_err()
+                .starts_with(STORAGE_UNREACHABLE)
+        );
     }
 
     #[test]

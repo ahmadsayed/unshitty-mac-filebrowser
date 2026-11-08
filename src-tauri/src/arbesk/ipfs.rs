@@ -16,6 +16,10 @@ use crate::arbesk::http::Http;
 const BROTLI_MAGIC: &[u8] = b"ARB\x01";
 const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
 
+/// How an error starts when the gateway didn't answer: a listing fails with
+/// it rather than leaving the row out.
+pub const STORAGE_UNREACHABLE: &str = "Arbesk's storage could not be reached";
+
 pub const TOO_LARGE: &str = "Arbesk sent a file larger than File Browser reads.";
 /// The most a manifest may hold once unpacked.
 pub const JSON_CAP: u64 = 16 * 1024 * 1024;
@@ -141,10 +145,11 @@ impl<'a> Gateway<'a> {
 
     fn fetch(&self, cid: &str, cap: u64) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
-        let packed = self
-            .http
-            .get(&url)
-            .map_err(|error| format!("Arbesk's storage could not be reached: {}", error.message))?;
+        let packed = self.http.get(&url).map_err(|error| match error.status {
+            // The gateway answered: it has nothing there. Not worth failing a listing for.
+            Some(404 | 410) => format!("Arbesk's storage has nothing at {cid}."),
+            _ => format!("{STORAGE_UNREACHABLE}: {}", error.message),
+        })?;
         unpack(packed, cap)
     }
 
