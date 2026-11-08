@@ -585,6 +585,16 @@ async fn preview_text(path: String, limit: usize) -> Result<fs_ops::TextPreview,
     blocking(move || fs_ops::preview_text(path, limit)).await?
 }
 
+/// A local file's bytes for the 3D preview, at most 512 MiB. Raw bytes
+/// avoid JSON-encoding them.
+#[tauri::command]
+async fn preview_bytes(path: String, limit: u64) -> Result<tauri::ipc::Response, String> {
+    place::local(&path)?;
+    let limit = limit.clamp(1, 512 * 1024 * 1024);
+    let bytes = blocking(move || fs_ops::preview_bytes(path, limit)).await??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[tauri::command]
 async fn rename_many(items: Vec<fs_ops::RenameItem>) -> Result<(), String> {
     for item in &items {
@@ -2130,6 +2140,7 @@ pub fn run() {
             open_url,
             open_with,
             preview_text,
+            preview_bytes,
             rename_many,
             set_permissions,
             create_symlink,
@@ -2648,6 +2659,7 @@ mod read_gate_tests {
         // crate root), so their refusal isn't a missing file.
         for (path, refusal) in refused("Cargo.toml") {
             assert_eq!(block_on(preview_text(path.into(), 100)).unwrap_err(), refusal, "{path}");
+            assert_eq!(block_on(preview_bytes(path.into(), 100)).err(), Some(refusal), "{path}");
         }
         for (path, refusal) in refused("src") {
             let found = search_local(path, "lib", false, 10, &mut |_| panic!("searched {path}"), &|| false);

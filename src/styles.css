@@ -924,6 +924,16 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   -webkit-user-select: text;
 }
 
+/* The 3D preview's canvas: as wide as the panel, a fixed share of the window tall. */
+.preview-model {
+  display: block;
+  width: 100%;
+  height: min(62vh, 560px);
+  cursor: grab;
+}
+
+.preview-model:active { cursor: grabbing; }
+
 .preview-empty {
   display: flex;
   flex-direction: column;

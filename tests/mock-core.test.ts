@@ -548,6 +548,21 @@ test("Google Drive keeps several accounts, one per Google account, each under it
   setMockDriveEmail("me@example.com");
 });
 
+test("preview_bytes serves the sample models, refuses folders and files over the limit", async () => {
+  const PRINTS = "/Users/me/Documents/Projects/Prints";
+  const bytes = (path: string, limit = 1_000_000) => invoke<ArrayBuffer>("preview_bytes", { path, limit });
+  const head = async (path: string) => new TextDecoder().decode((await bytes(path)).slice(0, 5));
+  expect(await head(`${PRINTS}/bracket.stl`)).toBe("solid");
+  expect(new Uint32Array((await bytes(`${PRINTS}/lamp.glb`)).slice(0, 4))[0]).toBe(0x46546c67);
+  expect(new Uint8Array((await bytes(`${PRINTS}/box.3mf`)).slice(0, 2))).toEqual(new Uint8Array([0x50, 0x4b]));
+  expect(JSON.parse(new TextDecoder().decode(await bytes(`${PRINTS}/lamp.gltf`))).buffers[0].uri).toBe("lamp.bin");
+  expect((await bytes(`${PRINTS}/lamp.bin`)).byteLength).toBe(168);
+  await expect(bytes(PRINTS)).rejects.toBe("Only files can be previewed.");
+  await expect(bytes(`${PRINTS}/scan.stl`, 256 * 1024 * 1024)).rejects.toBe("This file is too large to preview.");
+  await expect(bytes(`${PRINTS}/gone.stl`)).rejects.toMatch(/Failed to open file/);
+  await expect(bytes("sftp://me@host/box.stl")).rejects.toBeTruthy();
+});
+
 const DESKTOP_CLIENT = JSON.stringify({
   installed: { client_id: "123-abc.apps.googleusercontent.com", client_secret: "GOCSPX-test" },
 });
@@ -939,9 +954,12 @@ type MockOps = { hold(): void; held(): number; step(bytes: number): void; releas
 const mockOps = () => (globalThis as unknown as { __mockOps: MockOps }).__mockOps;
 
 test("measure sums files and folders like the backend", async () => {
-  const measured = await invoke("measure", { paths: [`${HOME}/Desktop/todo.txt`, `${HOME}/Documents/Projects`] });
-  // todo.txt, and Projects with unshitty-mac-filebrowser, its README.md and website.
-  expect(measured).toEqual({ bytes: 312 + 2_200, items: 5 });
+  const projects = `${HOME}/Documents/Projects`;
+  const measured = await invoke("measure", {
+    paths: [`${HOME}/Desktop/todo.txt`, `${projects}/unshitty-mac-filebrowser`, `${projects}/website`],
+  });
+  // todo.txt, unshitty-mac-filebrowser with its README.md, and the empty website.
+  expect(measured).toEqual({ bytes: 312 + 2_200, items: 4 });
 });
 
 test("measure asks Drive about Drive paths and the disk about local ones only, like the backend", async () => {

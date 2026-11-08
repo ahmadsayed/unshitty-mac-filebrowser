@@ -100,6 +100,9 @@ const SCENES = {
     await page.locator("#view .item").filter({ hasText: option("--item", "Notes.md") }).click();
     await page.keyboard.press("Space");
     await page.waitForSelector("#preview-layer:not([hidden])");
+    // A 3D model loads its viewer first, then draws.
+    await page.waitForSelector("#preview-body > *");
+    await page.waitForTimeout(400);
   },
   "qr-share": async (page) => {
     await page.locator("#view .item").filter({ hasText: option("--item", "Notes.md") }).click({ button: "right" });

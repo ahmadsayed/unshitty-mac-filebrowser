@@ -40,6 +40,8 @@ step when a module's role changes.
 | `src/themes/gnome.css`, `src/themes/macos.css` | The two themes' tokens (colours, font, sizes, radii, glass), light + dark; macOS also has a few scoped rules |
 | `src/theme.ts` | The platform's theme (macOS on a Mac, GNOME elsewhere) and the per-theme layout sizes the virtualized views use |
 | `src/qr-share.ts` | Send with QR Code…: the menu item and the dialog (code, link, progress, downloads) |
+| `src/models.ts` | 3D models in the Space preview without three.js: which files are models (`modelFormat`), and which companion files a .gltf may load, only in its folder or below (`companionPath`, `gltfCompanions`) |
+| `src/model-viewer.ts` | The 3D preview, loaded on demand in its own chunk: three.js reads glTF/GLB/STL/3MF (`loadModel`, no WebGL needed; STL and 3MF stood up from Z-up; files without a material drawn grey) and draws it to turn and zoom (`showModel`, released by `dispose`) |
 | `src/preview-actions.ts` | Which actions the Space preview offers (Open, Rename…, Move to Trash, Open Item Location) for where the item is, from `item-actions.ts`'s rules plus the preview's kept exceptions |
 | `src/selection.ts` | The view's selection, cursor and anchor, and the user's intent counter a paste checks before selecting what it made (#50) |
 | `src/path-refs.ts` | What remembers paths (stars, bookmarks, the clipboard, the background tabs' folders and every tab's Back and Forward) kept pointing at moved, renamed and trashed items: `moved(pairs)` and `gone(paths)`, one rule per holder, each holder replaced (and saved) at most once per report, a paste reporting each item as it lands; `followPath`, the prefix rewrite for what is inside a moved folder |

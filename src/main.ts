@@ -18,7 +18,7 @@ import {
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
   trashInfo, restoreEntry, deletePermanently, emptyTrash, cancelOperation, measure, listVolumes, trashDir, fileProperties, folderSize,
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
-  previewText, thumbnail,
+  previewBytes, previewText, thumbnail,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
   driveClientStatus, driveClientSet, driveClientClear,
   openExternal,
@@ -49,6 +49,7 @@ import { FolderSummaries } from "./folder-summaries";
 import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
 import type { DriveAuthNeed } from "./drive-auth";
 import { PathRefs, type Clip } from "./path-refs";
+import { companionPath, gltfCompanions, modelFormat, type ModelFormat } from "./models";
 import { accountOf, fromDrive, PROVIDERS, providerOf, withAccount, withoutAccount, type Account, type ProviderActions, type ProviderId } from "./providers";
 import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
@@ -4286,6 +4287,10 @@ function promptNewFolder(): void {
 
 let previewUrl: string | null = null;
 let previewSeq = 0;
+/** The 3D model on screen in the preview, released when it closes. */
+let modelView: { dispose(): void } | null = null;
+/** The most the 3D preview reads: the model and a .gltf's companions together. */
+const MODEL_PREVIEW_LIMIT = 256 * 1024 * 1024;
 
 function closePreview(): void {
   if (!previewLayer) return;
@@ -4296,6 +4301,8 @@ function closePreview(): void {
   previewName.textContent = "";
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = null;
+  modelView?.dispose();
+  modelView = null;
 }
 
 function previewEmpty(entry: Entry, text: string): void {
@@ -4335,6 +4342,8 @@ function previewStale(seq: number): boolean {
 }
 
 async function previewEntry(entry: Entry, seq: number, kind: FileKind): Promise<void> {
+  const model = modelFormat(entry.name);
+  if (model) return previewModelEntry(entry, seq, model);
   if (kind === "text" || kind === "code") return previewTextEntry(entry, seq);
   if (THUMB_KINDS.has(kind)) return previewThumbnailEntry(entry, seq);
   previewEmpty(entry, "No preview available.");
@@ -4351,6 +4360,40 @@ async function previewTextEntry(entry: Entry, seq: number): Promise<void> {
     if (previewStale(seq)) return;
     previewEmpty(entry, "No preview available.");
   }
+}
+
+/**
+ * A 3D model (glTF, GLB, STL, 3MF) you can turn and zoom. three.js loads only
+ * now, in its own chunk. Without WebGL, or for a file it can't read, the
+ * preview says there is none.
+ */
+async function previewModelEntry(entry: Entry, seq: number, format: ModelFormat): Promise<void> {
+  try {
+    const bytes = await previewBytes(entry.path, MODEL_PREVIEW_LIMIT);
+    const companions = format === "gltf" ? await readGltfCompanions(entry.path, bytes) : new Map<string, ArrayBuffer>();
+    const viewer = await import("./model-viewer");
+    const model = await viewer.loadModel(format, bytes, companions);
+    if (previewStale(seq)) return;
+    modelView = viewer.showModel(previewBody, model);
+  } catch (err) {
+    if (previewStale(seq)) return;
+    previewEmpty(entry, /too large/i.test(String(err)) ? "This file is too large to preview." : "No preview available.");
+  }
+}
+
+/** The files a .gltf names in its own folder or below, by the URI it names
+ *  them with; with the model, at most MODEL_PREVIEW_LIMIT bytes. */
+async function readGltfCompanions(path: string, bytes: ArrayBuffer): Promise<Map<string, ArrayBuffer>> {
+  const dir = parentPath(path) ?? path;
+  const found = new Map<string, ArrayBuffer>();
+  let left = MODEL_PREVIEW_LIMIT - bytes.byteLength;
+  for (const uri of gltfCompanions(JSON.parse(new TextDecoder().decode(bytes)))) {
+    const target = companionPath(uri)!.split("/").reduce(childPath, dir);
+    const data = await previewBytes(target, Math.max(left, 1));
+    left -= data.byteLength;
+    found.set(uri, data);
+  }
+  return found;
 }
 
 async function previewThumbnailEntry(entry: Entry, seq: number): Promise<void> {
@@ -5480,9 +5523,11 @@ async function init(): Promise<void> {
   previewName = $("#preview-name");
   previewBody = $("#preview-body");
   previewActionsEl = $("#preview-actions");
-  // Escape on a preview button: the view's own Escape doesn't see it.
+  // Escape on a preview button, or Escape or Space on a 3D model being
+  // turned: the view's own keys don't see them.
   previewLayer.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
+    const onModel = (event.target as Element).classList.contains("preview-model");
+    if (event.key !== "Escape" && !(event.key === " " && onModel)) return;
     event.preventDefault();
     event.stopPropagation();
     leavePreview();
