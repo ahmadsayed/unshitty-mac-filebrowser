@@ -11,15 +11,17 @@
 // --size <width>x<height> (default 1100x720), --theme gnome|macos (default
 // macos; the theme follows the platform, so gnome loads the page with a
 // Linux user agent and the app takes its Linux code paths), --scene
-// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview (default grid: the folder as it
+// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive|drive-expired (default grid: the folder as it
 // opens; list: list view with the second item selected; menu: the main menu
 // open; item-menu: the right-click menu of --item; background-menu: the
 // right-click menu of the empty area; dialog: the Keyboard Shortcuts dialog; search, search-list: a search
 // for --query, default "e", once its results are in; open-with: Open With… on
 // --item, default "Notes.md", with --query typed into its search; qr-share:
 // Send with QR Code… on --item, once its code shows; preview: Space on
-// --item). Uses ?demo (no test-only folders). The page's
-// clock is fixed, so the same scene always gives the same image.
+// --item; network-drive: Network with a connected Google account; drive-expired:
+// Google Drive whose sign-in expired, once its dialog shows). Uses ?demo (no
+// test-only folders). The page's clock is fixed, so the same scene always
+// gives the same image.
 import { createRequire } from "node:module";
 
 const args = process.argv.slice(2);
@@ -31,7 +33,7 @@ const option = (name, fallback) => {
 const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene", "--query", "--item"];
 const [path, out] = args.filter((a, i) => !a.startsWith("--") && !VALUE_OPTIONS.includes(args[i - 1]));
 if (!path || !out) {
-  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive] [--query <text>] [--item <name>]");
+  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive|drive-expired] [--query <text>] [--item <name>]");
   process.exit(2);
 }
 
@@ -110,17 +112,45 @@ const SCENES = {
   // Network (open it with the path pseudo:network) with a Google account
   // connected through the mock, as a list, so the Status column shows.
   "network-drive": async (page) => {
-    await page.getByText("Connect to Google Drive…", { exact: true }).click();
-    await page.fill(".client-json", JSON.stringify({ installed: { client_id: "1-a.apps.googleusercontent.com", client_secret: "s" } }));
-    await page.getByRole("button", { name: "Add Client", exact: true }).click();
-    await page.getByRole("button", { name: "Open Browser", exact: true }).click();
-    await page.waitForSelector(".crumb.current:has-text('My Drive')");
+    await connectMockDrive(page);
     await page.locator(".sidebar-row", { hasText: "Network" }).click();
     await page.waitForSelector("#view .item:has-text('Google Drive')");
     await page.keyboard.press(`${MOD}+1`);
     await page.waitForTimeout(300);
   },
+  // The mock's Google Drive sign-in has expired: opening the entry shows the
+  // dialog that fixes it (or, on a build before it, the old toast).
+  "drive-expired": async (page) => {
+    await connectMockDrive(page);
+    await page.locator(".sidebar-row", { hasText: "Network" }).click();
+    await page.waitForSelector("#view .item:has-text('Google Drive')");
+    // The connect toast would still be on screen; the dialog is the subject.
+    await page.locator(".toast .flat-btn").click().catch(() => {});
+    await page.evaluate(() =>
+      window.__mockCalls.failNext(
+        "list_dir",
+        "Google Drive session expired: Server returned error response: invalid_grant: Token has been expired or revoked."
+      )
+    );
+    await page.locator("#view .item", { hasText: "Google Drive" }).dblclick();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".dialog-heading")?.textContent === "Sign In to Google Drive" ||
+        [...document.querySelectorAll(".toast-title")].some((toast) => /session expired|Unable to access/.test(toast.textContent ?? "")),
+      null,
+      { timeout: 10_000 }
+    );
+  },
 };
+
+/** Connect the mock's Google account through Network's button and dialogs. */
+async function connectMockDrive(page) {
+  await page.getByText("Connect to Google Drive…", { exact: true }).click();
+  await page.fill(".client-json", JSON.stringify({ installed: { client_id: "1-a.apps.googleusercontent.com", client_secret: "s" } }));
+  await page.getByRole("button", { name: "Add Client", exact: true }).click();
+  await page.getByRole("button", { name: "Open Browser", exact: true }).click();
+  await page.waitForSelector(".crumb.current:has-text('My Drive')");
+}
 
 /** Search the folder for --query and wait for the recursive results. */
 async function search(page) {

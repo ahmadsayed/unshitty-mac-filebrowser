@@ -73,3 +73,26 @@ test("a name is only asked for when a toast shows it", () => {
     .toMatchObject({ kind: "connect", url: typed });
   expect(listingReaction("/a/locked", DENIED, ctx("reload", { nameOf: throws, parentOf: throws }))).toMatchObject({ kind: "errorPage" });
 });
+
+test("a Drive listing that lost its credential says which one is needed", () => {
+  const drive = "gdrive://acct/root~My%20Drive";
+  const expired = "Google Drive session expired: Server returned error response: invalid_grant: Token has been expired or revoked.";
+  expect(listingReaction(drive, expired, ctx("navigate"))).toMatchObject({
+    kind: "toast",
+    driveAuth: "sign-in",
+  });
+  expect(listingReaction(drive, expired, ctx("reload"))).toMatchObject({
+    kind: "errorPage",
+    driveAuth: "sign-in",
+  });
+  expect(
+    listingReaction(drive, "Google Drive needs your own OAuth client. Add one in the Connect dialog.", ctx("navigate"))
+  ).toMatchObject({ kind: "toast", driveAuth: "client" });
+});
+
+test("only Drive paths ask for a Drive credential", () => {
+  const expired = "Google Drive sign-in expired. Sign in again.";
+  expect(listingReaction("/a/folder", expired, ctx("navigate"))).not.toHaveProperty("driveAuth");
+  expect(listingReaction(SHARE, expired, ctx("navigate"))).not.toHaveProperty("driveAuth");
+  expect(listingReaction("sftp://me@host/x", expired, ctx("navigate"))).not.toHaveProperty("driveAuth");
+});
