@@ -10,12 +10,16 @@ import { ARBESK_MOCK_ADDRESS, invoke } from "../dev/mock-tauri/core";
 const viewer = vi.hoisted(() => ({
   showModel: vi.fn(),
   loadModel: vi.fn(),
-  real: { showModel: null as unknown as (host: HTMLElement, object: unknown) => unknown },
+  real: {
+    showModel: null as unknown as (host: HTMLElement, object: unknown) => unknown,
+    loadModel: null as unknown as (...args: unknown[]) => unknown,
+  },
 }));
 
 vi.mock("../src/model-viewer", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/model-viewer")>();
   viewer.real.showModel = actual.showModel;
+  viewer.real.loadModel = actual.loadModel as (...args: unknown[]) => unknown;
   viewer.loadModel.mockImplementation(actual.loadModel);
   return { ...actual, loadModel: viewer.loadModel, showModel: viewer.showModel };
 });
@@ -55,8 +59,13 @@ async function until(ok: () => boolean, ms = 10_000): Promise<void> {
 async function preview(name: string): Promise<void> {
   await click(hit(name));
   await key(" ");
-  await until(() => $("#preview-body").childElementCount > 0);
+  await until(() => shown());
   await settle(10);
+}
+
+/** Whether the preview shows its content (or why there is none), not the loading state. */
+function shown(): boolean {
+  return [...$("#preview-body").children].some((child) => !child.classList.contains("preview-loading"));
 }
 
 beforeAll(async () => {
@@ -145,6 +154,71 @@ test("a model closed before it finished loading is never shown", async () => {
   await settle(10);
   expect(viewer.showModel).not.toHaveBeenCalled();
   expect($("#preview-layer").hidden).toBe(true);
+});
+
+// ---- While a preview loads ---------------------------------------------------
+
+/** Hold the next model load until `release` is called. */
+function holdNextLoad(): () => void {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  viewer.loadModel.mockImplementationOnce(async (...args: unknown[]) => {
+    await held;
+    return (viewer.real.loadModel as (...a: unknown[]) => unknown)(...args);
+  });
+  return release;
+}
+
+test("a model still loading shows its icon, a spinner and Loading…", async () => {
+  const release = holdNextLoad();
+  await click(hit("bracket.stl"));
+  await key(" ");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const loading = $("#preview-body .preview-loading");
+  expect(loading).toBeTruthy();
+  expect(loading.querySelector(".preview-spinner")).toBeTruthy();
+  expect(loading.querySelector(".preview-empty-icon")).toBeTruthy();
+  expect(loading.textContent).toBe("Loading…");
+  release();
+  await until(() => !!$("#preview-body canvas.preview-model"));
+  expect($("#preview-body .preview-loading")).toBeNull();
+  await key("Escape");
+});
+
+test("a preview that loads at once never shows Loading…", async () => {
+  // Warm: the viewer's chunk is loaded; this load answers at once.
+  await preview("bracket.stl");
+  await key("Escape");
+  viewer.loadModel.mockResolvedValueOnce(new Group());
+  let flashed = 0;
+  const watch = new MutationObserver((records) => {
+    for (const record of records) {
+      flashed += [...record.addedNodes].filter((node) => (node as Element).classList?.contains("preview-loading")).length;
+    }
+  });
+  watch.observe($("#preview-body"), { childList: true, subtree: true });
+  await preview("bracket.stl");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  watch.disconnect();
+  expect(flashed).toBe(0);
+  await key("Escape");
+});
+
+test("a preview closed while loading leaves nothing behind", async () => {
+  const release = holdNextLoad();
+  await click(hit("bracket.stl"));
+  await key(" ");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect($("#preview-body .preview-loading")).toBeTruthy();
+  await key("Escape");
+  release();
+  await settle(20);
+  expect($("#preview-layer").hidden).toBe(true);
+  expect(viewer.showModel).not.toHaveBeenCalled();
+  // The next preview starts clean: no loading state left from the last one.
+  await preview("bracket.stl");
+  expect($("#preview-body .preview-loading")).toBeNull();
+  await key("Escape");
 });
 
 // ---- Remote items: Arbesk's models preview, other remote files don't ----
