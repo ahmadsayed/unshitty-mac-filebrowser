@@ -17,10 +17,10 @@ export { PSEUDO_PREFIX, type Pseudo };
  * the path's scheme (Google Drive, a received share, an SSH server, or a
  * folder on this computer or a mounted volume).
  */
-export type LocationKind = "recent" | "starred" | "network" | "trash" | "in-trash" | "share" | "sftp" | "drive" | "folder";
+export type LocationKind = "recent" | "starred" | "network" | "trash" | "in-trash" | "share" | "sftp" | "arbesk" | "drive" | "folder";
 
 const PSEUDO_KINDS = new Map<string, LocationKind>([["recent", "recent"], ["starred", "starred"], ["network", "network"]]);
-const PLACE_KINDS: Record<Place, LocationKind> = { drive: "drive", share: "share", sftp: "sftp", local: "folder" };
+const PLACE_KINDS: Record<Place, LocationKind> = { drive: "drive", share: "share", sftp: "sftp", arbesk: "arbesk", local: "folder" };
 
 /** The kind of place `path` is. Nothing is in the Trash until its path is
  *  known; an unknown `pseudo:` name (no window opens one: `isKnownPath`
@@ -50,9 +50,21 @@ export function isTrashKind(kind: LocationKind): boolean {
   return kind === "trash" || kind === "in-trash";
 }
 
-/** Shared folders and SSH servers are read only: no New Folder, Paste, Rename, Trash or drops. */
+/** Shared folders, SSH servers and Arbesk are read only: no New Folder, Paste, Rename, Trash or drops. */
 export function isReadOnlyKind(kind: LocationKind): boolean {
-  return kind === "share" || kind === "sftp";
+  return kind === "share" || kind === "sftp" || kind === "arbesk";
+}
+
+/** Whether a place's files have known sizes and dates: Arbesk's are known
+ *  only once an asset is built, so its size column stays empty. */
+export function knowsSizes(kind: LocationKind): boolean {
+  return kind !== "arbesk";
+}
+
+/** The remote places whose files Space previews: Arbesk's 3D models, built
+ *  into the app cache. Drive, shares and SSH servers have no preview yet. */
+export function previewsRemotely(kind: LocationKind): boolean {
+  return kind === "arbesk";
 }
 
 /** `isReadOnlyKind` for `path`. */
@@ -95,14 +107,20 @@ export function acceptsNewItems(path: string, trashPath: string): boolean {
   return kindAcceptsNewItems(locationKind(path, trashPath));
 }
 
+/** The copy-out refusal's words, by the first item's kind; a share's otherwise. */
+const COPY_OUT_WORDS: Partial<Record<LocationKind, string>> = {
+  sftp: "Copying from SSH servers comes next.",
+  arbesk: "Copying from Arbesk comes next.",
+};
+
 /**
  * Why items of these kinds can't be copied, cut or dragged out of where they
- * are: shared folders and SSH servers can't be copied from yet. Null when
- * none of them is on one; the first item's kind picks the wording.
+ * are: shared folders, SSH servers and Arbesk can't be copied from yet. Null
+ * when none of them is on one; the first item's kind picks the wording.
  */
 export function copyOutRefusalOf(kinds: readonly LocationKind[]): string | null {
   if (!kinds.some(isReadOnlyKind)) return null;
-  return kinds[0] === "sftp" ? "Copying from SSH servers comes next." : "Copying out of a shared folder comes next.";
+  return COPY_OUT_WORDS[kinds[0]] ?? "Copying out of a shared folder comes next.";
 }
 
 /** `copyOutRefusalOf` for paths. */

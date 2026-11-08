@@ -21,6 +21,7 @@ use oauth2::{
 use url::Url;
 
 use crate::cloud::client::OAuthClient;
+use crate::cloud::loopback::{self, Waited};
 use crate::cloud::token::Token;
 
 pub const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -117,57 +118,33 @@ pub fn finish(
     exchange: &dyn TokenExchange,
     timeout: Duration,
 ) -> Result<Token, String> {
-    flow.listener
-        .set_nonblocking(true)
-        .map_err(|error| format!("Could not wait for Google sign-in: {error}"))?;
-    let deadline = Instant::now() + timeout;
+    let callback = loopback::wait_for_callback(
+        &flow.listener,
+        timeout,
+        || flow.is_cancelled(),
+        parse_callback,
+        "You can close this window and return to File Browser.",
+    )
+    .map_err(|waited| match waited {
+        Waited::Cancelled => "Sign-in was cancelled.".to_string(),
+        Waited::TimedOut => "Sign-in timed out. Try again.".to_string(),
+        Waited::Io(error) => format!("Google sign-in failed: {error}"),
+    })?;
 
-    while Instant::now() < deadline {
-        if flow.is_cancelled() {
-            return Err("Sign-in was cancelled.".into());
-        }
-        match flow.listener.accept() {
-            Ok((mut stream, _)) => {
-                // A connection that goes quiet or fails (a browser preconnect,
-                // say) is dropped; only the deadline or a cancel ends the wait.
-                let until = deadline.min(Instant::now() + REQUEST_TIMEOUT);
-                let Some(request) = read_request(&mut stream, until, || flow.is_cancelled()) else {
-                    continue;
-                };
-                let Some(callback) = parse_callback(&request)? else {
-                    // A browser may ask for /favicon.ico or another path first.
-                    respond(&mut stream, 404, "Not found");
-                    continue;
-                };
-                respond(
-                    &mut stream,
-                    200,
-                    "You can close this window and return to File Browser.",
-                );
-
-                if let Some(error) = callback.error {
-                    return Err(if error == "access_denied" {
-                        "Sign-in was cancelled.".into()
-                    } else {
-                        format!("Google sign-in failed: {error}")
-                    });
-                }
-                if callback.state.as_deref() != Some(flow.csrf.as_str()) {
-                    return Err("Sign-in failed: the callback did not match this attempt.".into());
-                }
-                let Some(code) = callback.code else {
-                    return Err("Sign-in failed: Google did not return a code.".into());
-                };
-                return exchange.exchange(&code, flow.verifier.secret(), &flow.redirect_uri);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(error) => return Err(format!("Google sign-in failed: {error}")),
-        }
+    if let Some(error) = callback.error {
+        return Err(if error == "access_denied" {
+            "Sign-in was cancelled.".into()
+        } else {
+            format!("Google sign-in failed: {error}")
+        });
     }
-
-    Err("Sign-in timed out. Try again.".into())
+    if callback.state.as_deref() != Some(flow.csrf.as_str()) {
+        return Err("Sign-in failed: the callback did not match this attempt.".into());
+    }
+    let Some(code) = callback.code else {
+        return Err("Sign-in failed: Google did not return a code.".into());
+    };
+    exchange.exchange(&code, flow.verifier.secret(), &flow.redirect_uri)
 }
 
 /// The token endpoint, behind a trait so the callback tests can use a fake.
@@ -270,17 +247,9 @@ struct Callback {
     error: Option<String>,
 }
 
-fn parse_callback(request: &str) -> Result<Option<Callback>, String> {
-    let Some(target) = request
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-    else {
-        return Ok(None);
-    };
-    let url = Url::parse(&format!("http://127.0.0.1{target}"))
-        .map_err(|error| format!("Invalid Google sign-in callback: {error}"))?;
-
+/// Google's answer in a request's URL; `None` for a request without one
+/// (a browser may ask for /favicon.ico or another path first).
+fn parse_callback(url: &Url) -> Option<Callback> {
     let mut callback = Callback {
         code: None,
         state: None,
@@ -294,68 +263,8 @@ fn parse_callback(request: &str) -> Result<Option<Callback>, String> {
             _ => {}
         }
     }
-
-    if callback.code.is_none() && callback.state.is_none() && callback.error.is_none() {
-        return Ok(None);
-    }
-    Ok(Some(callback))
-}
-
-/// How long one connection may take to send its request head.
-const REQUEST_TIMEOUT: Duration = if cfg!(test) {
-    Duration::from_millis(300)
-} else {
-    Duration::from_secs(5)
-};
-
-/// Read the request head. TCP may deliver it in several pieces, so keep
-/// reading until the blank line that ends the headers, the peer closes, or
-/// 16 KB arrived. `None` when the read fails, `until` passes or `give_up`
-/// says so; reads are short so a cancel is noticed while the peer is quiet.
-fn read_request(
-    stream: &mut TcpStream,
-    until: Instant,
-    give_up: impl Fn() -> bool,
-) -> Option<String> {
-    const LIMIT: usize = 16 * 1024;
-    stream.set_nonblocking(false).ok();
-    let mut request = Vec::new();
-    let mut buffer = [0u8; 4096];
-    while request.len() < LIMIT && !request.windows(4).any(|w| w == b"\r\n\r\n") {
-        let left = until.saturating_duration_since(Instant::now());
-        if left.is_zero() || give_up() {
-            return None;
-        }
-        stream
-            .set_read_timeout(Some(left.min(Duration::from_millis(100))))
-            .ok();
-        match stream.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(read) => request.extend_from_slice(&buffer[..read]),
-            // A signal, or a quiet moment: check the deadline and read again.
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::Interrupted
-                        | std::io::ErrorKind::WouldBlock
-                        | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(_) => return None,
-        }
-    }
-    Some(String::from_utf8_lossy(&request).into_owned())
-}
-
-fn respond(stream: &mut TcpStream, status: u16, message: &str) {
-    let reason = if status == 200 { "OK" } else { "Not Found" };
-    let body = format!(
-        "<!doctype html><meta charset=\"utf-8\"><title>File Browser</title><p>{message}</p>"
-    );
-    let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    let _ = stream.write_all(response.as_bytes());
+    let empty = callback.code.is_none() && callback.state.is_none() && callback.error.is_none();
+    (!empty).then_some(callback)
 }
 
 #[cfg(test)]
@@ -509,46 +418,6 @@ mod tests {
         let token = finish(&flow, &exchange, Duration::from_secs(5)).unwrap();
         worker.join().unwrap();
         assert_eq!(token.access_token, "access");
-    }
-
-    /// A peer that sends one byte at a time until it is disconnected.
-    fn trickle(addr: std::net::SocketAddr) -> thread::JoinHandle<()> {
-        thread::spawn(move || {
-            let mut stream = TcpStream::connect(addr).unwrap();
-            stream.set_nodelay(true).unwrap();
-            while stream.write_all(b"G").is_ok() {
-                thread::sleep(Duration::from_millis(20));
-            }
-        })
-    }
-
-    #[test]
-    fn a_trickling_request_is_given_up_at_its_deadline() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let peer = trickle(listener.local_addr().unwrap());
-        let (mut stream, _) = listener.accept().unwrap();
-        let begun = Instant::now();
-        let read = read_request(&mut stream, begun + Duration::from_millis(200), || false);
-        assert!(read.is_none());
-        assert!(begun.elapsed() < Duration::from_secs(1));
-        drop(stream);
-        peer.join().unwrap();
-    }
-
-    #[test]
-    fn a_trickling_request_cannot_hold_off_a_cancel() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let peer = trickle(listener.local_addr().unwrap());
-        let (mut stream, _) = listener.accept().unwrap();
-        let begun = Instant::now();
-        let cancel_at = begun + Duration::from_millis(200);
-        let read = read_request(&mut stream, begun + Duration::from_secs(30), || {
-            Instant::now() >= cancel_at
-        });
-        assert!(read.is_none());
-        assert!(begun.elapsed() < Duration::from_secs(1));
-        drop(stream);
-        peer.join().unwrap();
     }
 
     #[test]

@@ -11,7 +11,7 @@
 // --size <width>x<height> (default 1100x720), --theme gnome|macos (default
 // macos; the theme follows the platform, so gnome loads the page with a
 // Linux user agent and the app takes its Linux code paths), --scene
-// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive|drive-expired|online-accounts|network-address-help (default grid: the folder as it
+// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|network-arbesk|arbesk-preview (default grid: the folder as it
 // opens; list: list view with the second item selected; menu: the main menu
 // open; item-menu: the right-click menu of --item; background-menu: the
 // right-click menu of the empty area; dialog: the Keyboard Shortcuts dialog; search, search-list: a search
@@ -21,7 +21,10 @@
 // --item; network-drive: Network with a connected Google account; drive-expired:
 // Google Drive whose sign-in expired, once its dialog shows; online-accounts:
 // Online Accounts with the mock's Google account connected;
-// network-address-help: Network's server address popover open). Uses ?demo (no
+// network-address-help: Network's server address popover open;
+// arbesk-connect: Connect to Arbesk with an email typed; arbesk-collection:
+// the mock's Arbesk collection as a list; network-arbesk: Network with the
+// Arbesk account; arbesk-preview: Space on --item there, default Box.3mf). Uses ?demo (no
 // test-only folders). The page's clock is fixed, so the same scene always
 // gives the same image.
 import { createRequire } from "node:module";
@@ -35,7 +38,7 @@ const option = (name, fallback) => {
 const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene", "--query", "--item"];
 const [path, out] = args.filter((a, i) => !a.startsWith("--") && !VALUE_OPTIONS.includes(args[i - 1]));
 if (!path || !out) {
-  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive|drive-expired|online-accounts|network-address-help] [--query <text>] [--item <name>]");
+  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|network-arbesk|arbesk-preview] [--query <text>] [--item <name>]");
   process.exit(2);
 }
 
@@ -160,7 +163,51 @@ const SCENES = {
       { timeout: 10_000 }
     );
   },
+  // Connect to Arbesk from Online Accounts, with an email typed.
+  "arbesk-connect": async (page) => {
+    await openArbeskConnect(page);
+    await page.fill("#arbesk-email", "me@example.com");
+  },
+  // An Arbesk collection in the list view, once the mock's account is connected.
+  "arbesk-collection": async (page) => {
+    await openMockArbeskCollection(page);
+    await page.locator("#view .item", { hasText: "Box.gltf" }).click();
+  },
+  // Network with the mock's Arbesk account connected.
+  "network-arbesk": async (page) => {
+    await openMockArbeskCollection(page);
+    await page.locator(".sidebar-row", { hasText: "Network" }).click();
+    await page.waitForSelector("#view .item:has-text('Arbesk')");
+  },
+  // Space on an Arbesk asset (--item, default Box.3mf).
+  "arbesk-preview": async (page) => {
+    await openMockArbeskCollection(page);
+    await page.locator("#view .item").filter({ hasText: option("--item", "Box.3mf") }).click();
+    await page.keyboard.press("Space");
+    await page.waitForSelector("#preview-body > *");
+    await page.waitForTimeout(400);
+  },
 };
+
+async function openArbeskConnect(page) {
+  await page.locator("#btn-main-menu").click();
+  await page.getByRole("menuitem", { name: "Online Accounts…", exact: true }).click();
+  await page.locator(".dialog .action-row", { hasText: "Arbesk" }).click();
+  await page.waitForSelector("#arbesk-email");
+}
+
+/** Connect the mock's Arbesk account, then open its Shapes collection as a list. */
+async function openMockArbeskCollection(page) {
+  await openArbeskConnect(page);
+  await page.fill("#arbesk-email", "me@example.com");
+  await page.getByRole("button", { name: "Open Browser", exact: true }).click();
+  await page.waitForSelector("#view .item:has-text('Shapes')");
+  await page.locator(".toast .flat-btn").click().catch(() => {});
+  await page.locator("#view .item", { hasText: "Shapes" }).dblclick();
+  await page.waitForSelector("#view .item:has-text('Box.3mf')");
+  await page.keyboard.press(`${MOD}+1`);
+  await page.waitForTimeout(300);
+}
 
 /** Connect the mock's Google account through Online Accounts and its dialogs. */
 async function connectMockDrive(page) {

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Where each source keeps its downloads, under the app cache folder.
-pub const DIRS: [&str; 3] = ["sftp/sftp-open", "drive", "share-open"];
+pub const DIRS: [&str; 4] = ["sftp/sftp-open", "drive", "share-open", "arbesk"];
 
 /// How long a download may go untouched before it is pruned.
 pub const MAX_AGE: Duration = Duration::from_secs(7 * 86_400);
@@ -41,6 +41,11 @@ pub fn mark(copy: &Path) {
 fn unchanged(copy: &Path, meta: &fs::Metadata) -> bool {
     let saved = mark_path(copy).and_then(|mark| fs::read_to_string(mark).ok());
     saved.is_some() && saved == fingerprint(meta)
+}
+
+/// Whether `copy` is still exactly as [`mark`] left it.
+pub fn is_unchanged(copy: &Path) -> bool {
+    fs::metadata(copy).is_ok_and(|meta| unchanged(copy, &meta))
 }
 
 /// Prune the downloads under `base` that nobody has touched for `max_age`:
@@ -196,6 +201,24 @@ mod tests {
             !named_part.exists(),
             "unchanged, so deleted rather than trashed"
         );
+    }
+
+    #[test]
+    fn a_copy_is_unchanged_until_someone_edits_it() {
+        let dir = tempdir().unwrap();
+        let copy = dir.path().join("Box.gltf");
+        write(&copy, "{}");
+        assert!(!is_unchanged(&copy), "unmarked");
+        mark(&copy);
+        assert!(is_unchanged(&copy));
+        write(&copy, "{\"edited\":true}");
+        assert!(!is_unchanged(&copy));
+        assert!(!is_unchanged(&dir.path().join("missing.gltf")));
+    }
+
+    #[test]
+    fn arbesk_assets_are_pruned_like_other_downloads() {
+        assert!(DIRS.contains(&"arbesk"));
     }
 
     #[test]

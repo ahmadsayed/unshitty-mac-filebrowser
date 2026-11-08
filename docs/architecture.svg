@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720" role="img" aria-label="The frontend's main.ts asks four groups of rule and state modules and calls typed commands in api.ts; Tauri IPC carries them to lib.rs, where every path goes through the place.rs gate before reaching placement.rs, trash_ops::Trash, fs_ops, Drive, shares or SSH; placement uses the Trash for Replace and platform.rs for renames that never replace.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720" role="img" aria-label="The frontend's main.ts asks four groups of rule and state modules and calls typed commands in api.ts; Tauri IPC carries them to lib.rs, where every path goes through the place.rs gate before reaching placement.rs, trash_ops::Trash, fs_ops, Drive, shares, SSH or Arbesk; placement uses the Trash for Replace and platform.rs for renames that never replace.">
   <title>File Browser architecture</title>
   <style>
     svg { --bg:#f5f7fa; --ink:#1c2430; --muted:#5a6575; --line:#b7c0cd; --box:#ffffff;
@@ -167,25 +167,29 @@
         <text class="s" x="966" y="311">log · Put Back · send · untrash</text>
 
         <!-- place.rs to the readers -->
-        <polyline class="edge" points="1160,201 1170,201 1170,352 735,352"/>
+        <polyline class="edge" points="1160,201 1170,201 1170,352 723,352"/>
         <text class="e" x="690" y="346">list · count · open · read</text>
-        <line class="edge" x1="735.5" y1="352" x2="735.5" y2="365" marker-end="url(#ah)"/>
-        <line class="edge" x1="858.5" y1="352" x2="858.5" y2="365" marker-end="url(#ah)"/>
-        <line class="edge" x1="981.5" y1="352" x2="981.5" y2="365" marker-end="url(#ah)"/>
-        <line class="edge" x1="1104.5" y1="352" x2="1104.5" y2="365" marker-end="url(#ah)"/>
+        <line class="edge" x1="723.5" y1="352" x2="723.5" y2="365" marker-end="url(#ah)"/>
+        <line class="edge" x1="822.5" y1="352" x2="822.5" y2="365" marker-end="url(#ah)"/>
+        <line class="edge" x1="920.5" y1="352" x2="920.5" y2="365" marker-end="url(#ah)"/>
+        <line class="edge" x1="1018.5" y1="352" x2="1018.5" y2="365" marker-end="url(#ah)"/>
+        <line class="edge" x1="1117.5" y1="352" x2="1117.5" y2="365" marker-end="url(#ah)"/>
 
-        <rect class="box" x="680" y="366" width="111" height="44" rx="7"/>
-        <text class="n" x="692" y="385">fs_ops.rs</text>
-        <text class="s" x="692" y="401">listing · copy</text>
-        <rect class="box" x="803" y="366" width="111" height="44" rx="7"/>
-        <text class="n" x="815" y="385">cloud/</text>
-        <text class="s" x="815" y="401">Google Drive</text>
-        <rect class="box" x="926" y="366" width="111" height="44" rx="7"/>
-        <text class="n" x="938" y="385">share/</text>
-        <text class="s" x="938" y="401">iroh shares</text>
-        <rect class="box" x="1049" y="366" width="111" height="44" rx="7"/>
-        <text class="n" x="1061" y="385">sftp.rs</text>
-        <text class="s" x="1061" y="401">SSH, read only</text>
+        <rect class="box" x="680.0" y="366" width="86.4" height="44" rx="7"/>
+        <text class="n" x="690.0" y="385">fs_ops.rs</text>
+        <text class="s" x="690.0" y="401">local files</text>
+        <rect class="box" x="778.4" y="366" width="86.4" height="44" rx="7"/>
+        <text class="n" x="788.4" y="385">cloud/</text>
+        <text class="s" x="788.4" y="401">Google Drive</text>
+        <rect class="box" x="876.8" y="366" width="86.4" height="44" rx="7"/>
+        <text class="n" x="886.8" y="385">share/</text>
+        <text class="s" x="886.8" y="401">iroh shares</text>
+        <rect class="box" x="975.2" y="366" width="86.4" height="44" rx="7"/>
+        <text class="n" x="985.2" y="385">sftp.rs</text>
+        <text class="s" x="985.2" y="401">SSH</text>
+        <rect class="box" x="1073.6" y="366" width="86.4" height="44" rx="7"/>
+        <text class="n" x="1083.6" y="385">arbesk/</text>
+        <text class="s" x="1083.6" y="401">Arbesk</text>
 
         <rect class="box" x="680" y="424" width="480" height="34" rx="7"/>
         <text class="row3" x="696" y="446">versions/ · properties · thumbnails · file_icons · recent · config_store</text>
@@ -203,5 +207,5 @@
 
         <rect class="ext" x="680" y="590" width="480" height="50" rx="8"/>
         <text class="n" x="696" y="611">the operating system</text>
-        <text class="s" x="696" y="629">files · Trash (Finder ~/.Trash · freedesktop Trash/) · Drive · iroh · SSH</text>
+        <text class="s" x="696" y="629">files · Trash (Finder ~/.Trash · freedesktop Trash/) · Drive · iroh · SSH · Arbesk</text>
       </svg>

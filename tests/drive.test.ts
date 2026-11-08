@@ -34,7 +34,7 @@ test("Google Drive connects from Network and browses the mock drive", async () =
 
   await openOnlineAccounts();
   expect(dialogHeading()).toBe("Online Accounts");
-  expect(accountGroups()).toEqual([{ title: "Connect an Account", rows: ["Google Drive"] }]);
+  expect(accountGroups()).toEqual([{ title: "Connect an Account", rows: ["Google Drive", "Arbesk"] }]);
 
   // No OAuth client yet: the setup step comes first.
   await chooseAccountRow("Connect an Account", "Google Drive");
@@ -126,7 +126,7 @@ test("Google Drive connects from Network and browses the mock drive", async () =
   await openOnlineAccounts();
   expect(accountGroups()).toEqual([
     { title: "Your Accounts", rows: ["Google Drive · me@example.com"] },
-    { title: "Connect an Account", rows: ["Google Drive"] },
+    { title: "Connect an Account", rows: ["Google Drive", "Arbesk"] },
   ]);
   await closeOverlays();
 });
@@ -344,6 +344,6 @@ test("Disconnect… from Network removes Google Drive and Online Accounts offers
   expect(toasts().join(" ")).toContain("Disconnected from Google Drive");
   expect(names()).not.toContain("Google Drive");
   await openOnlineAccounts();
-  expect(accountGroups()).toEqual([{ title: "Connect an Account", rows: ["Google Drive"] }]);
+  expect(accountGroups()).toEqual([{ title: "Connect an Account", rows: ["Google Drive", "Arbesk"] }]);
   await closeOverlays();
 });

@@ -35,6 +35,8 @@ beforeAll(async () => {
   await invoke("drive_client_set", { json: JSON.stringify({ installed: { client_id: "1-a.apps.googleusercontent.com", client_secret: "s" } }) });
   const flow = await invoke<{ flow_id: string }>("drive_connect_start", {});
   await invoke("drive_connect_finish", { flowId: flow.flow_id });
+  const arbesk = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  await invoke("arbesk_connect_finish", { flowId: arbesk.flow_id });
   await boot();
   await key("1", { mod: true }); // the list view, whose rows have a star
 });
@@ -181,6 +183,7 @@ const PSEUDO_LOCATION = ["New Folder… (off)", "Copy Location (off)", "Paste (o
 const PSEUDO_KEYS = { copy: "clipboard", paste: "nothing", properties: "file_properties", bookmark: "nothing", trash: "trash_entries", rename: "nothing" };
 const SHARE_COPY = "toast “Copying out of a shared folder comes next.”";
 const SSH_COPY = "toast “Copying from SSH servers comes next.”";
+const ARBESK_COPY = "toast “Copying from Arbesk comes next.”";
 const READ_ONLY_PASTE = "toast “Shared folders are read only.”";
 
 // prettier-ignore
@@ -251,6 +254,26 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     // inside Drive; the menu has neither.
     keys: { copy: "clipboard", paste: "nothing", properties: "file_properties", bookmark: "nothing", trash: "trash_entries", rename: "nothing" },
     drag: "drag",
+    preview: ["Open"],
+    star: false,
+  }],
+  "Arbesk in Network": [place("Network"), "Arbesk", {
+    item: ["Open", "Copy Location", "Disconnect…"],
+    background: ["Connect to Server…", "Online Accounts…", "Select All"],
+    location: ["Connect to Server…", "Online Accounts…", "Reload"],
+    // The account's entry is read only like an SSH server's: no copy, no properties.
+    keys: { copy: ARBESK_COPY, paste: "nothing", properties: "nothing", bookmark: "nothing", trash: "trash_entries", rename: "nothing" },
+    drag: ARBESK_COPY,
+    preview: ["Open"],
+    star: false,
+  }],
+  "an Arbesk collection": [async () => { await fromNetwork("Arbesk")(); await open("Shapes"); }, "Box.gltf", {
+    item: ["Open", "Copy (off)", "Copy Location"],
+    background: ["Show Hidden Files", "Reload", "Select All"],
+    location: ["Copy Location", "Reload", "Select All"],
+    // ⌘D bookmarks the collection, as on an SSH server; nothing else writes.
+    keys: { copy: ARBESK_COPY, paste: "toast “Arbesk is read only.”", properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing" },
+    drag: ARBESK_COPY,
     preview: ["Open"],
     star: false,
   }],

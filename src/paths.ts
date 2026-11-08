@@ -26,6 +26,9 @@ export const SHARE_PREFIX = "share://";
 /** Every SSH/SFTP location starts with this. */
 export const SFTP_PREFIX = "sftp://";
 
+/** Every Arbesk location starts with this: `arbesk://<address>/<token>~<name>/<asset>~<name>`. */
+export const ARBESK_PREFIX = "arbesk://";
+
 export function isCloudPath(path: string): boolean {
   return path.startsWith(CLOUD_PREFIX);
 }
@@ -36,6 +39,15 @@ export function isSharePath(path: string): boolean {
 
 export function isSftpPath(path: string): boolean {
   return path.startsWith(SFTP_PREFIX);
+}
+
+export function isArbeskPath(path: string): boolean {
+  return path.startsWith(ARBESK_PREFIX);
+}
+
+/** The wallet address an Arbesk path belongs to: its account key. */
+export function arbeskAccountKey(path: string): string {
+  return path.slice(ARBESK_PREFIX.length).split("/")[0] ?? "";
 }
 
 /**
@@ -64,9 +76,9 @@ export function isShareLink(text: string): boolean {
   return shareTicket(text) !== null;
 }
 
-/** Drive, received shares and SFTP are all remote, but different things. */
+/** Drive, received shares, SFTP and Arbesk are all remote, but different things. */
 export function isRemotePath(path: string): boolean {
-  return isCloudPath(path) || isSharePath(path) || isSftpPath(path);
+  return isCloudPath(path) || isSharePath(path) || isSftpPath(path) || isArbeskPath(path);
 }
 
 /** A share path for a child named `name`, encoded like a Drive name. */
@@ -163,12 +175,16 @@ export function resolveTypedPath(
   ) {
     // A bare name inside Drive has no id, so it cannot be resolved safely.
     return { error: "Enter a Google Drive location or a full path." };
+  } else if (isArbeskPath(location) && !isRemotePath(typed) && !typed.startsWith("/")) {
+    // Nor inside Arbesk, whose paths are ids too.
+    return { error: "Enter an Arbesk location or a full path." };
   } else if (
     !typed.startsWith("/") &&
     !location.startsWith(PSEUDO_PREFIX) &&
     !isCloudPath(location) &&
     !isCloudPath(typed) &&
-    !isSftpPath(typed)
+    !isSftpPath(typed) &&
+    !isArbeskPath(typed)
   ) {
     typed = `${location.replace(/\/+$/, "")}/${typed}`;
   }
@@ -195,12 +211,13 @@ function withoutTrailingSlash(typed: string): string {
 
 /** Which kind of path this is. Anything that isn't Drive, a share or SSH is
  *  "local", pseudo locations included: ask `isPseudo` first where it matters. */
-export type Place = "drive" | "share" | "sftp" | "local";
+export type Place = "drive" | "share" | "sftp" | "arbesk" | "local";
 
 export function placeOf(path: string): Place {
   if (isCloudPath(path)) return "drive";
   if (isSharePath(path)) return "share";
   if (isSftpPath(path)) return "sftp";
+  if (isArbeskPath(path)) return "arbesk";
   return "local";
 }
 
@@ -329,6 +346,19 @@ const SCHEMES: Record<Place, Scheme> = {
         root: sftpRoot,
         rootName: decodeSegment,
         segment: decodeSegment,
+      }),
+  },
+  arbesk: {
+    // Ids decide and names follow a `~`, as in Drive; the account is the top.
+    name: (path) => cloudSegmentName(path.replace(/\/+$/, "").split("/").pop() ?? ""),
+    parent: (path) => remoteParent(path, ARBESK_PREFIX, (key) => `${ARBESK_PREFIX}${key}`),
+    // Nothing is ever made in Arbesk: a child is named only as Drive names one.
+    child: joinCloudPath,
+    segments: (path) =>
+      remoteSegments(path, "arbesk", ARBESK_PREFIX, {
+        root: (key) => `${ARBESK_PREFIX}${key}`,
+        rootName: (key) => key,
+        segment: cloudSegmentName,
       }),
   },
   local: {

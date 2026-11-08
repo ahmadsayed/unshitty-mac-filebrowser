@@ -14,6 +14,8 @@ import {
   locationKind,
   mayHaveVersions,
   searchesRecursively,
+  knowsSizes,
+  previewsRemotely,
   type LocationKind,
 } from "../src/locations";
 
@@ -56,6 +58,7 @@ const ROWS: Record<string, Row> = {
   "a Google Drive folder":   { path: "gdrive://acct/root~My%20Drive",    kind: "drive", pseudo: F, readOnly: F, local: F, inTrash: F, searches: F, versions: F, newItems: T },
   "a received share":        { path: "share://r1/sub",                   kind: "share", pseudo: F, readOnly: T, local: F, inTrash: F, searches: F, versions: F, newItems: F },
   "an SSH server":           { path: "sftp://me@host/home",              kind: "sftp", pseudo: F, readOnly: T, local: F, inTrash: F, searches: F, versions: F, newItems: F },
+  "an Arbesk collection":    { path: "arbesk://0x00000000000000000000000000000000000000ab/1~Set", kind: "arbesk", pseudo: F, readOnly: T, local: F, inTrash: F, searches: F, versions: F, newItems: F },
 };
 
 for (const [name, row] of Object.entries(ROWS)) {
@@ -101,7 +104,14 @@ test("the kind of each place, in one precedence", () => {
   expect(locationKind(`${TRASH}/old`, "")).toBe("folder");
 });
 
+test("sizes are known everywhere but Arbesk, and only Arbesk previews remotely", () => {
+  const kinds: LocationKind[] = ["recent", "starred", "network", "trash", "in-trash", "share", "sftp", "drive", "arbesk", "folder"];
+  expect(kinds.filter((kind) => !knowsSizes(kind))).toEqual(["arbesk"]);
+  expect(kinds.filter(previewsRemotely)).toEqual(["arbesk"]);
+});
+
 test("the copy-out refusal, in the first item's words", () => {
+  expect(copyOutRefusal(["arbesk://0x00000000000000000000000000000000000000ab/1~S/a~B.gltf", "sftp://me@host/b"])).toBe("Copying from Arbesk comes next.");
   expect(copyOutRefusal(["/Users/me/a.txt", "gdrive://acct/x~a"])).toBeNull();
   expect(copyOutRefusal(["share://r1/a.txt"])).toBe("Copying out of a shared folder comes next.");
   expect(copyOutRefusal(["sftp://me@host/a.txt", "share://r1/b"])).toBe("Copying from SSH servers comes next.");

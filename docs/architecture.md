@@ -17,10 +17,10 @@ for it in tests (`dev/mock-tauri`).
 It owns no rules: it asks small modules that have no DOM.
 
 - **Where am I, what may run.** `paths.ts` breaks a path into its kind
-  (`placeOf`: local, Drive, share, SSH), name, parent and crumbs.
+  (`placeOf`: local, Drive, share, SSH, Arbesk), name, parent and crumbs.
   `locations.ts` turns a path into a `LocationKind` (Recent, Starred,
-  Network, the Trash, a folder in it, a share, an SSH server, Drive, a
-  folder) and says what that kind of place allows. `item-actions.ts` holds
+  Network, the Trash, a folder in it, a share, an SSH server, Arbesk, Drive,
+  a folder) and says what that kind of place allows. `item-actions.ts` holds
   one rule per action that several surfaces reach (menus, keys, the preview,
   the row star), asked inside the action itself. `preview-actions.ts` builds
   the Space preview's buttons from those rules. `models.ts` says which files
@@ -39,7 +39,7 @@ It owns no rules: it asks small modules that have no DOM.
 - **Widgets and dialogs.** `ui.ts`: menus, popovers, toasts, and dialogs
   whose busy mode runs one action at a time while the backend works.
   `online-accounts.ts` is the Online Accounts dialog, built from
-  `providers.ts`: one row per provider (Google Drive today), the accounts in
+  `providers.ts`: one row per provider (Google Drive and Arbesk), the accounts in
   one shape whatever their provider, and which account a path belongs to.
 
 **Across the boundary.** `api.ts` has one typed wrapper per Tauri command.
@@ -57,7 +57,9 @@ the place may be written. Then:
   `trash_ops::Trash`: the trash log, where an item came from (sidecar, log,
   Finder's Put Back), and both Trash layouts;
 - listing, counts, opening and reading go to `fs_ops.rs`, `cloud/` (Google
-  Drive), `share/` (iroh shares) and `sftp.rs` (SSH, read only).
+  Drive), `share/` (iroh shares), `sftp.rs` (SSH, read only) and `arbesk/`
+  (Arbesk, read only: its read path rebuilt from public sources, assets
+  built into the app cache to open and preview).
 
 Replace sends the old item to the Trash through `trash_ops::Trash` and, if
 the last rename fails, takes it back out and forgets its log entry. Every

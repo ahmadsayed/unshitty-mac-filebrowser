@@ -20,6 +20,7 @@ import {
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
   previewBytes, previewText, thumbnail,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
+  arbeskAccounts, arbeskConnectStart, arbeskConnectFinish, arbeskConnectCancel, arbeskDisconnect,
   driveClientStatus, driveClientSet, driveClientClear,
   openExternal,
   setPermissions,
@@ -50,10 +51,10 @@ import { listingReaction, type ListingContext, type ListingPhase } from "./listi
 import type { DriveAuthNeed } from "./drive-auth";
 import { PathRefs, type Clip } from "./path-refs";
 import { companionPath, gltfCompanions, modelFormat, type ModelFormat } from "./models";
-import { accountOf, fromDrive, PROVIDERS, providerOf, withAccount, withoutAccount, type Account, type ProviderActions, type ProviderId } from "./providers";
+import { accountOf, fromArbesk, fromDrive, PROVIDERS, providerOf, withAccount, withoutAccount, type Account, type ProviderActions, type ProviderId } from "./providers";
 import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
-import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
+import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, knowsSizes, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
 import { childPath, cloudAccountKey, homeFolder, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
@@ -295,7 +296,7 @@ export function escapeHtml(text: string): string {
 }
 
 /** What a path with no name of its own is called: a scheme's root. */
-const UNNAMED: Record<Place, string> = { drive: "My Drive", share: "Shared Folder", sftp: "SSH Server", local: "/" };
+const UNNAMED: Record<Place, string> = { drive: "My Drive", share: "Shared Folder", sftp: "SSH Server", arbesk: "Arbesk", local: "/" };
 
 function basename(path: string): string {
   return pathName(path) || UNNAMED[placeOf(path)];
@@ -910,9 +911,13 @@ async function refreshSftpServers(): Promise<void> {
 
 /** Refresh the connected online accounts, which Network lists. */
 async function refreshAccounts(): Promise<void> {
-  const drive = await driveAccounts().catch(() => null);
-  // A failed answer keeps what is known rather than emptying Network.
-  if (drive) accounts = drive.map(fromDrive);
+  const [drive, arbesk] = await Promise.all([
+    driveAccounts().then((list) => list.map(fromDrive)).catch(() => null),
+    arbeskAccounts().then((list) => list.map(fromArbesk)).catch(() => null),
+  ]);
+  // A failed answer keeps what is known of that provider rather than emptying Network.
+  const known = (provider: ProviderId, fresh: Account[] | null) => fresh ?? accounts.filter((a) => a.provider === provider);
+  accounts = [...known("gdrive", drive), ...known("arbesk", arbesk)];
   for (const ref of [...signInNeeded]) {
     if (!accounts.some((account) => accountRef(account) === ref)) signInNeeded.delete(ref);
   }
@@ -983,6 +988,7 @@ function crumbsFor(loc: string): Crumb[] {
   }
   const place = placeOf(loc);
   if (place === "drive") return driveCrumbs(loc);
+  if (place === "arbesk") return arbeskCrumbs(loc);
   if (place !== "local") return remoteCrumbs(loc, place);
   if (isInTrash(loc, trashPath)) {
     return [{ label: "Trash", path: trashPath, icon: "user-trash" }, ...segments(trashPath, loc)];
@@ -1006,6 +1012,12 @@ function driveCrumbs(loc: string): Crumb[] {
   const crumbs: Crumb[] = segments.map((s) => ({ label: s.name || "My Drive", path: s.path }));
   crumbs[0] = { ...crumbs[0], icon: "network-workgroup" };
   return crumbs;
+}
+
+/** Arbesk's crumbs: the account is "Arbesk", then the collection and the asset. */
+function arbeskCrumbs(loc: string): Crumb[] {
+  const { root, segments } = pathSegments(loc);
+  return [{ label: "Arbesk", path: root.path, icon: "network-workgroup" }, ...segments.map((s) => ({ label: s.name, path: s.path }))];
 }
 
 /** A share's or a server's crumbs: its root (the sharer's folder name, or the server), then its folders. */
@@ -1231,8 +1243,13 @@ function folderKind(entry: Entry): FolderKind {
   return folderKinds.get(entry.path) ?? "plain";
 }
 
+/** Whether `entry`'s size is known: not for Arbesk's assets until they are built. */
+function sizeKnown(entry: Entry): boolean {
+  return knowsSizes(locationKind(entry.path, trashPath));
+}
+
 function sizeText(entry: Entry): string {
-  if (!entry.is_dir) return formatSize(entry.size);
+  if (!entry.is_dir) return sizeKnown(entry) ? formatSize(entry.size) : "";
   const n = summaries.count(entry.path);
   return n === undefined || n === null ? "" : formatItemCount(n);
 }
@@ -1996,12 +2013,14 @@ function updateFloatingBar(): void {
       fetchCount(e.path);
       text = `“${e.name}” selected` + (n === undefined || n === null ? "" : ` (containing ${n === 1 ? "1 item" : `${n.toLocaleString()} items`})`);
     } else {
-      text = `“${e.name}” selected (${formatSize(e.size)})`;
+      text = sizeKnown(e) ? `“${e.name}” selected (${formatSize(e.size)})` : `“${e.name}” selected`;
     }
   } else {
     const files = sel.filter((e) => !e.is_dir);
     const folders = sel.length - files.length;
-    if (folders === 0) {
+    if (folders === 0 && !files.every(sizeKnown)) {
+      text = `${sel.length.toLocaleString()} items selected`;
+    } else if (folders === 0) {
       text = `${sel.length.toLocaleString()} items selected (${formatSize(files.reduce((s, e) => s + e.size, 0))})`;
     } else if (files.length === 0) {
       text = `${folders.toLocaleString()} folders selected`;
@@ -2208,6 +2227,7 @@ const ITEM_MENUS: Record<LocationKind, (sel: Entry[], single: Entry | null) => M
   "in-trash": trashItemMenu,
   share: (_sel, single) => shareItemMenu(single),
   sftp: (_sel, single) => shareItemMenu(single),
+  arbesk: (_sel, single) => shareItemMenu(single),
   drive: driveOrFolderItemMenu,
   folder: driveOrFolderItemMenu,
 };
@@ -2686,6 +2706,7 @@ const BACKGROUND_MENUS: Record<LocationKind, () => MenuItem[]> = {
   "in-trash": () => [openCurrentFolderWithItem(), { separator: true }, { label: "Select All", action: selectAll }],
   share: readOnlyBackgroundMenu,
   sftp: readOnlyBackgroundMenu,
+  arbesk: readOnlyBackgroundMenu,
   drive: () => [
     { label: "New Folder…", action: promptNewFolder },
     { separator: true },
@@ -2725,6 +2746,7 @@ const LOCATION_MENUS: Record<LocationKind, () => MenuItem[]> = {
   ],
   share: readOnlyLocationMenu,
   sftp: readOnlyLocationMenu,
+  arbesk: readOnlyLocationMenu,
   drive: () => [
     { label: "New Folder…", action: promptNewFolder },
     { separator: true },
@@ -4326,7 +4348,7 @@ async function showPreview(entry: Entry): Promise<void> {
   previewBody.replaceChildren();
   renderPreviewActions(entry);
 
-  if (isRemotePath(entry.path)) {
+  if (isRemotePath(entry.path) && !previewsRemotely(locationKind(entry.path, trashPath))) {
     previewEmpty(entry, "Preview isn't available for remote items.");
     return;
   }
@@ -5210,6 +5232,13 @@ const PROVIDER_ACTIONS: Record<ProviderId, ProviderActions> = {
     disconnect: (account) => confirmDisconnectDrive(account),
     links: (account) => [{ label: "Change Client…", action: () => void changeDriveClient(account) }],
   },
+  arbesk: {
+    connect: () => connectArbesk(),
+    // Nothing expires (no credential is kept), but connecting again is how an email changes.
+    signIn: (account) => connectArbesk(account),
+    disconnect: (account) => confirmDisconnectArbesk(account),
+    links: () => [],
+  },
 };
 
 const ONLINE_ACCOUNTS: OnlineAccountsHost = {
@@ -5363,6 +5392,86 @@ function openConnectDialog(
         }
         return false;
       }
+    },
+  });
+}
+
+/**
+ * Connect an Arbesk account as `besk login` does: the email, then Arbesk's
+ * own page in the browser, where the code Arbesk emails is typed. The app
+ * keeps only the email and wallet address Arbesk confirms.
+ */
+function connectArbesk(reconnect?: Account): void {
+  let flowId: string | null = null;
+  const extra = document.createElement("div");
+  extra.className = "connect-fields";
+  extra.innerHTML =
+    `<label>Email<input class="entry" id="arbesk-email" type="email" spellcheck="false" autocomplete="email" placeholder="you@example.com" /></label>` +
+    `<div class="field-message"></div>`;
+  const email = extra.querySelector<HTMLInputElement>("#arbesk-email")!;
+  const status = extra.querySelector<HTMLElement>(".field-message")!;
+  email.value = reconnect?.email ?? "";
+  const dialog = openDialog({
+    heading: reconnect ? "Sign In to Arbesk" : "Connect to Arbesk",
+    body: "Arbesk emails you a code. Enter it in your browser to sign in.",
+    extra,
+    className: "connect-dialog",
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "connect", label: "Open Browser", style: "suggested" },
+    ],
+    defaultResponse: "connect",
+    closeResponse: "cancel",
+    // Cancel stays live while Arbesk waits: it cancels the sign-in.
+    busy: { liveWhileBusy: ["cancel"], status },
+    onResponse: async (id) => {
+      if (id === "cancel") {
+        if (flowId) await arbeskConnectCancel(flowId).catch(() => {});
+        return;
+      }
+      try {
+        const start = await arbeskConnectStart(email.value);
+        flowId = start.flow_id;
+        status.textContent = "Waiting for Arbesk…";
+        await openExternal(start.sign_in_url);
+        const account = await arbeskConnectFinish(start.flow_id);
+        accounts = withAccount(accounts, fromArbesk(account));
+        dialog.close();
+        showToast(`Connected to ${account.email}`);
+        await navigate(account.root_path);
+      } catch (err) {
+        const message = cleanError(err);
+        status.textContent = /cancelled/i.test(message) ? "" : message;
+        return false;
+      }
+    },
+  });
+  const sync = () => dialog.setResponseEnabled("connect", email.value.includes("@"));
+  email.addEventListener("input", sync);
+  sync();
+  email.focus();
+}
+
+function confirmDisconnectArbesk(account: Account): void {
+  openDialog({
+    heading: "Disconnect Arbesk?",
+    body: `“${account.email}” is removed from File Browser. Your collections on Arbesk are not changed.`,
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "disconnect", label: "Disconnect", style: "destructive" },
+    ],
+    defaultResponse: "cancel",
+    closeResponse: "cancel",
+    onResponse: (id) => {
+      if (id !== "disconnect") return;
+      arbeskDisconnect(account.id)
+        .then(async () => {
+          forgetAccount(account);
+          showToast("Disconnected from Arbesk");
+          if (accountOf(location, [account])) await navigate(NETWORK);
+          else if (location === NETWORK) await reload([]);
+        })
+        .catch((err) => showToast(`Could not disconnect: ${cleanError(err)}`));
     },
   });
 }

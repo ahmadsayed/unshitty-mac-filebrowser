@@ -1,6 +1,6 @@
 import { encodeCloudName, isUnder, placeOf, type Place } from "../../src/paths";
 import { fold } from "../../src/search";
-import { sampleModelBytes } from "./models";
+import { sample3mf, sampleEmbeddedGltf, sampleModelBytes } from "./models";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
 // It serves a fake, in-memory home folder.
@@ -1623,6 +1623,109 @@ function refuseWhileConnected(): void {
 const driveFlows = new Set<string>();
 let driveFlowSeq = 0;
 
+// ----- Arbesk: one account, two collections, read only (src-tauri/src/arbesk/) -----
+
+/** The wallet address every mock sign-in resolves to. */
+export const ARBESK_MOCK_ADDRESS = `0x${"ab".repeat(20)}`;
+const ARBESK_ORIGIN = "https://promptscad.com";
+
+type MockArbeskAccount = { id: string; email: string; address: string; origin: string; chain_id: number; root_path: string };
+type MockAsset = { id: string; name: string; ext: "gltf" | "3mf"; huge?: boolean };
+
+/** The account's collections, as the backend lists them: Shapes, and one without a name. */
+const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset[] }> = [
+  {
+    token: "1",
+    name: "Shapes",
+    assets: [
+      { id: "box-g", name: "Box", ext: "gltf" },
+      { id: "box-m", name: "Box", ext: "3mf" },
+      { id: "big", name: "Big", ext: "gltf", huge: true },
+    ],
+  },
+  { token: "2", name: "Untitled Collection", assets: [{ id: "asset_1", name: "Cube", ext: "gltf" }] },
+];
+
+let arbeskAccountList: MockArbeskAccount[] = [];
+const arbeskFlows = new Map<string, string>();
+let arbeskFlowSeq = 0;
+
+/** `<id>~<name>`, both encoded as the backend writes them. */
+const arbeskSegment = (id: string, name: string) => `${encodeCloudName(id)}~${encodeCloudName(name)}`;
+
+/** The ids an `arbesk://` path names, after checking its account is connected. */
+function arbeskIds(path: string): { address: string; token?: string; asset?: string } {
+  const [address, ...rest] = path.slice("arbesk://".length).replace(/\/+$/, "").split("/");
+  if (!arbeskAccountList.some((account) => account.address === address?.toLowerCase())) {
+    throw "Connect this Arbesk account first.";
+  }
+  const [token, asset] = rest.map((segment) => decodeURIComponent(segment.split("~")[0]));
+  return { address, token, asset };
+}
+
+function arbeskEntry(name: string, path: string, isDir: boolean): Entry {
+  return { name, path, is_dir: isDir, size: 0, modified: now - day, is_hidden: false, is_symlink: false };
+}
+
+function listArbesk(path: string): Entry[] {
+  const { address, token, asset } = arbeskIds(path);
+  if (asset) throw `“${path}” is a file, not a folder.`;
+  const root = `arbesk://${address}`;
+  if (!token) return ARBESK_COLLECTIONS.map((c) => arbeskEntry(c.name, `${root}/${arbeskSegment(c.token, c.name)}`, true));
+  const collection = ARBESK_COLLECTIONS.find((c) => c.token === token);
+  if (!collection) throw "The chain refused this collection.";
+  const base = path.replace(/\/+$/, "");
+  return collection.assets.map((a) => arbeskEntry(`${a.name}.${a.ext}`, `${base}/${arbeskSegment(a.id, `${a.name}.${a.ext}`)}`, false));
+}
+
+function arbeskAsset(path: string): MockAsset {
+  const { token, asset } = arbeskIds(path);
+  const found = ARBESK_COLLECTIONS.find((c) => c.token === token)?.assets.find((a) => a.id === asset);
+  if (!found) throw "This asset is no longer in the collection.";
+  return found;
+}
+
+/** An asset's built file: a self-contained glTF (as Arbesk's are) or a 3MF. */
+function arbeskBytes(path: string, limit: number): Uint8Array {
+  const asset = arbeskAsset(path);
+  if (asset.huge) throw "This file is too large to preview.";
+  if (asset.ext === "3mf") return sample3mf();
+  const bytes = sampleEmbeddedGltf();
+  if (bytes.length > limit) throw "This file is too large to preview.";
+  return bytes;
+}
+
+const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
+  arbesk_accounts: () => arbeskAccountList.map((account) => ({ ...account })),
+  arbesk_connect_start: (a) => {
+    const email = str(a, "email").trim().toLowerCase();
+    if (!email.includes("@") || /\s/.test(email)) throw "Enter the email address you use with Arbesk.";
+    const flow_id = `arbesk-flow-${++arbeskFlowSeq}`;
+    arbeskFlows.set(flow_id, email);
+    return { flow_id, sign_in_url: `${ARBESK_ORIGIN}/api/v1/cli-auth?email=${encodeURIComponent(email)}&port=4242` };
+  },
+  arbesk_connect_finish: (a) => {
+    const email = arbeskFlows.get(str(a, "flowId"));
+    if (!email) throw "This sign-in attempt is no longer active.";
+    arbeskFlows.delete(str(a, "flowId"));
+    const known = arbeskAccountList.find((account) => account.address === ARBESK_MOCK_ADDRESS);
+    const account: MockArbeskAccount = {
+      id: known?.id ?? "arbesk-account",
+      email,
+      address: ARBESK_MOCK_ADDRESS,
+      origin: ARBESK_ORIGIN,
+      chain_id: 84532,
+      root_path: `arbesk://${ARBESK_MOCK_ADDRESS}`,
+    };
+    arbeskAccountList = [...arbeskAccountList.filter((item) => item !== known), account];
+    return { ...account };
+  },
+  arbesk_connect_cancel: (a) => void arbeskFlows.delete(str(a, "flowId")),
+  arbesk_disconnect: (a) => {
+    arbeskAccountList = arbeskAccountList.filter((account) => account.id !== str(a, "account"));
+  },
+};
+
 const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
   drive_accounts: () => driveAccountList.map((account) => ({ ...account })),
   drive_client_status: () => ({ configured: driveClientId !== null, client_id: driveClientId }),
@@ -1923,7 +2026,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   },
   list_dir: (a) => {
     const path = str(a, "path");
-    const lists = { sftp: listSftp, share: listShare, drive: listDrive, local: (p: string) => list(localPath(p), a.showHidden as boolean) };
+    const lists = { sftp: listSftp, share: listShare, drive: listDrive, arbesk: listArbesk, local: (p: string) => list(localPath(p), a.showHidden as boolean) };
     return lists[placeOf(path)](path);
   },
   search_dir: searchCommand,
@@ -1935,6 +2038,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     const path = str(a, "path");
     if (placeOf(path) === "share") throw "Properties aren't available for shared folders yet.";
     if (placeOf(path) === "sftp") throw "Properties aren't available for SSH servers yet.";
+    if (placeOf(path) === "arbesk") throw "Properties aren't available for Arbesk yet.";
     return placeOf(path) === "drive" ? driveProperties(path) : fileProperties(localPath(path));
   },
   set_permissions: (a) => {
@@ -2040,6 +2144,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   },
   // The real file's bytes; here a sample model for its name (./models).
   preview_bytes: (a) => {
+    if (placeOf(str(a, "path")) === "arbesk") return arbeskBytes(str(a, "path"), Number(a.limit)).slice().buffer;
     const path = localPath(str(a, "path"));
     const node = lookup(path);
     if (!node) throw "Failed to open file: No such file or directory (os error 2)";
@@ -2198,6 +2303,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   },
   ...SHARE_COMMANDS,
   ...DRIVE_COMMANDS,
+  ...ARBESK_COMMANDS,
   ...VERSION_COMMANDS,
   measure: async (a) => {
     if (measureHolding) await new Promise<void>((resolve, reject) => held.push({ op: "", bytes: 0, resolve, reject }));
@@ -2232,6 +2338,10 @@ const DOWNLOAD_TO_OPEN: Record<Exclude<Place, "local">, (path: string) => OpenTa
   drive: driveOpen,
   share: (path) => ({ kind: "file", path: shareOpen(path) }),
   sftp: (path) => ({ kind: "file", path: `/tmp/opencode/mock-sftp/${decodeURIComponent(path.split("/").pop() ?? "file")}` }),
+  arbesk: (path) => {
+    const asset = arbeskAsset(path);
+    return { kind: "file", path: `/tmp/opencode/mock-arbesk/${asset.name}.${asset.ext}` };
+  },
 };
 
 /** Like the backend, only a download is an operation (held, cancelled, reported). */
@@ -2251,6 +2361,7 @@ COMMANDS.open_target = (a) => {
 function writable(path: string): void {
   if (placeOf(path) === "sftp") throw "SSH servers are read only for now.";
   if (placeOf(path) === "share") throw "Shared folders are read only.";
+  if (placeOf(path) === "arbesk") throw "Arbesk is read only.";
 }
 
 /** Where a copy, move or rename runs (place::transfer): both sides
@@ -2266,6 +2377,7 @@ const NOT_LOCAL: Record<Exclude<Place, "local">, string> = {
   drive: "This action is not available for Google Drive items yet.",
   share: "This action is not available for shared folders.",
   sftp: "This action is not available for SSH servers.",
+  arbesk: "This action is not available for Arbesk.",
 };
 
 /** `path` when it is a file on this computer; throws why it isn't otherwise. */

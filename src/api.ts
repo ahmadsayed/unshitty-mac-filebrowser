@@ -198,6 +198,16 @@ export interface Volume {
 }
 
 /** A connected Google account. Tokens are deliberately not part of this. */
+/** A connected Arbesk account (no credential is kept: reading needs only the address). */
+export interface ArbeskAccount {
+  id: string;
+  email: string;
+  address: string;
+  origin: string;
+  chain_id: number;
+  root_path: string;
+}
+
 export interface DriveAccount {
   id: string;
   email: string;
@@ -231,6 +241,34 @@ export async function driveClientSet(json: string): Promise<DriveClientStatus> {
 
 export async function driveClientClear(): Promise<void> {
   return invoke<void>("drive_client_clear");
+}
+
+export interface ArbeskConnectStart {
+  flow_id: string;
+  /** Arbesk's sign-in page, to open in the browser. */
+  sign_in_url: string;
+}
+
+export async function arbeskAccounts(): Promise<ArbeskAccount[]> {
+  return invoke<ArbeskAccount[]>("arbesk_accounts");
+}
+
+/** Start an Arbesk sign-in for `email`: Arbesk emails the code. */
+export async function arbeskConnectStart(email: string): Promise<ArbeskConnectStart> {
+  return invoke<ArbeskConnectStart>("arbesk_connect_start", { email });
+}
+
+/** Wait for the browser and connect the account Arbesk confirms. */
+export async function arbeskConnectFinish(flowId: string): Promise<ArbeskAccount> {
+  return invoke<ArbeskAccount>("arbesk_connect_finish", { flowId });
+}
+
+export async function arbeskConnectCancel(flowId: string): Promise<void> {
+  return invoke<void>("arbesk_connect_cancel", { flowId });
+}
+
+export async function arbeskDisconnect(account: string): Promise<void> {
+  return invoke<void>("arbesk_disconnect", { account });
 }
 
 export async function driveAccounts(): Promise<DriveAccount[]> {

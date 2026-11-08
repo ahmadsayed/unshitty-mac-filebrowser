@@ -45,7 +45,7 @@ test("Online Accounts opens from the primary menu with the first row focused", a
   await openOnlineAccounts();
   expect(dialogHeading()).toBe("Online Accounts");
   expect($(".dialog-layer .dialog-text").textContent).toBe("Connect an account to browse its files in Network.");
-  expect(accountGroups()).toEqual([{ title: "Connect an Account", rows: ["Google Drive"] }]);
+  expect(accountGroups()).toEqual([{ title: "Connect an Account", rows: ["Google Drive", "Arbesk"] }]);
   expect(document.activeElement?.classList.contains("action-row")).toBe(true);
   expect(buttons()).toEqual(["Close"]);
   await key("Escape", { target: document.activeElement ?? document.body });
@@ -63,7 +63,7 @@ test("a connected account lists under Your Accounts, and a second Google account
   await openOnlineAccounts();
   expect(accountGroups()).toEqual([
     { title: "Your Accounts", rows: ["Google Drive · me@example.com", "Google Drive · work@example.com"] },
-    { title: "Connect an Account", rows: ["Google Drive"] },
+    { title: "Connect an Account", rows: ["Google Drive", "Arbesk"] },
   ]);
   await closeOverlays();
 
@@ -181,6 +181,6 @@ test("Change Client… with the agreement disconnects every Google account and o
   expect((await invoke<{ configured: boolean }>("drive_client_status")).configured).toBe(false);
   await respond("Cancel");
   await openOnlineAccounts();
-  expect(accountGroups()).toEqual([{ title: "Connect an Account", rows: ["Google Drive"] }]);
+  expect(accountGroups()).toEqual([{ title: "Connect an Account", rows: ["Google Drive", "Arbesk"] }]);
   await closeOverlays();
 });

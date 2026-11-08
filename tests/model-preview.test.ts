@@ -5,6 +5,7 @@ import { beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { Group, type Object3D } from "three";
 import { $, boot, click, goTo, hit, key, settle } from "./app";
 import { SAMPLE_TRIANGLES } from "../dev/mock-tauri/models";
+import { ARBESK_MOCK_ADDRESS, invoke } from "../dev/mock-tauri/core";
 
 const viewer = vi.hoisted(() => ({
   showModel: vi.fn(),
@@ -144,4 +145,47 @@ test("a model closed before it finished loading is never shown", async () => {
   await settle(10);
   expect(viewer.showModel).not.toHaveBeenCalled();
   expect($("#preview-layer").hidden).toBe(true);
+});
+
+// ---- Remote items: Arbesk's models preview, other remote files don't ----
+
+const ARBESK_SHAPES = `arbesk://${ARBESK_MOCK_ADDRESS}/1~Shapes`;
+
+async function connectArbesk(): Promise<void> {
+  const flow = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  await invoke("arbesk_connect_finish", { flowId: flow.flow_id });
+}
+
+test.each(["Box.gltf", "Box.3mf"])("Space shows the Arbesk asset %s as a 3D model", async (name) => {
+  await connectArbesk();
+  await goTo(ARBESK_SHAPES);
+  await preview(name);
+  expect($("#preview-name").textContent).toBe(name);
+  expect($("#preview-body canvas.preview-model")).toBeTruthy();
+  const [, model] = viewer.showModel.mock.calls[0];
+  expect(triangles(model)).toBe(SAMPLE_TRIANGLES);
+  await key("Escape");
+});
+
+test("an Arbesk asset too large to preview says so", async () => {
+  await goTo(ARBESK_SHAPES);
+  await preview("Big.gltf");
+  expect($("#preview-body .preview-empty").textContent).toBe("This file is too large to preview.");
+  expect(viewer.showModel).not.toHaveBeenCalled();
+  await key("Escape");
+});
+
+test("Drive and SSH files still have no preview", async () => {
+  await invoke("drive_client_set", { json: JSON.stringify({ installed: { client_id: "1-a.apps.googleusercontent.com", client_secret: "s" } }) });
+  const flow = await invoke<{ flow_id: string }>("drive_connect_start", {});
+  await invoke("drive_connect_finish", { flowId: flow.flow_id });
+  await invoke("sftp_connect", { url: "user@host" });
+  for (const [where, name] of [["gdrive://mock/mock-root~My%20Drive", "hello.txt"], ["sftp://user@host/home/user", "notes.txt"]]) {
+    // From Home: a typed address of another remote kind isn't taken inside Drive or SSH.
+    await goTo("/Users/me");
+    await goTo(where);
+    await preview(name);
+    expect($("#preview-body .preview-empty").textContent).toBe("Preview isn't available for remote items.");
+    await key("Escape");
+  }
 });
