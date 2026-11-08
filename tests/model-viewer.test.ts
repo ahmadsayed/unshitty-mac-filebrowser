@@ -4,7 +4,7 @@
 import { expect, test, vi } from "vitest";
 import { Box3, BoxGeometry, Group, Mesh, Quaternion, Vector3, type Object3D } from "three";
 import {
-  dracoLoader, dragTurns, keyAction, loadModel, recentred, resourceUrl, modelControls, shownBounds, showModel, turned, turnForKey,
+  dracoLoader, dragTurns, keyAction, loadModel, pickedPoint, recentred, resourceUrl, modelControls, shownBounds, showModel, turned, turnForKey,
   zoomed, zoomForKey, type Turn,
 } from "../src/model-viewer";
 import {
@@ -273,4 +273,44 @@ test("recentring keeps the model's turn and leaves its inputs alone", () => {
   expect(round(recentred(position, turn, point))).toEqual([1, 1, 1]);
   expect(round(position)).toEqual([1, 1, 1]);
   expect(turn.equals(new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.3))).toBe(true);
+});
+
+/** A scene 20 units across: a floor, and a small figure made of a body and a hat. */
+function scene() {
+  const root = new Group();
+  const floor = new Mesh(new BoxGeometry(20, 0.1, 20));
+  const figure = new Group();
+  figure.position.set(5, 0, -3);
+  const body = new Mesh(new BoxGeometry(1, 1, 1));
+  body.position.y = 0.5;
+  const hat = new Mesh(new BoxGeometry(1, 0.4, 1));
+  hat.position.y = 1.2;
+  figure.add(body, hat);
+  root.add(floor, figure);
+  root.updateMatrixWorld(true);
+  const size = shownBounds(root).getSize(new Vector3()).length();
+  return { root, floor, figure, body, hat, size };
+}
+
+test("double-clicking part of a small object turns the model about the whole object, so it spins in place", () => {
+  const { root, body, hat, size } = scene();
+  const hitOnBody = new Vector3(5, 0.5, -2.5);
+  // The body and the hat belong to one figure: its middle, from its foot to the top of its hat.
+  expect(round(pickedPoint(hitOnBody, body, root, size))).toEqual([5, 0.7, -3]);
+  expect(round(pickedPoint(new Vector3(5, 1.3, -2.5), hat, root, size))).toEqual([5, 0.7, -3]);
+});
+
+test("double-clicking something as large as the scene keeps the point that was hit", () => {
+  const { root, floor, size } = scene();
+  // The floor's middle may be far from where you clicked.
+  const hit = new Vector3(7, 0.05, -6);
+  expect(round(pickedPoint(hit, floor, root, size))).toEqual([7, 0.05, -6]);
+});
+
+test("a whole single-part model picks its own middle only when it is small beside the model, which it never is", () => {
+  const model = new Group().add(new Mesh(new BoxGeometry(2, 2, 2)));
+  model.updateMatrixWorld(true);
+  const size = shownBounds(model).getSize(new Vector3()).length();
+  const hit = new Vector3(0.3, 1, 0.2);
+  expect(round(pickedPoint(hit, model.children[0], model, size))).toEqual([0.3, 1, 0.2]);
 });

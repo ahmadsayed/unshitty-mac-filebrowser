@@ -94,10 +94,15 @@ thumbnails yet.
   (`intro.gltf`'s flower among scattered tiles). Now the model turns about
   the middle of its visible meshes' own vertices (`shownBounds`, hidden
   meshes left out, sampled to at most 400,000 vertices: 7 ms for 4 million
-  triangles), and, as in Sketchfab, a double-click on the model makes the
-  point under the pointer the pivot, gliding it to the centre
-  (`recentred`); a double-click on empty space goes back to the middle,
-  and Reset View puts back the pivot, the turn and the zoom.
+  triangles). A double-click on the model picks a new pivot and glides it to
+  the centre (`recentred`): climbing from the mesh hit, the largest group
+  still under half the model's size is the object clicked (in
+  `intro.gltf`, the Suka figure of many meshes) and its middle is the
+  pivot, so it spins in place; when even the mesh is that large (a floor),
+  the point hit is the pivot, as in Sketchfab (`pickedPoint`). Turning the
+  surface point instead made the figure circle it by about 20 px. A
+  double-click on empty space goes back to the middle, and Reset View puts
+  back the pivot, the turn and the zoom.
 
 ## Not in this change
 

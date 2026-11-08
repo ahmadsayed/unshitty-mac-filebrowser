@@ -161,6 +161,24 @@ export function recentred(position: Vector3, pivot: Quaternion, point: Vector3):
   return position.clone().sub(point.clone().applyQuaternion(pivot.clone().invert()));
 }
 
+/**
+ * The point a double-click makes the pivot. Climbing from the mesh it hit
+ * towards `root`, the largest group whose visible box is still under half
+ * the model's size is the object clicked (a figure of many meshes in a
+ * scene), and its middle is the pivot, so it spins in place. When even the
+ * mesh is that large (a floor), its middle can be far away: the point hit is
+ * the pivot instead.
+ */
+export function pickedPoint(hit: Vector3, mesh: Object3D, root: Object3D, modelSize: number): Vector3 {
+  let picked: Box3 | null = null;
+  for (let node: Object3D | null = mesh; node && node !== root; node = node.parent) {
+    const box = shownBounds(node);
+    if (box.isEmpty() || box.getSize(new Vector3()).length() >= modelSize / 2) break;
+    picked = box;
+  }
+  return picked ? picked.getCenter(new Vector3()) : hit.clone();
+}
+
 /** Moves `object` towards a position over TURN_MS (at once with reduced
  *  motion), rendering every frame. */
 function glider(object: Object3D, render: () => void) {
@@ -384,15 +402,17 @@ export function showModel(host: HTMLElement, object: Object3D): ModelView {
       place();
     }
   };
-  // A double-click turns the model about the point under the pointer from
-  // then on, that point gliding to the centre; on empty space, about its
-  // middle again.
+  // A double-click turns the model about what is under the pointer from then
+  // on (the middle of the small object clicked, or the point on a large
+  // one), gliding it to the centre; on empty space, about the model's middle
+  // again.
   const raycaster = new Raycaster();
   const pick = (x: number, y: number) => {
     pivot.updateMatrixWorld(true);
     raycaster.setFromCamera(new Vector2((x / (canvas.clientWidth || 1)) * 2 - 1, 1 - (y / (canvas.clientHeight || 1)) * 2), camera);
     const hit = raycaster.intersectObject(pivot, true)[0];
-    glide.to(hit ? recentred(object.position, pivot.quaternion, hit.point) : middle);
+    const point = hit && pickedPoint(hit.point, hit.object, pivot, size);
+    glide.to(point ? recentred(object.position, pivot.quaternion, point) : middle);
   };
   const zoom = (factor: number) => {
     distance = zoomed(distance, factor, size);
