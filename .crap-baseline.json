@@ -2,7 +2,6 @@
   "threshold": 30,
   "rust": {
     "src-tauri/src/lib.rs::list_dir": 56,
-    "src-tauri/src/lib.rs::rename_entry": 42,
     "src-tauri/src/platform.rs::DmgMount::open": 132,
     "src-tauri/src/platform.rs::dmg_helper": 182,
     "src-tauri/src/platform.rs::dmg_keep_both": 72,
