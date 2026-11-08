@@ -1630,7 +1630,8 @@ export const ARBESK_MOCK_ADDRESS = `0x${"ab".repeat(20)}`;
 const ARBESK_ORIGIN = "https://promptscad.com";
 
 type MockArbeskAccount = { id: string; email: string; address: string; origin: string; chain_id: number; root_path: string };
-type MockAsset = { id: string; name: string; ext: "gltf" | "3mf"; huge?: boolean };
+/** `thumbnail`: saved with one, as the Studio does when it can render the model. */
+type MockAsset = { id: string; name: string; ext: "gltf" | "3mf"; huge?: boolean; thumbnail?: boolean };
 
 /** The account's collections, as the backend lists them: Shapes, and one without a name. */
 const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset[] }> = [
@@ -1638,12 +1639,12 @@ const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset
     token: "1",
     name: "Shapes",
     assets: [
-      { id: "box-g", name: "Box", ext: "gltf" },
+      { id: "box-g", name: "Box", ext: "gltf", thumbnail: true },
       { id: "box-m", name: "Box", ext: "3mf" },
       { id: "big", name: "Big", ext: "gltf", huge: true },
     ],
   },
-  { token: "2", name: "Untitled Collection", assets: [{ id: "asset_1", name: "Cube", ext: "gltf" }] },
+  { token: "2", name: "Untitled Collection", assets: [{ id: "asset_1", name: "Cube", ext: "gltf", thumbnail: true }] },
 ];
 
 let arbeskAccountList: MockArbeskAccount[] = [];
@@ -1693,6 +1694,38 @@ function arbeskBytes(path: string, limit: number): Uint8Array {
   const bytes = sampleEmbeddedGltf();
   if (bytes.length > limit) throw "This file is too large to preview.";
   return bytes;
+}
+
+/** The thumbnail an asset was saved with, as PNG: a shaded cube on the
+ *  Studio's backdrop, 16:9 and at most 512 x 288 like the Studio's (the
+ *  backend never enlarges one). Empty when it has none or can't be read,
+ *  as the backend answers (never an error). */
+async function arbeskThumbnail(path: string, size: number): Promise<ArrayBuffer> {
+  let asset: MockAsset;
+  try {
+    asset = arbeskAsset(path);
+  } catch {
+    return new ArrayBuffer(0);
+  }
+  if (!asset.thumbnail) return new ArrayBuffer(0);
+  const w = Math.min(size, 512);
+  const h = Math.round((w * 9) / 16);
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#2a2b2f";
+  ctx.fillRect(0, 0, w, h);
+  const r = h * 0.35;
+  const face = (color: string, points: Array<[number, number]>) => {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    points.forEach(([x, y], i) => (i ? ctx.lineTo(w / 2 + x * r, h / 2 + y * r) : ctx.moveTo(w / 2 + x * r, h / 2 + y * r)));
+    ctx.closePath();
+    ctx.fill();
+  };
+  face("#f0a64b", [[0, -1], [0.87, -0.5], [0, 0], [-0.87, -0.5]]);
+  face("#c27f2f", [[-0.87, -0.5], [0, 0], [0, 1], [-0.87, 0.5]]);
+  face("#9a6322", [[0.87, -0.5], [0.87, 0.5], [0, 1], [0, 0]]);
+  return (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer();
 }
 
 const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
@@ -2234,6 +2267,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   trash_dir: () => TRASH,
   thumbnail: async (a) => {
     const path = str(a, "path");
+    if (path.startsWith("arbesk://")) return arbeskThumbnail(path, a.size as number);
     if (!isLocal(path)) return new ArrayBuffer(0);
     const ticket = a.ticket as number | undefined;
     thumbLog.requested.push(path);

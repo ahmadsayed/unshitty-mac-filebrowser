@@ -1467,34 +1467,57 @@ async fn thumbnail(
     ticket: Option<u64>,
 ) -> tauri::ipc::Response {
     let size = size.clamp(32, 1024);
-    let png = if place::kind(&path) == Kind::Drive {
-        blocking(move || {
-            let state = app.state::<CloudState>();
-            cloud::service::thumbnail(&state, &path, size)
-        })
-        .await
-        .unwrap_or_default()
-    } else if place::local(&path).is_err() {
-        Vec::new()
-    } else {
-        // Registered until it finishes, so the window can cancel it.
-        let request = ticket.map(|t| app.state::<thumbnails::Requests>().start(window.label(), t));
-        let stop = request.as_ref().map(thumbnails::Request::stop_flag);
-        blocking(move || {
-            let stop = || stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::SeqCst));
-            thumbnail_dir(&app)
-                .and_then(|dir| {
-                    thumbnails::thumbnail_unless(Path::new(&path), size, &dir, &stop)
-                        .ok()
-                        .flatten()
-                })
-                .and_then(|p| std::fs::read(p).ok())
-                .unwrap_or_default()
-        })
-        .await
-        .unwrap_or_default()
+    let png = match place::kind(&path) {
+        Kind::Drive => blocking(move || cloud::service::thumbnail(&app.state::<CloudState>(), &path, size))
+            .await
+            .unwrap_or_default(),
+        // The thumbnail the asset was saved with, if any.
+        Kind::Arbesk => {
+            let handle = app.clone();
+            cancellable(&app, &window, ticket, move |stop| {
+                handle.state::<arbesk::ArbeskState>().thumbnail(&path, size, stop)
+            })
+            .await
+        }
+        _ if place::local(&path).is_err() => Vec::new(),
+        _ => {
+            let handle = app.clone();
+            cancellable(&app, &window, ticket, move |stop| local_thumbnail(&handle, &path, size, stop))
+                .await
+        }
     };
     tauri::ipc::Response::new(png)
+}
+
+/// Run a thumbnail's `work` on a blocking thread, registered under `ticket`
+/// until it finishes so the window can cancel it; `work` checks `stop`.
+async fn cancellable(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    ticket: Option<u64>,
+    work: impl FnOnce(&dyn Fn() -> bool) -> Vec<u8> + Send + 'static,
+) -> Vec<u8> {
+    let request = ticket.map(|t| app.state::<thumbnails::Requests>().start(window.label(), t));
+    let stop = request.as_ref().map(thumbnails::Request::stop_flag);
+    blocking(move || {
+        let stop = || stop.as_ref().is_some_and(|s| s.load(std::sync::atomic::Ordering::SeqCst));
+        work(&stop)
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// `thumbnail` for a local file: Quick Look or the image decoder, through
+/// the disk cache.
+fn local_thumbnail(app: &tauri::AppHandle, path: &str, size: u32, stop: &dyn Fn() -> bool) -> Vec<u8> {
+    thumbnail_dir(app)
+        .and_then(|dir| {
+            thumbnails::thumbnail_unless(Path::new(path), size, &dir, stop)
+                .ok()
+                .flatten()
+        })
+        .and_then(|p| std::fs::read(p).ok())
+        .unwrap_or_default()
 }
 
 /// Start sharing local files with a QR code; the id names the share for

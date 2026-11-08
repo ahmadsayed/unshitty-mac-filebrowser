@@ -1,5 +1,6 @@
 // Which picture each item shows, and when it's asked for. In order: its
-// thumbnail once loaded (src/thumbnails.ts), an SSH server's glyph in
+// thumbnail once loaded (src/thumbnails.ts; for an Arbesk asset, the one it
+// was saved with), an SSH server's glyph in
 // Network, the OS icon once loaded (src/native-icons.ts), otherwise the
 // app's drawing; icons.ts puts the emblems on top. The OS icons of a
 // folder's first screenful are waited for, briefly, before it's shown. On
@@ -10,7 +11,7 @@
 
 import type { Entry } from "./api";
 import { fileKind, itemIcon, type FileKind, type FolderKind, type IconBase } from "./icons";
-import { PSEUDO_PREFIX } from "./locations";
+import { providesThumbnails, PSEUDO_PREFIX } from "./locations";
 import { loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl, preloadNativeIcons, recheckNativeIcons } from "./native-icons";
 import { isRemotePath, isSftpPath } from "./paths";
 import { PROVIDERS, providerOf } from "./providers";
@@ -182,8 +183,11 @@ export class ItemIcons {
     if (folders.length) void recheckNativeIcons(folders, this.nativePx(), this.changed);
   }
 
+  /** Pictures and documents, and any file of a place that hands over its
+   *  own thumbnails (Arbesk); the backend answers empty when there is none. */
   private wantsThumb(e: Entry): boolean {
-    return this.host.view().showThumbnails && !e.is_dir && THUMB_KINDS.has(fileKind(e.name));
+    if (!this.host.view().showThumbnails || e.is_dir) return false;
+    return THUMB_KINDS.has(fileKind(e.name)) || providesThumbnails(e.path);
   }
 
   /** Pixel size to request: the displayed icon size at screen resolution, in a few steps. */

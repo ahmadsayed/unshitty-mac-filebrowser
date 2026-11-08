@@ -1,7 +1,8 @@
 //! An Arbesk account as folders and files: its collections, a collection's
-//! assets, and an asset built into the app cache to open or preview.
+//! assets, an asset built into the app cache to open or preview, and the
+//! thumbnail an asset was saved with.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 
@@ -14,6 +15,7 @@ use crate::arbesk::ipfs::{Gateway, ManifestCache, STORAGE_UNREACHABLE, in_parall
 use crate::arbesk::location::{ArbeskPath, asset_path_named, collection_path, parse};
 use crate::fs_ops::Entry;
 use crate::progress::Progress;
+use crate::thumbnails::png_from_bytes;
 
 /// How many requests a listing runs at once.
 const PARALLEL: usize = 8;
@@ -22,19 +24,142 @@ const MANIFEST_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 const UNTITLED_COLLECTION: &str = "Untitled Collection";
 
 /// The folder or file entries at `path`: an account's collections, or a
-/// collection's assets. Rows that can't be read are left out.
+/// collection's assets. Rows that can't be read are left out. Each asset
+/// listed has its thumbnail, or its lack of one, kept in `thumbs`.
 pub fn list(
     http: &dyn Http,
     site: &Site,
     path: &str,
     cache_dir: &Path,
+    thumbs: &Thumbnails,
 ) -> Result<Vec<Entry>, String> {
     let reader = Reader::open(http, site, cache_dir)?;
     match parse(path)? {
         ArbeskPath::Account { address } => reader.collections(&address),
-        ArbeskPath::Collection { token_id, .. } => reader.assets(path, &token_id),
+        ArbeskPath::Collection { address, token_id } => {
+            thumbs.forget_collection(&address, &token_id);
+            reader.assets(path, &address, &token_id, thumbs)
+        }
         ArbeskPath::Asset { .. } => Err(format!("“{path}” is a file, not a folder.")),
     }
+}
+
+/// The thumbnail the asset at `path` was saved with, as PNG at most `size`
+/// pixels square. `None` when it has none, the picture can't be read, or
+/// `stop` says the view no longer wants it: the view keeps the file's icon,
+/// as for any file without a thumbnail.
+pub fn thumbnail(
+    http: &dyn Http,
+    site: &Site,
+    path: &str,
+    size: u32,
+    cache_dir: &Path,
+    thumbs: &Thumbnails,
+    stop: &dyn Fn() -> bool,
+) -> Option<Vec<u8>> {
+    let ArbeskPath::Asset {
+        address,
+        token_id,
+        asset_id,
+    } = parse(path).ok()?
+    else {
+        return None;
+    };
+    if stop() {
+        return None;
+    }
+    let key = asset_key(&address, &token_id, &asset_id);
+    let stored = match thumbs.known(&key) {
+        Some(known) => known,
+        // Not kept when the chain or the storage didn't answer, so a later
+        // request tries again.
+        None => {
+            let found = find_thumbnail(http, site, &token_id, &asset_id, cache_dir).ok()?;
+            thumbs.remember(key, found.clone());
+            found
+        }
+    }?;
+    if stop() {
+        return None;
+    }
+    let gateway = Gateway::new(http, &stored.gateway, manifest_cache(cache_dir));
+    png_from_bytes(&gateway.image(&stored.cid).ok()?, size, stop)
+}
+
+/// The thumbnail of an asset no listing has shown, found through its collection.
+fn find_thumbnail(
+    http: &dyn Http,
+    site: &Site,
+    token_id: &str,
+    asset_id: &str,
+    cache_dir: &Path,
+) -> Result<Option<Stored>, String> {
+    let reader = Reader::open(http, site, cache_dir)?;
+    let (_, manifest) = reader.asset_manifest(token_id, asset_id)?;
+    Ok(reader.stored_thumbnail(&manifest))
+}
+
+/// Where each asset a listing showed keeps its thumbnail: the picture's
+/// gateway and CID, or `None` for an asset saved without one. A thumbnail
+/// then costs one request to the gateway. Keyed by the asset's ids
+/// ([`asset_key`]), never by names a collection's owner chooses.
+#[derive(Default)]
+pub struct Thumbnails {
+    known: Mutex<HashMap<String, Option<Stored>>>,
+}
+
+/// An asset's key in [`Thumbnails`]: its account, token and asset ids. A
+/// token id is a number, so the collection's assets share a prefix.
+fn asset_key(address: &str, token_id: &str, asset_id: &str) -> String {
+    format!("{address}/{token_id}/{asset_id}")
+}
+
+/// A thumbnail on an account's gateway.
+#[derive(Clone)]
+struct Stored {
+    gateway: String,
+    cid: String,
+}
+
+impl Thumbnails {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Option<Stored>>> {
+        self.known.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn remember(&self, key: String, stored: Option<Stored>) {
+        self.lock().insert(key, stored);
+    }
+
+    /// What the last listing said about the asset's thumbnail, if one showed it.
+    fn known(&self, key: &str) -> Option<Option<Stored>> {
+        self.lock().get(key).cloned()
+    }
+
+    /// Forget a collection's assets before its listing records them again,
+    /// so one that left the collection isn't shown with its old picture.
+    fn forget_collection(&self, address: &str, token_id: &str) {
+        let prefix = asset_key(address, token_id, "");
+        self.lock().retain(|key, _| !key.starts_with(&prefix));
+    }
+
+    /// Forget every thumbnail: an account was disconnected.
+    pub fn clear(&self) {
+        self.lock().clear();
+    }
+}
+
+/// The CID of an asset's thumbnail, read as Arbesk reads it
+/// (`extractThumbnailCid`): the object's `cid`, else its `source.cid`;
+/// older manifests may hold the CID itself.
+fn thumbnail_cid(manifest: &Value) -> Option<&str> {
+    let thumbnail = &manifest["thumbnail"];
+    [thumbnail, &thumbnail["cid"], &thumbnail["source"]["cid"]]
+        .into_iter()
+        .find_map(text)
+}
+
+fn manifest_cache(cache_dir: &Path) -> ManifestCache {
+    ManifestCache::new(cache_dir.join("arbesk-manifests"), MANIFEST_CACHE_BYTES)
 }
 
 /// The asset at `path` as a file in `cache_dir/arbesk`, built once per
@@ -55,11 +180,8 @@ pub fn build(
         return Err(format!("“{path}” is a folder, not a file."));
     };
     let reader = Reader::open(http, site, cache_dir)?;
-    let collection = reader.collection_manifest(&token_id)?;
-    let cid = collection["assets"][&asset_id]
-        .as_str()
-        .ok_or("This asset is no longer in the collection.")?;
-    let manifest = reader.gateway.json(cid)?;
+    let (cid, manifest) = reader.asset_manifest(&token_id, &asset_id)?;
+    let cid = cid.as_str();
     if is_child_ref(&manifest) {
         return Err(UNKNOWN_FORMAT.into());
     }
@@ -134,8 +256,7 @@ struct Reader<'a> {
 impl<'a> Reader<'a> {
     fn open(http: &'a dyn Http, site: &'a Site, cache_dir: &Path) -> Result<Self, String> {
         let chain = chain::config(http, site)?;
-        let cache = ManifestCache::new(cache_dir.join("arbesk-manifests"), MANIFEST_CACHE_BYTES);
-        let gateway = Gateway::new(http, &chain.gateway, cache);
+        let gateway = Gateway::new(http, &chain.gateway, manifest_cache(cache_dir));
         Ok(Self {
             http,
             site,
@@ -147,6 +268,25 @@ impl<'a> Reader<'a> {
     fn collection_manifest(&self, token_id: &str) -> Result<Value, String> {
         self.gateway
             .json(&chain::token_uri(self.http, &self.chain, token_id)?)
+    }
+
+    /// The CID and manifest of asset `asset_id` in collection `token_id`.
+    fn asset_manifest(&self, token_id: &str, asset_id: &str) -> Result<(String, Value), String> {
+        let collection = self.collection_manifest(token_id)?;
+        let cid = collection["assets"][asset_id]
+            .as_str()
+            .ok_or("This asset is no longer in the collection.")?
+            .to_string();
+        let manifest = self.gateway.json(&cid)?;
+        Ok((cid, manifest))
+    }
+
+    /// Where the asset `manifest` keeps its thumbnail, if it has one.
+    fn stored_thumbnail(&self, manifest: &Value) -> Option<Stored> {
+        thumbnail_cid(manifest).map(|cid| Stored {
+            gateway: self.chain.gateway.clone(),
+            cid: cid.to_string(),
+        })
     }
 
     fn collections(&self, address: &str) -> Result<Vec<Entry>, String> {
@@ -165,7 +305,13 @@ impl<'a> Reader<'a> {
         Ok(entry(name, path, true, &manifest))
     }
 
-    fn assets(&self, path: &str, token_id: &str) -> Result<Vec<Entry>, String> {
+    fn assets(
+        &self,
+        path: &str,
+        address: &str,
+        token_id: &str,
+        thumbs: &Thumbnails,
+    ) -> Result<Vec<Entry>, String> {
         let manifest = self.collection_manifest(token_id)?;
         let assets: Vec<(String, String)> = manifest["assets"]
             .as_object()
@@ -174,13 +320,21 @@ impl<'a> Reader<'a> {
             .filter_map(|(id, cid)| Some((id.clone(), cid.as_str()?.to_string())))
             .collect();
         readable(in_parallel(&assets, PARALLEL, |(id, cid)| {
-            self.asset_entry(path, id, cid)
+            let entry = self.asset_entry(path, id, cid)?;
+            thumbs.remember(asset_key(address, token_id, id), entry.1);
+            Ok(entry.0)
         }))
     }
 
     /// An asset's row: its name with its format's extension; a live link
-    /// shows as glTF, an unknown format without an extension.
-    fn asset_entry(&self, collection: &str, asset_id: &str, cid: &str) -> Result<Entry, String> {
+    /// shows as glTF, an unknown format without an extension. With it,
+    /// where its thumbnail is.
+    fn asset_entry(
+        &self,
+        collection: &str,
+        asset_id: &str,
+        cid: &str,
+    ) -> Result<(Entry, Option<Stored>), String> {
         let manifest = self.gateway.json(cid)?;
         let ext = if is_child_ref(&manifest) {
             Some("gltf")
@@ -192,7 +346,8 @@ impl<'a> Reader<'a> {
         let base = display_name(&manifest, asset_id);
         let name = ext.map_or_else(|| base.clone(), |ext| format!("{base}.{ext}"));
         let path = asset_path_named(collection, asset_id, &name);
-        Ok(entry(name, path, false, &manifest))
+        let thumbnail = self.stored_thumbnail(&manifest);
+        Ok((entry(name, path, false, &manifest), thumbnail))
     }
 }
 
@@ -353,6 +508,15 @@ mod tests {
             }
         }
 
+        /// Gives the asset manifest at `asset` a thumbnail stored at `cid`, as
+        /// the Studio saves one: a WebP picture and its metadata.
+        fn put_thumbnail(&mut self, asset: &str, cid: &str, width: u32, height: u32) {
+            let mut manifest: Value = serde_json::from_slice(&self.files[asset]).unwrap();
+            manifest["thumbnail"] = json!({ "cid": cid, "mime": "image/webp", "path": "thumbnail.webp", "width": width, "height": height });
+            self.put(asset, manifest);
+            self.files.insert(cid.into(), webp(width, height));
+        }
+
         /// An asset manifest that wraps the source at `source`.
         fn put_asset(&mut self, cid: &str, name: Option<&str>, source: &str) {
             let mut manifest = json!({ "type": "asset", "timestamp": STAMP_MS, "scene": { "nodes": [{ "source": { "cid": source } }] } });
@@ -378,6 +542,7 @@ mod tests {
         w.put_asset("bafyA2", Some("Box"), "bafySrc3mf");
         w.put_asset("bafyA4", Some("Odd"), "bafySrcOdd");
         w.put("bafyA3", json!({ "name": "Linked", "scene": { "nodes": [{ "child_ref": { "assetID": "x" } }] } }));
+        w.put_thumbnail("bafyA1", "bafyThumb", 512, 384);
         w.put(
             "bafyC1",
             json!({ "type": "collection", "name": "Shapes", "timestamp": STAMP_MS, "assets": {
@@ -437,6 +602,16 @@ mod tests {
         })
     }
 
+    /// A WebP picture, the format the Studio stores thumbnails in.
+    fn webp(width: u32, height: u32) -> Vec<u8> {
+        let picture = image::DynamicImage::new_rgb8(width, height);
+        let mut bytes = Vec::new();
+        picture
+            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::WebP)
+            .unwrap();
+        bytes
+    }
+
     fn names(entries: &[Entry]) -> Vec<String> {
         let mut names: Vec<String> = entries.iter().map(|entry| entry.name.clone()).collect();
         names.sort();
@@ -463,7 +638,7 @@ mod tests {
     fn an_account_lists_its_readable_collections() {
         let cache = tempfile::tempdir().unwrap();
         let http = arbesk(Arc::new(Mutex::new(world())));
-        let entries = list(&http, &site(), &format!("arbesk://{ADDRESS}"), cache.path()).unwrap();
+        let entries = list(&http, &site(), &format!("arbesk://{ADDRESS}"), cache.path(), &Thumbnails::default()).unwrap();
         assert_eq!(names(&entries), ["Shapes", "Untitled Collection"]);
         let shapes_entry = entries.iter().find(|entry| entry.name == "Shapes").unwrap();
         assert!(shapes_entry.is_dir);
@@ -480,7 +655,7 @@ mod tests {
     fn a_collection_lists_its_assets_as_files() {
         let cache = tempfile::tempdir().unwrap();
         let http = arbesk(Arc::new(Mutex::new(world())));
-        let entries = list(&http, &site(), &shapes(), cache.path()).unwrap();
+        let entries = list(&http, &site(), &shapes(), cache.path(), &Thumbnails::default()).unwrap();
         assert_eq!(
             names(&entries),
             ["Box.3mf", "Box.gltf", "Linked.gltf", "Odd"]
@@ -506,10 +681,10 @@ mod tests {
         let world = Arc::new(Mutex::new(world()));
         world.lock().unwrap().rpc_down = true;
         let http = arbesk(world);
-        let account = list(&http, &site(), &format!("arbesk://{ADDRESS}"), cache.path());
+        let account = list(&http, &site(), &format!("arbesk://{ADDRESS}"), cache.path(), &Thumbnails::default());
         assert!(account.unwrap_err().starts_with(CHAIN_UNREACHABLE));
         assert!(
-            list(&http, &site(), &shapes(), cache.path())
+            list(&http, &site(), &shapes(), cache.path(), &Thumbnails::default())
                 .unwrap_err()
                 .starts_with(CHAIN_UNREACHABLE)
         );
@@ -525,12 +700,12 @@ mod tests {
             .failing
             .extend(["bafyC1", "bafyC2", "bafyA1"].map(String::from));
         let http = arbesk(world.clone());
-        let account = list(&http, &site(), &format!("arbesk://{ADDRESS}"), cache.path());
+        let account = list(&http, &site(), &format!("arbesk://{ADDRESS}"), cache.path(), &Thumbnails::default());
         assert!(account.unwrap_err().starts_with(STORAGE_UNREACHABLE));
         // One asset unreachable fails the collection too: Reload tries again.
         world.lock().unwrap().failing = ["bafyA1".to_string()].into();
         assert!(
-            list(&http, &site(), &shapes(), cache.path())
+            list(&http, &site(), &shapes(), cache.path(), &Thumbnails::default())
                 .unwrap_err()
                 .starts_with(STORAGE_UNREACHABLE)
         );
@@ -541,7 +716,7 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let http = arbesk(Arc::new(Mutex::new(world())));
         let asset = asset_path(&shapes(), "a1", "Box", "gltf");
-        assert!(list(&http, &site(), &asset, cache.path()).is_err());
+        assert!(list(&http, &site(), &asset, cache.path(), &Thumbnails::default()).is_err());
     }
 
     #[test]
@@ -800,5 +975,189 @@ mod tests {
         assert_eq!(file_name("a/b", "gltf"), "a_b.gltf");
         assert_eq!(file_name("..", "3mf"), "_.3mf");
         assert_eq!(file_name("", "gltf"), "_.gltf");
+    }
+
+    fn box_gltf() -> String {
+        asset_path(&shapes(), "a1", "Box", "gltf")
+    }
+
+    fn box_3mf() -> String {
+        asset_path(&shapes(), "a2", "Box", "3mf")
+    }
+
+    fn png_size(png: &[u8]) -> (u32, u32) {
+        use image::GenericImageView;
+        assert_eq!(image::guess_format(png).unwrap(), image::ImageFormat::Png);
+        image::load_from_memory(png).unwrap().dimensions()
+    }
+
+    /// The URLs asked for since request number `from`.
+    fn asked_since(http: &FakeHttp, from: usize) -> Vec<String> {
+        http.requests()[from..]
+            .iter()
+            .map(|request| request.url.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_listed_asset_shows_its_own_thumbnail_after_one_request() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let thumbs = Thumbnails::default();
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        let before = http.requests().len();
+        let png = thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| false)
+            .expect("Box.gltf was saved with a thumbnail");
+        assert_eq!(png_size(&png), (256, 192));
+        // Neither the backend nor the chain: the listing found where it is.
+        assert_eq!(asked_since(&http, before), ["https://gw.test/ipfs/bafyThumb"]);
+    }
+
+    #[test]
+    fn an_asset_saved_without_a_thumbnail_has_none_and_asks_nobody() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let thumbs = Thumbnails::default();
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        let before = http.requests().len();
+        assert!(thumbnail(&http, &site(), &box_3mf(), 256, cache.path(), &thumbs, &|| false).is_none());
+        assert!(asked_since(&http, before).is_empty());
+    }
+
+    #[test]
+    fn an_asset_not_listed_yet_finds_its_thumbnail_through_its_collection() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let thumbs = Thumbnails::default();
+        let png = thumbnail(&http, &site(), &box_gltf(), 128, cache.path(), &thumbs, &|| false)
+            .expect("found through the chain");
+        assert_eq!(png_size(&png), (128, 96));
+        // Found once, remembered: the next one goes straight to the picture.
+        let before = http.requests().len();
+        assert!(thumbnail(&http, &site(), &box_gltf(), 128, cache.path(), &thumbs, &|| false).is_some());
+        assert_eq!(asked_since(&http, before), ["https://gw.test/ipfs/bafyThumb"]);
+    }
+
+    #[test]
+    fn a_new_version_saved_without_a_thumbnail_drops_the_old_one() {
+        let cache = tempfile::tempdir().unwrap();
+        let world = Arc::new(Mutex::new(world()));
+        let http = arbesk(world.clone());
+        let thumbs = Thumbnails::default();
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        assert!(thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| false).is_some());
+        {
+            let mut w = world.lock().unwrap();
+            w.put_asset("bafyA1v2", Some("Box"), "bafySrcGltf");
+            let mut collection: Value = serde_json::from_slice(&w.files["bafyC1"]).unwrap();
+            collection["assets"]["a1"] = json!("bafyA1v2");
+            w.put("bafyC1v2", collection);
+            w.tokens.insert(1, "bafyC1v2".into());
+        }
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        assert!(thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| false).is_none());
+    }
+
+    #[test]
+    fn a_thumbnail_that_cannot_be_read_is_no_thumbnail() {
+        let cache = tempfile::tempdir().unwrap();
+        let world = Arc::new(Mutex::new(world()));
+        let http = arbesk(world.clone());
+        let thumbs = Thumbnails::default();
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        world.lock().unwrap().failing.insert("bafyThumb".into());
+        assert!(thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| false).is_none());
+        {
+            let mut w = world.lock().unwrap();
+            w.failing.clear();
+            w.put("bafyThumb", json!({ "not": "a picture" }));
+        }
+        assert!(thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| false).is_none());
+        // Folders, assets gone from the collection and other accounts' paths have none either.
+        for path in [
+            shapes(),
+            asset_path(&shapes(), "a9", "Gone", "gltf"),
+            "arbesk://not-an-address/1~x/a1~y.gltf".to_string(),
+        ] {
+            assert!(thumbnail(&http, &site(), &path, 256, cache.path(), &thumbs, &|| false).is_none(), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_cancelled_thumbnail_asks_nobody() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let thumbs = Thumbnails::default();
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        let before = http.requests().len();
+        assert!(thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| true).is_none());
+        assert!(asked_since(&http, before).is_empty());
+    }
+
+    #[test]
+    fn a_renamed_asset_keeps_its_thumbnail_by_its_ids() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let thumbs = Thumbnails::default();
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        let before = http.requests().len();
+        let renamed = asset_path(&collection_path(ADDRESS, "1", "Old name"), "a1", "Crate", "gltf");
+        assert!(thumbnail(&http, &site(), &renamed, 128, cache.path(), &thumbs, &|| false).is_some());
+        assert_eq!(asked_since(&http, before), ["https://gw.test/ipfs/bafyThumb"]);
+    }
+
+    #[test]
+    fn listing_a_collection_again_forgets_assets_no_longer_in_it() {
+        let cache = tempfile::tempdir().unwrap();
+        let world = Arc::new(Mutex::new(world()));
+        let http = arbesk(world.clone());
+        let thumbs = Thumbnails::default();
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        {
+            let mut w = world.lock().unwrap();
+            let mut collection: Value = serde_json::from_slice(&w.files["bafyC1"]).unwrap();
+            collection["assets"].as_object_mut().unwrap().remove("a1");
+            w.put("bafyC1v3", collection);
+            w.tokens.insert(1, "bafyC1v3".into());
+        }
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        // Not the remembered picture: Box.gltf left the collection.
+        assert!(thumbnail(&http, &site(), &box_gltf(), 256, cache.path(), &thumbs, &|| false).is_none());
+    }
+
+    #[test]
+    fn forgetting_every_thumbnail_leaves_none_known() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let thumbs = Thumbnails::default();
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        let key = asset_key(ADDRESS, "1", "a1");
+        assert!(thumbs.known(&key).is_some());
+        thumbs.clear();
+        assert!(thumbs.known(&key).is_none());
+    }
+
+    #[test]
+    fn the_thumbnail_cid_reads_every_shape_arbesk_has_saved() {
+        // Today an object; older manifests kept a bare CID or a `source`.
+        assert_eq!(thumbnail_cid(&json!({ "thumbnail": { "cid": "bafyT" } })), Some("bafyT"));
+        assert_eq!(thumbnail_cid(&json!({ "thumbnail": "bafyT" })), Some("bafyT"));
+        assert_eq!(
+            thumbnail_cid(&json!({ "thumbnail": { "source": { "cid": "bafyT" } } })),
+            Some("bafyT")
+        );
+        assert_eq!(
+            thumbnail_cid(&json!({ "thumbnail": { "cid": "", "source": { "cid": "bafyT" } } })),
+            Some("bafyT")
+        );
+        for none in [
+            json!({}),
+            json!({ "thumbnail": null }),
+            json!({ "thumbnail": "" }),
+            json!({ "thumbnail": { "cid": 7 } }),
+            json!({ "thumbnail": { "path": "thumbnail.webp" } }),
+        ] {
+            assert_eq!(thumbnail_cid(&none), None, "{none}");
+        }
     }
 }

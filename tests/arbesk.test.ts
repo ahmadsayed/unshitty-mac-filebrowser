@@ -3,12 +3,13 @@
 // backend can't answer for a moment.
 import { beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, accountGroups, boot, chooseAccountRow, click, closeOverlays, dialogHeading, goTo, key, menuLabels, mouse, names, open, openOnlineAccounts, respond, settle, toasts, type } from "./app";
+import { $, $$, accountGroups, boot, chooseAccountRow, click, closeOverlays, dialogHeading, goTo, installFakeCanvas, key, menuLabels, mouse, names, open, openOnlineAccounts, respond, settle, toasts, type } from "./app";
 
 const calls = () =>
   (globalThis as unknown as { __mockCalls: { failNext(cmd: string, error: string): void } }).__mockCalls;
 
 beforeAll(async () => {
+  installFakeCanvas(); // the mock draws the thumbnails Arbesk hands over
   await boot();
   await key("1", { mod: true }); // the list view, with its size and date cells
 });
@@ -64,6 +65,14 @@ test("a collection lists its assets as files, without sizes", async () => {
   expect(row("Box.gltf").querySelector(".meta.size")?.textContent).toBe("");
   await click(row("Box.3mf"));
   expect($("#floating-bar").textContent).toBe("“Box.3mf” selected");
+});
+
+test("an asset shows the thumbnail it was saved with, and one saved without keeps its icon", async () => {
+  expect(crumbs()).toEqual(["Arbesk", "Shapes"]);
+  await settle(20);
+  expect(row("Box.gltf").querySelector(".icon img")).not.toBeNull();
+  expect(row("Box.3mf").querySelector(".icon img")).toBeNull();
+  expect(row("Big.gltf").querySelector(".icon img")).toBeNull();
 });
 
 test("nothing in Arbesk can be written, renamed or copied out", async () => {
