@@ -16,11 +16,27 @@ import {
   searchesRecursively,
   knowsSizes,
   previewsRemotely,
+  providesThumbnails,
   type LocationKind,
 } from "../src/locations";
 
 // The Trash folder the app shows: Finder's on macOS, freedesktop's files/ on Linux.
 const TRASH = "/Users/me/.Trash";
+
+/** A path of each kind of place. */
+const PLACE_PATHS: Record<LocationKind, string> = {
+  recent: "pseudo:recent",
+  starred: "pseudo:starred",
+  network: "pseudo:network",
+  trash: TRASH,
+  "in-trash": `${TRASH}/old.png`,
+  share: "share://r1/Photos/a.png",
+  sftp: "sftp://me@host/a.png",
+  drive: "gdrive://acct/x~a.png",
+  arbesk: "arbesk://0x00000000000000000000000000000000000000ab/1~S/a~B.gltf",
+  folder: "/Users/me/a.gltf",
+};
+const locationOf = (kind: LocationKind) => PLACE_PATHS[kind];
 const LINUX_TRASH = "/home/me/.local/share/Trash/files";
 
 type Row = {
@@ -108,6 +124,11 @@ test("sizes are known everywhere but Arbesk, and only Arbesk previews remotely",
   const kinds: LocationKind[] = ["recent", "starred", "network", "trash", "in-trash", "share", "sftp", "drive", "arbesk", "folder"];
   expect(kinds.filter((kind) => !knowsSizes(kind))).toEqual(["arbesk"]);
   expect(kinds.filter(previewsRemotely)).toEqual(["arbesk"]);
+});
+
+test("only Arbesk hands over its own thumbnails, whatever kind of file an item is", () => {
+  const kinds: LocationKind[] = ["recent", "starred", "network", "trash", "in-trash", "share", "sftp", "drive", "arbesk", "folder"];
+  expect(kinds.filter((kind) => providesThumbnails(locationOf(kind)))).toEqual(["arbesk"]);
 });
 
 test("the copy-out refusal, in the first item's words", () => {

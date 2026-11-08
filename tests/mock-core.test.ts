@@ -1400,6 +1400,10 @@ test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend'
   const json = JSON.parse(new TextDecoder().decode(await invoke<ArrayBuffer>("preview_bytes", { path: gltf, limit: 1 << 20 })));
   expect(json.buffers.every((b: { uri: string }) => b.uri.startsWith("data:"))).toBe(true);
   await expect(invoke("preview_bytes", { path: big, limit: 1 << 20 })).rejects.toBe("This file is too large to preview.");
+  // The thumbnail Box.gltf was saved with; Box.3mf has none, which is no error.
+  installFakeCanvas();
+  expect((await invoke<ArrayBuffer>("thumbnail", { path: gltf, size: 64 })).byteLength).toBeGreaterThan(0);
+  expect((await invoke<ArrayBuffer>("thumbnail", { path: threeMf, size: 64 })).byteLength).toBe(0);
 
   await expect(invoke("make_dir", { path: `${shapes}/~New` })).rejects.toBe("Arbesk is read only.");
   await expect(invoke("file_properties", { path: gltf, showHidden: false })).rejects.toBe("Properties aren't available for Arbesk yet.");
@@ -1408,4 +1412,6 @@ test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend'
   await invoke("arbesk_disconnect", { account: account.id });
   expect(await invoke("arbesk_accounts", {})).toEqual([]);
   await expect(invoke("list_dir", { path: shapes, showHidden: false })).rejects.toBe("Connect this Arbesk account first.");
+  expect((await invoke<ArrayBuffer>("thumbnail", { path: gltf, size: 64 })).byteLength).toBe(0);
+  delete (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
 });

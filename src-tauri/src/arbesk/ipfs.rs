@@ -25,6 +25,9 @@ pub const TOO_LARGE: &str = "Arbesk sent a file larger than File Browser reads."
 pub const JSON_CAP: u64 = 16 * 1024 * 1024;
 /// The most one part of an asset may hold once unpacked.
 pub const PART_CAP: u64 = 512 * 1024 * 1024;
+/// The most a thumbnail may hold once unpacked; the Studio's are a few
+/// hundred kilobytes.
+pub const IMAGE_CAP: u64 = 16 * 1024 * 1024;
 
 /// A stored payload as it was before Arbesk packed it, at most `cap` bytes:
 /// a few packed bytes can stand for gigabytes, so unpacking stops there.
@@ -156,6 +159,11 @@ impl<'a> Gateway<'a> {
     /// The content at `cid`, unpacked.
     pub fn bytes(&self, cid: &str) -> Result<Vec<u8>, String> {
         self.fetch(cid, self.part_cap)
+    }
+
+    /// The picture at `cid` (an asset's thumbnail), unpacked.
+    pub fn image(&self, cid: &str) -> Result<Vec<u8>, String> {
+        self.fetch(cid, IMAGE_CAP)
     }
 
     /// The JSON document at `cid`, from the cache when it is there.

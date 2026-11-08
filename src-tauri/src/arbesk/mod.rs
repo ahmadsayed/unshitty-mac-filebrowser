@@ -45,6 +45,7 @@ pub struct ArbeskState {
     accounts: Mutex<Accounts>,
     flows: Mutex<HashMap<String, Arc<Flow>>>,
     builds: service::Builds,
+    thumbnails: service::Thumbnails,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -76,6 +77,7 @@ impl ArbeskState {
             accounts,
             flows: Mutex::new(HashMap::new()),
             builds: service::Builds::default(),
+            thumbnails: service::Thumbnails::default(),
         }
     }
 
@@ -99,7 +101,18 @@ impl ArbeskState {
     /// `service::list` for the account `path` belongs to.
     pub fn list(&self, path: &str) -> Result<Vec<Entry>, String> {
         let site = self.site_for(parse(path)?.address())?;
-        service::list(self.http()?, &site, path, &self.cache_dir)
+        service::list(self.http()?, &site, path, &self.cache_dir, &self.thumbnails)
+    }
+
+    /// `service::thumbnail` for the account `path` belongs to, as PNG bytes:
+    /// empty when the asset has none, as the `thumbnail` command answers.
+    pub fn thumbnail(&self, path: &str, size: u32, stop: &dyn Fn() -> bool) -> Vec<u8> {
+        let site = parse(path).and_then(|path| self.site_for(path.address()));
+        let (Ok(site), Ok(http)) = (site, self.http()) else {
+            return Vec::new();
+        };
+        service::thumbnail(http, &site, path, size, &self.cache_dir, &self.thumbnails, stop)
+            .unwrap_or_default()
     }
 
     /// `service::build` for the account `path` belongs to.
@@ -152,7 +165,10 @@ impl ArbeskState {
 
     /// Forget the account; nothing on Arbesk changes.
     pub fn disconnect(&self, id: &str) -> Result<(), String> {
-        lock(&self.accounts).remove(id).map(|_| ())
+        lock(&self.accounts).remove(id)?;
+        // Where its assets' thumbnails are is no longer needed.
+        self.thumbnails.clear();
+        Ok(())
     }
 }
 
@@ -298,5 +314,8 @@ mod tests {
                 .is_err()
         );
         assert!(state.list("arbesk://bad").is_err());
+        // Its thumbnails are empty, as for any file without one.
+        assert!(state.thumbnail(&format!("{path}/1~S/a~B.gltf"), 256, &|| false).is_empty());
+        assert!(state.thumbnail("arbesk://bad", 256, &|| false).is_empty());
     }
 }

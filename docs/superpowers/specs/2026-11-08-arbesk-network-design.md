@@ -19,8 +19,8 @@ once with an email and the code Arbesk emails, then browse it from Network.
 Out of scope for this version: every write (New Folder, Rename, Paste or drop
 in, Move to Trash, Delete); copying or dragging items out, which SSH servers
 and shares don't offer yet either ("Copying from Arbesk comes next."); version history, editor-shared collections from
-other chains, search inside Arbesk, thumbnails in the grid. Arbesk's own
-repository is not changed.
+other chains, search inside Arbesk. Arbesk's own repository is not
+changed. (Thumbnails, first left out, came next: D10.)
 
 ## Decisions
 
@@ -150,6 +150,26 @@ buffer/image URI that is neither `ipfs://` nor `data:`, fails with
 that is a link to another token (`child_ref`) is listed but opens with the
 same message.
 
+**D10. An asset shows the thumbnail it was saved with.** The Studio saves
+a WebP picture with each version it can render: `manifest.thumbnail`, an
+object whose `cid` names it (older manifests keep a bare CID or a
+`source.cid`, read as Arbesk's own `extractThumbnailCid` reads them). The
+grid and list views show it as the asset's thumbnail, with Show Thumbnails
+on; an asset saved without one keeps the model's icon. `locations.ts`
+gains `providesThumbnails(path)`, true only for Arbesk, so its files ask
+whatever their kind (elsewhere only pictures and documents do). A listing
+remembers where each asset's thumbnail is (the gateway and CID, or none),
+by the asset's ids (never its name, which the collection's owner picks),
+so a thumbnail costs one gateway request; listing a collection again first
+forgets its old entries, Disconnect forgets them all, and a path no listing
+has shown is looked up through its collection. A request the view cancels
+(scrolled away) is skipped before the download and before the decode, as a
+local thumbnail's is. The picture unpacks to at most
+16 MiB, is decoded under the same pixel limit as a local picture
+(`thumbnails::png_from_bytes`), shrunk to the size asked for and handed
+over as PNG. Anything that fails is no thumbnail, never an error. They
+aren't cached on disk: the view keeps them in memory, as Drive's.
+
 ## Errors
 
 | When | What the user sees |
@@ -167,7 +187,9 @@ same message.
   compose against fixtures with a fake gateway (`ipfs://` → bytes); the
   sign-in callback check (matching, wrong email, wrong address, 401, 503)
   against a fake backend; path parsing and refusals in `place.rs`'s table
-  test.
+  test; thumbnails (D10): the one a listing remembers costs one gateway
+  request, one never listed is found through its collection, an asset
+  without one or a picture that can't be read gives none.
 - **Rust, against Arbesk's own output:** a fixture made once with
   `besk download` from a known CID is checked in with its composite; the
   Rust build of the same composite must be equal (3MF: same entries and
@@ -189,13 +211,16 @@ same message.
   parsing). Plain functions; only `lib.rs` uses Tauri.
 - `src-tauri/src/cloud/oauth.rs`: the loopback wait moves to a shared helper.
 - `src-tauri/src/place.rs`, `lib.rs` (the `Kind::Arbesk` arms of
-  `list_dir`, `open_target`, `preview_bytes`, `path_info`; commands
+  `list_dir`, `open_target`, `preview_bytes`, `path_info`, `thumbnail`;
+  commands
   `arbesk_accounts`, `arbesk_connect_start/finish/cancel`,
   `arbesk_disconnect`), `Cargo.toml` (`brotli`, `flate2`, `zip`, all
   already in `Cargo.lock` through other crates, so direct dependencies add no
   new code; still checked with cargo-deny).
+- `src-tauri/src/thumbnails.rs`: `png_from_bytes`, the local decoder's
+  steps for a picture handed over as bytes (D10).
 - `src/providers.ts`, `src/paths.ts`, `src/locations.ts`,
-  `src/item-actions.ts`, `src/api.ts`, `src/main.ts`
+  `src/item-actions.ts`, `src/item-icons.ts` (D10), `src/api.ts`, `src/main.ts`
   (`PROVIDER_ACTIONS.arbesk`, the email dialog, `showPreview`),
   `dev/mock-tauri/`, the tests above.
 - Docs: README (feature list, "Not supported yet": Arbesk writes),

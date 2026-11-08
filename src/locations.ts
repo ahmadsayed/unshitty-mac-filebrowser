@@ -67,6 +67,14 @@ export function previewsRemotely(kind: LocationKind): boolean {
   return kind === "arbesk";
 }
 
+/** Whether `path`'s place hands over its own thumbnails, whatever kind of
+ *  file an item is: Arbesk, the one each asset was saved with. Elsewhere
+ *  only pictures and documents get one (`THUMB_KINDS`, item-icons.ts). The
+ *  Trash holds only local files, so it plays no part. */
+export function providesThumbnails(path: string): boolean {
+  return locationKind(path, "") === "arbesk";
+}
+
 /** `isReadOnlyKind` for `path`. */
 export function isReadOnlyLocation(path: string): boolean {
   return isReadOnlyKind(locationKind(path, ""));
