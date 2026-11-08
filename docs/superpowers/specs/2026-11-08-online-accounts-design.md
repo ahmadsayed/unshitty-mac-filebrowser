@@ -145,7 +145,7 @@ top to bottom, in GNOME's words:
 
 Rows are real `<button>`s inside the list: Tab moves between them, Enter and
 Space activate, and the dialog's first row has focus on open. The dialog is
-520 px wide at most and shrinks with the window (it must fit a 700 px
+460 px wide at most and shrinks with the window (it must fit a 700 px
 window). It is never busy itself: connecting and disconnecting happen in the
 provider's own dialogs, which already use `openDialog`'s busy mode. The
 dialog is rebuilt from `accounts` whenever it is opened; while open, a

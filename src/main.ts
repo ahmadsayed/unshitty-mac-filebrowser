@@ -238,7 +238,6 @@ let sftpServerList: SftpServer[] = [];
 let sharedFolders: ShareSummary[] = [];
 /** Why a share path cannot be listed (offline, no access, moved). */
 let sharePage: "offline" | "no-access" | "missing" | null = null;
-/** The connected Google account, if any. */
 /** Connected online accounts (src/providers.ts), which Network lists. */
 let accounts: Account[] = [];
 /** Accounts whose last request failed for want of a sign-in, by `provider:id`. */
