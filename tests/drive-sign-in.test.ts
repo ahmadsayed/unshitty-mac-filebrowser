@@ -86,4 +86,15 @@ test("Change Client… from the expired dialog disconnects first, as the backend
   await settle(20);
   expect(dialogHeading()).toBe("Add Your Google Client");
   expect(await invoke<unknown[]>("drive_accounts")).toEqual([]);
+  await respond("Cancel");
+});
+
+test("with a client but no account, a Drive failure offers Connect, not client setup", async () => {
+  await invoke("drive_client_set", { json: CLIENT });
+  calls().failNext("list_dir", "Google Drive is not connected. Sign in again.");
+  await goTo(DRIVE);
+  await settle(20);
+  expect(dialogHeading()).toBe("Connect to Google Drive");
+  expect(buttonLabels()).toEqual(["Cancel", "Open Browser"]);
+  await respond("Cancel");
 });

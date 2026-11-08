@@ -5057,9 +5057,9 @@ async function offerDriveSignIn(need: DriveAuthNeed, loc: string): Promise<void>
       const accounts = await driveAccounts().catch(() => []);
       account = accounts.find((item) => item.id === cloudAccountKey(loc)) ?? account ?? accounts[0] ?? null;
     }
-    // No account to sign in again means the client is the only thing to add.
+    // No account to sign in again: connect one with the client already set.
     if (account) openConnectDialog(account, after, need === "client");
-    else openClientSetup(after);
+    else openConnectDialog(null, after);
   } finally {
     driveSignInPrompt = false;
   }
