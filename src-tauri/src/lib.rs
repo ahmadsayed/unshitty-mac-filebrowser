@@ -1,3 +1,4 @@
+mod arbesk;
 mod archive;
 mod cloud;
 mod config_store;
@@ -275,18 +276,22 @@ async fn list_dir(
             let hint = share_versions_hint(&app);
             state.list_dir(&path, show_hidden, hint).await
         }
-        Kind::Sftp => {
-            let app = app.clone();
-            blocking(move || app.state::<sftp::SftpState>().list(&path, show_hidden)).await?
-        }
-        Kind::Drive => {
-            blocking(move || {
-                let state = app.state::<CloudState>();
-                cloud::service::list_dir(&state, &path, show_hidden)
-            })
-            .await?
-        }
         Kind::Local => list_local(path, show_hidden).await,
+        kind => blocking(move || list_remote(&app, kind, &path, show_hidden)).await?,
+    }
+}
+
+/// `list_dir` for the remote kinds whose listing blocks: SSH, Drive, Arbesk.
+fn list_remote(
+    app: &tauri::AppHandle,
+    kind: Kind,
+    path: &str,
+    show_hidden: bool,
+) -> Result<Vec<fs_ops::Entry>, String> {
+    match kind {
+        Kind::Sftp => app.state::<sftp::SftpState>().list(path, show_hidden),
+        Kind::Drive => cloud::service::list_dir(&app.state::<CloudState>(), path, show_hidden),
+        other => Err(format!("{other:?} paths are not handled here.")),
     }
 }
 
@@ -519,24 +524,41 @@ async fn download_to_open(
     progress: &progress::Progress,
 ) -> Result<OpenTarget, String> {
     match place::kind(&path) {
-        Kind::Drive => drive_target(app.clone(), path, progress.clone()).await,
         Kind::Share => share_target(app, &path, progress).await,
-        Kind::Sftp => sftp_target(app.clone(), path, progress.clone()).await,
         Kind::Local => open_local_target(path),
+        kind => {
+            let (app, progress) = (app.clone(), progress.clone());
+            blocking(move || cached_target(&app, kind, &path, &progress)).await?
+        }
+    }
+}
+
+/// A copy in the app cache for the remote kinds whose download blocks: a
+/// Drive file's snapshot (or a Google Docs file's page), an SSH server's
+/// file, an Arbesk asset.
+fn cached_target(
+    app: &tauri::AppHandle,
+    kind: Kind,
+    path: &str,
+    progress: &progress::Progress,
+) -> Result<OpenTarget, String> {
+    match kind {
+        Kind::Drive => drive_target(app, path, progress),
+        Kind::Sftp => sftp_target(app, path, progress),
+        other => Err(format!("{other:?} paths are not handled here.")),
     }
 }
 
 /// A Drive file's snapshot in the app cache, or a Google Docs file's page.
-async fn drive_target(
-    app: tauri::AppHandle,
-    path: String,
-    progress: progress::Progress,
-) -> Result<OpenTarget, String> {
-    blocking(move || {
-        let cache = app.path().app_cache_dir().map_err(|error| error.to_string())?;
-        cloud::service::open(&app.state::<CloudState>(), &path, &cache, &progress)
-    })
-    .await?
+fn drive_target(app: &tauri::AppHandle, path: &str, progress: &progress::Progress) -> Result<OpenTarget, String> {
+    let cache = app.path().app_cache_dir().map_err(|error| error.to_string())?;
+    cloud::service::open(&app.state::<CloudState>(), path, &cache, progress)
+}
+
+/// An SSH server's file, downloaded into the app cache.
+fn sftp_target(app: &tauri::AppHandle, path: &str, progress: &progress::Progress) -> Result<OpenTarget, String> {
+    let path = app.state::<sftp::SftpState>().open(path, progress)?;
+    Ok(OpenTarget::File { path })
 }
 
 /// A received share's file, fetched into the app cache.
@@ -547,16 +569,6 @@ async fn share_target(
 ) -> Result<OpenTarget, String> {
     let state = app.state::<share::state::ShareState>();
     let path = state.open(path, share_versions_hint(app), progress).await?;
-    Ok(OpenTarget::File { path })
-}
-
-/// An SSH server's file, downloaded into the app cache.
-async fn sftp_target(
-    app: tauri::AppHandle,
-    path: String,
-    progress: progress::Progress,
-) -> Result<OpenTarget, String> {
-    let path = blocking(move || app.state::<sftp::SftpState>().open(&path, &progress)).await??;
     Ok(OpenTarget::File { path })
 }
 
@@ -676,6 +688,7 @@ fn path_infos(
 fn properties_refusal(path: &str) -> Result<(), String> {
     match place::kind(path) {
         Kind::Sftp => Err("Properties aren't available for SSH servers yet.".into()),
+        Kind::Arbesk => Err("Properties aren't available for Arbesk yet.".into()),
         Kind::Share => Err("Properties aren't available for shared folders yet.".into()),
         Kind::Drive => Ok(()),
         Kind::Local => place::local(path).map(|_| ()),
@@ -713,6 +726,7 @@ async fn folder_size(path: String, walk: u64) -> Result<u64, String> {
 fn folder_size_refusal(path: &str) -> Result<(), String> {
     match place::kind(path) {
         Kind::Sftp => Err("Folder sizes aren't available for SSH servers yet.".into()),
+        Kind::Arbesk => Err("Folder sizes aren't available for Arbesk yet.".into()),
         Kind::Share => Err("Folder sizes aren't available for shared folders yet.".into()),
         Kind::Drive => Err(cloud::service::unsupported()),
         Kind::Local => place::local(path).map(|_| ()),

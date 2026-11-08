@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{cloud, share, sftp};
+use crate::{arbesk, cloud, share, sftp};
 
 // ---- Kinds -------------------------------------------------------------------
 
@@ -33,12 +33,16 @@ pub enum Kind {
     Share,
     /// An SSH server (`sftp://`).
     Sftp,
+    /// An Arbesk account (`arbesk://`), read only.
+    Arbesk,
 }
 
 /// The kind of place `path` names, from its scheme alone: a malformed
 /// remote path still has its scheme's kind, so its own parser refuses it.
 pub fn kind(path: &str) -> Kind {
-    if cloud::is_cloud(path) {
+    if arbesk::location::is_arbesk(path) {
+        Kind::Arbesk
+    } else if cloud::is_cloud(path) {
         Kind::Drive
     } else if share::location::is_share(path) {
         Kind::Share
@@ -60,15 +64,17 @@ pub fn local(path: &str) -> Result<&Path, String> {
         Kind::Drive => Err(cloud::service::unsupported()),
         Kind::Share => Err("This action is not available for shared folders.".into()),
         Kind::Sftp => Err("This action is not available for SSH servers.".into()),
+        Kind::Arbesk => Err("This action is not available for Arbesk.".into()),
     }
 }
 
-/// Whether anything may be written at `path`: received shares and SSH
-/// servers are read only.
+/// Whether anything may be written at `path`: received shares, SSH servers
+/// and Arbesk are read only.
 pub fn writable(path: &str) -> Result<(), String> {
     match kind(path) {
         Kind::Sftp => Err("SSH servers are read only for now.".into()),
         Kind::Share => Err("Shared folders are read only.".into()),
+        Kind::Arbesk => Err("Arbesk is read only.".into()),
         Kind::Local | Kind::Drive => Ok(()),
     }
 }
@@ -150,6 +156,9 @@ mod tests {
     const SFTP_LOCAL: &str = "This action is not available for SSH servers.";
     const SHARE_READ_ONLY: &str = "Shared folders are read only.";
     const SFTP_READ_ONLY: &str = "SSH servers are read only for now.";
+    const ARBESK_LOCAL: &str = "This action is not available for Arbesk.";
+    const ARBESK_READ_ONLY: &str = "Arbesk is read only.";
+    const ARBESK: &str = "arbesk://0x00000000000000000000000000000000000000ab/12~Set";
 
     /// Each path: its kind, `local`'s answer (None: the path itself),
     /// `writable`'s refusal.
@@ -178,6 +187,9 @@ mod tests {
             ("share://r1/%2E%2E", Kind::Share, Some(SHARE_LOCAL.into()), Some(SHARE_READ_ONLY)),
             ("sftp://me@host/home", Kind::Sftp, Some(SFTP_LOCAL.into()), Some(SFTP_READ_ONLY)),
             ("sftp://", Kind::Sftp, Some(SFTP_LOCAL.into()), Some(SFTP_READ_ONLY)),
+            (ARBESK, Kind::Arbesk, Some(ARBESK_LOCAL.into()), Some(ARBESK_READ_ONLY)),
+            ("arbesk://", Kind::Arbesk, Some(ARBESK_LOCAL.into()), Some(ARBESK_READ_ONLY)),
+            ("arbesk:/0xab", Kind::Local, not_local("arbesk:/0xab"), None),
         ]
     }
 
@@ -210,6 +222,10 @@ mod tests {
             assert_eq!(kind(path), Kind::Sftp);
             assert!(sftp::parse_target(path).is_err(), "{path}");
         }
+        for path in ["arbesk://", "arbesk://0xab", "arbesk://0x00000000000000000000000000000000000000ab/x~Set"] {
+            assert_eq!(kind(path), Kind::Arbesk);
+            assert!(arbesk::location::parse(path).is_err(), "{path}");
+        }
     }
 
     #[test]
@@ -233,6 +249,8 @@ mod tests {
         // The read-only refusals come first, `from`'s before `to`'s.
         assert_eq!(transfer("share://r1/a", "rel").unwrap_err(), SHARE_READ_ONLY);
         assert_eq!(transfer("rel", "sftp://me@host/b").unwrap_err(), SFTP_READ_ONLY);
+        assert_eq!(transfer(ARBESK, a).unwrap_err(), ARBESK_READ_ONLY);
+        assert_eq!(transfer(a, ARBESK).unwrap_err(), ARBESK_READ_ONLY);
         // A side outside Drive is a path on this computer, whichever way it goes.
         for (from, to, bad) in [
             ("rel", b, "rel"),
@@ -260,7 +278,7 @@ mod tests {
 
     #[test]
     fn local_only_answers_local_paths_in_one_call_and_others_with_none() {
-        let paths: Vec<String> = ["/a", "gdrive://acct/root~x", "/b", "share://r1", "sftp://me@h/", "rel", "/c"]
+        let paths: Vec<String> = ["/a", "gdrive://acct/root~x", "/b", "share://r1", "sftp://me@h/", "rel", "/c", ARBESK]
             .map(String::from)
             .to_vec();
         let mut calls = 0;
@@ -270,7 +288,7 @@ mod tests {
             local.into_iter().map(|p| (p != "/b").then(|| p.len())).collect()
         });
         assert_eq!(calls, 1);
-        assert_eq!(out, vec![Some(2), None, None, None, None, None, Some(2)]);
+        assert_eq!(out, vec![Some(2), None, None, None, None, None, Some(2), None]);
         let none: Vec<Option<u8>> = local_only(&[], |local| {
             assert!(local.is_empty());
             Vec::new()
