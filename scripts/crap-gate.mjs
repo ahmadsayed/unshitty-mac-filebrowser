@@ -4,6 +4,8 @@
 // may not grow; new code must stay under the threshold.
 //
 //   node scripts/crap-gate.mjs             check everything
+//   node scripts/crap-gate.mjs --ts        only the TypeScript half (Vitest + fallow)
+//   node scripts/crap-gate.mjs --rust      only the Rust half
 //   node scripts/crap-gate.mjs --staged    check only languages with staged changes (pre-commit)
 //   node scripts/crap-gate.mjs --update    rewrite the baseline from the current tree
 //
@@ -27,6 +29,8 @@ const FALLOW = "fallow@3.35.0";
 const args = new Set(process.argv.slice(2));
 const update = args.has("--update");
 const staged = args.has("--staged");
+const tsOnly = args.has("--ts");
+const rustOnly = args.has("--rust");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -147,7 +151,8 @@ function analyzeTs() {
 
 const only = (scores) => Object.fromEntries(Object.entries(scores).filter(([, v]) => v.score > THRESHOLD));
 
-let langs = ["rust", "ts"];
+if (tsOnly && rustOnly) fail("use --ts or --rust, not both");
+let langs = tsOnly ? ["ts"] : rustOnly ? ["rust"] : ["rust", "ts"];
 if (staged) {
   const files = stagedFiles();
   langs = [];
