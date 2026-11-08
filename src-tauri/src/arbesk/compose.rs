@@ -161,6 +161,8 @@ fn compose_3mf(parts: &Parts, source: &Value) -> Result<Vec<u8>, String> {
         .get("modelPath")
         .and_then(Value::as_str)
         .unwrap_or("3D/3dmodel.model");
+    // Like every part's, the model's name may not leave the package.
+    let model_path = &part_path(model_path)?;
     let mut files: Vec<(String, Vec<u8>)> = vec![
         (
             "[Content_Types].xml".into(),
@@ -376,6 +378,21 @@ mod tests {
         let source =
             json!({ "arbesk_format": "composite-3mf", "contentTypes": "<x/>", "rootRels": "<x/>" });
         assert!(compose_offline(source).is_err());
+    }
+
+    #[test]
+    fn a_3mf_model_path_that_climbs_is_refused() {
+        for model_path in ["../evil.model", "/etc/evil.model", "3D//x.model"] {
+            let source = json!({
+                "arbesk_format": "composite-3mf", "contentTypes": "<x/>", "rootRels": "<x/>", "model": "<m/>",
+                "modelPath": model_path
+            });
+            assert_eq!(
+                compose_offline(source).unwrap_err(),
+                UNKNOWN_FORMAT,
+                "{model_path}"
+            );
+        }
     }
 
     #[test]
