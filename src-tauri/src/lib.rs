@@ -1600,6 +1600,41 @@ async fn volumes() -> Result<Vec<platform::Volume>, String> {
     blocking(move || platform::volumes(&platform::volume_roots())).await
 }
 
+// ---- Arbesk ------------------------------------------------------------------
+
+#[tauri::command]
+fn arbesk_accounts(state: tauri::State<arbesk::ArbeskState>) -> Vec<arbesk::accounts::ArbeskAccount> {
+    state.accounts()
+}
+
+#[derive(serde::Serialize)]
+struct ArbeskConnectStart {
+    flow_id: String,
+    sign_in_url: String,
+}
+
+/// Start an Arbesk sign-in for `email`; the frontend opens `sign_in_url`.
+#[tauri::command]
+fn arbesk_connect_start(state: tauri::State<arbesk::ArbeskState>, email: String) -> Result<ArbeskConnectStart, String> {
+    let (flow_id, sign_in_url) = state.connect_start(&email)?;
+    Ok(ArbeskConnectStart { flow_id, sign_in_url })
+}
+
+#[tauri::command]
+async fn arbesk_connect_finish(app: tauri::AppHandle, flow_id: String) -> Result<arbesk::accounts::ArbeskAccount, String> {
+    blocking(move || app.state::<arbesk::ArbeskState>().connect_finish(&flow_id)).await?
+}
+
+#[tauri::command]
+fn arbesk_connect_cancel(state: tauri::State<arbesk::ArbeskState>, flow_id: String) {
+    state.connect_cancel(&flow_id);
+}
+
+#[tauri::command]
+fn arbesk_disconnect(state: tauri::State<arbesk::ArbeskState>, account: String) -> Result<(), String> {
+    state.disconnect(&account)
+}
+
 #[derive(serde::Serialize)]
 struct DriveConnectStart {
     flow_id: String,
@@ -2110,7 +2145,7 @@ pub fn run() {
                 std::env::var("FILEBROWSER_RELAY").ok(),
             ));
             app.manage(CloudState::new(&config_dir));
-            app.manage(arbesk::ArbeskState::new(cache_dir.clone()));
+            app.manage(arbesk::ArbeskState::new(cache_dir.clone(), config_dir.join("arbesk_accounts.json")));
             app.manage(sftp::SftpState::new(
                 config_dir.join("sftp_known_hosts"),
                 home,
@@ -2232,6 +2267,11 @@ pub fn run() {
             drive_connect_start,
             drive_connect_finish,
             drive_connect_cancel,
+            arbesk_accounts,
+            arbesk_connect_start,
+            arbesk_connect_finish,
+            arbesk_connect_cancel,
+            arbesk_disconnect,
             share_identity,
             set_share_name,
             share_folder,
