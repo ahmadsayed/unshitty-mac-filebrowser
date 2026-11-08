@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
 // @ts-expect-error type error without @types/node package
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 
 // The About dialog shows the version from package.json.
 const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
@@ -47,6 +47,9 @@ export default defineConfig(() => ({
           port: 1421,
         }
       : undefined,
+    // A task worktree's node_modules links to the main checkout's; the dev
+    // server may read it there too (the 3D preview's Draco decoder).
+    fs: { allow: [".", realpathSync("node_modules")] },
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
