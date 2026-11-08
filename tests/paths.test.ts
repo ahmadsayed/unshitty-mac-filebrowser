@@ -260,6 +260,15 @@ test("pathSegments breaks an Arbesk path into the account and its collection", (
   });
 });
 
+test("a typed Arbesk location stays one, and a bare name inside Arbesk is refused", () => {
+  const collection = "arbesk://0x00000000000000000000000000000000000000ab/1~Set";
+  expect(resolveTypedPath(`${collection}/`, HOME, HOME)).toEqual({ path: collection });
+  expect(resolveTypedPath(collection, "pseudo:network", HOME)).toEqual({ path: collection });
+  expect(resolveTypedPath("Box.gltf", collection, HOME)).toEqual({ error: "Enter an Arbesk location or a full path." });
+  expect(resolveTypedPath("/tmp", collection, HOME)).toEqual({ path: "/tmp" });
+  expect(resolveTypedPath("~/Notes", collection, HOME)).toEqual({ path: `${HOME}/Notes` });
+});
+
 test("Arbesk paths are remote, keyed by their address", () => {
   expect(isArbeskPath("arbesk://0x00000000000000000000000000000000000000ab")).toBe(true);
   expect(isArbeskPath("/arbesk://x")).toBe(false);

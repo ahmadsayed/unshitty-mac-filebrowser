@@ -175,12 +175,16 @@ export function resolveTypedPath(
   ) {
     // A bare name inside Drive has no id, so it cannot be resolved safely.
     return { error: "Enter a Google Drive location or a full path." };
+  } else if (isArbeskPath(location) && !isArbeskPath(typed) && !typed.startsWith("/")) {
+    // Nor inside Arbesk, whose paths are ids too.
+    return { error: "Enter an Arbesk location or a full path." };
   } else if (
     !typed.startsWith("/") &&
     !location.startsWith(PSEUDO_PREFIX) &&
     !isCloudPath(location) &&
     !isCloudPath(typed) &&
-    !isSftpPath(typed)
+    !isSftpPath(typed) &&
+    !isArbeskPath(typed)
   ) {
     typed = `${location.replace(/\/+$/, "")}/${typed}`;
   }
