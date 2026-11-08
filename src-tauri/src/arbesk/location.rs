@@ -65,7 +65,9 @@ pub fn collection_path(address: &str, token_id: &str, name: &str) -> String {
     format!("{}/{}", account_path(address), segment(token_id, name))
 }
 
-/// An asset in `collection_path`, named `<name>.<ext>`.
+/// An asset in `collection_path`, named `<name>.<ext>` (the listing names
+/// its own with `asset_path_named`).
+#[cfg(test)]
 pub fn asset_path(collection_path: &str, asset_id: &str, name: &str, ext: &str) -> String {
     asset_path_named(collection_path, asset_id, &format!("{name}.{ext}"))
 }
