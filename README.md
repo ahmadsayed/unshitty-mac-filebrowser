@@ -96,7 +96,10 @@ one out on its own platform.
   application as you type its name; arrow keys and Enter open the file with it.
   It works on folders too, including the one you're in (right-click the empty
   area or use the path-bar menu) to open a project in your editor or IDE.
-- **Preview (Space)** shows text, pictures and PDFs, with Open, Rename…, Move to
+- **Preview (Space)** shows text, pictures, PDFs and 3D models (glTF, GLB, STL,
+  3MF), which you turn by dragging, with Rotate Left, Rotate Right and Reset
+  View, or with the arrow keys, and zoom with the wheel, a pinch or + and -;
+  with Open, Rename…, Move to
   Trash and, for search results and Recent or Starred items, Open Item
   Location, without closing the preview first.
 - **macOS DMG installation:** right-click a disk image to choose an application
@@ -151,7 +154,9 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 - Send with QR Code: files only, no folders (up to 1,000 files). The phone
   keeps the files in memory until they are saved, and downloads go through
   iroh's public relays, which are rate-limited.
-- Preview has no video or audio playback.
+- Preview has no video or audio playback. 3D models: no thumbnails yet, files
+  up to 256 MB, and glTF without compressed meshes (Draco, meshopt) or KTX2
+  textures; it needs WebGL, which some Linux setups turn off.
 - Open With… lists every application, also for a folder, and has no Open in
   Terminal: most Linux terminals don't open at a folder passed this way.
 - Drag and drop with other apps carries files and folders only: a link or an
@@ -190,6 +195,7 @@ tries to bring their work to other desktops.
   (`src/assets/fonts/AdwaitaSans-LICENSE.txt`).
 - **[Tauri](https://tauri.app/)**, **[Iroh](https://www.iroh.computer/)** and the
   Rust crates this app builds on.
+- **[three.js](https://threejs.org/)** (MIT) draws the 3D preview.
 
 ## Trademarks
 

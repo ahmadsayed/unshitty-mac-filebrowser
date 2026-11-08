@@ -924,6 +924,65 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   -webkit-user-select: text;
 }
 
+/* The 3D preview: as wide as the panel and up to a share of the window
+   tall, shrinking to the room the panel has, so the controls below the model
+   never scroll out of sight. The canvas fills it. */
+.preview-body:has(> .preview-model-wrap) {
+  flex-direction: column;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.preview-model-wrap {
+  position: relative;
+  flex: 0 1 min(62vh, 560px);
+  min-height: 160px;
+}
+
+.preview-model {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  /* Touch drags and pinches turn and zoom the model, not the page. */
+  touch-action: none;
+}
+
+/* A drag focuses the canvas; only keyboard focus shows the ring. */
+.preview-model:focus { outline: none; }
+.preview-model:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-bg) 50%, transparent);
+  outline-offset: -2px;
+}
+
+/* Rotate Left, Rotate Right, Reset View: an on-screen bar over the model,
+   like GNOME Image Viewer's. */
+.preview-model-controls {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--osd-bg);
+  color: var(--osd-fg);
+}
+
+.preview-model-controls .flat-btn {
+  border-radius: 50%;
+  padding: 0;
+  color: inherit;
+}
+
+.preview-model-controls .flat-btn:hover { background: color-mix(in srgb, currentColor 15%, transparent); }
+.preview-model-controls .flat-btn:active { background: color-mix(in srgb, currentColor 28%, transparent); }
+
+.preview-model:active { cursor: grabbing; }
+
 .preview-empty {
   display: flex;
   flex-direction: column;

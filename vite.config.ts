@@ -27,6 +27,10 @@ export default defineConfig(() => ({
       }
     : undefined,
 
+  // The 3D preview's chunk (three.js, src/model-viewer.ts) is about 680 kB and
+  // loads only when a model is previewed; warn only past that.
+  build: { chunkSizeWarningLimit: 700 },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

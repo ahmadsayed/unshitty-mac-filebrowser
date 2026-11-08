@@ -1,5 +1,6 @@
 import { encodeCloudName, isUnder, placeOf, type Place } from "../../src/paths";
 import { fold } from "../../src/search";
+import { sampleModelBytes } from "./models";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
 // It serves a fake, in-memory home folder.
@@ -42,7 +43,20 @@ const tree: Record<string, Node> = {
         "Budget 2026.xlsx": f(48_211, 40 * day),
         "Roadmap.key": f(9_810_220, 400 * day),
         "Notes.md": f(4_120, 3600),
-        Projects: d({ "unshitty-mac-filebrowser": d({ "README.md": f(2_200, 60) }), website: d() }),
+        Projects: d({
+          "unshitty-mac-filebrowser": d({ "README.md": f(2_200, 60) }),
+          website: d(),
+          // 3D models for the Space preview; the bytes come from ./models.
+          Prints: d({
+            "bracket.stl": f(3_412, 2 * day),
+            "bracket-binary.stl": f(684, 2 * day),
+            "box.3mf": f(1_102, 3 * day),
+            "lamp.glb": f(1_620, 4 * day),
+            "lamp.gltf": f(1_150, 4 * day),
+            "lamp.bin": f(168, 4 * day),
+            "scan.stl": f(900_000_000, 9 * day),
+          }),
+        }),
         Versioned: d({
           "notes.txt": f(2_100, 2 * 3600),
           "image.png": f(120_000, day),
@@ -2023,6 +2037,16 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     const limit = Math.max(1, Math.min(1_048_576, Number(a.limit)));
     const text = `Preview of ${path}\n\nThis is sample text from the mock filesystem.\n`;
     return { text: text.slice(0, limit), truncated: text.length > limit };
+  },
+  // The real file's bytes; here a sample model for its name (./models).
+  preview_bytes: (a) => {
+    const path = localPath(str(a, "path"));
+    const node = lookup(path);
+    if (!node) throw "Failed to open file: No such file or directory (os error 2)";
+    if (node.dir) throw "Only files can be previewed.";
+    if (node.size > Number(a.limit)) throw "This file is too large to preview.";
+    const bytes = sampleModelBytes(path.slice(path.lastIndexOf("/") + 1)) ?? new TextEncoder().encode(`Contents of ${path}`);
+    return bytes.slice().buffer;
   },
   list_apps: () => mockListApps(),
   // A Mac draws its own window buttons. Set __mockButtonLayout (GNOME's

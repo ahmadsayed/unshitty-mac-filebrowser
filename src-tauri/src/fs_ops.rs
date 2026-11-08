@@ -217,6 +217,27 @@ pub fn preview_text(path: String, limit: usize) -> Result<TextPreview, String> {
     Ok(TextPreview { text, truncated })
 }
 
+/// A whole file's bytes for the preview (3D models), refused when it is
+/// larger than `limit` so a huge file never fills the webview's memory.
+pub fn preview_bytes(path: String, limit: u64) -> Result<Vec<u8>, String> {
+    let mut file =
+        std::fs::File::open(&path).map_err(|e| format!("Failed to open file: {e}"))?;
+    let meta = file.metadata().map_err(|e| format!("Failed to read file: {e}"))?;
+    if !meta.is_file() {
+        return Err("Only files can be previewed.".into());
+    }
+    if meta.len() > limit {
+        return Err("This file is too large to preview.".into());
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    // At most `limit`, even if the file grew since it was measured.
+    file.by_ref()
+        .take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Failed to read file: {e}"))?;
+    Ok(bytes)
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RenameItem {
     pub from: String,
@@ -1106,6 +1127,21 @@ mod tests {
         let binary = dir.path().join("a.bin");
         fs::write(&binary, [0xff, 0xfe, 0xfd]).unwrap();
         assert!(preview_text(binary.to_string_lossy().to_string(), 10).is_err());
+    }
+
+    #[test]
+    fn preview_bytes_reads_the_whole_file_and_refuses_one_over_the_limit() {
+        let dir = tempdir().unwrap();
+        let model = dir.path().join("cube.stl");
+        fs::write(&model, [1u8, 2, 3, 4, 5]).unwrap();
+        let path = model.to_string_lossy().to_string();
+        assert_eq!(preview_bytes(path.clone(), 5).unwrap(), vec![1, 2, 3, 4, 5]);
+        assert_eq!(preview_bytes(path, 4).unwrap_err(), "This file is too large to preview.");
+
+        let folder = dir.path().to_string_lossy().to_string();
+        assert_eq!(preview_bytes(folder, 100).unwrap_err(), "Only files can be previewed.");
+        let missing = dir.path().join("gone.stl").to_string_lossy().to_string();
+        assert!(preview_bytes(missing, 100).unwrap_err().starts_with("Failed to open file"));
     }
 
     #[test]

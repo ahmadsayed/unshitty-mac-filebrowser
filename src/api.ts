@@ -631,6 +631,11 @@ export async function previewText(path: string, limit: number): Promise<TextPrev
   return invoke<TextPreview>("preview_text", { path, limit });
 }
 
+/** A local file's bytes for the 3D preview; refused over `limit` bytes. */
+export async function previewBytes(path: string, limit: number): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("preview_bytes", { path, limit });
+}
+
 export interface AppChoice {
   name: string;
   /** macOS: the `.app` path; Linux: the `.desktop` file path. */
