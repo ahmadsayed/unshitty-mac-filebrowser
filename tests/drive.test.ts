@@ -14,9 +14,9 @@ async function openNetwork(): Promise<void> {
   await settle(20);
 }
 
-/** Network's "Connect to Google Drive…" button, shown while no account is connected. */
-const connectButton = () =>
-  $$<HTMLButtonElement>(".network-paste .btn").find((button) => button.textContent === "Connect to Google Drive…");
+/** Network's Add… menu, where servers and online accounts are chosen. */
+const addButton = () =>
+  $$<HTMLButtonElement>(".network-paste .btn").find((button) => button.textContent === "Add…");
 
 async function rightClick(el: Element): Promise<void> {
   await mouse(el, "mousedown", { button: 2 });
@@ -30,10 +30,15 @@ test("Google Drive connects from Network and browses the mock drive", async () =
   );
   await openNetwork();
   expect(names()).not.toContain("Google Drive");
-  expect(connectButton()).toBeTruthy();
+  expect(addButton()).toBeTruthy();
+
+  // One Add menu holds the server and the online account.
+  await click(addButton()!);
+  await settle(10);
+  expect(menuLabels()).toEqual(["Connect to Server…", "Google Drive…"]);
 
   // No OAuth client yet: the setup step comes first.
-  connectButton()!.click();
+  await chooseMenu("Google Drive…");
   await settle(10);
   expect($(".dialog-heading").textContent).toBe("Add Your Google Client");
   const links = $$(".dialog-links button").map((button) => button.textContent);
@@ -119,7 +124,10 @@ test("Google Drive connects from Network and browses the mock drive", async () =
   await openNetwork();
   expect(names()).toContain("Google Drive");
   expect(item("Google Drive").textContent).toContain("me@example.com");
-  expect(connectButton()).toBeUndefined();
+  await click(addButton()!);
+  await settle(10);
+  expect(menuLabels()).not.toContain("Google Drive…");
+  await closeOverlays();
 });
 
 test("Up from My Drive goes to Network and selects Google Drive", async () => {
@@ -334,5 +342,9 @@ test("Disconnect… from Network removes Google Drive and offers to connect agai
   await settle(20);
   expect(toasts().join(" ")).toContain("Disconnected from Google Drive");
   expect(names()).not.toContain("Google Drive");
-  expect(connectButton()).toBeTruthy();
+  expect(addButton()).toBeTruthy();
+  await click(addButton()!);
+  await settle(10);
+  expect(menuLabels()).toEqual(["Connect to Server…", "Google Drive…"]);
+  await closeOverlays();
 });

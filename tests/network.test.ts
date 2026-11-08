@@ -100,3 +100,15 @@ test("an unknown host key asks before connecting", async () => {
   expect(title()).toBe("user");
   expect(names()).toEqual(["Documents", "notes.txt"]);
 });
+
+test("Network's Add… menu opens Connect to Server", async () => {
+  await click(place("Network"));
+  await settle(20);
+  await click($$(".network-paste .btn").find((button) => button.textContent === "Add…")!);
+  await settle(10);
+  expect(menuLabels()).toEqual(["Connect to Server…", "Google Drive…"]);
+  await chooseMenu("Connect to Server…");
+  await settle(10);
+  expect(dialogHeading()).toBe("Connect to Server");
+  await respond("Cancel");
+});

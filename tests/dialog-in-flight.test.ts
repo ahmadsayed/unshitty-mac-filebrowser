@@ -368,11 +368,13 @@ test("Share: a failure is a toast, and everything is enabled again", async () =>
 
 // ----- Google Drive -----
 
-/** Network's "Connect to Google Drive…" button, clicked. */
+/** Network's Add… menu, then Google Drive…, clicked. */
 async function clickConnectDrive(): Promise<void> {
   await click($$(".sidebar-row").find((row) => row.textContent?.trim() === "Network")!);
   await settle(20);
-  $$<HTMLButtonElement>(".network-paste .btn").find((button) => button.textContent === "Connect to Google Drive…")!.click();
+  await click($$<HTMLButtonElement>(".network-paste .btn").find((button) => button.textContent === "Add…")!);
+  await settle(10);
+  await chooseMenu("Google Drive…");
 }
 const CLIENT = JSON.stringify({ installed: { client_id: "123-abc.apps.googleusercontent.com", client_secret: "GOCSPX-test" } });
 const link = (label: string) => $$(".dialog-layer .dialog-links button").find((b) => b.textContent === label)!;

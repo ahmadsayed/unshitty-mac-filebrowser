@@ -317,8 +317,10 @@ Drive is rejected with "Enter a Google Drive location or a full path." A
 - `basename`/`parentOf` learn the URI case; `crumbsFor` gains a Drive branch.
 - `openFile` asks `open_target`, which downloads cloud paths (it was `drive_open`).
 - Network lists the account as **Google Drive** (a sidebar row until
-  2026-11-08), its bar offers **Connect to Google Drive…**, and the connect
-  dialog.
+  2026-11-08). Its bar keeps the address field and **Connect**, and adds one
+  **Add…** menu for every kind of location: **Connect to Server…** and, under
+  **Online Accounts**, **Google Drive…** (later providers are rows there, not
+  new buttons). The account entry and connect dialog are unchanged.
 - `versions` commands reject cloud paths before reaching the filesystem.
 - No UI framework, no new frontend dependencies.
 

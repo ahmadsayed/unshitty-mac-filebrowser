@@ -34,9 +34,9 @@ test("Network is empty with an address bar and reports a bad link inline", async
   expect(title()).toBe("Network");
   expect(place("Shares")).toBeUndefined();
   expect($("#view").textContent).toContain("No Network Locations");
-  expect($("#view").textContent).toContain("Enter a server address, paste a share link or connect to Google Drive below.");
+  expect($("#view").textContent).toContain("Connect to a server, paste a share link or add an online account below.");
   const input = $<HTMLInputElement>(".network-link");
-  expect(input.placeholder).toBe("Enter server address or share link");
+  expect(input.placeholder).toBe("Server or share link");
 
   await type(input, link("bad"));
   await click($(".network-paste .btn"));

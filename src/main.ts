@@ -101,7 +101,7 @@ function savePrefs(): void {
 const PSEUDO: Record<Pseudo, { label: string; icon: string; title: string; text: string }> = {
   recent: { label: "Recent", icon: "document-open-recent", title: "No Recent Files", text: "" },
   starred: { label: "Starred", icon: "starred", title: "Starred files will appear here", text: "" },
-  network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Enter a server address, paste a share link or connect to Google Drive below." },
+  network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Connect to a server, paste a share link or add an online account below." },
 };
 const RECENT = `${PSEUDO_PREFIX}recent`;
 const STARRED = `${PSEUDO_PREFIX}starred`;
@@ -1442,23 +1442,36 @@ function renderNetworkPaste(overlay: Element): void {
   const input = document.createElement("input");
   input.className = "network-link";
   input.type = "text";
-  input.placeholder = "Enter server address or share link";
+  input.placeholder = "Server or share link";
   input.spellcheck = false;
   input.setAttribute("aria-label", "Server address or share link");
   const button = document.createElement("button");
   button.className = "btn suggested";
   button.textContent = "Connect";
+  const add = document.createElement("button");
+  add.className = "btn";
+  add.textContent = "Add…";
+  add.setAttribute("aria-haspopup", "menu");
   const error = document.createElement("span");
   error.className = "network-error";
-  bar.append(input, button, error);
-  if (!driveAccount) {
-    // Connected, the account is one of Network's entries instead.
-    const drive = document.createElement("button");
-    drive.className = "btn";
-    drive.textContent = "Connect to Google Drive…";
-    drive.addEventListener("click", () => void connectDrive());
-    bar.append(drive);
-  }
+  bar.append(input, button, add, error);
+  add.addEventListener("click", (event) => {
+    // One menu for every kind of location: a server now, an online account
+    // per provider (more than one account later), so the bar never grows a
+    // button per service.
+    const typed = input.value.trim();
+    const items: MenuItem[] = [
+      {
+        label: "Connect to Server…",
+        action: () => showConnectServerDialog(isShareLink(typed) ? "" : typed),
+      },
+    ];
+    if (!driveAccount) {
+      // Connected, the account is one of Network's entries instead.
+      items.push({ separator: true }, { heading: "Online Accounts" }, { label: "Google Drive…", action: () => void connectDrive() });
+    }
+    openMenu(event.currentTarget as HTMLElement, items);
+  });
 
   const connect = async () => {
     const link = input.value.trim();
