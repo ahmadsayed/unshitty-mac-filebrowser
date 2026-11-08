@@ -1,0 +1,297 @@
+//! The HTTP requests Arbesk needs, behind [`Http`] so tests never open a
+//! socket: GETs (config, token index, IPFS gateway), JSON POSTs (JSON-RPC,
+//! the sign-in check) and one DELETE (ending the sign-in's session).
+
+use std::time::Duration;
+
+/// A failed request: the HTTP status when the server answered, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpError {
+    pub status: Option<u16>,
+    pub message: String,
+}
+
+impl HttpError {
+    pub fn new(status: Option<u16>, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+        }
+    }
+}
+
+pub trait Http: Send + Sync {
+    fn get(&self, url: &str) -> Result<Vec<u8>, HttpError>;
+    /// POST `body` as JSON; `session` goes in `Authorization: Session <token>`.
+    fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        session: Option<&str>,
+    ) -> Result<Vec<u8>, HttpError>;
+    fn delete(&self, url: &str, session: Option<&str>) -> Result<(), HttpError>;
+}
+
+/// The real client: 30 seconds per request, rustls, no cookies.
+pub struct ReqwestHttp {
+    client: reqwest::blocking::Client,
+}
+
+impl ReqwestHttp {
+    pub fn new() -> Result<Self, String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .user_agent(concat!("FileBrowser/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|error| error.to_string())?;
+        Ok(Self { client })
+    }
+
+    fn send(
+        &self,
+        request: reqwest::blocking::RequestBuilder,
+        session: Option<&str>,
+    ) -> Result<Vec<u8>, HttpError> {
+        let request = match session {
+            Some(token) => request.header("Authorization", format!("Session {token}")),
+            None => request,
+        };
+        let response = request
+            .send()
+            .map_err(|error| HttpError::new(None, error.to_string()))?;
+        let status = response.status();
+        let bytes = response
+            .bytes()
+            .map_err(|error| HttpError::new(Some(status.as_u16()), error.to_string()))?;
+        if status.is_success() {
+            Ok(bytes.to_vec())
+        } else {
+            Err(HttpError::new(
+                Some(status.as_u16()),
+                format!("The server answered {status}."),
+            ))
+        }
+    }
+}
+
+impl Http for ReqwestHttp {
+    fn get(&self, url: &str) -> Result<Vec<u8>, HttpError> {
+        self.send(self.client.get(url), None)
+    }
+
+    fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        session: Option<&str>,
+    ) -> Result<Vec<u8>, HttpError> {
+        self.send(self.client.post(url).json(body), session)
+    }
+
+    fn delete(&self, url: &str, session: Option<&str>) -> Result<(), HttpError> {
+        self.send(self.client.delete(url), session).map(|_| ())
+    }
+}
+
+/// A scripted [`Http`] for tests: `answer` decides each request's response,
+/// and every request is logged.
+#[cfg(test)]
+pub mod fake {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Request {
+        pub method: &'static str,
+        pub url: String,
+        pub body: Option<serde_json::Value>,
+        pub session: Option<String>,
+    }
+
+    type Answer = Box<dyn Fn(&Request) -> Result<Vec<u8>, HttpError> + Send + Sync>;
+
+    pub struct FakeHttp {
+        answer: Answer,
+        pub log: Mutex<Vec<Request>>,
+    }
+
+    impl FakeHttp {
+        pub fn new(
+            answer: impl Fn(&Request) -> Result<Vec<u8>, HttpError> + Send + Sync + 'static,
+        ) -> Self {
+            Self {
+                answer: Box::new(answer),
+                log: Mutex::new(Vec::new()),
+            }
+        }
+
+        pub fn requests(&self) -> Vec<Request> {
+            self.log.lock().unwrap().clone()
+        }
+
+        fn call(&self, request: Request) -> Result<Vec<u8>, HttpError> {
+            let answer = (self.answer)(&request);
+            self.log.lock().unwrap().push(request);
+            answer
+        }
+    }
+
+    impl Http for FakeHttp {
+        fn get(&self, url: &str) -> Result<Vec<u8>, HttpError> {
+            self.call(Request {
+                method: "GET",
+                url: url.into(),
+                body: None,
+                session: None,
+            })
+        }
+
+        fn post_json(
+            &self,
+            url: &str,
+            body: &serde_json::Value,
+            session: Option<&str>,
+        ) -> Result<Vec<u8>, HttpError> {
+            let session = session.map(String::from);
+            self.call(Request {
+                method: "POST",
+                url: url.into(),
+                body: Some(body.clone()),
+                session,
+            })
+        }
+
+        fn delete(&self, url: &str, session: Option<&str>) -> Result<(), HttpError> {
+            let session = session.map(String::from);
+            self.call(Request {
+                method: "DELETE",
+                url: url.into(),
+                body: None,
+                session,
+            })
+            .map(|_| ())
+        }
+    }
+
+    pub fn not_found() -> HttpError {
+        HttpError::new(Some(404), "The server answered 404 Not Found.")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    /// Serve one request with `status` and `body`; returns the base URL and
+    /// a handle that yields the request's head.
+    fn serve_once(
+        status: &'static str,
+        body: &'static str,
+    ) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            let mut buffer = [0u8; 4096];
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                seen.extend_from_slice(&buffer[..read]);
+            }
+            let head = String::from_utf8_lossy(&seen).into_owned();
+            let length: usize = head
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|n| n.trim().parse().unwrap())
+                })
+                .unwrap_or(0);
+            let body_start = seen.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let mut have = seen.len() - body_start;
+            while have < length {
+                have += stream.read(&mut buffer).unwrap();
+            }
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            head
+        });
+        (url, handle)
+    }
+
+    #[test]
+    fn a_get_returns_the_body() {
+        let (url, server) = serve_once("200 OK", "hello");
+        assert_eq!(ReqwestHttp::new().unwrap().get(&url).unwrap(), b"hello");
+        let head = server.join().unwrap();
+        assert!(head.starts_with("GET / "), "{head}");
+        assert!(
+            !head.to_ascii_lowercase().contains("authorization"),
+            "{head}"
+        );
+    }
+
+    #[test]
+    fn a_post_sends_json_and_the_session() {
+        let (url, server) = serve_once("200 OK", "{}");
+        let body = serde_json::json!({ "email": "a@b.c" });
+        ReqwestHttp::new()
+            .unwrap()
+            .post_json(&url, &body, Some("tok"))
+            .unwrap();
+        let head = server.join().unwrap();
+        assert!(head.starts_with("POST / "), "{head}");
+        assert!(
+            head.contains("authorization: Session tok")
+                || head.contains("Authorization: Session tok"),
+            "{head}"
+        );
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("content-type: application/json"),
+            "{head}"
+        );
+    }
+
+    #[test]
+    fn a_delete_reports_success() {
+        let (url, server) = serve_once("200 OK", "{\"invalidated\":true}");
+        ReqwestHttp::new()
+            .unwrap()
+            .delete(&url, Some("tok"))
+            .unwrap();
+        assert!(server.join().unwrap().starts_with("DELETE / "));
+    }
+
+    #[test]
+    fn an_error_status_carries_its_code() {
+        let (url, server) = serve_once("503 Service Unavailable", "busy");
+        let error = ReqwestHttp::new().unwrap().get(&url).unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error.status, Some(503));
+    }
+
+    #[test]
+    fn an_unreachable_server_has_no_status() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let error = ReqwestHttp::new()
+            .unwrap()
+            .get(&format!("http://127.0.0.1:{port}"))
+            .unwrap_err();
+        assert_eq!(error.status, None);
+    }
+}

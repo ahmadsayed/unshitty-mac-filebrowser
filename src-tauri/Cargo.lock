@@ -1566,6 +1566,7 @@ dependencies = [
  "bao-tree",
  "base64 0.23.1",
  "blake3",
+ "brotli",
  "bzip2",
  "chacha20poly1305",
  "chrono",

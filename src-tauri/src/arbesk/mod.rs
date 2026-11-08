@@ -4,4 +4,7 @@
 //! rebuilt here from public sources (the backend's config and token index,
 //! the chain's `tokenURI`, the IPFS gateway); nothing is written to Arbesk.
 
+pub mod chain;
+pub mod http;
+pub mod ipfs;
 pub mod location;
