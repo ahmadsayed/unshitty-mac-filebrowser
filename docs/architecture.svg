@@ -108,16 +108,19 @@
         <rect class="box" x="56" y="588" width="180" height="30" rx="6"/>
         <text class="n" x="68" y="608">thumbnails.ts</text>
 
-        <!-- Group D: widgets -->
-        <rect class="grp" x="310" y="444" width="250" height="82" rx="10"/>
-        <text class="g" x="324" y="463">WIDGETS</text>
-        <rect class="deep" x="326" y="474" width="180" height="32" rx="6"/>
-        <text class="n" x="338" y="495">ui.ts · busy dialogs</text>
-        <text class="tag" x="514" y="494">#153</text>
+        <!-- Group D: widgets and dialogs -->
+        <rect class="grp" x="310" y="444" width="250" height="96" rx="10"/>
+        <text class="g" x="324" y="463">WIDGETS · DIALOGS</text>
+        <rect class="deep" x="326" y="470" width="180" height="28" rx="6"/>
+        <text class="n" x="338" y="489">ui.ts · busy dialogs</text>
+        <text class="tag" x="514" y="488">#153</text>
+        <rect class="box" x="326" y="504" width="226" height="28" rx="6"/>
+        <text class="n" x="338" y="523">online-accounts.ts</text>
+        <text class="s" x="482" y="522">providers.ts</text>
 
         <!-- main.ts calls commands through api.ts -->
-        <polyline class="edge" points="560,112 572,112 572,546 435,546 435,559" marker-end="url(#ah)"/>
-        <text class="e" x="445" y="541">invoke(command)</text>
+        <polyline class="edge" points="560,112 572,112 572,550 435,550 435,559" marker-end="url(#ah)"/>
+        <text class="e" x="428" y="557" text-anchor="end">invoke(command)</text>
         <rect class="box" x="310" y="560" width="250" height="44" rx="8"/>
         <text class="n" x="326" y="579">api.ts</text>
         <text class="s" x="326" y="596">one typed wrapper per command</text>

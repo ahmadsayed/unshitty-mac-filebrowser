@@ -125,17 +125,22 @@ addDriveItem({ id: "file-2", name: "Report.docx", parent: "mock-root", isDir: fa
 addDriveItem({ id: "file-3", name: "Plan", parent: "mock-root", isDir: false, doc: true });
 addDriveItem({ id: "file-4", name: "nested.txt", parent: "folder-1", isDir: false, size: 3 });
 
-function drivePath(id: string): string {
+/** The account key in a Drive path: every mock account shows the same tree. */
+function driveKey(path: string): string {
+  return path.slice("gdrive://".length).split("/")[0] || "mock";
+}
+
+function drivePath(id: string, key = "mock"): string {
   const parts: string[] = [];
   for (let item = driveItems.get(id); item; item = item.parent ? driveItems.get(item.parent) : undefined) {
     parts.unshift(`${item.id}~${encodeCloudName(item.name)}`);
   }
-  return `gdrive://mock/${parts.join("/")}`;
+  return `gdrive://${key}/${parts.join("/")}`;
 }
 
 /** The ids along a Drive path and, for a pending `~name` tail, that name. */
 function parseDrive(path: string): { ids: string[]; pending?: string } {
-  const segments = path.slice("gdrive://mock/".length).split("/").filter(Boolean);
+  const segments = path.slice(`gdrive://${driveKey(path)}/`.length).split("/").filter(Boolean);
   const last = segments[segments.length - 1] ?? "";
   if (last.startsWith("~")) {
     return { ids: segments.slice(0, -1).map((s) => s.split("~")[0]), pending: decodeURIComponent(last.slice(1)) };
@@ -164,17 +169,17 @@ function driveTarget(path: string): { parent: DriveItem; name: string } {
   return { parent, name: pending };
 }
 
-function driveEntry(item: DriveItem): Entry {
+function driveEntry(item: DriveItem, key = "mock"): Entry {
   return {
     name: item.name,
-    path: drivePath(item.id),
+    path: drivePath(item.id, key),
     is_dir: item.isDir,
     size: item.size,
     modified: now - day,
     is_hidden: false,
     is_symlink: false,
     cloud: {
-      account: "mock",
+      account: key,
       id: item.id,
       mime_type: item.doc ? DOC_MIME : item.isDir ? FOLDER_MIME : "text/plain",
       is_google_doc: item.doc,
@@ -188,12 +193,12 @@ function driveEntry(item: DriveItem): Entry {
 function listDrive(path: string): Entry[] {
   const folder = driveItemAt(path);
   if (!folder?.isDir) throw "Google Drive item no longer exists.";
-  return driveChildren(folder.id).map(driveEntry);
+  return driveChildren(folder.id).map((item) => driveEntry(item, driveKey(path)));
 }
 
 function driveNode(path: string): Entry | undefined {
   const item = driveItemAt(path);
-  return item && driveEntry(item);
+  return item && driveEntry(item, driveKey(path));
 }
 
 function drivePathExists(path: string): boolean {
@@ -1558,7 +1563,23 @@ interface MockDriveAccount {
   scopes: string[];
   connected_at: number;
 }
-let driveAccount: MockDriveAccount | null = null;
+/** Connected accounts, in the order they were added, as the backend keeps them. */
+let driveAccountList: MockDriveAccount[] = [];
+/** The Google account the next sign-in in the browser picks (tests change it). */
+let nextDriveEmail = "me@example.com";
+
+/** A new account's key: "mock" (the paths the tests and the preview use) while free, then mock2, mock3… */
+function freeDriveKey(): string {
+  const used = new Set(driveAccountList.map((account) => driveKey(account.root_path)));
+  let n = 1;
+  while (used.has(n === 1 ? "mock" : `mock${n}`)) n++;
+  return n === 1 ? "mock" : `mock${n}`;
+}
+
+/** Sign the next "Open Browser" in as `email`, as a second Google account would. */
+export function setMockDriveEmail(email: string): void {
+  nextDriveEmail = email;
+}
 /** The user's OAuth client id; the mock checks the file's shape like the backend. */
 let driveClientId: string | null = null;
 
@@ -1583,13 +1604,13 @@ function parseDriveClient(json: string): string {
 }
 
 function refuseWhileConnected(): void {
-  if (driveAccount) throw "Disconnect Google Drive first.";
+  if (driveAccountList.length) throw "Disconnect Google Drive first.";
 }
 const driveFlows = new Set<string>();
 let driveFlowSeq = 0;
 
 const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
-  drive_accounts: () => (driveAccount ? [{ ...driveAccount }] : []),
+  drive_accounts: () => driveAccountList.map((account) => ({ ...account })),
   drive_client_status: () => ({ configured: driveClientId !== null, client_id: driveClientId }),
   drive_client_set: (a) => {
     refuseWhileConnected();
@@ -1615,23 +1636,31 @@ const DRIVE_COMMANDS: Record<string, (args: Args) => unknown> = {
     if (!driveFlows.delete(str(a, "flowId"))) {
       throw "This sign-in attempt is no longer active.";
     }
-    // Signing in again for the same account keeps its id and paths.
+    // Signing in again for the same account keeps its id and paths, and so
+    // does a fresh sign-in to a Google account that is already connected.
     const reconnect = typeof a.account === "string" ? a.account : null;
-    driveAccount = {
-      id: reconnect === driveAccount?.id ? reconnect : "mock-account",
-      email: "me@example.com",
-      name: "Me",
+    const email = nextDriveEmail;
+    const known =
+      driveAccountList.find((account) => account.id === reconnect) ??
+      (reconnect ? undefined : driveAccountList.find((account) => account.email.toLowerCase() === email.toLowerCase()));
+    const key = known ? driveKey(known.root_path) : freeDriveKey();
+    const account: MockDriveAccount = {
+      id: known?.id ?? (key === "mock" ? "mock-account" : `${key}-account`),
+      email,
+      name: email.split("@")[0],
       root_id: "mock-root",
       root_name: "My Drive",
-      root_path: DRIVE_ROOT,
+      root_path: DRIVE_ROOT.replace("gdrive://mock/", `gdrive://${key}/`),
       scopes: [DRIVE_SCOPE],
       connected_at: now,
     };
-    return { ...driveAccount };
+    if (known) driveAccountList = driveAccountList.map((item) => (item === known ? account : item));
+    else driveAccountList.push(account);
+    return { ...account };
   },
   drive_connect_cancel: (a) => void driveFlows.delete(str(a, "flowId")),
-  drive_disconnect: () => {
-    driveAccount = null;
+  drive_disconnect: (a) => {
+    driveAccountList = driveAccountList.filter((account) => account.id !== str(a, "account"));
   },
 };
 

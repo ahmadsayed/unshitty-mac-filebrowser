@@ -134,15 +134,24 @@ impl CloudState {
         } else {
             token.scopes.clone()
         };
-        let id = match reconnect {
-            Some(id) => self
+        // Signing in for an account keeps its id (so its paths); so does a
+        // fresh sign-in to a Google account that is already connected, which
+        // replaces its token instead of adding the same account twice.
+        let id = {
+            let accounts = self
                 .accounts
                 .lock()
-                .map_err(|_| "Google Drive state is unavailable.".to_string())?
-                .get(id)
+                .map_err(|_| "Google Drive state is unavailable.".to_string())?;
+            let known = match reconnect {
+                Some(id) => accounts.get(id),
+                None => accounts
+                    .items()
+                    .iter()
+                    .find(|account| account.email.eq_ignore_ascii_case(&about.email)),
+            };
+            known
                 .map(|account| account.id.clone())
-                .unwrap_or_else(accounts::new_account_id),
-            None => accounts::new_account_id(),
+                .unwrap_or_else(accounts::new_account_id)
         };
         let account = DriveAccount::new(
             id,
@@ -418,6 +427,45 @@ mod tests {
         assert_eq!(
             state.token(&first.id).unwrap().unwrap().access_token,
             "access-2"
+        );
+    }
+
+    #[test]
+    fn signing_in_to_a_connected_email_keeps_its_account_and_another_email_adds_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        let first = state
+            .record_sign_in(sign_in_about(), &token("access-1", "refresh-1", vec![]), None)
+            .unwrap();
+
+        // Online Accounts' "Connect an Account" signs in with no account in
+        // mind; the same Google account must not become a second row.
+        let mut same = sign_in_about();
+        same.email = "ME@example.com".into();
+        let again = state
+            .record_sign_in(same, &token("access-2", "refresh-2", vec![]), None)
+            .unwrap();
+        assert_eq!(again.id, first.id);
+        assert_eq!(state.accounts.lock().unwrap().items().len(), 1);
+        assert_eq!(
+            state.token(&first.id).unwrap().unwrap().access_token,
+            "access-2"
+        );
+
+        let mut other = sign_in_about();
+        other.email = "work@example.com".into();
+        let second = state
+            .record_sign_in(other, &token("access-3", "refresh-3", vec![]), None)
+            .unwrap();
+        assert_ne!(second.id, first.id);
+        let accounts = state.accounts.lock().unwrap();
+        assert_eq!(accounts.items().len(), 2);
+        assert_eq!(accounts.items()[0].id, first.id);
+        drop(accounts);
+        assert_eq!(
+            state.token(&first.id).unwrap().unwrap().access_token,
+            "access-2",
+            "the first account's token is untouched"
         );
     }
 

@@ -129,7 +129,7 @@ below.
 - **Sharing UI** (permissions, links, "Shared with me"). Shared drives and
   shared-with-me are a later phase, not v1.
 - **Multi-account UI** in v1. The data model allows it; Network shows one
-  account.
+  account. (Lifted 2026-11-08 by `2026-11-08-online-accounts-design.md`.)
 - **Windows.** Not a target today; the design does not add any OS-specific
   code, so a future Windows port only needs a keyring backend.
 
@@ -210,7 +210,9 @@ gdrive://8f3c/R0OT~My%20Drive/1AbC~Documents/9xYz~report.docx
 be added later without a migration. Since 2026-11-08 the account is one of
 Network's entries (email, "Connected", **Disconnect…** on right-click) instead
 of a sidebar row; while none is connected, Network's bar offers **Connect to
-Google Drive…**, and Up from My Drive goes to Network.
+Google Drive…**, and Up from My Drive goes to Network. Since 2026-11-08 the
+frontend keeps every account and Network lists one entry per account; see
+`2026-11-08-online-accounts-design.md`.
 
 **D4. OAuth 2.0 Authorization Code + PKCE, loopback redirect, system browser.**
 - Auth endpoint `https://accounts.google.com/o/oauth2/v2/auth`; token endpoint
@@ -321,6 +323,9 @@ Drive is rejected with "Enter a Google Drive location or a full path." A
   **Add…** menu for every kind of location: **Connect to Server…** and, under
   **Online Accounts**, **Google Drive…** (later providers are rows there, not
   new buttons). The account entry and connect dialog are unchanged.
+  Replaced the same day by the Online Accounts dialog
+  (`2026-11-08-online-accounts-design.md`): the bar is the entry, Connect and
+  an info popover, and accounts are added and managed in that dialog.
 - `versions` commands reject cloud paths before reaching the filesystem.
 - No UI framework, no new frontend dependencies.
 

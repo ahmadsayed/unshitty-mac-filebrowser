@@ -101,14 +101,32 @@ test("an unknown host key asks before connecting", async () => {
   expect(names()).toEqual(["Documents", "notes.txt"]);
 });
 
-test("Network's Add… menu opens Connect to Server", async () => {
+test("Network's info button says which server addresses the bar takes", async () => {
   await click(place("Network"));
   await settle(20);
-  await click($$(".network-paste .btn").find((button) => button.textContent === "Add…")!);
+  const info = $<HTMLButtonElement>(".network-paste .network-info");
+  expect(info.title).toBe("Server Address Information");
+  await click(info);
   await settle(10);
-  expect(menuLabels()).toEqual(["Connect to Server…", "Google Drive…"]);
-  await chooseMenu("Connect to Server…");
-  await settle(10);
-  expect(dialogHeading()).toBe("Connect to Server");
-  await respond("Cancel");
+  const help = $(".popover .server-help");
+  expect(help.querySelector("h3")?.textContent).toBe("Server Addresses");
+  expect([...help.querySelectorAll(".server-help-protocols span")].map((cell) => cell.textContent)).toEqual([
+    "Available Protocols", "Prefix",
+    "SSH File Transfer Protocol", "sftp:// or ssh://",
+    "Shared folder link", "share://",
+  ]);
+  await key("Escape", { target: help });
+  await settle(5);
+  expect(document.querySelector(".popover .server-help")).toBeNull();
+});
+
+test("Network's menus open Online Accounts", async () => {
+  await click(place("Network"));
+  await settle(20);
+  await mouse($("#view"), "contextmenu", { button: 2 });
+  await settle(5);
+  expect(menuLabels()).toEqual(["Connect to Server…", "Online Accounts…", "Select All"]);
+  await chooseMenu("Online Accounts…");
+  expect(dialogHeading()).toBe("Online Accounts");
+  await respond("Close");
 });

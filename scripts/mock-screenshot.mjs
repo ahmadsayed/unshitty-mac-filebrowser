@@ -11,7 +11,7 @@
 // --size <width>x<height> (default 1100x720), --theme gnome|macos (default
 // macos; the theme follows the platform, so gnome loads the page with a
 // Linux user agent and the app takes its Linux code paths), --scene
-// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive|drive-expired|network-add-menu (default grid: the folder as it
+// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive|drive-expired|online-accounts|network-address-help (default grid: the folder as it
 // opens; list: list view with the second item selected; menu: the main menu
 // open; item-menu: the right-click menu of --item; background-menu: the
 // right-click menu of the empty area; dialog: the Keyboard Shortcuts dialog; search, search-list: a search
@@ -19,8 +19,9 @@
 // --item, default "Notes.md", with --query typed into its search; qr-share:
 // Send with QR Code… on --item, once its code shows; preview: Space on
 // --item; network-drive: Network with a connected Google account; drive-expired:
-// Google Drive whose sign-in expired, once its dialog shows; network-add-menu:
-// Network's Add… menu open). Uses ?demo (no
+// Google Drive whose sign-in expired, once its dialog shows; online-accounts:
+// Online Accounts with the mock's Google account connected;
+// network-address-help: Network's server address popover open). Uses ?demo (no
 // test-only folders). The page's clock is fixed, so the same scene always
 // gives the same image.
 import { createRequire } from "node:module";
@@ -34,7 +35,7 @@ const option = (name, fallback) => {
 const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene", "--query", "--item"];
 const [path, out] = args.filter((a, i) => !a.startsWith("--") && !VALUE_OPTIONS.includes(args[i - 1]));
 if (!path || !out) {
-  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive|drive-expired|network-add-menu] [--query <text>] [--item <name>]");
+  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive|drive-expired|online-accounts|network-address-help] [--query <text>] [--item <name>]");
   process.exit(2);
 }
 
@@ -119,10 +120,19 @@ const SCENES = {
     await page.keyboard.press(`${MOD}+1`);
     await page.waitForTimeout(300);
   },
-  // Network's Add… menu, where a server or an online account is chosen.
-  "network-add-menu": async (page) => {
-    await page.locator(".network-paste .btn", { hasText: "Add…" }).click();
-    await page.waitForSelector(".popover .menu-item:has-text('Google Drive…')");
+  // Online Accounts from the primary menu, with the mock's Google account
+  // connected, so both groups show.
+  "online-accounts": async (page) => {
+    await connectMockDrive(page);
+    await page.locator(".toast .flat-btn").click().catch(() => {});
+    await page.locator("#btn-main-menu").click();
+    await page.getByRole("menuitem", { name: "Online Accounts…", exact: true }).click();
+    await page.waitForSelector(".dialog .preferences-group");
+  },
+  // Network's info button: the server addresses the bar takes.
+  "network-address-help": async (page) => {
+    await page.locator(".network-paste .network-info").click();
+    await page.waitForSelector(".popover .server-help");
   },
   // The mock's Google Drive sign-in has expired: opening the entry shows the
   // dialog that fixes it (or, on a build before it, the old toast).
@@ -149,10 +159,11 @@ const SCENES = {
   },
 };
 
-/** Connect the mock's Google account through Network's button and dialogs. */
+/** Connect the mock's Google account through Online Accounts and its dialogs. */
 async function connectMockDrive(page) {
-  await page.locator(".network-paste .btn", { hasText: "Add…" }).click();
-  await page.getByText("Google Drive…", { exact: true }).click();
+  await page.locator("#btn-main-menu").click();
+  await page.getByRole("menuitem", { name: "Online Accounts…", exact: true }).click();
+  await page.locator(".dialog .action-row", { hasText: "Google Drive" }).click();
   await page.fill(".client-json", JSON.stringify({ installed: { client_id: "1-a.apps.googleusercontent.com", client_secret: "s" } }));
   await page.getByRole("button", { name: "Add Client", exact: true }).click();
   await page.getByRole("button", { name: "Open Browser", exact: true }).click();

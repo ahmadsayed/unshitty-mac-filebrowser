@@ -34,8 +34,11 @@ It owns no rules: it asks small modules that have no DOM.
 - **Pictures.** `item-icons.ts` decides which picture an item shows and when
   it is asked again; `itemIcon` in `icons.ts` composes the picture with its
   emblems. `native-icons.ts` and `thumbnails.ts` are the caches behind them.
-- **Widgets.** `ui.ts`: menus, popovers, toasts, and dialogs whose busy mode
-  runs one action at a time while the backend works.
+- **Widgets and dialogs.** `ui.ts`: menus, popovers, toasts, and dialogs
+  whose busy mode runs one action at a time while the backend works.
+  `online-accounts.ts` is the Online Accounts dialog, built from
+  `providers.ts`: one row per provider (Google Drive today), the accounts in
+  one shape whatever their provider, and which account a path belongs to.
 
 **Across the boundary.** `api.ts` has one typed wrapper per Tauri command.
 In the tests, `dev/mock-tauri` answers the same commands from an in-memory
@@ -67,6 +70,7 @@ between macOS and Linux too: XDG paths and volumes.
 | --- | --- |
 | Allow or refuse an action in a kind of place | one cell in `item-actions.ts` |
 | A new kind of location (SMB, WebDAV) | a row in `paths.ts`, a kind in `locations.ts`, a `Kind` in `place.rs` |
+| A new online account provider (OneDrive, Dropbox) | a row in `providers.ts` and in `PROVIDER_ACTIONS` (`main.ts`), plus the location rows above |
 | How copy, move or Replace behaves | `placement.rs` |
 | The trash log, Put Back, Restore, Empty Trash | `trash_ops::Trash` |
 | Something new that remembers paths | one holder in `path-refs.ts` |

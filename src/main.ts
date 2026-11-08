@@ -49,6 +49,8 @@ import { FolderSummaries } from "./folder-summaries";
 import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
 import type { DriveAuthNeed } from "./drive-auth";
 import { PathRefs, type Clip } from "./path-refs";
+import { accountOf, fromDrive, PROVIDERS, providerOf, withAccount, withoutAccount, type Account, type ProviderActions, type ProviderId } from "./providers";
+import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
 import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
@@ -98,10 +100,10 @@ function savePrefs(): void {
 // ---------------------------------------------------------------------------
 
 /** Sidebar places that aren't folders. Recent and Starred list items from anywhere; Network lists received shares and SSH servers. */
-const PSEUDO: Record<Pseudo, { label: string; icon: string; title: string; text: string }> = {
+const PSEUDO: Record<Pseudo, { label: string; icon: string; title: string; text: string; action?: string }> = {
   recent: { label: "Recent", icon: "document-open-recent", title: "No Recent Files", text: "" },
   starred: { label: "Starred", icon: "starred", title: "Starred files will appear here", text: "" },
-  network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Connect to a server, paste a share link or add an online account below." },
+  network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Connect to a server, paste a share link or connect an online account.", action: "Online Accounts…" },
 };
 const RECENT = `${PSEUDO_PREFIX}recent`;
 const STARRED = `${PSEUDO_PREFIX}starred`;
@@ -236,8 +238,11 @@ let sftpServerList: SftpServer[] = [];
 let sharedFolders: ShareSummary[] = [];
 /** Why a share path cannot be listed (offline, no access, moved). */
 let sharePage: "offline" | "no-access" | "missing" | null = null;
-/** The connected Google account, if any. */
-let driveAccount: DriveAccount | null = null;
+/** Connected online accounts (src/providers.ts), which Network lists. */
+let accounts: Account[] = [];
+/** Accounts whose last request failed for want of a sign-in, by `provider:id`. */
+const signInNeeded = new Set<string>();
+const accountRef = (account: Account) => `${account.provider}:${account.id}`;
 let cloudOpenNoticeShown = false;
 /** Mounted volumes, as the backend reported them; used for breadcrumbs and
  * for guessing whether a drag crosses filesystems. */
@@ -298,7 +303,7 @@ function basename(path: string): string {
 /** Above a share's or a server's root, and above My Drive (the account's
  *  root folder, Network's entry), is Network. */
 function parentOf(path: string): string {
-  if (isCloud(path) && (path === driveAccount?.root_path || parentPath(path) === path)) return NETWORK;
+  if (accounts.some((account) => account.rootPath === path) || (isCloud(path) && parentPath(path) === path)) return NETWORK;
   return parentPath(path) ?? NETWORK;
 }
 
@@ -307,7 +312,7 @@ function receivedFor(path: string): ReceivedShare | undefined {
 }
 
 /** What Network lists: one folder entry per received share, then one per
- *  connected server, then the Google account, if one is connected. */
+ *  connected server, then one per online account. */
 function networkEntries(): Entry[] {
   const place = { is_dir: true, size: 0, modified: 0, is_hidden: false, is_symlink: false };
   const shares: Entry[] = networkShares.map((share) => ({
@@ -318,8 +323,8 @@ function networkEntries(): Entry[] {
     shareStatus: share.status,
   }));
   const servers: Entry[] = sftpServerList.map((server) => ({ ...place, name: server.label, path: server.url }));
-  const drive: Entry[] = driveAccount ? [{ ...place, name: "Google Drive", path: driveAccount.root_path }] : [];
-  return [...shares, ...servers, ...drive];
+  const online: Entry[] = accounts.map((account) => ({ ...place, name: PROVIDERS[account.provider].label, path: account.rootPath }));
+  return [...shares, ...servers, ...online];
 }
 
 /** The SSH server a Network entry stands for. */
@@ -342,15 +347,16 @@ function selectionOn(loc: string, select: string | undefined): string | undefine
   return loc === NETWORK && select ? networkEntryFor(select) : select;
 }
 
-/** Network's second line: who shared a folder, what kind of server it is, or the Google account. */
+/** Network's second line: who shared a folder, what kind of server it is, or the account's address. */
 function networkDetail(entry: Entry): string {
   if (isSftpPath(entry.path)) return "SSH server";
-  if (isCloud(entry.path)) return driveAccount?.email ?? "";
+  const account = accountOf(entry.path, accounts);
+  if (account) return account.email;
   return entry.sharer ? `Shared by ${entry.sharer}` : "";
 }
 
 function networkStatus(entry: Entry): { cls: string; label: string } {
-  if (isSftpPath(entry.path) || isCloud(entry.path)) return { cls: "online", label: "Connected" };
+  if (isSftpPath(entry.path) || providerOf(entry.path)) return { cls: "online", label: "Connected" };
   return { cls: entry.shareStatus ?? "", label: shareStatusLabel(entry.shareStatus) };
 }
 
@@ -713,7 +719,7 @@ async function navigate(loc: string, opts: NavigateOptions = {}): Promise<Naviga
 /** List `loc` for navigate(). Null when the view keeps its place: a toast
  *  said why, or no toast because a later navigation overtook this one. */
 async function arrive(loc: string, overtaken: () => boolean, wanted: string | undefined): Promise<Arrival | null> {
-  if (loc === NETWORK) await Promise.all([refreshShares(), refreshSftpServers(), refreshDriveAccount()]);
+  if (loc === NETWORK) await Promise.all([refreshShares(), refreshSftpServers(), refreshAccounts()]);
   // Asked after the refresh: the server list says which entry is whose.
   const arrival: Arrival = { next: [], error: null, page: null, select: selectionOn(loc, wanted) };
   const shared = isSharePath(loc) ? receivedFor(loc) : undefined;
@@ -802,7 +808,7 @@ async function reload(select?: string[]): Promise<void> {
   const seq = viewSeq;
   const moved = () => seq !== viewSeq;
   if (isSharePath(location) || location === NETWORK) await refreshShares();
-  if (location === NETWORK) await Promise.all([refreshSftpServers(), refreshDriveAccount()]);
+  if (location === NETWORK) await Promise.all([refreshSftpServers(), refreshAccounts()]);
   if (moved() || showShareStatusPage()) return;
   if (!(await relist(moved))) return;
   selection.retain(select ?? selection.paths(), entries);
@@ -901,9 +907,14 @@ async function refreshSftpServers(): Promise<void> {
   sftpServerList = await sftpServers().catch(() => []);
 }
 
-/** Refresh the connected Google account (one at most), which Network lists. */
-async function refreshDriveAccount(): Promise<void> {
-  driveAccount = await driveAccounts().then((accounts) => accounts[0] ?? null).catch(() => null);
+/** Refresh the connected online accounts, which Network lists. */
+async function refreshAccounts(): Promise<void> {
+  const drive = await driveAccounts().catch(() => null);
+  // A failed answer keeps what is known rather than emptying Network.
+  if (drive) accounts = drive.map(fromDrive);
+  for (const ref of [...signInNeeded]) {
+    if (!accounts.some((account) => accountRef(account) === ref)) signInNeeded.delete(ref);
+  }
 }
 
 /** The folder that keeps versions for `loc`, if any (never for Trash or Recent). */
@@ -1235,7 +1246,9 @@ function renderView(): void {
   if (sharePage) {
     viewEl.innerHTML = shareStatusPage(sharePage);
   } else if (pseudo && (!hasEntries(location) || (shown.length === 0 && !search.text))) {
-    viewEl.innerHTML = statusPage(pseudo.icon, pseudo.title, pseudo.text);
+    viewEl.innerHTML = statusPage(pseudo.icon, pseudo.title, pseudo.text, pseudo.action);
+    // Network's only action: the dialog that adds an online account.
+    viewEl.querySelector(".status-action")?.addEventListener("click", () => void openOnlineAccounts());
   } else if (listingError !== null) {
     viewEl.innerHTML = statusPage("dialog-error", "Unable to Access Location", listingError);
   } else if (shown.length === 0 && search.text && search.busy) {
@@ -1448,30 +1461,19 @@ function renderNetworkPaste(overlay: Element): void {
   const button = document.createElement("button");
   button.className = "btn suggested";
   button.textContent = "Connect";
-  const add = document.createElement("button");
-  add.className = "btn";
-  add.textContent = "Add…";
-  add.setAttribute("aria-haspopup", "menu");
+  // GNOME Files' network address bar: the entry, Connect, and a round info
+  // button for what can be typed. Online accounts are added from Online
+  // Accounts…, never from a button per provider here.
+  const info = document.createElement("button");
+  info.className = "flat-btn circular network-info";
+  info.title = "Server Address Information";
+  info.setAttribute("aria-label", "Server Address Information");
+  info.setAttribute("aria-haspopup", "dialog");
+  info.innerHTML = sym("info-outline");
   const error = document.createElement("span");
   error.className = "network-error";
-  bar.append(input, button, add, error);
-  add.addEventListener("click", (event) => {
-    // One menu for every kind of location: a server now, an online account
-    // per provider (more than one account later), so the bar never grows a
-    // button per service.
-    const typed = input.value.trim();
-    const items: MenuItem[] = [
-      {
-        label: "Connect to Server…",
-        action: () => showConnectServerDialog(isShareLink(typed) ? "" : typed),
-      },
-    ];
-    if (!driveAccount) {
-      // Connected, the account is one of Network's entries instead.
-      items.push({ separator: true }, { heading: "Online Accounts" }, { label: "Google Drive…", action: () => void connectDrive() });
-    }
-    openMenu(event.currentTarget as HTMLElement, items);
-  });
+  bar.append(input, button, info, error);
+  info.addEventListener("click", () => openPopover(info, serverAddressHelp(), {}));
 
   const connect = async () => {
     const link = input.value.trim();
@@ -1513,8 +1515,29 @@ function renderNetworkPaste(overlay: Element): void {
   overlay.appendChild(bar);
 }
 
-function statusPage(icon: string, title: string, text: string): string {
-  return `<div class="status-page">${sym(icon)}<h1>${escapeHtml(title)}</h1>${text ? `<p>${escapeHtml(text)}</p>` : ""}</div>`;
+/** What Network's address entry accepts, one row per kind of address. */
+const SERVER_PROTOCOLS: Array<{ name: string; prefix: string }> = [
+  { name: "SSH File Transfer Protocol", prefix: "sftp:// or ssh://" },
+  { name: "Shared folder link", prefix: SHARE_PREFIX },
+];
+
+/** The info button's popover, as GNOME Files' "Server Addresses". */
+function serverAddressHelp(): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "server-help";
+  box.innerHTML =
+    `<h3>Server Addresses</h3>` +
+    `<p>Server addresses are made up of a protocol prefix and an address. Examples:</p>` +
+    `<p class="server-help-examples">ssh://192.168.0.1, sftp://files.example.org</p>` +
+    `<div class="server-help-protocols"><span class="heading">Available Protocols</span><span class="heading">Prefix</span>` +
+    SERVER_PROTOCOLS.map((p) => `<span>${escapeHtml(p.name)}</span><span class="prefix">${escapeHtml(p.prefix)}</span>`).join("") +
+    `</div>`;
+  return box;
+}
+
+function statusPage(icon: string, title: string, text: string, action = ""): string {
+  const button = action ? `<button class="btn pill status-action">${escapeHtml(action)}</button>` : "";
+  return `<div class="status-page">${sym(icon)}<h1>${escapeHtml(title)}</h1>${text ? `<p>${escapeHtml(text)}</p>` : ""}${button}</div>`;
 }
 
 function itemClasses(e: Entry, i: number): string {
@@ -2205,7 +2228,7 @@ function shareItemMenu(single: Entry | null): MenuItem[] {
 }
 
 /** A Network item: open a received share or forget it; open a server or
- *  disconnect it; open Google Drive or disconnect the account. */
+ *  disconnect it; open an online account or disconnect it. */
 function networkItemMenu(single: Entry | null): MenuItem[] {
   const server = single ? serverFor(single) : undefined;
   if (server) {
@@ -2216,12 +2239,13 @@ function networkItemMenu(single: Entry | null): MenuItem[] {
       { label: "Disconnect", action: () => void disconnectServer(server) },
     ];
   }
-  if (single && isCloud(single.path)) {
+  const account = single ? accountOf(single.path, accounts) : undefined;
+  if (account) {
     return [
       { label: "Open", action: activateSelection },
       { label: "Copy Location", action: copyLocation },
       { separator: true },
-      { label: "Disconnect…", action: confirmDisconnectDrive },
+      { label: "Disconnect…", action: () => PROVIDER_ACTIONS[account.provider].disconnect(account) },
     ];
   }
   const id = single && isSharePath(single.path) ? shareId(single.path) : "";
@@ -2653,6 +2677,7 @@ const BACKGROUND_MENUS: Record<LocationKind, () => MenuItem[]> = {
   starred: pseudoBackgroundMenu,
   network: () => [
     { label: "Connect to Server…", action: () => showConnectServerDialog() },
+    { label: "Online Accounts…", action: () => void openOnlineAccounts() },
     { separator: true },
     { label: "Select All", action: selectAll },
   ],
@@ -2686,6 +2711,7 @@ const LOCATION_MENUS: Record<LocationKind, () => MenuItem[]> = {
   starred: () => folderLocationMenu(false),
   network: () => [
     { label: "Connect to Server…", action: () => showConnectServerDialog() },
+    { label: "Online Accounts…", action: () => void openOnlineAccounts() },
     { separator: true },
     { label: "Reload", action: () => void reload() },
   ],
@@ -2738,6 +2764,7 @@ function openMainMenu(anchor: HTMLElement): void {
     { label: "Close Tab", disabled: tabs.length <= 1, action: () => void closeTab(activeTab) },
     { separator: true },
     { label: "Connect to Server…", action: () => showConnectServerDialog() },
+    { label: "Online Accounts…", action: () => void openOnlineAccounts() },
     { separator: true },
     { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
     { label: "Show Thumbnails", check: prefs.showThumbnails, action: toggleThumbnails },
@@ -5050,12 +5077,16 @@ let driveSignInPrompt = false;
  * Without a client, that is the client setup dialog (with the guide) first.
  */
 async function offerDriveSignIn(need: DriveAuthNeed, loc: string): Promise<void> {
+  if (!accountOf(loc, accounts)) await refreshAccounts();
+  const failed = accountOf(loc, accounts);
+  // Online Accounts marks it "Sign in again" until it signs in.
+  if (failed) signInNeeded.add(accountRef(failed));
   if (driveSignInPrompt || document.querySelector(".dialog-layer")) return;
   driveSignInPrompt = true;
   const after = async (account: DriveAccount) => {
     // The account may have been re-added under a new id; its root is where to
     // go then, not the stale Drive path that failed.
-    if (cloudAccountKey(loc) !== account.id) await navigate(account.root_path);
+    if (cloudAccountKey(loc) !== cloudAccountKey(account.root_path)) await navigate(account.root_path);
     else if (location === loc) await reload([]);
     else await navigate(loc);
   };
@@ -5065,17 +5096,91 @@ async function offerDriveSignIn(need: DriveAuthNeed, loc: string): Promise<void>
       openClientSetup(after);
       return;
     }
-    let account = driveAccount;
-    if (!account || account.id !== cloudAccountKey(loc)) {
-      const accounts = await driveAccounts().catch(() => []);
-      account = accounts.find((item) => item.id === cloudAccountKey(loc)) ?? account ?? accounts[0] ?? null;
-    }
+    const account = failed ?? accounts.find((item) => item.provider === "gdrive");
     // No account to sign in again: connect one with the client already set.
     if (account) openConnectDialog(account, after, need === "client");
     else openConnectDialog(null, after);
   } finally {
     driveSignInPrompt = false;
   }
+}
+
+/** Sign a Google account in again, from Online Accounts. */
+async function signInDrive(account: Account): Promise<void> {
+  const status = await driveClientStatus().catch(() => null);
+  if (status?.configured) openConnectDialog(account);
+  else openClientSetup();
+}
+
+/**
+ * A token belongs to the client that issued it, so every Google account is
+ * disconnected before the client can change. That needs asking first when
+ * it removes an account that still works (anything but `current` whose
+ * sign-in already failed).
+ */
+async function changeDriveClient(current: Account | null, before: () => void = () => {}): Promise<void> {
+  await refreshAccounts();
+  const google = accounts.filter((account) => account.provider === "gdrive");
+  const working = google.filter((account) => !(account.id === current?.id && signInNeeded.has(accountRef(account))));
+  if (working.length && !(await confirmChangeDriveClient(google))) return;
+  try {
+    for (const account of google) {
+      await driveDisconnect(account.id);
+      forgetAccount(account);
+    }
+    await driveClientClear();
+    before();
+    openClientSetup();
+  } catch (err) {
+    showToast(cleanError(err));
+  }
+}
+
+function confirmChangeDriveClient(google: Account[]): Promise<boolean> {
+  const who = google.length === 1 ? `“${google[0].email}” is` : `${google.length} Google accounts are`;
+  return new Promise((resolve) => {
+    openDialog({
+      heading: "Change Google Client?",
+      body: `${who} disconnected first, because a sign-in belongs to the client that made it. Files in Google Drive are not deleted.`,
+      responses: [
+        { id: "cancel", label: "Cancel" },
+        { id: "change", label: "Disconnect and Change", style: "destructive" },
+      ],
+      defaultResponse: "cancel",
+      closeResponse: "cancel",
+      onResponse: (id) => resolve(id === "change"),
+    });
+  });
+}
+
+/** Drop an account the backend no longer has. */
+function forgetAccount(account: Account): void {
+  accounts = withoutAccount(accounts, account);
+  signInNeeded.delete(accountRef(account));
+}
+
+/** What each provider does: its own dialogs, behind Online Accounts and Network's menus. */
+const PROVIDER_ACTIONS: Record<ProviderId, ProviderActions> = {
+  gdrive: {
+    connect: () => void connectDrive(),
+    signIn: (account) => void signInDrive(account),
+    disconnect: (account) => confirmDisconnectDrive(account),
+    links: (account) => [{ label: "Change Client…", action: () => void changeDriveClient(account) }],
+  },
+};
+
+const ONLINE_ACCOUNTS: OnlineAccountsHost = {
+  accounts: () => accounts,
+  needsSignIn: (account) => signInNeeded.has(accountRef(account)),
+  actions: PROVIDER_ACTIONS,
+  open: (account) => void navigate(account.rootPath),
+};
+
+/** Online Accounts…, from the primary menu, Network's menus and its empty state. */
+async function openOnlineAccounts(): Promise<void> {
+  // Accounts load with Network; from elsewhere they may not be known yet.
+  await refreshAccounts();
+  showOnlineAccounts(ONLINE_ACCOUNTS);
 }
 
 async function connectDrive(): Promise<void> {
@@ -5148,7 +5253,7 @@ function openClientSetup(after?: (account: DriveAccount) => Promise<void>): void
  * without it, it connects an account for the first time.
  */
 function openConnectDialog(
-  reconnect: DriveAccount | null = null,
+  reconnect: Account | null = null,
   after?: (account: DriveAccount) => Promise<void>,
   clientProblem = false
 ): void {
@@ -5165,19 +5270,7 @@ function openConnectDialog(
       label: "Change Client…",
       action: () => {
         if (dialog.busy) return;
-        // A token belongs to the client that issued it, so a connected
-        // account is disconnected before the client can change.
-        const disconnect = reconnect ? driveDisconnect(reconnect.id) : Promise.resolve();
-        disconnect
-          .then(() => {
-            driveAccount = null;
-            return driveClientClear();
-          })
-          .then(() => {
-            dialog.close();
-            openClientSetup();
-          })
-          .catch((err) => showToast(cleanError(err)));
+        void changeDriveClient(reconnect, () => dialog.close());
       },
     },
   ]);
@@ -5209,7 +5302,8 @@ function openConnectDialog(
         status.textContent = "Waiting for Google…";
         await openExternal(start.auth_url);
         const account = await driveConnectFinish(start.flow_id, reconnect?.id);
-        driveAccount = account;
+        accounts = withAccount(accounts, fromDrive(account));
+        signInNeeded.delete(accountRef(fromDrive(account)));
         dialog.close();
         showToast(reconnect ? `Signed in to ${account.email}` : `Connected to ${account.email}`);
         if (after) await after(account);
@@ -5230,9 +5324,7 @@ function openConnectDialog(
   });
 }
 
-function confirmDisconnectDrive(): void {
-  const account = driveAccount;
-  if (!account) return;
+function confirmDisconnectDrive(account: Account): void {
   openDialog({
     heading: "Disconnect Google Drive?",
     body: `“${account.email}” will be removed from File Browser. Files in Google Drive are not deleted.`,
@@ -5246,10 +5338,10 @@ function confirmDisconnectDrive(): void {
       if (id !== "disconnect") return;
       driveDisconnect(account.id)
         .then(async () => {
-          driveAccount = null;
+          forgetAccount(account);
           showToast("Disconnected from Google Drive");
-          // Network, where the account was listed, shows it gone and offers to connect again.
-          if (isCloud(location)) await navigate(NETWORK);
+          // Network, where the account was listed, shows it gone.
+          if (accountOf(location, [account])) await navigate(NETWORK);
           else if (location === NETWORK) await reload([]);
         })
         .catch((err) => showToast(`Could not disconnect: ${cleanError(err)}`));

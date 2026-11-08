@@ -29,6 +29,8 @@ export const MACOS_SYMBOLIC: Record<string, string> = {
   "non-starred": `<path d="m8 1.75 1.9 3.95 4.35.55-3.2 3 .82 4.3L8 11.45l-3.87 2.1.82-4.3-3.2-3 4.35-.55z" ${LINE} stroke-width="1.2"/>`,
   "starred": `<path d="m8 1.75 1.9 3.95 4.35.55-3.2 3 .82 4.3L8 11.45l-3.87 2.1.82-4.3-3.2-3 4.35-.55z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>`,
   // A globe: Mac sidebars show Network as one.
+  cloud: `<path d="M4.75 12.75a3.25 3.25 0 0 1-.55-6.45 4.25 4.25 0 0 1 8.1-.95 3.3 3.3 0 0 1-.55 7.4z" ${LINE}/>`,
+  "info-outline": `<circle cx="8" cy="8" r="6.25" ${LINE} stroke-width="1.2"/><path d="M8 7.25v4" ${LINE}/><circle cx="8" cy="4.85" r=".8" fill="currentColor"/>`,
   "network-workgroup": `<circle cx="8" cy="8" r="6.25" ${LINE} stroke-width="1.2"/><ellipse cx="8" cy="8" rx="2.75" ry="6.25" ${LINE} stroke-width="1.2"/><path d="M1.75 8h12.5M2.75 5h10.5M2.75 11h10.5" ${LINE} stroke-width="1.1"/>`,
   "user-trash": `<path d="M2.5 4h11M6 4V2.75h4V4" ${LINE}/><path d="m3.75 4 .7 9.15a1 1 0 0 0 1 .93h5.1a1 1 0 0 0 1-.93L12.25 4M6.5 6.75v4.5M9.5 6.75v4.5" ${LINE}/>`,
   "folder-documents": `<path d="M4 1.75h5l3.25 3.25v8.25a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.75a1 1 0 0 1 1-1z" ${LINE}/><path d="M9 1.75V5h3.25M5.25 8h5.5M5.25 10.5h5.5M5.25 13h3" ${LINE} stroke-width="1.1"/>`,
