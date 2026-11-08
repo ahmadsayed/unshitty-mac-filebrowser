@@ -4057,13 +4057,16 @@ function showBatchRename(sel: Entry[]): void {
       try {
         const items = changed.map(({ entry, name }) => ({ from: entry.path, to: joinPath(location, name) }));
         await renameMany(items);
-        // The backend renames all of them or, undoing what it did, none.
+        // The backend renames all of them or, undoing what it did, none,
+        // unless an item took an old name meanwhile: then that rename
+        // stays, and the error says which (the reload below shows it).
         pathRefs.moved(items);
         dialog.close();
         showToast(`Renamed ${changed.length} ${changed.length === 1 ? "item" : "items"}`);
         await reload();
       } catch (err) {
         message.textContent = cleanError(err);
+        await reload();
       }
       return false;
     },
