@@ -1200,6 +1200,83 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 .dialog-error:empty { display: none; }
 .dialog-error { color: var(--destructive); margin-top: 6px; }
 
+/* ----- Online Accounts: GNOME Settings' groups of boxed lists ----- */
+.online-accounts-dialog { width: min(460px, calc(100vw - 24px)); }
+
+.online-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.preferences-group-title {
+  margin: 0 0 6px 2px;
+  font-size: inherit;
+  font-weight: 700;
+}
+
+.boxed-list {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--card-bg);
+  box-shadow: 0 0 0 1px var(--card-shade);
+}
+
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 6px 12px 6px 14px;
+  border: none;
+  border-top: 1px solid var(--card-shade);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.action-row:first-child { border-top: none; }
+.action-row:hover { background: var(--hover); }
+.action-row:active { background: var(--active); }
+.action-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-bg) 50%, transparent);
+  outline-offset: -2px;
+}
+
+.action-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.action-row-title,
+.action-row-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.action-row-subtitle { font-size: 9pt; opacity: var(--dim); }
+.action-row-chevron { opacity: var(--dim); }
+
+.action-row-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--destructive);
+  font-size: 9pt;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.status-page .status-action { margin-top: 12px; }
+
 /* Paste box for the OAuth client JSON */
 .client-json {
   display: block;
@@ -1982,6 +2059,46 @@ kbd {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
+
+/* The bar's info button (GNOME Files' "Server Address Information") */
+.network-paste .network-info {
+  width: var(--button-height);
+  padding: 0;
+  border-radius: 50%;
+}
+
+.server-help {
+  width: 320px;
+  max-width: calc(100vw - 48px);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  line-height: 1.4;
+}
+
+.server-help h3 {
+  font-size: inherit;
+  font-weight: 800;
+  text-align: center;
+}
+
+.server-help-examples,
+.server-help-protocols .prefix {
+  font-family: ui-monospace, "Adwaita Mono", monospace;
+  font-size: 9pt;
+}
+
+.server-help-examples { opacity: var(--dim); }
+
+.server-help-protocols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 12px;
+  margin-top: 6px;
+}
+
+.server-help-protocols .heading { font-weight: 700; }
 
 .network-error {
   max-width: 180px;

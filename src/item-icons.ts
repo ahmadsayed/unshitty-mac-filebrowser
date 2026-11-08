@@ -12,7 +12,8 @@ import type { Entry } from "./api";
 import { fileKind, itemIcon, type FileKind, type FolderKind, type IconBase } from "./icons";
 import { PSEUDO_PREFIX } from "./locations";
 import { loadNativeIcons, nativeIcon, nativeIconSize, nativeIconUrl, preloadNativeIcons, recheckNativeIcons } from "./native-icons";
-import { isCloudPath, isRemotePath, isSftpPath } from "./paths";
+import { isRemotePath, isSftpPath } from "./paths";
+import { PROVIDERS, providerOf } from "./providers";
 import { cachedThumb, keepOnly, requestThumb, thumbKey } from "./thumbnails";
 
 /** Icon sizes, in CSS pixels, per zoom level of each view. */
@@ -77,14 +78,15 @@ export class ItemIcons {
     return v.view === "grid" ? GRID_SIZES[v.gridZoom] : LIST_SIZES[v.listZoom];
   }
 
-  /** The thumbnail if it's loaded, an SSH server's or Google Drive's glyph in
-   *  Network, the OS icon if it's loaded, otherwise the app's drawing. */
+  /** The thumbnail if it's loaded, an SSH server's or an online account's
+   *  glyph in Network, the OS icon if it's loaded, otherwise the app's drawing. */
   base(e: Entry): IconBase {
     const thumb = this.wantsThumb(e) ? cachedThumb(this.thumbKeyFor(e)) : null;
     if (thumb) return { thumb };
     const loc = this.host.location();
     if (loc === NETWORK && isSftpPath(e.path)) return { glyph: "network-server" };
-    if (loc === NETWORK && isCloudPath(e.path)) return { glyph: "network-workgroup" };
+    const provider = loc === NETWORK ? providerOf(e.path) : null;
+    if (provider) return { glyph: PROVIDERS[provider].icon };
     const native = hasOsIcons(e.path, loc) ? nativeIconUrl(e.path, this.nativePx()) : null;
     return native ? { native } : { drawn: this.host.folderKind(e) };
   }

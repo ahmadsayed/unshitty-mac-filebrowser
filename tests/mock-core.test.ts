@@ -1,7 +1,7 @@
 // Characterization tests for the in-memory backend in dev/mock-tauri/core.ts:
 // every command it serves, including its errors.
 import { expect, test, vi } from "vitest";
-import { Channel, fileShareMock, invoke, nativeIconMock, searchMock } from "../dev/mock-tauri/core";
+import { Channel, fileShareMock, invoke, nativeIconMock, searchMock, setMockDriveEmail } from "../dev/mock-tauri/core";
 import { installFakeCanvas } from "./app";
 
 const HOME = "/Users/me";
@@ -512,6 +512,40 @@ test("Google Drive account commands connect, cancel and disconnect", async () =>
   await expect(invoke("drive_connect_finish", { flowId: cancelled.flow_id })).rejects.toMatch(
     /no longer active/,
   );
+});
+
+test("Google Drive keeps several accounts, one per Google account, each under its own path", async () => {
+  type Account = { id: string; email: string; root_path: string };
+  const accounts = () => invoke<Account[]>("drive_accounts");
+  await invoke("drive_client_set", { json: DESKTOP_CLIENT }).catch(() => {});
+  const signIn = async (email: string, account?: string) => {
+    setMockDriveEmail(email);
+    const flow = await invoke<{ flow_id: string }>("drive_connect_start");
+    return invoke<Account>("drive_connect_finish", { flowId: flow.flow_id, account });
+  };
+
+  const first = await signIn("me@example.com");
+  const second = await signIn("work@example.com");
+  expect(second.id).not.toBe(first.id);
+  expect(second.root_path).toBe("gdrive://mock2/mock-root~My%20Drive");
+  expect((await accounts()).map((a) => a.email)).toEqual(["me@example.com", "work@example.com"]);
+
+  // The same Google account signed in afresh keeps its row, id and path.
+  const same = await signIn("ME@example.com");
+  expect(same).toMatchObject({ id: first.id, root_path: first.root_path });
+  expect(await accounts()).toHaveLength(2);
+
+  // Each account lists the fake tree under its own path.
+  const listed = await invoke<Array<{ path: string; cloud: { account: string } }>>("list_dir", {
+    path: second.root_path,
+    showHidden: false,
+  });
+  expect(listed.every((entry) => entry.path.startsWith("gdrive://mock2/") && entry.cloud.account === "mock2")).toBe(true);
+
+  await invoke("drive_disconnect", { account: first.id });
+  expect((await accounts()).map((a) => a.email)).toEqual(["work@example.com"]);
+  await invoke("drive_disconnect", { account: second.id });
+  setMockDriveEmail("me@example.com");
 });
 
 const DESKTOP_CLIENT = JSON.stringify({

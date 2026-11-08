@@ -1,7 +1,8 @@
 # Online Accounts — Design
 
 **Date:** 2026-11-08
-**Status:** approved design, not implemented
+**Status:** implemented 2026-11-08 (branch `feat/online-accounts`); the
+"As built" section at the end lists where the code differs from this design
 **Tracking:** no issue yet; PR #214 (the Add… menu) ends with the note this
 spec answers
 **Related:** `2026-10-24-google-drive-design.md` (D3, D15: the one account and
@@ -311,3 +312,36 @@ Frontend only (`npm test`); no Rust change.
   design leaves room for both).
 - A Preferences dialog. If one arrives, **Online Accounts…** moves under it
   and the primary menu item goes.
+
+## As built (2026-11-08)
+
+Where the implementation differs from the design above, and why:
+
+- **One backend change after all.** A fresh sign-in got a new account id
+  every time, so connecting a Google account that is already connected would
+  have listed it twice. `CloudState::record_sign_in` now reuses the id of the
+  account with the same email (ignoring case) when no account is named, with
+  a test. The mock keeps a list of accounts and does the same.
+- **The table is split in two.** `src/providers.ts` holds what has no DOM
+  (label, icon, which paths are the provider's, the account key in a path,
+  `Account`, `accountOf`); what a provider does is `PROVIDER_ACTIONS` in
+  `main.ts`, a `Record<ProviderId, ProviderActions>`, because its dialogs
+  live there. A missing row is still a type error in either. The dialogs are
+  their own module, `src/online-accounts.ts`.
+- **The account dialog.** Its link to the account's files is **Browse
+  Files** (it opens My Drive, not Network). Responses are Close,
+  **Disconnect…** (destructive), then **Sign In Again** (suggested, only when
+  known expired), so the suggested action is last as in GNOME's dialogs;
+  Enter signs in again when that is offered and closes otherwise.
+- **Change Client… asks first.** A client change disconnects every Google
+  account, so it confirms ("Change Google Client?", default Cancel) unless
+  the only account it removes is the one whose sign-in already failed (the
+  expired sign-in dialog's Change Client…, which behaves as before).
+- **Network's row icon** comes from the provider's row (a cloud drawn by the
+  app, in both themes) instead of the network glyph.
+- **The protocol popover** lists "Shared folder link" with its real prefix,
+  `share://`.
+- **Known edge:** signing in again for one account while choosing a
+  different Google account in the browser keeps the first account's id and
+  takes the new email, as before this change; if that email is another
+  connected account, both rows show it until one is disconnected.

@@ -2,7 +2,7 @@
 // and keep the read-only milestone free of version markers and write actions.
 import { beforeAll, expect, test, vi } from "vitest";
 import { driveLog, invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, menuLabels, mouse, names, respond, selectedNames, settle, toasts, type, hit } from "./app";
+import { $, $$, accountGroups, boot, chooseAccountRow, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, menuLabels, mouse, names, openOnlineAccounts, respond, selectedNames, settle, toasts, type, hit } from "./app";
 
 beforeAll(async () => {
   await boot();
@@ -13,10 +13,6 @@ async function openNetwork(): Promise<void> {
   await click($$(".sidebar-row").find((row) => row.textContent?.trim() === "Network")!);
   await settle(20);
 }
-
-/** Network's Add… menu, where servers and online accounts are chosen. */
-const addButton = () =>
-  $$<HTMLButtonElement>(".network-paste .btn").find((button) => button.textContent === "Add…");
 
 async function rightClick(el: Element): Promise<void> {
   await mouse(el, "mousedown", { button: 2 });
@@ -30,16 +26,18 @@ test("Google Drive connects from Network and browses the mock drive", async () =
   );
   await openNetwork();
   expect(names()).not.toContain("Google Drive");
-  expect(addButton()).toBeTruthy();
+  // Network's bar has no button per provider: accounts are added in Online Accounts.
+  expect($$(".network-paste button").map((button) => button.textContent || button.title)).toEqual([
+    "Connect",
+    "Server Address Information",
+  ]);
 
-  // One Add menu holds the server and the online account.
-  await click(addButton()!);
-  await settle(10);
-  expect(menuLabels()).toEqual(["Connect to Server…", "Google Drive…"]);
+  await openOnlineAccounts();
+  expect(dialogHeading()).toBe("Online Accounts");
+  expect(accountGroups()).toEqual([{ title: "Connect an Account", rows: ["Google Drive"] }]);
 
   // No OAuth client yet: the setup step comes first.
-  await chooseMenu("Google Drive…");
-  await settle(10);
+  await chooseAccountRow("Connect an Account", "Google Drive");
   expect($(".dialog-heading").textContent).toBe("Add Your Google Client");
   const links = $$(".dialog-links button").map((button) => button.textContent);
   expect(links).toEqual(["Open Guide", "Choose File…"]);
@@ -120,13 +118,16 @@ test("Google Drive connects from Network and browses the mock drive", async () =
 
   expect($$(".versioned-icon").length).toBe(0);
 
-  // Network now lists the account, with its email, and no longer offers to connect.
+  // Network now lists the account, with its email; Online Accounts lists it
+  // under Your Accounts and still offers Google Drive, for another account.
   await openNetwork();
   expect(names()).toContain("Google Drive");
   expect(item("Google Drive").textContent).toContain("me@example.com");
-  await click(addButton()!);
-  await settle(10);
-  expect(menuLabels()).not.toContain("Google Drive…");
+  await openOnlineAccounts();
+  expect(accountGroups()).toEqual([
+    { title: "Your Accounts", rows: ["Google Drive · me@example.com"] },
+    { title: "Connect an Account", rows: ["Google Drive"] },
+  ]);
   await closeOverlays();
 });
 
@@ -332,7 +333,7 @@ test("Copy and Paste in the same Drive folder makes a copy without asking", asyn
 });
 
 // Last: it disconnects the account the other tests browse.
-test("Disconnect… from Network removes Google Drive and offers to connect again", async () => {
+test("Disconnect… from Network removes Google Drive and Online Accounts offers to connect again", async () => {
   await openNetwork();
   await rightClick(hit("Google Drive"));
   expect(menuLabels()).toEqual(["Open", "Copy Location", "Disconnect…"]);
@@ -342,9 +343,7 @@ test("Disconnect… from Network removes Google Drive and offers to connect agai
   await settle(20);
   expect(toasts().join(" ")).toContain("Disconnected from Google Drive");
   expect(names()).not.toContain("Google Drive");
-  expect(addButton()).toBeTruthy();
-  await click(addButton()!);
-  await settle(10);
-  expect(menuLabels()).toEqual(["Connect to Server…", "Google Drive…"]);
+  await openOnlineAccounts();
+  expect(accountGroups()).toEqual([{ title: "Connect an Account", rows: ["Google Drive"] }]);
   await closeOverlays();
 });

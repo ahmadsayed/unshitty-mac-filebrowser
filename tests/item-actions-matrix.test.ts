@@ -223,8 +223,8 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
   }],
   "a received share in Network": [place("Network"), "Photos", {
     item: ["Open", "Copy Location", "Remove from Network"],
-    background: ["Connect to Server…", "Select All"],
-    location: ["Connect to Server…", "Reload"],
+    background: ["Connect to Server…", "Online Accounts…", "Select All"],
+    location: ["Connect to Server…", "Online Accounts…", "Reload"],
     // Kept: ⌘⌫ reaches Move to Trash, and only the backend refuses; the menu has none.
     keys: { copy: SHARE_COPY, paste: "nothing", properties: "nothing", bookmark: "nothing", trash: "trash_entries", rename: "nothing" },
     drag: SHARE_COPY,
@@ -233,8 +233,8 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
   }],
   "an SSH server in Network": [place("Network"), "user@host", {
     item: ["Open", "Copy Location", "Disconnect"],
-    background: ["Connect to Server…", "Select All"],
-    location: ["Connect to Server…", "Reload"],
+    background: ["Connect to Server…", "Online Accounts…", "Select All"],
+    location: ["Connect to Server…", "Online Accounts…", "Reload"],
     // Kept: as for a share in Network.
     keys: { copy: SSH_COPY, paste: "nothing", properties: "nothing", bookmark: "nothing", trash: "trash_entries", rename: "nothing" },
     drag: SSH_COPY,
@@ -245,8 +245,8 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
   }],
   "Google Drive in Network": [place("Network"), "Google Drive", {
     item: ["Open", "Copy Location", "Disconnect…"],
-    background: ["Connect to Server…", "Select All"],
-    location: ["Connect to Server…", "Reload"],
+    background: ["Connect to Server…", "Online Accounts…", "Select All"],
+    location: ["Connect to Server…", "Online Accounts…", "Reload"],
     // Kept: ⌘I shows My Drive's properties and ⌘⌫ reaches Move to Trash, as
     // inside Drive; the menu has neither.
     keys: { copy: "clipboard", paste: "nothing", properties: "file_properties", bookmark: "nothing", trash: "trash_entries", rename: "nothing" },

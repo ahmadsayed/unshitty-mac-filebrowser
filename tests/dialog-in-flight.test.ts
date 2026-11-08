@@ -4,7 +4,7 @@
 import { beforeAll, beforeEach, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
 import {
-  $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, hit, item, key, mouse, names, respond, settle, title, toasts, type,
+  $, $$, boot, chooseAccountRow, chooseMenu, click, closeOverlays, dialogHeading, goTo, hit, item, key, mouse, names, openOnlineAccounts, respond, settle, title, toasts, type,
 } from "./app";
 
 const HOME = "/Users/me";
@@ -368,13 +368,10 @@ test("Share: a failure is a toast, and everything is enabled again", async () =>
 
 // ----- Google Drive -----
 
-/** Network's Add… menu, then Google Drive…, clicked. */
+/** Online Accounts, then Google Drive under Connect an Account, clicked. */
 async function clickConnectDrive(): Promise<void> {
-  await click($$(".sidebar-row").find((row) => row.textContent?.trim() === "Network")!);
-  await settle(20);
-  await click($$<HTMLButtonElement>(".network-paste .btn").find((button) => button.textContent === "Add…")!);
-  await settle(10);
-  await chooseMenu("Google Drive…");
+  await openOnlineAccounts();
+  await chooseAccountRow("Connect an Account", "Google Drive");
 }
 const CLIENT = JSON.stringify({ installed: { client_id: "123-abc.apps.googleusercontent.com", client_secret: "GOCSPX-test" } });
 const link = (label: string) => $$(".dialog-layer .dialog-links button").find((b) => b.textContent === label)!;

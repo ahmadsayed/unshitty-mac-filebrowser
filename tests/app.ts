@@ -146,6 +146,39 @@ export async function respond(label: string): Promise<void> {
 }
 
 /** Text of the toasts on screen. */
+/** Online Accounts… from the primary menu, once its dialog shows. */
+export async function openOnlineAccounts(): Promise<void> {
+  await click($("#btn-main-menu"));
+  await settle(5);
+  await chooseMenu("Online Accounts…");
+  await settle(15);
+}
+
+/** The open Online Accounts dialog's groups, each as its title and its rows' text. */
+export function accountGroups(): Array<{ title: string; rows: string[] }> {
+  return $$(".dialog-layer .preferences-group").map((group) => ({
+    title: group.querySelector(".preferences-group-title")?.textContent ?? "",
+    rows: [...group.querySelectorAll(".action-row")].map((row) =>
+      [...row.querySelectorAll(".action-row-title, .action-row-subtitle, .action-row-error")]
+        .map((part) => part.textContent?.trim())
+        .join(" · "),
+    ),
+  }));
+}
+
+/** Click the row of `group` whose text starts with `text`. */
+export async function chooseAccountRow(group: "Your Accounts" | "Connect an Account", text: string): Promise<void> {
+  const section = $$(".dialog-layer .preferences-group").find(
+    (g) => g.querySelector(".preferences-group-title")?.textContent === group,
+  );
+  const row = [...(section?.querySelectorAll<HTMLElement>(".action-row") ?? [])].find((r) =>
+    r.textContent?.trim().startsWith(text),
+  );
+  if (!row) throw new Error(`no “${text}” row in ${group}: ${JSON.stringify(accountGroups())}`);
+  await click(row);
+  await settle(15);
+}
+
 export function toasts(): string[] {
   return $$(".toast").map((t) => t.textContent ?? "");
 }
