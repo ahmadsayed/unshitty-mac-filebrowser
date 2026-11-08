@@ -12,6 +12,7 @@ pub mod accounts;
 pub mod client;
 pub mod drive;
 pub mod location;
+pub mod loopback;
 pub mod oauth;
 pub mod service;
 pub mod token;
