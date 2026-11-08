@@ -148,9 +148,22 @@ fn rename_new_by(
 /// normalization (APFS by default, FAT), `Foo` names the same entry as
 /// `foo`, so the exclusive rename refuses a rename between the two; that
 /// one goes through a hidden staging name instead, and back if the second
-/// step is refused.
+/// step is refused. Only that one: a hard link to the same file is another
+/// entry under the exact name, and is refused without staging anything.
 pub(crate) fn rename_in_place(from: &Path, to: &Path) -> io::Result<()> {
-    rename_in_place_by(from, to, crate::platform::rename_exclusive, same_entry)
+    rename_in_place_by(from, to, crate::platform::rename_exclusive, folded_onto_itself)
+}
+
+/// Whether `to` reaches `from`'s own entry only by folding its name: the
+/// same entry, and no entry in the folder carries `to`'s exact name.
+pub(crate) fn folded_onto_itself(from: &Path, to: &Path) -> bool {
+    let (Some(dir), Some(name)) = (to.parent(), to.file_name()) else {
+        return false;
+    };
+    same_entry(from, to)
+        && std::fs::read_dir(dir).is_ok_and(|mut entries| {
+            entries.all(|e| e.is_ok_and(|e| e.file_name() != name))
+        })
 }
 
 /// `rename_in_place` with the exclusive rename and the same-entry test
@@ -736,17 +749,54 @@ mod tests {
         assert_eq!(names_in(dir.path()), ["b", "c", "d"]);
     }
 
+    thread_local! {
+        static RENAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// The platform's exclusive rename, counting its calls on this thread.
+    fn counted_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+        RENAMES.with(|n| n.set(n.get() + 1));
+        crate::platform::rename_exclusive(from, to)
+    }
+
     /// A hard link is the same file under another entry: renaming one onto
-    /// the other is refused, and the staging name goes away.
+    /// the other is refused at once, the item never leaving its name for a
+    /// staging one.
     #[test]
     fn a_rename_in_place_refuses_another_link_to_the_same_file() {
         let dir = tempdir().unwrap();
         let (from, to) = (dir.path().join("a"), dir.path().join("b"));
         fs::write(&from, "mine").unwrap();
         fs::hard_link(&from, &to).unwrap();
-        let err = rename_in_place(&from, &to).unwrap_err();
+        RENAMES.with(|n| n.set(0));
+        let err = rename_in_place_by(&from, &to, counted_exclusive, folded_onto_itself).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(RENAMES.with(|n| n.get()), 1, "only the refused rename, no staging");
         assert_eq!(names_in(dir.path()), ["a", "b"]);
+        assert_eq!(rename_in_place(&from, &to).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    /// The same entry by device and inode, never following a link; the
+    /// staging step only when no entry has the exact name. (That `true`
+    /// case needs a disk that ignores case, which a test can't make here.)
+    #[test]
+    fn the_same_entry_is_told_apart_from_links_and_exact_names() {
+        let dir = tempdir().unwrap();
+        let p = |name: &str| dir.path().join(name);
+        fs::write(p("a"), "mine").unwrap();
+        fs::hard_link(p("a"), p("hard")).unwrap();
+        std::os::unix::fs::symlink(p("a"), p("soft")).unwrap();
+
+        assert!(same_entry(&p("a"), &p("a")));
+        assert!(same_entry(&p("a"), &p("hard")));
+        assert!(!same_entry(&p("soft"), &p("a")));
+        assert!(!same_entry(&p("a"), &p("missing")));
+        assert!(!same_entry(&p("missing"), &p("a")));
+
+        assert!(!folded_onto_itself(&p("a"), &p("a")), "the exact name is there");
+        assert!(!folded_onto_itself(&p("a"), &p("hard")), "the exact name is there");
+        assert!(!folded_onto_itself(&p("soft"), &p("a")));
+        assert!(!folded_onto_itself(&p("a"), &p("missing")));
     }
 
     /// `foo` to `Foo` on a disk that ignores case: the exclusive rename

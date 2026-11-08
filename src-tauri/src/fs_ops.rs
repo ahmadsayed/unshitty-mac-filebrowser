@@ -260,9 +260,10 @@ fn rename_many_by(items: Vec<RenameItem>, rename: InPlaceFn) -> Result<(), Strin
         if !seen_from.insert(from.clone()) || !seen_to.insert(to.clone()) {
             return Err("Two items would have the same name.".into());
         }
-        // The same entry is a change of case on a disk that ignores it; a
-        // link to `to` is not `to` (the test doesn't follow links).
-        if std::fs::symlink_metadata(&to).is_ok() && !placement::same_entry(&from, &to) {
+        // Only a change of case on a disk that ignores it may find `from`
+        // itself at `to`; a link to `to`, or a hard link of the same file
+        // under that exact name, is another item.
+        if std::fs::symlink_metadata(&to).is_ok() && !placement::folded_onto_itself(&from, &to) {
             return Err(already_named(&to));
         }
         work.push((from, to));
