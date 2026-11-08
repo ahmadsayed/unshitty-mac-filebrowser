@@ -258,7 +258,7 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     star: false,
   }],
   "Arbesk in Network": [place("Network"), "Arbesk", {
-    item: ["Open", "Copy Location", "Disconnect…"],
+    item: ["Open", "Disconnect…"],
     background: ["Connect to Server…", "Online Accounts…", "Select All"],
     location: ["Connect to Server…", "Online Accounts…", "Reload"],
     // The account's entry is read only like an SSH server's: no copy, no properties.
@@ -268,9 +268,9 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     star: false,
   }],
   "an Arbesk collection": [async () => { await fromNetwork("Arbesk")(); await open("Shapes"); }, "Box.gltf", {
-    item: ["Open", "Copy (off)", "Copy Location"],
+    item: ["Open", "Copy (off)"],
     background: ["Show Hidden Files", "Reload", "Select All"],
-    location: ["Copy Location", "Reload", "Select All"],
+    location: ["Reload", "Select All"],
     // ⌘D bookmarks the collection, as on an SSH server; nothing else writes.
     keys: { copy: ARBESK_COPY, paste: "toast “Arbesk is read only.”", properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing" },
     drag: ARBESK_COPY,

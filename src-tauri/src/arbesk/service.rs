@@ -162,6 +162,19 @@ fn manifest_cache(cache_dir: &Path) -> ManifestCache {
     ManifestCache::new(cache_dir.join("arbesk-manifests"), MANIFEST_CACHE_BYTES)
 }
 
+/// Where Arbesk's Studio opens the asset at `path`: the deep link
+/// `besk show` opens, `{origin}/studio?asset=<token>&assetId=<id>`.
+pub fn studio_url(site: &Site, path: &str) -> Result<String, String> {
+    let ArbeskPath::Asset { token_id, asset_id, .. } = parse(path)? else {
+        return Err(format!("“{path}” is a folder, not a file."));
+    };
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("asset", &token_id)
+        .append_pair("assetId", &asset_id)
+        .finish();
+    Ok(format!("{}/studio?{query}", site.origin))
+}
+
 /// The asset at `path` as a file in `cache_dir/arbesk`, built once per
 /// version (its manifest CID) and reused while nobody has changed it.
 pub fn build(
@@ -709,6 +722,22 @@ mod tests {
                 .unwrap_err()
                 .starts_with(STORAGE_UNREACHABLE)
         );
+    }
+
+    #[test]
+    fn an_asset_opens_at_its_studio_link() {
+        let asset = asset_path(&shapes(), "a1", "Box", "gltf");
+        assert_eq!(studio_url(&site(), &asset).unwrap(), format!("{ORIGIN}/studio?asset=1&assetId=a1"));
+        // Ids are query values, encoded as the Studio's URLSearchParams reads them.
+        let odd = asset_path(&shapes(), "a/b~c d", "Box", "gltf");
+        assert_eq!(studio_url(&site(), &odd).unwrap(), format!("{ORIGIN}/studio?asset=1&assetId=a%2Fb%7Ec+d"));
+    }
+
+    #[test]
+    fn only_an_asset_has_a_studio_link() {
+        for path in [shapes(), format!("arbesk://{ADDRESS}"), "arbesk://bad".to_string()] {
+            assert!(studio_url(&site(), &path).is_err(), "{path}");
+        }
     }
 
     #[test]

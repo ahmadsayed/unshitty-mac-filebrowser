@@ -2227,7 +2227,7 @@ const ITEM_MENUS: Record<LocationKind, (sel: Entry[], single: Entry | null) => M
   "in-trash": trashItemMenu,
   share: (_sel, single) => shareItemMenu(single),
   sftp: (_sel, single) => shareItemMenu(single),
-  arbesk: (_sel, single) => shareItemMenu(single),
+  arbesk: () => arbeskItemMenu(),
   drive: driveOrFolderItemMenu,
   folder: driveOrFolderItemMenu,
 };
@@ -2237,6 +2237,15 @@ function openItemMenu(at: Anchor): void {
   if (sel.length === 0) return;
   const single = sel.length === 1 ? sel[0] : null;
   openMenu(at, ITEM_MENUS[hereKind()](sel, single));
+}
+
+/** An Arbesk asset: Open goes to Arbesk's Studio; no copying out, and no
+ *  Copy Location (an arbesk:// address means nothing outside the app). */
+function arbeskItemMenu(): MenuItem[] {
+  return [
+    { label: "Open", action: activateSelection },
+    { label: "Copy", disabled: true },
+  ];
 }
 
 /** Read-only actions for a received share. Copy out arrives in Task 9. */
@@ -2262,9 +2271,11 @@ function networkItemMenu(single: Entry | null): MenuItem[] {
   }
   const account = single ? accountOf(single.path, accounts) : undefined;
   if (account) {
+    // An arbesk:// address means nothing outside the app: no Copy Location.
+    const copy: MenuItem[] = account.provider === "arbesk" ? [] : [{ label: "Copy Location", action: copyLocation }];
     return [
       { label: "Open", action: activateSelection },
-      { label: "Copy Location", action: copyLocation },
+      ...copy,
       { separator: true },
       { label: "Disconnect…", action: () => PROVIDER_ACTIONS[account.provider].disconnect(account) },
     ];
@@ -2688,6 +2699,11 @@ const readOnlyBackgroundMenu = (): MenuItem[] => [
 
 const readOnlyLocationMenu = (): MenuItem[] => [
   { label: "Copy Location", action: copyLocation },
+  ...arbeskLocationMenu(),
+];
+
+/** Arbesk's location menu: its arbesk:// address means nothing outside the app. */
+const arbeskLocationMenu = (): MenuItem[] => [
   { label: "Reload", action: () => void reload() },
   { separator: true },
   { label: "Select All", disabled: !hasEntries(location), action: selectAll },
@@ -2746,7 +2762,7 @@ const LOCATION_MENUS: Record<LocationKind, () => MenuItem[]> = {
   ],
   share: readOnlyLocationMenu,
   sftp: readOnlyLocationMenu,
-  arbesk: readOnlyLocationMenu,
+  arbesk: arbeskLocationMenu,
   drive: () => [
     { label: "New Folder…", action: promptNewFolder },
     { separator: true },

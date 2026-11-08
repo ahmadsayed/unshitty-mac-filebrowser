@@ -2372,9 +2372,12 @@ const DOWNLOAD_TO_OPEN: Record<Exclude<Place, "local">, (path: string) => OpenTa
   drive: driveOpen,
   share: (path) => ({ kind: "file", path: shareOpen(path) }),
   sftp: (path) => ({ kind: "file", path: `/tmp/opencode/mock-sftp/${decodeURIComponent(path.split("/").pop() ?? "file")}` }),
+  // As the backend answers: the asset's Studio link, opened in the browser.
   arbesk: (path) => {
+    const { token } = arbeskIds(path);
     const asset = arbeskAsset(path);
-    return { kind: "file", path: `/tmp/opencode/mock-arbesk/${asset.name}.${asset.ext}` };
+    const query = new URLSearchParams({ asset: token ?? "", assetId: asset.id });
+    return { kind: "url", url: `${ARBESK_ORIGIN}/studio?${query}` };
   },
 };
 

@@ -114,11 +114,14 @@ content-addressed, so they are cached on disk by CID without expiry (capped
 by bytes, oldest dropped first); `tokenURI` and the indexer are asked again
 on every listing and on Reload. Requests run at most 8 at a time.
 
-**D7. Open and preview share one built file.** An asset's built
-file goes to the app cache (`arbesk/<asset manifest CID>/<name>`; a new
-version has a new CID), written under a `.part` name and renamed in with
-`placement::rename_new`. `open_target` and `preview_bytes` both ask for it,
-so Space then double-click downloads once. It is reused only while
+**D7. Preview builds the file; Open goes to the Studio.** Opening an asset
+(`open_target`) answers with its Studio link,
+`{origin}/studio?asset=<token>&assetId=<id>`, which the app opens in the
+browser as it does a Google Docs file (changed 2026-11-09 at the human's
+request; Arbesk's menus also lost Copy Location). An asset's built file,
+for the preview, goes to the app cache (`arbesk/<asset manifest CID>/<name>`;
+a new version has a new CID), written under a `.part` name and renamed in
+with `placement::rename_new`. It is reused only while
 `downloads.rs` says it is unchanged: an edited copy stays where it is and a
 fresh one is built beside it, so an edit is never shown as Arbesk's
 content. The copy is pruned by `downloads.rs` like other remote downloads
