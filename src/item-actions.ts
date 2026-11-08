@@ -39,11 +39,16 @@ export type Verdict = string | null;
 const OK: Verdict = null;
 const QUIET: Verdict = "";
 const READ_ONLY: Verdict = "Shared folders are read only.";
+const ARBESK_READ_ONLY: Verdict = "Arbesk is read only.";
 
 /** Paste, by the kind of folder it pastes into: wherever New Folder can add
- *  (`kindAcceptsNewItems`, which keeps the Trash out); shares and servers say why not. */
-const paste = (here: Here): Verdict =>
-  kindAcceptsNewItems(here.kind) ? OK : isReadOnlyKind(here.kind) ? READ_ONLY : QUIET;
+ *  (`kindAcceptsNewItems`, which keeps the Trash out); shares, servers and
+ *  Arbesk say why not. Kept: an SSH server says "Shared folders are read only." */
+const paste = (here: Here): Verdict => {
+  if (kindAcceptsNewItems(here.kind)) return OK;
+  if (here.kind === "arbesk") return ARBESK_READ_ONLY;
+  return isReadOnlyKind(here.kind) ? READ_ONLY : QUIET;
+};
 
 /** Move to Trash, by the location on screen. In the Trash, Delete deletes permanently instead. */
 const TRASH: Record<LocationKind, Verdict> = {
@@ -51,13 +56,13 @@ const TRASH: Record<LocationKind, Verdict> = {
   // Kept: Delete in Network reaches Move to Trash, and only the backend refuses
   // shares and servers (its menu has no Move to Trash).
   network: OK,
-  share: QUIET, sftp: QUIET, trash: QUIET, "in-trash": QUIET,
+  share: QUIET, sftp: QUIET, arbesk: QUIET, trash: QUIET, "in-trash": QUIET,
 };
 
 /** Delete Permanently, by the location on screen: only inside the Trash. */
 const DELETE_PERMANENTLY: Record<LocationKind, Verdict> = {
   trash: OK, "in-trash": OK,
-  folder: QUIET, drive: QUIET, recent: QUIET, starred: QUIET, network: QUIET, share: QUIET, sftp: QUIET,
+  folder: QUIET, drive: QUIET, recent: QUIET, starred: QUIET, network: QUIET, share: QUIET, sftp: QUIET, arbesk: QUIET,
 };
 
 /** Star and Unstar, by the location on screen. */
@@ -65,6 +70,8 @@ const STAR: Record<LocationKind, Verdict> = {
   folder: OK, recent: OK, starred: OK,
   // Kept: the list row's star shows on Drive, share and SSH rows, whose menus have no Star.
   drive: OK, share: OK, sftp: OK,
+  // Starred lists stars by asking each path's folder; Arbesk items aren't starred.
+  arbesk: QUIET,
   trash: QUIET, "in-trash": QUIET, network: QUIET,
 };
 
@@ -74,19 +81,21 @@ const BOOKMARK: Record<LocationKind, Verdict> = {
   // Kept: ⌘D bookmarks a Drive folder, a share, an SSH folder or a folder in
   // the Trash, though their location menus have no Add to Bookmarks.
   drive: OK, share: OK, sftp: OK, trash: OK, "in-trash": OK,
+  // A collection can be bookmarked like an SSH folder.
+  arbesk: OK,
   recent: QUIET, starred: QUIET, network: QUIET,
 };
 
 /** Rename, by each item's kind: its record names a trashed item, and shares and servers are read only. */
 const RENAME_ITEM: Record<LocationKind, Verdict> = {
   folder: OK, drive: OK, recent: OK, starred: OK, network: OK,
-  share: QUIET, sftp: QUIET, trash: QUIET, "in-trash": QUIET,
+  share: QUIET, sftp: QUIET, arbesk: QUIET, trash: QUIET, "in-trash": QUIET,
 };
 
 /** Properties, by each item's kind: the backend can't read shares or SSH servers yet. */
 const PROPERTIES_ITEM: Record<LocationKind, Verdict> = {
   folder: OK, drive: OK, trash: OK, "in-trash": OK,
-  share: QUIET, sftp: QUIET,
+  share: QUIET, sftp: QUIET, arbesk: QUIET,
   recent: QUIET, starred: QUIET, network: QUIET,
 };
 

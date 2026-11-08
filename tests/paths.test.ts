@@ -4,7 +4,7 @@ import { expect, test } from "vitest";
 import {
   childPath, cloudSegmentName, decodeSegment, homeFolder, isCloudRoot, isKnownPath, isUnder, isWithin, joinCloudPath, joinSharePath, joinSftpPath,
   isCloudPath, isRemotePath, isShareLink, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket,
-  isSharePath, isSftpPath, resolveTypedPath,
+  isSharePath, isSftpPath, resolveTypedPath, isArbeskPath, arbeskAccountKey,
 } from "../src/paths";
 
 const HOME = "/Users/me";
@@ -126,6 +126,7 @@ test.each([
   ["gdrive://acct/root~My%20Drive", "drive"],
   ["share://r1/Photos", "share"],
   ["sftp://me@host/", "sftp"],
+  ["arbesk://0x00000000000000000000000000000000000000ab/1~Set", "arbesk"],
   ["/Users/me", "local"],
   ["pseudo:recent", "local"],
   ["", "local"],
@@ -153,6 +154,10 @@ test.each([
   ["sftp://me@host/docs/%zz",                "%zz"],
   ["sftp://%E0%A4%A/",                       "%E0%A4%A"],
   ["sftp://",                                ""],
+  // Arbesk: the name after the id's `~`, decoded; the address at the root.
+  ["arbesk://0x00000000000000000000000000000000000000ab",                           "0x00000000000000000000000000000000000000ab"],
+  ["arbesk://0x00000000000000000000000000000000000000ab/12~My%20Set",               "My Set"],
+  ["arbesk://0x00000000000000000000000000000000000000ab/12~My%20Set/a1~Box.gltf",   "Box.gltf"],
   // Local: the last segment as it is, none at the root.
   ["/Users/me/Documents/",                   "Documents"],
   ["/Users/me/a%20b",                        "a%20b"],
@@ -176,6 +181,10 @@ test.each([
   ["sftp://me@host/docs/",                   "sftp://me@host/"],
   ["sftp://me@host",                         NETWORK],
   ["sftp://me@host/docs/sub/",               "sftp://me@host/docs"],
+  // An Arbesk account is the top: Network is above it.
+  ["arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf",        "arbesk://0x00000000000000000000000000000000000000ab/12~Set"],
+  ["arbesk://0x00000000000000000000000000000000000000ab/12~Set",                    "arbesk://0x00000000000000000000000000000000000000ab"],
+  ["arbesk://0x00000000000000000000000000000000000000ab",                           NETWORK],
   ["/Users/me/Documents/",                   "/Users/me"],
   ["/Users",                                 "/"],
   ["/",                                      "/"],
@@ -239,6 +248,24 @@ test("pathSegments breaks an SSH path into the server and its folders", () => {
   expect(pathSegments("sftp://%E0%A4%A/").root).toEqual({
     kind: "sftp", key: "%E0%A4%A", path: "sftp://%E0%A4%A/", name: "%E0%A4%A",
   });
+});
+
+test("pathSegments breaks an Arbesk path into the account and its collection", () => {
+  expect(pathSegments("arbesk://0x00000000000000000000000000000000000000ab/12~My%20Set/a1~Box.gltf")).toEqual({
+    root: { kind: "arbesk", key: "0x00000000000000000000000000000000000000ab", path: "arbesk://0x00000000000000000000000000000000000000ab", name: "0x00000000000000000000000000000000000000ab" },
+    segments: [
+      { name: "My Set", path: "arbesk://0x00000000000000000000000000000000000000ab/12~My%20Set" },
+      { name: "Box.gltf", path: "arbesk://0x00000000000000000000000000000000000000ab/12~My%20Set/a1~Box.gltf" },
+    ],
+  });
+});
+
+test("Arbesk paths are remote, keyed by their address", () => {
+  expect(isArbeskPath("arbesk://0x00000000000000000000000000000000000000ab")).toBe(true);
+  expect(isArbeskPath("/arbesk://x")).toBe(false);
+  expect(isRemotePath("arbesk://0x00000000000000000000000000000000000000ab/1~S")).toBe(true);
+  expect(arbeskAccountKey("arbesk://0x00000000000000000000000000000000000000ab/1~S/a~B.gltf")).toBe("0x00000000000000000000000000000000000000ab");
+  expect(isKnownPath("arbesk://0x00000000000000000000000000000000000000ab")).toBe(true);
 });
 
 test("pathSegments and localSegments break a local path into its folders", () => {

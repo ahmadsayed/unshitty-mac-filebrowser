@@ -295,7 +295,7 @@ export function escapeHtml(text: string): string {
 }
 
 /** What a path with no name of its own is called: a scheme's root. */
-const UNNAMED: Record<Place, string> = { drive: "My Drive", share: "Shared Folder", sftp: "SSH Server", local: "/" };
+const UNNAMED: Record<Place, string> = { drive: "My Drive", share: "Shared Folder", sftp: "SSH Server", arbesk: "Arbesk", local: "/" };
 
 function basename(path: string): string {
   return pathName(path) || UNNAMED[placeOf(path)];
@@ -983,6 +983,7 @@ function crumbsFor(loc: string): Crumb[] {
   }
   const place = placeOf(loc);
   if (place === "drive") return driveCrumbs(loc);
+  if (place === "arbesk") return arbeskCrumbs(loc);
   if (place !== "local") return remoteCrumbs(loc, place);
   if (isInTrash(loc, trashPath)) {
     return [{ label: "Trash", path: trashPath, icon: "user-trash" }, ...segments(trashPath, loc)];
@@ -1006,6 +1007,12 @@ function driveCrumbs(loc: string): Crumb[] {
   const crumbs: Crumb[] = segments.map((s) => ({ label: s.name || "My Drive", path: s.path }));
   crumbs[0] = { ...crumbs[0], icon: "network-workgroup" };
   return crumbs;
+}
+
+/** Arbesk's crumbs: the account is "Arbesk", then the collection and the asset. */
+function arbeskCrumbs(loc: string): Crumb[] {
+  const { root, segments } = pathSegments(loc);
+  return [{ label: "Arbesk", path: root.path, icon: "network-workgroup" }, ...segments.map((s) => ({ label: s.name, path: s.path }))];
 }
 
 /** A share's or a server's crumbs: its root (the sharer's folder name, or the server), then its folders. */
@@ -2208,6 +2215,7 @@ const ITEM_MENUS: Record<LocationKind, (sel: Entry[], single: Entry | null) => M
   "in-trash": trashItemMenu,
   share: (_sel, single) => shareItemMenu(single),
   sftp: (_sel, single) => shareItemMenu(single),
+  arbesk: (_sel, single) => shareItemMenu(single),
   drive: driveOrFolderItemMenu,
   folder: driveOrFolderItemMenu,
 };
@@ -2686,6 +2694,7 @@ const BACKGROUND_MENUS: Record<LocationKind, () => MenuItem[]> = {
   "in-trash": () => [openCurrentFolderWithItem(), { separator: true }, { label: "Select All", action: selectAll }],
   share: readOnlyBackgroundMenu,
   sftp: readOnlyBackgroundMenu,
+  arbesk: readOnlyBackgroundMenu,
   drive: () => [
     { label: "New Folder…", action: promptNewFolder },
     { separator: true },
@@ -2725,6 +2734,7 @@ const LOCATION_MENUS: Record<LocationKind, () => MenuItem[]> = {
   ],
   share: readOnlyLocationMenu,
   sftp: readOnlyLocationMenu,
+  arbesk: readOnlyLocationMenu,
   drive: () => [
     { label: "New Folder…", action: promptNewFolder },
     { separator: true },
@@ -5209,6 +5219,13 @@ const PROVIDER_ACTIONS: Record<ProviderId, ProviderActions> = {
     signIn: (account) => void signInDrive(account),
     disconnect: (account) => confirmDisconnectDrive(account),
     links: (account) => [{ label: "Change Client…", action: () => void changeDriveClient(account) }],
+  },
+  // Wired to its dialogs with the Connect dialog.
+  arbesk: {
+    connect: () => {},
+    signIn: () => {},
+    disconnect: () => {},
+    links: () => [],
   },
 };
 

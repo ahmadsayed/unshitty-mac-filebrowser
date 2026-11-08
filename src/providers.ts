@@ -7,10 +7,10 @@
 // main.ts as a `Record<ProviderId, ProviderActions>`, so a missing one is a
 // type error.
 
-import type { DriveAccount } from "./api";
-import { cloudAccountKey, isCloudPath } from "./paths";
+import type { ArbeskAccount, DriveAccount } from "./api";
+import { arbeskAccountKey, cloudAccountKey, isArbeskPath, isCloudPath } from "./paths";
 
-export type ProviderId = "gdrive";
+export type ProviderId = "gdrive" | "arbesk";
 
 /** A connected account, whatever its provider. */
 export interface Account {
@@ -36,10 +36,11 @@ export interface Provider {
 
 export const PROVIDERS: Record<ProviderId, Provider> = {
   gdrive: { label: "Google Drive", icon: "cloud", owns: isCloudPath, accountKey: cloudAccountKey },
+  arbesk: { label: "Arbesk", icon: "arbesk", owns: isArbeskPath, accountKey: arbeskAccountKey },
 };
 
 /** The order Online Accounts lists the providers in. */
-export const PROVIDER_ORDER: ProviderId[] = ["gdrive"];
+export const PROVIDER_ORDER: ProviderId[] = ["gdrive", "arbesk"];
 
 /** What a provider does, wired by main.ts to its own dialogs. */
 export interface ProviderActions {
@@ -56,6 +57,11 @@ export interface ProviderActions {
 /** A Google account as the backend reports it, in the shared shape. */
 export function fromDrive(account: DriveAccount): Account {
   return { provider: "gdrive", id: account.id, email: account.email, rootPath: account.root_path };
+}
+
+/** An Arbesk account as the backend reports it, in the shared shape. */
+export function fromArbesk(account: ArbeskAccount): Account {
+  return { provider: "arbesk", id: account.id, email: account.email, rootPath: account.root_path };
 }
 
 /** The provider whose path this is, if any. */

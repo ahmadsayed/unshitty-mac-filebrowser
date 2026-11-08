@@ -198,6 +198,16 @@ export interface Volume {
 }
 
 /** A connected Google account. Tokens are deliberately not part of this. */
+/** A connected Arbesk account (no credential is kept: reading needs only the address). */
+export interface ArbeskAccount {
+  id: string;
+  email: string;
+  address: string;
+  origin: string;
+  chain_id: number;
+  root_path: string;
+}
+
 export interface DriveAccount {
   id: string;
   email: string;

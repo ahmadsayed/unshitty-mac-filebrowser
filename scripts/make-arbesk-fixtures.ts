@@ -22,21 +22,20 @@ function base64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
 }
 
-async function makeCase(name: string, ext: string, input: unknown, format?: string): Promise<void> {
+async function makeCase(name: string, ext: string, input: unknown, opts: { format?: string } = {}): Promise<void> {
   const { read, write, dump } = createMemoryIpfs();
   const core = createArbeskCore({ ipfsRead: read, ipfsWrite: write });
-  const { compositeCid } = await core.decompose(input as never, format ? { format } : {});
+  const { compositeCid } = await core.decompose(input as never, opts);
   if (!compositeCid) throw new Error(`${name}: no composite CID`);
   const composite = await read.getJSON(compositeCid);
-  const expected = new Uint8Array(await (await core.compose(composite, format ? { format } : {})).arrayBuffer());
+  const expected = new Uint8Array(await (await core.compose(composite, opts)).arrayBuffer());
   const dir = join(out, name);
   mkdirSync(join(dir, "cids"), { recursive: true });
   writeFileSync(join(dir, "source.json"), JSON.stringify(composite, null, 2));
-  for (const [cid, bytes] of dump()) {
-    if (cid !== compositeCid) writeFileSync(join(dir, "cids", cid), bytes);
-  }
+  const parts = [...dump()].filter(([cid]) => cid !== compositeCid);
+  for (const [cid, bytes] of parts) writeFileSync(join(dir, "cids", cid), bytes);
   writeFileSync(join(dir, `expected.${ext}`), expected);
-  console.log(name, compositeCid, `${dump().size - 1} parts`, `${expected.length} bytes`);
+  console.log(name, compositeCid, `${parts.length} parts`, `${expected.length} bytes`);
 }
 
 await makeCase("glb-box", "gltf", sampleGlb().slice().buffer);
@@ -46,8 +45,8 @@ withImage.images = [{ uri: `data:image/png;base64,${PNG}`, mimeType: "image/png"
 withImage.textures = [{ source: 0 }];
 await makeCase("gltf-image", "gltf", withImage);
 
-await makeCase("3mf-box", "3mf", sample3mf().slice().buffer, "3mf");
+await makeCase("3mf-box", "3mf", sample3mf().slice().buffer, { format: "3mf" });
 
 const withThumb = unzipSync(sample3mf());
 withThumb["Metadata/thumbnail.png"] = new Uint8Array(Buffer.from(PNG, "base64"));
-await makeCase("3mf-thumbnail", "3mf", zipSync(withThumb).slice().buffer, "3mf");
+await makeCase("3mf-thumbnail", "3mf", zipSync(withThumb).slice().buffer, { format: "3mf" });

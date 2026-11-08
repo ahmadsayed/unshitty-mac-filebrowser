@@ -5,26 +5,27 @@ import { expect, test } from "vitest";
 import { allows, refusal, type Here, type SharedAction } from "../src/item-actions";
 import type { LocationKind } from "../src/locations";
 
-const KINDS: LocationKind[] = ["recent", "starred", "network", "trash", "in-trash", "share", "sftp", "drive", "folder"];
+const KINDS: LocationKind[] = ["recent", "starred", "network", "trash", "in-trash", "share", "sftp", "arbesk", "drive", "folder"];
 
-// ✓ allowed, · refused quietly, R "Shared folders are read only."
+// ✓ allowed, · refused quietly, R "Shared folders are read only.", A "Arbesk is read only."
 const Y = "✓";
 const N = "·";
 const R = "R";
-const SHOWN: Record<string, string | null> = { [Y]: null, [N]: "", [R]: "Shared folders are read only." };
+const A = "A";
+const SHOWN: Record<string, string | null> = { [Y]: null, [N]: "", [R]: "Shared folders are read only.", [A]: "Arbesk is read only." };
 
 // Actions decided by the place they happen in (for paste: the folder pasted into).
 // prettier-ignore
 const BY_PLACE: Partial<Record<SharedAction, string[]>> = {
-  //                 recent starred network trash in-trash share sftp drive folder
-  paste:             [N,    N,      N,      N,    N,       R,    R,   Y,    Y],
+  //                 recent starred network trash in-trash share sftp arbesk drive folder
+  paste:             [N,    N,      N,      N,    N,       R,    R,   A,     Y,    Y],
   // Kept: Network ✓, which only the backend refuses.
-  trash:             [Y,    Y,      Y,      N,    N,       N,    N,   Y,    Y],
-  deletePermanently: [N,    N,      N,      Y,    Y,       N,    N,   N,    N],
+  trash:             [Y,    Y,      Y,      N,    N,       N,    N,   N,     Y,    Y],
+  deletePermanently: [N,    N,      N,      Y,    Y,       N,    N,   N,     N,    N],
   // Kept: share, sftp and drive ✓, for the list row's star.
-  star:              [Y,    Y,      N,      N,    N,       Y,    Y,   Y,    Y],
+  star:              [Y,    Y,      N,      N,    N,       Y,    Y,   N,     Y,    Y],
   // Kept: drive, trash, in-trash, share and sftp ✓, through ⌘D; their location menus have no Add to Bookmarks.
-  bookmark:          [N,    N,      N,      Y,    Y,       Y,    Y,   Y,    Y],
+  bookmark:          [N,    N,      N,      Y,    Y,       Y,    Y,   Y,     Y,    Y],
 };
 
 for (const [action, cells] of Object.entries(BY_PLACE) as [SharedAction, string[]][]) {
@@ -37,9 +38,9 @@ for (const [action, cells] of Object.entries(BY_PLACE) as [SharedAction, string[
 // Actions decided by the items' own kinds, from a folder on screen.
 // prettier-ignore
 const BY_ITEM: Partial<Record<SharedAction, string[]>> = {
-  //          recent starred network trash in-trash share sftp drive folder
-  rename:     [Y,    Y,      Y,      N,    N,       N,    N,   Y,    Y],
-  properties: [N,    N,      N,      Y,    Y,       N,    N,   Y,    Y],
+  //          recent starred network trash in-trash share sftp arbesk drive folder
+  rename:     [Y,    Y,      Y,      N,    N,       N,    N,   N,     Y,    Y],
+  properties: [N,    N,      N,      Y,    Y,       N,    N,   N,     Y,    Y],
 };
 
 for (const [action, cells] of Object.entries(BY_ITEM) as [SharedAction, string[]][]) {
@@ -64,6 +65,7 @@ test("cut, copy and a drag: not out of a share or an SSH server yet, said in the
     expect(refusal(action, at(["sftp", "share"]))).toBe("Copying from SSH servers comes next.");
     // Mixed with a local item the share wording stands, as before.
     expect(refusal(action, at(["folder", "sftp"]))).toBe("Copying out of a shared folder comes next.");
+    expect(refusal(action, at(["arbesk", "share"]))).toBe("Copying from Arbesk comes next.");
   }
 });
 
