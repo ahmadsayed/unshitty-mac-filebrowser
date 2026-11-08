@@ -243,6 +243,17 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     preview: ["Open"],
     star: false,
   }],
+  "Google Drive in Network": [place("Network"), "Google Drive", {
+    item: ["Open", "Copy Location", "Disconnect…"],
+    background: ["Connect to Server…", "Select All"],
+    location: ["Connect to Server…", "Reload"],
+    // Kept: ⌘I shows My Drive's properties and ⌘⌫ reaches Move to Trash, as
+    // inside Drive; the menu has neither.
+    keys: { copy: "clipboard", paste: "nothing", properties: "file_properties", bookmark: "nothing", trash: "trash_entries", rename: "nothing" },
+    drag: "drag",
+    preview: ["Open"],
+    star: false,
+  }],
   "the Trash": [() => goTo(TRASH), "Old", {
     item: ["Open", "Preview (off)", "Open With…", "Restore From Trash", "Cut", "Copy", "Delete Permanently…", "Properties"],
     background: ["Empty Trash…", "Select All"],
@@ -291,8 +302,8 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     item: ["Open", "Open Item Location", "Cut", "Copy", "Rename…", "Move to Trash", "Properties"],
     background: ["New Folder…", "Paste", "Reload", "Select All"],
     location: ["New Folder…", "Copy Location", "Paste", "Select All"],
-    // ⌘D does nothing: My Drive has its own sidebar row.
-    keys: { copy: "clipboard", paste: "copy_entry", properties: "file_properties", bookmark: "nothing", trash: "trash_entries", rename: "rename popover" },
+    // ⌘D bookmarks My Drive: it is reached from Network and has no sidebar row of its own.
+    keys: { copy: "clipboard", paste: "copy_entry", properties: "file_properties", bookmark: "save_pins", trash: "trash_entries", rename: "rename popover" },
     drag: "drag",
     // Kept: no Rename… or Move to Trash, which the menu and the keys offer.
     preview: ["Open"],

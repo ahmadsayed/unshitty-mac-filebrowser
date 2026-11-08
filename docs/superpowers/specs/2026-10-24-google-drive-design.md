@@ -22,7 +22,7 @@ the cheap route of discovering OS-provided mounts and makes OAuth and the Drive
 API part of the app.
 
 Success looks like: the user adds a Google account once in the file browser,
-sees **Google Drive** in the sidebar, browses My Drive with the same grid/list
+sees **Google Drive** in Network, browses My Drive with the same grid/list
 views and breadcrumbs as a local folder, opens a document in its default app,
 and — in the second milestone — creates folders, uploads, renames, moves and
 trashes items. Nothing about local browsing changes.
@@ -128,7 +128,7 @@ below.
   folder; Drive-wide search is a later feature.
 - **Sharing UI** (permissions, links, "Shared with me"). Shared drives and
   shared-with-me are a later phase, not v1.
-- **Multi-account UI** in v1. The data model allows it; the sidebar shows one
+- **Multi-account UI** in v1. The data model allows it; Network shows one
   account.
 - **Windows.** Not a target today; the design does not add any OS-specific
   code, so a future Windows port only needs a keyring backend.
@@ -207,7 +207,10 @@ gdrive://8f3c/R0OT~My%20Drive/1AbC~Documents/9xYz~report.docx
 
 **D3. One account in v1, modeled as a list.**
 `accounts.json` stores an array with at most one entry so multiple accounts can
-be added later without a migration.
+be added later without a migration. Since 2026-11-08 the account is one of
+Network's entries (email, "Connected", **Disconnect…** on right-click) instead
+of a sidebar row; while none is connected, Network's bar offers **Connect to
+Google Drive…**, and Up from My Drive goes to Network.
 
 **D4. OAuth 2.0 Authorization Code + PKCE, loopback redirect, system browser.**
 - Auth endpoint `https://accounts.google.com/o/oauth2/v2/auth`; token endpoint
@@ -313,7 +316,9 @@ Drive is rejected with "Enter a Google Drive location or a full path." A
 - `isCloud(path)` guards the new branches.
 - `basename`/`parentOf` learn the URI case; `crumbsFor` gains a Drive branch.
 - `openFile` asks `open_target`, which downloads cloud paths (it was `drive_open`).
-- Sidebar gains a **Google Drive** row and a connect dialog.
+- Network lists the account as **Google Drive** (a sidebar row until
+  2026-11-08), its bar offers **Connect to Google Drive…**, and the connect
+  dialog.
 - `versions` commands reject cloud paths before reaching the filesystem.
 - No UI framework, no new frontend dependencies.
 

@@ -368,12 +368,17 @@ test("Share: a failure is a toast, and everything is enabled again", async () =>
 
 // ----- Google Drive -----
 
-const driveRow = () => $$("#sidebar-places .sidebar-row").find((row) => row.textContent?.includes("Google Drive"))!;
+/** Network's "Connect to Google Drive…" button, clicked. */
+async function clickConnectDrive(): Promise<void> {
+  await click($$(".sidebar-row").find((row) => row.textContent?.trim() === "Network")!);
+  await settle(20);
+  $$<HTMLButtonElement>(".network-paste .btn").find((button) => button.textContent === "Connect to Google Drive…")!.click();
+}
 const CLIENT = JSON.stringify({ installed: { client_id: "123-abc.apps.googleusercontent.com", client_secret: "GOCSPX-test" } });
 const link = (label: string) => $$(".dialog-layer .dialog-links button").find((b) => b.textContent === label)!;
 
 test("Add Your Google Client: Escape while it's added closes it, and Connect still follows", async () => {
-  driveRow().click();
+  await clickConnectDrive();
   await settle(10);
   expect(dialogHeading()).toBe("Add Your Google Client");
   $<HTMLTextAreaElement>(".client-json").value = CLIENT;
@@ -389,7 +394,7 @@ test("Add Your Google Client: Escape while it's added closes it, and Connect sti
 
 test("Add Your Google Client: a failure stays in the dialog, cleaned, with everything enabled", async () => {
   await invoke("drive_client_clear");
-  driveRow().click();
+  await clickConnectDrive();
   await settle(10);
   $<HTMLTextAreaElement>(".client-json").value = CLIENT;
   calls().failNext("drive_client_set", "Invalid client: Use a Desktop app client");
@@ -404,7 +409,7 @@ test("Add Your Google Client: a failure stays in the dialog, cleaned, with every
 
 test("Connect to Google Drive: while it waits Cancel stays live, and Open Browser runs once", async () => {
   await invoke("drive_client_set", { json: CLIENT });
-  driveRow().click();
+  await clickConnectDrive();
   await settle(10);
   expect(dialogHeading()).toBe("Connect to Google Drive");
   calls().hold("drive_connect_finish");
@@ -425,7 +430,7 @@ test("Connect to Google Drive: while it waits Cancel stays live, and Open Browse
 });
 
 test("Connect to Google Drive: a failure is shown in the dialog and as a toast, and Open Browser is enabled", async () => {
-  driveRow().click();
+  await clickConnectDrive();
   await settle(10);
   calls().failNext("drive_connect_start", "Failed to start: Network is unreachable");
   await respond("Open Browser");
@@ -501,7 +506,7 @@ test("Rename from the preview: a double Enter renames once", async () => {
 
 test("Add Your Google Client: a double click adds the client once and opens one Connect dialog", async () => {
   await invoke("drive_client_clear");
-  driveRow().click();
+  await clickConnectDrive();
   await settle(10);
   expect(dialogHeading()).toBe("Add Your Google Client");
   $<HTMLTextAreaElement>(".client-json").value = CLIENT;
