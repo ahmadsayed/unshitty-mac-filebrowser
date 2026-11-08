@@ -4334,6 +4334,7 @@ function closePreview(): void {
   if (!previewLayer) return;
   previewSeq += 1;
   previewLayer.hidden = true;
+  previewLoaded();
   previewBody.replaceChildren();
   previewActionsEl.replaceChildren();
   previewName.textContent = "";
@@ -4343,16 +4344,44 @@ function closePreview(): void {
   modelView = null;
 }
 
-function previewEmpty(entry: Entry, text: string): void {
+/** The item's icon over a line of text: why there is no preview, or, with a
+ *  spinner between them, that it is still loading. */
+function previewNotice(entry: Entry, text: string, loading = false): HTMLElement {
   const box = document.createElement("div");
-  box.className = "preview-empty";
+  box.className = loading ? "preview-empty preview-loading" : "preview-empty";
   const icon = document.createElement("div");
   icon.className = "preview-empty-icon";
   itemIcons.dialogIcon(icon, entry, 192);
   const label = document.createElement("p");
   label.textContent = text;
-  box.append(icon, label);
-  previewBody.appendChild(box);
+  const spinner = document.createElement("div");
+  spinner.className = "preview-spinner";
+  box.append(icon, ...(loading ? [spinner] : []), label);
+  return box;
+}
+
+function previewEmpty(entry: Entry, text: string): void {
+  previewLoaded();
+  previewBody.appendChild(previewNotice(entry, text));
+}
+
+/** How long a preview may take before it says it is loading: one that is
+ *  ready sooner never flashes the spinner. */
+const PREVIEW_LOADING_DELAY = 200;
+let previewLoadingTimer = 0;
+
+/** Say "Loading…" if preview `seq` still shows nothing after the delay. */
+function previewLoading(entry: Entry, seq: number): void {
+  previewLoadingTimer = window.setTimeout(() => {
+    if (previewStale(seq) || previewBody.childElementCount > 0) return;
+    previewBody.appendChild(previewNotice(entry, "Loading…", true));
+  }, PREVIEW_LOADING_DELAY);
+}
+
+/** The preview's content is here (or why there is none): no more "Loading…". */
+function previewLoaded(): void {
+  window.clearTimeout(previewLoadingTimer);
+  previewBody.querySelector(".preview-loading")?.remove();
 }
 
 async function showPreview(entry: Entry): Promise<void> {
@@ -4372,6 +4401,7 @@ async function showPreview(entry: Entry): Promise<void> {
     previewEmpty(entry, "Folder");
     return;
   }
+  previewLoading(entry, seq);
   await previewEntry(entry, seq, fileKind(entry.name));
 }
 
@@ -4393,6 +4423,7 @@ async function previewTextEntry(entry: Entry, seq: number): Promise<void> {
     if (previewStale(seq)) return;
     const pre = document.createElement("pre");
     pre.textContent = result.text + (result.truncated ? "\n…" : "");
+    previewLoaded();
     previewBody.appendChild(pre);
   } catch {
     if (previewStale(seq)) return;
@@ -4412,6 +4443,7 @@ async function previewModelEntry(entry: Entry, seq: number, format: ModelFormat)
     const viewer = await import("./model-viewer");
     const model = await viewer.loadModel(format, bytes, companions);
     if (previewStale(seq)) return;
+    previewLoaded();
     modelView = viewer.showModel(previewBody, model);
   } catch (err) {
     if (previewStale(seq)) return;
@@ -4446,6 +4478,7 @@ async function previewThumbnailEntry(entry: Entry, seq: number): Promise<void> {
     const image = document.createElement("img");
     image.src = previewUrl;
     image.alt = entry.name;
+    previewLoaded();
     previewBody.appendChild(image);
   } catch {
     if (previewStale(seq)) return;

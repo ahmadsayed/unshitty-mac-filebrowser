@@ -11,7 +11,7 @@
 // --size <width>x<height> (default 1100x720), --theme gnome|macos (default
 // macos; the theme follows the platform, so gnome loads the page with a
 // Linux user agent and the app takes its Linux code paths), --scene
-// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-grid|network-arbesk|arbesk-preview (default grid: the folder as it
+// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-grid|network-arbesk|arbesk-preview (default grid: the folder as it
 // opens; list: list view with the second item selected; menu: the main menu
 // open; item-menu: the right-click menu of --item; background-menu: the
 // right-click menu of the empty area; dialog: the Keyboard Shortcuts dialog; search, search-list: a search
@@ -22,6 +22,7 @@
 // Google Drive whose sign-in expired, once its dialog shows; online-accounts:
 // Online Accounts with the mock's Google account connected;
 // network-address-help: Network's server address popover open;
+// preview-loading: Space on --item while the mock holds its bytes;
 // arbesk-connect: Connect to Arbesk with an email typed; arbesk-collection:
 // the mock's Arbesk collection as a list; arbesk-grid: the same collection
 // in the grid view, with the thumbnails its assets were saved with;
@@ -40,7 +41,7 @@ const option = (name, fallback) => {
 const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene", "--query", "--item"];
 const [path, out] = args.filter((a, i) => !a.startsWith("--") && !VALUE_OPTIONS.includes(args[i - 1]));
 if (!path || !out) {
-  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-grid|network-arbesk|arbesk-preview] [--query <text>] [--item <name>]");
+  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-grid|network-arbesk|arbesk-preview] [--query <text>] [--item <name>]");
   process.exit(2);
 }
 
@@ -106,8 +107,15 @@ const SCENES = {
     await page.keyboard.press("Space");
     await page.waitForSelector("#preview-layer:not([hidden])");
     // A 3D model loads its viewer first, then draws.
-    await page.waitForSelector("#preview-body > *");
+    await page.waitForSelector("#preview-body > :not(.preview-loading)");
     await page.waitForTimeout(400);
+  },
+  // Space on --item while its preview is still loading (the mock holds it).
+  "preview-loading": async (page) => {
+    await page.evaluate(() => window.__mockCalls.hold("preview_bytes"));
+    await page.locator("#view .item").filter({ hasText: option("--item", "Notes.md") }).click();
+    await page.keyboard.press("Space");
+    await page.waitForSelector("#preview-body .preview-loading");
   },
   "qr-share": async (page) => {
     await page.locator("#view .item").filter({ hasText: option("--item", "Notes.md") }).click({ button: "right" });
@@ -192,7 +200,7 @@ const SCENES = {
     await openMockArbeskCollection(page);
     await page.locator("#view .item").filter({ hasText: option("--item", "Box.3mf") }).click();
     await page.keyboard.press("Space");
-    await page.waitForSelector("#preview-body > *");
+    await page.waitForSelector("#preview-body > :not(.preview-loading)");
     await page.waitForTimeout(400);
   },
 };
