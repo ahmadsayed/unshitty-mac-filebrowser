@@ -76,8 +76,9 @@ one out on its own platform.
     encrypted, on any network, and photos show on the page once they arrive.
     Sending stops when the dialog closes.
 - **Network (Experimental):** browse SSH/SFTP servers read-only.
-- **Google Drive (Experimental):** browse, copy, move and trash in My Drive
-  with your own OAuth client ([setup](docs/google-drive.md)).
+- **Google Drive (Experimental):** a Network location: browse, copy, move
+  and trash in My Drive with your own OAuth client
+  ([setup](docs/google-drive.md)).
 - **Trash done right:** Undo (⌘Z), Restore (also for items trashed in Finder),
   and nothing is ever deleted without asking.
 - **Check for Updates** (main menu): the AppImage and the Mac app download,

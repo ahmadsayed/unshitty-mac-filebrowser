@@ -31,7 +31,7 @@ const option = (name, fallback) => {
 const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene", "--query", "--item"];
 const [path, out] = args.filter((a, i) => !a.startsWith("--") && !VALUE_OPTIONS.includes(args[i - 1]));
 if (!path || !out) {
-  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview] [--query <text>] [--item <name>]");
+  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|network-drive] [--query <text>] [--item <name>]");
   process.exit(2);
 }
 
@@ -106,6 +106,19 @@ const SCENES = {
     await page.keyboard.press(`${MOD}+1`);
     await page.waitForTimeout(300);
     await search(page);
+  },
+  // Network (open it with the path pseudo:network) with a Google account
+  // connected through the mock, as a list, so the Status column shows.
+  "network-drive": async (page) => {
+    await page.getByText("Connect to Google Drive…", { exact: true }).click();
+    await page.fill(".client-json", JSON.stringify({ installed: { client_id: "1-a.apps.googleusercontent.com", client_secret: "s" } }));
+    await page.getByRole("button", { name: "Add Client", exact: true }).click();
+    await page.getByRole("button", { name: "Open Browser", exact: true }).click();
+    await page.waitForSelector(".crumb.current:has-text('My Drive')");
+    await page.locator(".sidebar-row", { hasText: "Network" }).click();
+    await page.waitForSelector("#view .item:has-text('Google Drive')");
+    await page.keyboard.press(`${MOD}+1`);
+    await page.waitForTimeout(300);
   },
 };
 

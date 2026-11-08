@@ -2,20 +2,38 @@
 // and keep the read-only milestone free of version markers and write actions.
 import { beforeAll, expect, test, vi } from "vitest";
 import { driveLog, invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, click, closeOverlays, goTo, item, key, menuLabels, mouse, names, respond, selectedNames, settle, toasts, type, hit } from "./app";
+import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, menuLabels, mouse, names, respond, selectedNames, settle, toasts, type, hit } from "./app";
 
 beforeAll(async () => {
   await boot();
 });
 
-test("Google Drive connects and browses the mock drive", async () => {
-  const driveRow = () =>
-    $$("#sidebar-places .sidebar-row").find((row) => row.textContent?.includes("Google Drive"))!;
-  expect(driveRow()).toBeTruthy();
-  expect(driveRow().title).toBe("Connect to Google Drive");
+/** Open Network from the sidebar (a typed `pseudo:` path is not a location). */
+async function openNetwork(): Promise<void> {
+  await click($$(".sidebar-row").find((row) => row.textContent?.trim() === "Network")!);
+  await settle(20);
+}
+
+/** Network's "Connect to Google Drive…" button, shown while no account is connected. */
+const connectButton = () =>
+  $$<HTMLButtonElement>(".network-paste .btn").find((button) => button.textContent === "Connect to Google Drive…");
+
+async function rightClick(el: Element): Promise<void> {
+  await mouse(el, "mousedown", { button: 2 });
+  await mouse(el, "contextmenu", { button: 2 });
+}
+
+test("Google Drive connects from Network and browses the mock drive", async () => {
+  // Drive is a Network location, not a sidebar row of its own.
+  expect($$("#sidebar-places .sidebar-row").map((row) => row.textContent?.trim())).toEqual(
+    ["Home", "Recent", "Starred", "Network", "Trash"],
+  );
+  await openNetwork();
+  expect(names()).not.toContain("Google Drive");
+  expect(connectButton()).toBeTruthy();
 
   // No OAuth client yet: the setup step comes first.
-  driveRow().click();
+  connectButton()!.click();
   await settle(10);
   expect($(".dialog-heading").textContent).toBe("Add Your Google Client");
   const links = $$(".dialog-links button").map((button) => button.textContent);
@@ -96,7 +114,32 @@ test("Google Drive connects and browses the mock drive", async () => {
   expect(names()).toContain("hello.txt");
 
   expect($$(".versioned-icon").length).toBe(0);
-  expect(driveRow().title).toBe("me@example.com");
+
+  // Network now lists the account, with its email, and no longer offers to connect.
+  await openNetwork();
+  expect(names()).toContain("Google Drive");
+  expect(item("Google Drive").textContent).toContain("me@example.com");
+  expect(connectButton()).toBeUndefined();
+});
+
+test("Up from My Drive goes to Network and selects Google Drive", async () => {
+  await goTo("gdrive://mock/mock-root~My%20Drive");
+  await key("ArrowUp", { alt: true });
+  await settle(20);
+  expect($(".crumb.current")?.textContent).toContain("Network");
+  expect(selectedNames()).toEqual(["Google Drive"]);
+});
+
+test("a file dropped from another app on Google Drive in Network copies it", async () => {
+  await invoke("copy_entry", { from: "/Users/me/Desktop/todo.txt", to: "/Users/me/Desktop/drop-me.txt", overwrite: false });
+  await openNetwork();
+  const pointAt = document.elementFromPoint;
+  document.elementFromPoint = () => item("Google Drive");
+  (window as unknown as { __mockDrop: (paths: string[], x: number, y: number) => void })
+    .__mockDrop(["/Users/me/Desktop/drop-me.txt"], 10, 10);
+  await settle(30);
+  document.elementFromPoint = pointAt;
+  expect(await invoke("path_exists", { path: "gdrive://mock/mock-root~My%20Drive/~drop-me.txt" })).toBe(true);
 });
 
 const DRIVE = "gdrive://mock/mock-root~My%20Drive";
@@ -216,14 +259,6 @@ async function dragTo(name: string, target: Element, mods: MouseEventInit = {}):
 
 const row = (text: string) => $$(".sidebar-row").find((r) => r.textContent?.trim() === text)!;
 
-test("dropping a local file on the Google Drive row copies it", async () => {
-  await invoke("copy_entry", { from: "/Users/me/Desktop/todo.txt", to: "/Users/me/Desktop/drop-me.txt", overwrite: false });
-  await goTo("/Users/me/Desktop");
-  await dragTo("drop-me.txt", row("Google Drive"));
-  expect(names()).toContain("drop-me.txt");
-  expect(await invoke("path_exists", { path: `${DRIVE}/~drop-me.txt` })).toBe(true);
-});
-
 test("dropping a Drive item on a local folder copies it", async () => {
   await goTo(DRIVE);
   await dragTo("Report.docx", row("Downloads"));
@@ -286,4 +321,18 @@ test("Copy and Paste in the same Drive folder makes a copy without asking", asyn
   await settle(15);
   expect(document.querySelector(".dialog-layer")).toBeNull();
   expect(names().filter((n) => n === "greeting.txt")).toHaveLength(1);
+});
+
+// Last: it disconnects the account the other tests browse.
+test("Disconnect… from Network removes Google Drive and offers to connect again", async () => {
+  await openNetwork();
+  await rightClick(hit("Google Drive"));
+  expect(menuLabels()).toEqual(["Open", "Copy Location", "Disconnect…"]);
+  await chooseMenu("Disconnect…");
+  expect(dialogHeading()).toBe("Disconnect Google Drive?");
+  await respond("Disconnect");
+  await settle(20);
+  expect(toasts().join(" ")).toContain("Disconnected from Google Drive");
+  expect(names()).not.toContain("Google Drive");
+  expect(connectButton()).toBeTruthy();
 });

@@ -32,7 +32,7 @@ step when a module's role changes.
 | `src/icons.ts` | Icon sprite (symbolic `sym-*`, full-colour `fc-*`), drawn for the theme; file-kind detection; `itemIcon`, every item icon's markup: its picture (drawing, OS icon, thumbnail, glyph) and which emblems (link, versions, shared) go on it, in what order |
 | `src/icons-macos.ts` | The macOS theme's drawings under the same symbol ids: folders, file pages, line icons |
 | `src/thumbnails.ts` | Thumbnail request queue (4 concurrent) and bounded blob-URL cache |
-| `src/item-icons.ts` | Which picture an item shows (thumbnail, SSH server glyph in Network, OS icon, drawing), the shown size, which places have OS icons, the first-screenful wait before a folder shows, the macOS folder icons asked again per listing and when recounted; the dialogs' icons |
+| `src/item-icons.ts` | Which picture an item shows (thumbnail, SSH server and Google Drive glyphs in Network, OS icon, drawing), the shown size, which places have OS icons, the first-screenful wait before a folder shows, the macOS folder icons asked again per listing and when recounted; the dialogs' icons |
 | `src/native-icons.ts` | The OS icons' cache: ids in one batch, one image per type and size, rechecking cached ids; `item-icons.ts` decides what to ask for and when |
 | `src/format.ts` | GNOME-style size and date strings |
 | `src/api.ts` | Typed wrappers for every Tauri command |

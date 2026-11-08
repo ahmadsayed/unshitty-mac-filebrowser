@@ -51,7 +51,7 @@ import { PathRefs, type Clip } from "./path-refs";
 import { LatestSave } from "./latest-save";
 import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, locationKind, mayHaveVersions, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
-import { childPath, cloudAccountKey, homeFolder, isCloudPath as isCloud, isCloudRoot, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
+import { childPath, cloudAccountKey, homeFolder, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -100,7 +100,7 @@ function savePrefs(): void {
 const PSEUDO: Record<Pseudo, { label: string; icon: string; title: string; text: string }> = {
   recent: { label: "Recent", icon: "document-open-recent", title: "No Recent Files", text: "" },
   starred: { label: "Starred", icon: "starred", title: "Starred files will appear here", text: "" },
-  network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Enter a server address or paste a share link below." },
+  network: { label: "Network", icon: "network-workgroup", title: "No Network Locations", text: "Enter a server address, paste a share link or connect to Google Drive below." },
 };
 const RECENT = `${PSEUDO_PREFIX}recent`;
 const STARRED = `${PSEUDO_PREFIX}starred`;
@@ -294,8 +294,10 @@ function basename(path: string): string {
   return pathName(path) || UNNAMED[placeOf(path)];
 }
 
-/** Above a share's or a server's root is Network. */
+/** Above a share's or a server's root, and above My Drive (the account's
+ *  root folder, Network's entry), is Network. */
 function parentOf(path: string): string {
+  if (isCloud(path) && (path === driveAccount?.root_path || parentPath(path) === path)) return NETWORK;
   return parentPath(path) ?? NETWORK;
 }
 
@@ -303,7 +305,8 @@ function receivedFor(path: string): ReceivedShare | undefined {
   return networkShares.find((share) => share.id === shareId(path));
 }
 
-/** What Network lists: one folder entry per received share, then one per connected server. */
+/** What Network lists: one folder entry per received share, then one per
+ *  connected server, then the Google account, if one is connected. */
 function networkEntries(): Entry[] {
   const place = { is_dir: true, size: 0, modified: 0, is_hidden: false, is_symlink: false };
   const shares: Entry[] = networkShares.map((share) => ({
@@ -314,7 +317,8 @@ function networkEntries(): Entry[] {
     shareStatus: share.status,
   }));
   const servers: Entry[] = sftpServerList.map((server) => ({ ...place, name: server.label, path: server.url }));
-  return [...shares, ...servers];
+  const drive: Entry[] = driveAccount ? [{ ...place, name: "Google Drive", path: driveAccount.root_path }] : [];
+  return [...shares, ...servers, ...drive];
 }
 
 /** The SSH server a Network entry stands for. */
@@ -337,13 +341,15 @@ function selectionOn(loc: string, select: string | undefined): string | undefine
   return loc === NETWORK && select ? networkEntryFor(select) : select;
 }
 
-/** Network's second line: who shared a folder, or what kind of server it is. */
+/** Network's second line: who shared a folder, what kind of server it is, or the Google account. */
 function networkDetail(entry: Entry): string {
-  return isSftpPath(entry.path) ? "SSH server" : entry.sharer ? `Shared by ${entry.sharer}` : "";
+  if (isSftpPath(entry.path)) return "SSH server";
+  if (isCloud(entry.path)) return driveAccount?.email ?? "";
+  return entry.sharer ? `Shared by ${entry.sharer}` : "";
 }
 
 function networkStatus(entry: Entry): { cls: string; label: string } {
-  if (isSftpPath(entry.path)) return { cls: "online", label: "Connected" };
+  if (isSftpPath(entry.path) || isCloud(entry.path)) return { cls: "online", label: "Connected" };
   return { cls: entry.shareStatus ?? "", label: shareStatusLabel(entry.shareStatus) };
 }
 
@@ -706,7 +712,7 @@ async function navigate(loc: string, opts: NavigateOptions = {}): Promise<Naviga
 /** List `loc` for navigate(). Null when the view keeps its place: a toast
  *  said why, or no toast because a later navigation overtook this one. */
 async function arrive(loc: string, overtaken: () => boolean, wanted: string | undefined): Promise<Arrival | null> {
-  if (loc === NETWORK) await Promise.all([refreshShares(), refreshSftpServers()]);
+  if (loc === NETWORK) await Promise.all([refreshShares(), refreshSftpServers(), refreshDriveAccount()]);
   // Asked after the refresh: the server list says which entry is whose.
   const arrival: Arrival = { next: [], error: null, page: null, select: selectionOn(loc, wanted) };
   const shared = isSharePath(loc) ? receivedFor(loc) : undefined;
@@ -794,7 +800,7 @@ async function reload(select?: string[]): Promise<void> {
   const seq = viewSeq;
   const moved = () => seq !== viewSeq;
   if (isSharePath(location) || location === NETWORK) await refreshShares();
-  if (location === NETWORK) await refreshSftpServers();
+  if (location === NETWORK) await Promise.all([refreshSftpServers(), refreshDriveAccount()]);
   if (moved() || showShareStatusPage()) return;
   if (!(await relist(moved))) return;
   selection.retain(select ?? selection.paths(), entries);
@@ -892,6 +898,11 @@ async function refreshSftpServers(): Promise<void> {
   sftpServerList = await sftpServers().catch(() => []);
 }
 
+/** Refresh the connected Google account (one at most), which Network lists. */
+async function refreshDriveAccount(): Promise<void> {
+  driveAccount = await driveAccounts().then((accounts) => accounts[0] ?? null).catch(() => null);
+}
+
 /** The folder that keeps versions for `loc`, if any (never for Trash or Recent). */
 function lookupVersionedRoot(loc: string): Promise<string | null> {
   if (!mayHaveVersions(loc, trashPath)) return Promise.resolve(null);
@@ -927,7 +938,6 @@ function goForward(): void {
 
 function goUp(): void {
   if (isPseudo(location) || location === "/") return;
-  if (isCloud(location) && isCloudRoot(location)) return;
   navigate(parentOf(location), { select: location });
 }
 
@@ -1435,6 +1445,14 @@ function renderNetworkPaste(overlay: Element): void {
   const error = document.createElement("span");
   error.className = "network-error";
   bar.append(input, button, error);
+  if (!driveAccount) {
+    // Connected, the account is one of Network's entries instead.
+    const drive = document.createElement("button");
+    drive.className = "btn";
+    drive.textContent = "Connect to Google Drive…";
+    drive.addEventListener("click", () => void connectDrive());
+    bar.append(drive);
+  }
 
   const connect = async () => {
     const link = input.value.trim();
@@ -2167,7 +2185,8 @@ function shareItemMenu(single: Entry | null): MenuItem[] {
   ];
 }
 
-/** A Network item: open a received share or forget it; open a server or disconnect it. */
+/** A Network item: open a received share or forget it; open a server or
+ *  disconnect it; open Google Drive or disconnect the account. */
 function networkItemMenu(single: Entry | null): MenuItem[] {
   const server = single ? serverFor(single) : undefined;
   if (server) {
@@ -2176,6 +2195,14 @@ function networkItemMenu(single: Entry | null): MenuItem[] {
       { label: "Copy Location", action: copyLocation },
       { separator: true },
       { label: "Disconnect", action: () => void disconnectServer(server) },
+    ];
+  }
+  if (single && isCloud(single.path)) {
+    return [
+      { label: "Open", action: activateSelection },
+      { label: "Copy Location", action: copyLocation },
+      { separator: true },
+      { label: "Disconnect…", action: confirmDisconnectDrive },
     ];
   }
   const id = single && isSharePath(single.path) ? shareId(single.path) : "";
@@ -3447,7 +3474,6 @@ function dropTargetAt(x: number, y: number, sources: string[]): DropTarget | nul
   }
   const row = el.closest<HTMLElement>(".sidebar-row");
   if (row) {
-    // A disconnected Google Drive row has no location.
     const loc = row.dataset.location;
     return !loc || isPseudo(loc) ? null : { dir: loc, el: row };
   }
@@ -5110,7 +5136,6 @@ function openConnectDialog(): void {
         driveAccount = account;
         dialog.close();
         showToast(`Connected to ${account.email}`);
-        await buildSidebar();
         await navigate(account.root_path);
       } catch (err) {
         const message = cleanError(err);
@@ -5145,8 +5170,9 @@ function confirmDisconnectDrive(): void {
         .then(async () => {
           driveAccount = null;
           showToast("Disconnected from Google Drive");
-          if (isCloud(location)) await navigate(home || "/");
-          await buildSidebar();
+          // Network, where the account was listed, shows it gone and offers to connect again.
+          if (isCloud(location)) await navigate(NETWORK);
+          else if (location === NETWORK) await reload([]);
         })
         .catch((err) => showToast(`Could not disconnect: ${cleanError(err)}`));
     },
@@ -5163,12 +5189,6 @@ async function buildSidebar(): Promise<void> {
   mounts.replaceChildren();
   fixedSidebarPaths.clear();
 
-  try {
-    driveAccount = (await driveAccounts())[0] ?? null;
-  } catch {
-    driveAccount = null;
-  }
-
   const tryDir = async (fn: () => Promise<string>) => {
     try {
       return await fn();
@@ -5181,24 +5201,6 @@ async function buildSidebar(): Promise<void> {
   sidebarRow(places, "Recent", "document-open-recent", RECENT);
   sidebarRow(places, "Starred", "starred", STARRED);
   sidebarRow(places, "Network", "network-workgroup", NETWORK);
-  const driveRow = sidebarRow(
-    places,
-    "Google Drive",
-    "network-workgroup",
-    driveAccount?.root_path ?? "",
-    !!driveAccount,
-    driveAccount ? undefined : () => void connectDrive()
-  );
-  if (driveAccount) {
-    driveRow.title = driveAccount.email;
-    driveRow.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openMenu(event, [{ label: "Disconnect…", action: () => confirmDisconnectDrive() }]);
-    });
-  } else {
-    driveRow.title = "Connect to Google Drive";
-  }
   if (trashPath) sidebarRow(places, "Trash", "user-trash", trashPath);
 
   // Desktop plus GNOME's default bookmarks, resolved to this machine's folders

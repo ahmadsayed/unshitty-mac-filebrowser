@@ -79,7 +79,8 @@ the JSON again.
 
 ## Part 2: Connect File Browser
 
-1. In File Browser's sidebar, click **Google Drive**.
+1. In File Browser's sidebar, click **Network**, then click **Connect to
+   Google Drive…** at the bottom of the view.
 2. The **Add Your Google Client** dialog opens. Click **Choose File…** and pick
    the JSON file you downloaded. You can also open the file in a text editor,
    copy all of it, paste it into the box, and click **Add Client**.
@@ -101,7 +102,7 @@ after 7 days, and File Browser asks you to sign in again. To stop this:
 1. Open <https://console.cloud.google.com/auth/audience>.
 2. Click **Publish app** and confirm. You don't need Google's verification for
    your own use.
-3. In File Browser, right-click **Google Drive** in the sidebar, choose
+3. In File Browser, open **Network**, right-click **Google Drive**, choose
    **Disconnect…**, then connect again. The new session doesn't expire.
 
 The "unverified app" warning still appears when you sign in. That's normal.
@@ -128,9 +129,9 @@ The "unverified app" warning still appears when you sign in. That's normal.
 
 ## Using a different client
 
-Disconnect Google Drive first: right-click it in the sidebar and choose
-**Disconnect…**. Then click **Google Drive** and choose **Change Client…** in
-the Connect dialog.
+Disconnect Google Drive first: in **Network**, right-click **Google Drive**
+and choose **Disconnect…**. Then click **Connect to Google Drive…** and choose
+**Change Client…** in the Connect dialog.
 
 ## Troubleshooting
 

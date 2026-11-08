@@ -1954,11 +1954,16 @@ kbd {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: min(560px, calc(100% - 48px));
+  width: min(720px, calc(100% - 48px));
   padding: 8px;
   border-radius: 12px;
   background: var(--card-bg);
   box-shadow: var(--popover-shadow);
+}
+
+.network-paste .btn {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .network-link {

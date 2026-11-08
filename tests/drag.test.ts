@@ -422,14 +422,6 @@ test("macOS: a drag out dropped in another app is forgotten after a few seconds"
   }
 });
 
-test("the Google Drive row is not a drop target while disconnected", async () => {
-  await goTo(`${HOME}/D`);
-  const driveRow = $$(".sidebar-row").find((r) => r.textContent?.includes("Google Drive"))!;
-  await dragTo("four.txt", driveRow);
-  expect(names()).toContain("four.txt");
-  expect(await invoke("path_exists", { path: "/four.txt" })).toBe(false);
-});
-
 // "/" contains only itself in the view's drop rules: a disk's root dropped
 // from another app goes on to the copy, which asks or refuses (the mock asks
 // about a clash; the backend refuses copying a folder into itself).
