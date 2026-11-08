@@ -97,13 +97,37 @@ npm run build               # tsc + vite build
 npm run dev:mock            # UI in a normal browser with a fake filesystem (port 1420)
 cd src-tauri && cargo test  # backend tests
 npm test                    # frontend tests (Vitest + jsdom)
+npx vitest run tests/<file>.test.ts  # only the frontend tests a change touches
+npx vitest                  # the same, in watch mode
 npm run crap                # CRAP gate (also runs as the pre-commit hook)
+npm run crap:ts             # CRAP gate for TypeScript only: Vitest coverage + fallow
 npm run crap:baseline       # accept the current scores into .crap-baseline.json
 ```
 
-Before finishing a change: `npx tsc --noEmit`, `npm run build`,
-`npm test` and `cargo test` must pass. For UI changes, also look at the result in
-`npm run dev:mock`.
+Before finishing a change: `npx tsc --noEmit` and `npm run build` must pass,
+plus `npm test` for a frontend change and `cargo test` for a backend one (the
+pre-commit hook runs the full suite of each language a commit touches). For UI
+changes, also look at the result in `npm run dev:mock`.
+
+### TypeScript-only changes
+
+While a change touches only `src/`, `tests/`, `dev/` or `scripts/`, keep the
+loop fast:
+
+- type-check with `npx tsc --noEmit`;
+- run the test files it touches, not the whole suite:
+  `npx vitest run tests/drive.test.ts tests/listing-failure-table.test.ts`
+  (drop `run` to watch them);
+- score the gate for TypeScript only with `npm run crap:ts`. That still runs
+  every frontend test with coverage, because fallow needs the coverage, but it
+  skips the Rust build, tests and coverage; `npm run crap` does both halves.
+  The pre-commit hook already picks the languages from the staged files
+  (`--staged`), so a TypeScript-only commit never runs Rust.
+
+`cargo test` is not needed when no file under `src-tauri/` changed. The
+pre-commit hook runs the whole frontend suite with coverage on every
+TypeScript commit, so the PR has that result even though the loop used only
+the related files.
 
 **CRAP gate.** `npm install` sets `core.hooksPath` to `.githooks`, whose
 `pre-commit` runs `scripts/crap-gate.mjs` for the languages a commit touches.
@@ -119,6 +143,10 @@ key and command dispatch), not just tests. Fix a failure by testing or
 simplifying the function; update the baseline only when a score is accepted
 on purpose, and say so in the commit message. Don't bypass the hook with
 `--no-verify`.
+
+The hook's `--staged` picks the languages itself. To score one language by
+hand, `npm run crap:ts` and `node scripts/crap-gate.mjs --rust` skip the
+other half.
 
 **Frontend tests** boot the real app (`tests/app.ts`) in jsdom with
 `dev/mock-tauri/` as the backend; each test file gets a fresh app and fake

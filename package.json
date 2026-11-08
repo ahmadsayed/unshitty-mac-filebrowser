@@ -12,6 +12,7 @@
     "tauri": "tauri",
     "test": "vitest run",
     "crap": "node scripts/crap-gate.mjs",
+    "crap:ts": "node scripts/crap-gate.mjs --ts",
     "crap:baseline": "node scripts/crap-gate.mjs --update",
     "prepare": "git config core.hooksPath .githooks || true"
   },
