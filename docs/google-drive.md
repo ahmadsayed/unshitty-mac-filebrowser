@@ -97,7 +97,12 @@ the JSON again.
 ## Signing in every 7 days
 
 While your Google project is in **Testing** mode, Google ends the session
-after 7 days, and File Browser asks you to sign in again. To stop this:
+after 7 days. The next time you open Google Drive, File Browser shows **Sign
+In to Google Drive**: click **Sign In** and allow access in the browser. The
+account keeps its place in Network, and its folders and files stay where they
+were.
+
+To stop the expiry:
 
 1. Open <https://console.cloud.google.com/auth/audience>.
 2. Click **Publish app** and confirm. You don't need Google's verification for
@@ -144,5 +149,7 @@ and choose **Disconnect…**. Then click **Connect to Google Drive…** and choo
 | **invalid_client** or "The OAuth client was not found" | The client was deleted, or its secret was reset. Download the JSON again, then use **Change Client…**. |
 | "Disconnect Google Drive first." | You tried to change the client while connected. Disconnect, then change it. |
 | You're asked to sign in again every week | Your project is in Testing mode; see [Signing in every 7 days](#signing-in-every-7-days). |
+| **Sign In to Google Drive** says the session expired or was revoked | Google no longer accepts the saved sign-in. Click **Sign In**; if it keeps failing, use **Change Client…** with a freshly downloaded JSON file. |
+| `invalid_grant: Token has been expired or revoked` | The same as the row above: sign in again. |
 | "Google Drive is connected read-only" | Your connection was made before File Browser could change files. Disconnect Google Drive and connect again. |
 | "Sign-in timed out" | The browser didn't come back within 3 minutes. Click **Open Browser** again. |

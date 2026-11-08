@@ -27,7 +27,8 @@ It owns no rules: it asks small modules that have no DOM.
 - **View state and stored paths.** `selection.ts` (selection, cursor,
   anchor), `search.ts` (`SearchSession`: the walk, its pause, its limit,
   late answers), `folder-summaries.ts` (item counts and version badges),
-  `listing-failure.ts` (what a folder that can't be listed turns into) and
+  `listing-failure.ts` (what a folder that can't be listed turns into, and
+  whether a Drive failure needs a credential: `drive-auth.ts`) and
   `path-refs.ts` (stars, bookmarks, the clipboard and tab history follow a
   moved or renamed item).
 - **Pictures.** `item-icons.ts` decides which picture an item shows and when
