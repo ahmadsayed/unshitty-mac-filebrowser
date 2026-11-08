@@ -143,6 +143,59 @@ fn rename_new_by(
     }
 }
 
+/// Rename an item within its folder (the user's Rename and Batch Rename),
+/// never over another item. On a disk that ignores case or Unicode
+/// normalization (APFS by default, FAT), `Foo` names the same entry as
+/// `foo`, so the exclusive rename refuses a rename between the two; that
+/// one goes through a hidden staging name instead, and back if the second
+/// step is refused.
+pub(crate) fn rename_in_place(from: &Path, to: &Path) -> io::Result<()> {
+    rename_in_place_by(from, to, crate::platform::rename_exclusive, same_entry)
+}
+
+/// `rename_in_place` with the exclusive rename and the same-entry test
+/// given, so tests can play a disk that ignores case.
+fn rename_in_place_by(
+    from: &Path,
+    to: &Path,
+    exclusive: fn(&Path, &Path) -> io::Result<()>,
+    same: fn(&Path, &Path) -> bool,
+) -> io::Result<()> {
+    match rename_new_by(from, to, exclusive) {
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists && same(from, to) => {
+            let staged = staging_path(to);
+            rename_new_by(from, &staged, exclusive)?;
+            rename_new_by(&staged, to, exclusive).map_err(|e| {
+                match rename_new_by(&staged, from, exclusive) {
+                    Ok(()) => e,
+                    Err(back) => io::Error::other(format!(
+                        "The item was kept at “{}” and could not be put back: {}",
+                        staged.display(),
+                        back
+                    )),
+                }
+            })
+        }
+        done => done,
+    }
+}
+
+/// Whether `a` and `b` name the same directory entry (device and inode,
+/// not following links): a link to `b` is not `b`.
+#[cfg(unix)]
+pub(crate) fn same_entry(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+        (Ok(ma), Ok(mb)) => ma.dev() == mb.dev() && ma.ino() == mb.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn same_entry(_a: &Path, _b: &Path) -> bool {
+    false
+}
+
 // ---- Placing -----------------------------------------------------------------
 
 /// Where a Replace sends the item it replaces, and how it takes it back out
@@ -602,6 +655,148 @@ mod tests {
         let err = rename_new_by(&to, &from, denied).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
         assert_eq!(names_in(dir.path()), ["b"]);
+    }
+
+    /// `std::fs::rename` replaces a file at its target on Unix, so the
+    /// user's items are placed with `rename_new` / `rename_in_place` (#192).
+    /// The modules left rename only what the app itself made, over its own
+    /// files: saves written to a temporary name first, caches, and
+    /// content-addressed version objects. Test code is not scanned.
+    #[test]
+    fn only_listed_modules_call_std_fs_rename() {
+        const ALLOWED: [&str; 7] = [
+            "placement.rs",       // rename_new's fallback, after its check
+            "config_store.rs",    // pins.json, starred.json, flags.json saves
+            "cloud/token.rs",     // Drive settings save
+            "cloud/service.rs",   // Drive's open cache (#204)
+            "thumbnails.rs",      // the thumbnail cache
+            "versions/mod.rs",    // .versions/meta.json save
+            "versions/store.rs",  // an object is its bytes' hash
+        ];
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut callers = Vec::new();
+        let mut folders = vec![src.clone()];
+        while let Some(folder) = folders.pop() {
+            for path in fs::read_dir(&folder).unwrap().flatten().map(|e| e.path()) {
+                if path.is_dir() {
+                    folders.push(path);
+                    continue;
+                }
+                let text = fs::read_to_string(&path).unwrap_or_default();
+                // The code up to the top-level test module, without comments.
+                let code = text.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
+                let calls = code
+                    .lines()
+                    .filter(|line| !line.trim_start().starts_with("//"))
+                    .any(|line| line.contains("fs::rename"));
+                let name = path.strip_prefix(&src).unwrap().to_string_lossy().to_string();
+                if calls && !ALLOWED.contains(&name.as_str()) {
+                    callers.push(name);
+                }
+            }
+        }
+        callers.sort();
+        assert_eq!(callers, Vec::<String>::new(), "place the user's items with placement::rename_new");
+    }
+
+    /// The exclusive rename of a disk that ignores case: a name is taken
+    /// when any entry in the folder matches it ignoring case.
+    fn rename_ignoring_case(from: &Path, to: &Path) -> io::Result<()> {
+        let name = to.file_name().unwrap().to_string_lossy().to_lowercase();
+        let taken = fs::read_dir(to.parent().unwrap())?
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().to_lowercase() == name);
+        if taken {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        fs::rename(from, to)
+    }
+
+    /// On that disk, two names that differ only in case are one entry.
+    fn same_ignoring_case(a: &Path, b: &Path) -> bool {
+        let lower = |p: &Path| p.file_name().unwrap().to_string_lossy().to_lowercase();
+        a.parent() == b.parent() && lower(a) == lower(b) && fs::symlink_metadata(a).is_ok()
+    }
+
+    #[test]
+    fn a_rename_in_place_never_replaces_another_item() {
+        let dir = tempdir().unwrap();
+        let (from, file, link) = (dir.path().join("a"), dir.path().join("b"), dir.path().join("c"));
+        fs::write(&from, "mine").unwrap();
+        fs::write(&file, "theirs").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone"), &link).unwrap();
+        for taken in [&file, &link] {
+            let err = rename_in_place(&from, taken).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::AlreadyExists, "{}", taken.display());
+        }
+        assert_eq!(fs::read_to_string(&file).unwrap(), "theirs");
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(names_in(dir.path()), ["a", "b", "c"]);
+        rename_in_place(&from, &dir.path().join("d")).unwrap();
+        assert_eq!(names_in(dir.path()), ["b", "c", "d"]);
+    }
+
+    /// A hard link is the same file under another entry: renaming one onto
+    /// the other is refused, and the staging name goes away.
+    #[test]
+    fn a_rename_in_place_refuses_another_link_to_the_same_file() {
+        let dir = tempdir().unwrap();
+        let (from, to) = (dir.path().join("a"), dir.path().join("b"));
+        fs::write(&from, "mine").unwrap();
+        fs::hard_link(&from, &to).unwrap();
+        let err = rename_in_place(&from, &to).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(names_in(dir.path()), ["a", "b"]);
+    }
+
+    /// `foo` to `Foo` on a disk that ignores case: the exclusive rename
+    /// refuses (it finds `foo` itself), so the item goes through a staging
+    /// name and arrives under the new case.
+    #[test]
+    fn a_rename_in_place_changes_only_the_case() {
+        let dir = tempdir().unwrap();
+        let (from, to) = (dir.path().join("foo.txt"), dir.path().join("Foo.txt"));
+        fs::write(&from, "mine").unwrap();
+        rename_in_place_by(&from, &to, rename_ignoring_case, same_ignoring_case).unwrap();
+        assert_eq!(names_in(dir.path()), ["Foo.txt"]);
+        assert_eq!(fs::read_to_string(&to).unwrap(), "mine");
+    }
+
+    /// If the name is taken between the two steps, the item goes back to
+    /// its old name and the refusal is the one a rename would have met.
+    #[test]
+    fn a_case_change_refused_halfway_goes_back() {
+        let dir = tempdir().unwrap();
+        let (from, to) = (dir.path().join("foo.txt"), dir.path().join("Foo.txt"));
+        fs::write(&from, "mine").unwrap();
+        let refuse_foo: fn(&Path, &Path) -> io::Result<()> = |from, to| {
+            if to.file_name().unwrap() == "Foo.txt" {
+                return Err(io::ErrorKind::AlreadyExists.into());
+            }
+            fs::rename(from, to)
+        };
+        let err = rename_in_place_by(&from, &to, refuse_foo, |_, _| true).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(names_in(dir.path()), ["foo.txt"]);
+        assert_eq!(fs::read_to_string(&from).unwrap(), "mine");
+    }
+
+    /// If it can't go back either, the error says where the item is.
+    #[test]
+    fn a_case_change_that_cannot_go_back_says_where_the_item_is() {
+        let dir = tempdir().unwrap();
+        let (from, to) = (dir.path().join("foo.txt"), dir.path().join("Foo.txt"));
+        fs::write(&from, "mine").unwrap();
+        let only_staging: fn(&Path, &Path) -> io::Result<()> = |from, to| {
+            if !to.file_name().unwrap().to_string_lossy().contains(".filebrowser-") {
+                return Err(io::ErrorKind::AlreadyExists.into());
+            }
+            fs::rename(from, to)
+        };
+        let err = rename_in_place_by(&from, &to, only_staging, |_, _| true).unwrap_err();
+        let staged = format!(".Foo.txt.filebrowser-{}-0", std::process::id());
+        assert!(err.to_string().contains(&staged), "{err}");
+        assert_eq!(names_in(dir.path()), [staged]);
     }
 
     /// The real one, on this filesystem: a free name, then a taken file and

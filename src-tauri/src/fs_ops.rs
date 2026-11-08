@@ -19,12 +19,14 @@ pub fn make_dir(path: String) -> Result<(), String> {
     std::fs::create_dir(p).map_err(|e| format!("Failed to create directory: {}", e))
 }
 
+/// Rename an item in its folder, never over another one: the rename itself
+/// refuses a taken name (`placement::rename_in_place`), so an item that
+/// took it after the view was listed, or a link whose target is gone, stays.
 pub fn rename_entry(from: String, to: String) -> Result<(), String> {
-    let to_path = Path::new(&to);
-    if to_path.exists() {
-        return Err(format!("Target already exists: {}", to));
-    }
-    std::fs::rename(&from, &to).map_err(|e| format!("Failed to rename: {}", e))
+    placement::rename_in_place(Path::new(&from), Path::new(&to)).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => format!("Target already exists: {}", to),
+        _ => format!("Failed to rename: {}", e),
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -222,9 +224,17 @@ pub struct RenameItem {
 }
 
 /// Rename several items in place, all or nothing. Every target is checked
-/// before the first rename; if one still fails, the completed renames are
-/// rolled back.
+/// before the first rename, and each rename refuses a name taken since
+/// (`placement::rename_in_place`); if one fails, the completed renames are
+/// rolled back the same way, so none lands on an item that took an old name.
 pub fn rename_many(items: Vec<RenameItem>) -> Result<(), String> {
+    rename_many_by(items, &placement::rename_in_place)
+}
+
+type InPlaceFn<'a> = &'a dyn Fn(&Path, &Path) -> std::io::Result<()>;
+
+/// `rename_many` with the rename given, so tests can take a name meanwhile.
+fn rename_many_by(items: Vec<RenameItem>, rename: InPlaceFn) -> Result<(), String> {
     if items.is_empty() {
         return Ok(());
     }
@@ -250,38 +260,47 @@ pub fn rename_many(items: Vec<RenameItem>) -> Result<(), String> {
         if !seen_from.insert(from.clone()) || !seen_to.insert(to.clone()) {
             return Err("Two items would have the same name.".into());
         }
-        if std::fs::symlink_metadata(&to).is_ok() && !same_file(&from, &to) {
-            let name = to.file_name().unwrap_or_default().to_string_lossy();
-            return Err(format!("A file or folder named “{name}” already exists."));
+        // The same entry is a change of case on a disk that ignores it; a
+        // link to `to` is not `to` (the test doesn't follow links).
+        if std::fs::symlink_metadata(&to).is_ok() && !placement::same_entry(&from, &to) {
+            return Err(already_named(&to));
         }
         work.push((from, to));
     }
 
     let mut done: Vec<(PathBuf, PathBuf)> = Vec::new();
     for (from, to) in work {
-        if let Err(e) = std::fs::rename(&from, &to) {
-            for (old_from, old_to) in done.iter().rev() {
-                let _ = std::fs::rename(old_to, old_from);
-            }
-            return Err(format!("Failed to rename “{}”: {e}", from.display()));
+        if let Err(e) = rename(&from, &to) {
+            let failed = match e.kind() {
+                std::io::ErrorKind::AlreadyExists => already_named(&to),
+                _ => format!("Failed to rename “{}”: {e}", from.display()),
+            };
+            return Err(failed + &roll_back(&done, rename));
         }
         done.push((from, to));
     }
     Ok(())
 }
 
-#[cfg(unix)]
-fn same_file(a: &Path, b: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(ma), Ok(mb)) => ma.dev() == mb.dev() && ma.ino() == mb.ino(),
-        _ => false,
-    }
+fn already_named(to: &Path) -> String {
+    let name = to.file_name().unwrap_or_default().to_string_lossy();
+    format!("A file or folder named “{name}” already exists.")
 }
 
-#[cfg(not(unix))]
-fn same_file(_a: &Path, _b: &Path) -> bool {
-    false
+/// Put the completed renames back, last first, never over an item that
+/// took an old name meanwhile; says which stayed renamed, if any.
+fn roll_back(done: &[(PathBuf, PathBuf)], rename: InPlaceFn) -> String {
+    let mut kept = String::new();
+    for (from, to) in done.iter().rev() {
+        if let Err(e) = rename(to, from) {
+            let reason = match e.kind() {
+                std::io::ErrorKind::AlreadyExists => "another item is there now".to_string(),
+                _ => e.to_string(),
+            };
+            kept += &format!(" “{}” could not be renamed back to “{}”: {reason}.", to.display(), from.display());
+        }
+    }
+    kept
 }
 
 /// Lowercase with accents removed, so "cafe" finds "Café". Matches the
@@ -1383,6 +1402,98 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err();
         assert!(msg.contains("already exists"), "unexpected error: {}", msg);
+    }
+
+    /// A link whose target is gone still takes its name: `exists()` follows
+    /// it and says the name is free, and `std::fs::rename` replaced it. The
+    /// view doesn't list it (hidden), so only the backend can refuse.
+    #[test]
+    fn rename_entry_never_replaces_a_dangling_link() {
+        let dir = tempdir().unwrap();
+        let (src, link) = (dir.path().join("a.txt"), dir.path().join(".hidden"));
+        fs::write(&src, "mine").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone"), &link).unwrap();
+
+        let err = rename_entry(s(&src), s(&link)).unwrap_err();
+
+        assert!(err.contains("already exists"), "{err}");
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&src).unwrap(), "mine");
+    }
+
+    /// A link to `b` renamed to `b` is not `b` itself: a check that follows
+    /// links took it for a rename to the same item and replaced `b`.
+    #[test]
+    fn batch_rename_never_replaces_the_item_a_link_points_to() {
+        let dir = tempdir().unwrap();
+        let (link, target) = (dir.path().join("a"), dir.path().join("b"));
+        fs::write(&target, "kept").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = rename_many(vec![RenameItem { from: s(&link), to: s(&target) }]).unwrap_err();
+
+        assert!(err.contains("already exists"), "{err}");
+        assert!(fs::symlink_metadata(&target).unwrap().file_type().is_file());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "kept");
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    }
+
+    /// An item that takes a target's name after the check stays; the items
+    /// already renamed go back.
+    #[test]
+    fn batch_rename_never_replaces_an_item_that_took_the_name_meanwhile() {
+        let dir = tempdir().unwrap();
+        let p = |name: &str| dir.path().join(name);
+        fs::write(p("a"), "a").unwrap();
+        fs::write(p("b"), "b").unwrap();
+        let racing = |from: &Path, to: &Path| {
+            if to == p("y") {
+                fs::write(p("y"), "theirs").unwrap();
+            }
+            placement::rename_in_place(from, to)
+        };
+        let items = vec![
+            RenameItem { from: s(&p("a")), to: s(&p("x")) },
+            RenameItem { from: s(&p("b")), to: s(&p("y")) },
+        ];
+
+        let err = rename_many_by(items, &racing).unwrap_err();
+
+        assert_eq!(err, "A file or folder named “y” already exists.");
+        assert_eq!(fs::read_to_string(p("y")).unwrap(), "theirs");
+        assert_eq!(fs::read_to_string(p("a")).unwrap(), "a");
+        assert_eq!(fs::read_to_string(p("b")).unwrap(), "b");
+        assert!(!p("x").exists());
+    }
+
+    /// The rollback never lands on an item that took an old name: that
+    /// rename stays, and the error says so.
+    #[test]
+    fn batch_rename_rollback_never_replaces_an_item_that_took_an_old_name() {
+        let dir = tempdir().unwrap();
+        let p = |name: &str| dir.path().join(name);
+        fs::write(p("a"), "a").unwrap();
+        fs::write(p("b"), "b").unwrap();
+        let failing = |from: &Path, to: &Path| {
+            if to == p("y") {
+                fs::write(p("a"), "theirs").unwrap();
+                return Err(std::io::ErrorKind::PermissionDenied.into());
+            }
+            placement::rename_in_place(from, to)
+        };
+        let items = vec![
+            RenameItem { from: s(&p("a")), to: s(&p("x")) },
+            RenameItem { from: s(&p("b")), to: s(&p("y")) },
+        ];
+
+        let err = rename_many_by(items, &failing).unwrap_err();
+
+        assert!(err.starts_with(&format!("Failed to rename “{}”", p("b").display())), "{err}");
+        let kept = format!("“{}” could not be renamed back to “{}”: another item is there now.", p("x").display(), p("a").display());
+        assert!(err.ends_with(&kept), "{err}");
+        assert_eq!(fs::read_to_string(p("a")).unwrap(), "theirs");
+        assert_eq!(fs::read_to_string(p("x")).unwrap(), "a");
+        assert_eq!(fs::read_to_string(p("b")).unwrap(), "b");
     }
 
     // ----- copy / move / trash tests -----
