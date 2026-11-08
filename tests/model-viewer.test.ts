@@ -2,8 +2,8 @@
 // mock's sample box as STL (ASCII and binary), 3MF, GLB and glTF. Drawing
 // needs WebGL, which jsdom lacks, so showModel is checked to fail cleanly.
 import { expect, test, vi } from "vitest";
-import { Box3, Mesh, Vector3, type Object3D } from "three";
-import { loadModel, showModel } from "../src/model-viewer";
+import { Box3, Mesh, Quaternion, Vector3, type Object3D } from "three";
+import { loadModel, modelControls, showModel, turned, turnForKey, type Turn } from "../src/model-viewer";
 import {
   SAMPLE_TRIANGLES, sample3mf, sampleGlb, sampleGltf, sampleGltfBin, sampleGltfJson, sampleStlAscii, sampleStlBinary,
 } from "../dev/mock-tauri/models";
@@ -103,4 +103,55 @@ test("without WebGL, showModel throws and leaves nothing behind", async () => {
   const model = await loadModel("stl", buffer(sampleStlAscii()));
   expect(() => showModel(host, model)).toThrow();
   expect(host.querySelector("canvas")).toBeNull();
+});
+
+// ----- Turning the model -----
+
+const RIGHT = new Vector3(1, 0, 0);
+/** Where the model's front (facing the viewer, +Z) points after `goal`. */
+const front = (goal: Quaternion) => new Vector3(0, 0, 1).applyQuaternion(goal).toArray().map((v) => Math.round(v * 1000) / 1000 + 0);
+
+test("Rotate Left and Right swing the front to that side, a quarter turn about the vertical", () => {
+  const [left, right] = (() => {
+    const asked: Turn[] = [];
+    const bar = modelControls((t) => asked.push(t));
+    for (const button of bar.querySelectorAll("button")) button.click();
+    return asked;
+  })();
+  expect(front(turned(new Quaternion(), left, RIGHT))).toEqual([-1, 0, 0]);
+  expect(front(turned(new Quaternion(), right, RIGHT))).toEqual([1, 0, 0]);
+});
+
+test("the controls are Rotate Left, Rotate Right and Reset View, each a labelled button", () => {
+  const asked: Turn[] = [];
+  const bar = modelControls((t) => asked.push(t));
+  const buttons = [...bar.querySelectorAll("button")];
+  expect(buttons.map((b) => [b.title, b.getAttribute("aria-label")])).toEqual([
+    ["Rotate Left", "Rotate Left"],
+    ["Rotate Right", "Rotate Right"],
+    ["Reset View", "Reset View"],
+  ]);
+  buttons[2].click();
+  expect(asked).toEqual(["reset"]);
+});
+
+test("arrow keys turn in 15° steps the way a drag would, Home resets, other keys do nothing", () => {
+  expect(front(turned(new Quaternion(), turnForKey("ArrowLeft")!, RIGHT))[0]).toBeLessThan(0);
+  expect(front(turned(new Quaternion(), turnForKey("ArrowRight")!, RIGHT))[0]).toBeGreaterThan(0);
+  // Up tips the front up, showing the underside, as dragging up does.
+  expect(front(turned(new Quaternion(), turnForKey("ArrowUp")!, RIGHT))[1]).toBeGreaterThan(0);
+  expect(front(turned(new Quaternion(), turnForKey("ArrowDown")!, RIGHT))[1]).toBeLessThan(0);
+  expect(turnForKey("Home")).toBe("reset");
+  expect(turnForKey("a")).toBeNull();
+  expect(turnForKey("Escape")).toBeNull();
+});
+
+test("turns add up, pitch follows the view's own horizontal axis, and reset undoes them all", () => {
+  const step = turnForKey("ArrowRight")!;
+  let goal = new Quaternion();
+  for (let i = 0; i < 6; i++) goal = turned(goal, step, RIGHT);
+  expect(front(goal)).toEqual([1, 0, 0]);
+  // Seen from the side (the view's right is world -Z), pitch turns about that axis.
+  expect(front(turned(new Quaternion(), { axis: "pitch", degrees: -90 }, new Vector3(0, 0, -2)))).toEqual([0, 0, 1]);
+  expect(turned(goal, "reset", RIGHT).equals(new Quaternion())).toBe(true);
 });

@@ -97,7 +97,8 @@ one out on its own platform.
   It works on folders too, including the one you're in (right-click the empty
   area or use the path-bar menu) to open a project in your editor or IDE.
 - **Preview (Space)** shows text, pictures, PDFs and 3D models (glTF, GLB, STL,
-  3MF) you can turn and zoom, with Open, Rename…, Move to
+  3MF), which you turn by dragging, with Rotate Left, Rotate Right and Reset
+  View, or with the arrow keys, and zoom with the wheel; with Open, Rename…, Move to
   Trash and, for search results and Recent or Starred items, Open Item
   Location, without closing the preview first.
 - **macOS DMG installation:** right-click a disk image to choose an application

@@ -46,6 +46,16 @@ thumbnails yet.
   disposes the renderer, geometries, materials and textures.
 - **D6. Keys.** The canvas takes focus when dragged, so Escape and Space on
   it close the preview as they do from the view.
+- **D7. Turning without dragging.** An on-screen bar over the model, in the
+  translucent toast style, has **Rotate Left** and **Rotate Right** (a
+  quarter turn about the vertical, the model's front swinging that way, as
+  GNOME Image Viewer names its rotate buttons) and **Reset View** (the
+  model and camera as first shown). On the focused model, the arrow keys
+  turn it in 15° steps the way a drag would (Left and Right about the
+  vertical, Up and Down about the view's horizontal axis) and Home resets;
+  they don't move the folder's selection. Turns animate over 200 ms, at
+  once when the user prefers reduced motion. The model area shrinks to the
+  room the preview panel has, so the bar is never scrolled out of sight.
 
 ## Not in this change
 
