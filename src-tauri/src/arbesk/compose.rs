@@ -68,20 +68,52 @@ pub fn is_child_ref(manifest: &Value) -> bool {
 
 /// The file `source` stands for, its parts fetched through `gateway`.
 pub fn compose(gateway: &Gateway, source: &Value) -> Result<Vec<u8>, String> {
+    compose_within(gateway, source, BUILD_CAP)
+}
+
+pub const TOO_LARGE_TO_BUILD: &str = "This asset is too large to open.";
+/// The most an asset's parts may add up to.
+pub const BUILD_CAP: u64 = 512 * 1024 * 1024;
+
+/// `compose`, refusing once the parts fetched add up to more than `cap` bytes.
+pub fn compose_within(gateway: &Gateway, source: &Value, cap: u64) -> Result<Vec<u8>, String> {
+    let parts = Parts {
+        gateway,
+        left: std::cell::Cell::new(cap),
+    };
     match format_of(source)? {
-        Format::Gltf => compose_gltf(gateway, source),
-        Format::ThreeMf => compose_3mf(gateway, source),
+        Format::Gltf => compose_gltf(&parts, source),
+        Format::ThreeMf => compose_3mf(&parts, source),
+    }
+}
+
+/// The parts of one build, fetched within its budget.
+struct Parts<'g> {
+    gateway: &'g Gateway<'g>,
+    left: std::cell::Cell<u64>,
+}
+
+impl Parts<'_> {
+    fn fetch(&self, cid: &str) -> Result<Vec<u8>, String> {
+        let bytes = self.gateway.bytes(cid)?;
+        let left = self
+            .left
+            .get()
+            .checked_sub(bytes.len() as u64)
+            .ok_or(TOO_LARGE_TO_BUILD)?;
+        self.left.set(left);
+        Ok(bytes)
     }
 }
 
 // ---- glTF --------------------------------------------------------------------
 
-fn compose_gltf(gateway: &Gateway, source: &Value) -> Result<Vec<u8>, String> {
+fn compose_gltf(parts: &Parts, source: &Value) -> Result<Vec<u8>, String> {
     let mut gltf = source.clone();
     for (key, is_image) in [("buffers", false), ("images", true)] {
         if let Some(items) = gltf.get_mut(key).and_then(Value::as_array_mut) {
             for item in items.iter_mut().filter_map(Value::as_object_mut) {
-                embed(gateway, item, is_image)?;
+                embed(parts, item, is_image)?;
             }
         }
     }
@@ -91,7 +123,7 @@ fn compose_gltf(gateway: &Gateway, source: &Value) -> Result<Vec<u8>, String> {
 /// One buffer or image as a standard glTF holds it: Arbesk's `_arbesk`
 /// removed, an `ipfs://` URI replaced by the data itself. An image with a
 /// URI loses its `bufferView`, as asset-core's compose does.
-fn embed(gateway: &Gateway, item: &mut Map<String, Value>, is_image: bool) -> Result<(), String> {
+fn embed(parts: &Parts, item: &mut Map<String, Value>, is_image: bool) -> Result<(), String> {
     item.remove("_arbesk");
     let Some(uri) = item.get("uri").and_then(Value::as_str).map(String::from) else {
         return Ok(());
@@ -108,7 +140,7 @@ fn embed(gateway: &Gateway, item: &mut Map<String, Value>, is_image: bool) -> Re
         _ if is_image => "image/png".into(),
         _ => "application/octet-stream".into(),
     };
-    let data = BASE64.encode(&gateway.bytes(cid)?);
+    let data = BASE64.encode(&parts.fetch(cid)?);
     item.insert(
         "uri".into(),
         Value::String(format!("data:{mime};base64,{data}")),
@@ -118,7 +150,7 @@ fn embed(gateway: &Gateway, item: &mut Map<String, Value>, is_image: bool) -> Re
 
 // ---- 3MF ---------------------------------------------------------------------
 
-fn compose_3mf(gateway: &Gateway, source: &Value) -> Result<Vec<u8>, String> {
+fn compose_3mf(parts: &Parts, source: &Value) -> Result<Vec<u8>, String> {
     let text = |key: &str| {
         source
             .get(key)
@@ -150,7 +182,7 @@ fn compose_3mf(gateway: &Gateway, source: &Value) -> Result<Vec<u8>, String> {
             .get("cid")
             .and_then(Value::as_str)
             .ok_or(UNKNOWN_FORMAT)?;
-        files.push((part_path(path)?, gateway.bytes(cid)?));
+        files.push((part_path(path)?, parts.fetch(cid)?));
     }
     zip_files(&files)
 }
@@ -265,6 +297,32 @@ mod tests {
             ManifestCache::new(cache.path().into(), 1 << 20),
         );
         compose(&gateway, &source)
+    }
+
+    #[test]
+    fn a_build_stops_once_its_parts_pass_the_cap() {
+        let http = FakeHttp::new(|_| Ok(vec![7u8; 600]));
+        let cache = tempfile::tempdir().unwrap();
+        let gateway = Gateway::new(
+            &http,
+            "https://gw.test/ipfs",
+            ManifestCache::new(cache.path().into(), 1 << 20),
+        );
+        let two_parts =
+            json!({ "buffers": [{ "uri": "ipfs://bafyA" }, { "uri": "ipfs://bafyB" }] });
+        assert!(compose_within(&gateway, &two_parts, 1200).is_ok());
+        assert_eq!(
+            compose_within(&gateway, &two_parts, 1199).unwrap_err(),
+            TOO_LARGE_TO_BUILD
+        );
+        let threemf = json!({
+            "arbesk_format": "composite-3mf", "contentTypes": "<x/>", "rootRels": "<x/>", "model": "<m/>",
+            "parts": { "a.png": { "cid": "bafyA" }, "b.png": { "cid": "bafyB" } }
+        });
+        assert_eq!(
+            compose_within(&gateway, &threemf, 1000).unwrap_err(),
+            TOO_LARGE_TO_BUILD
+        );
     }
 
     #[test]

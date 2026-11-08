@@ -32,19 +32,28 @@ pub trait Http: Send + Sync {
     fn delete(&self, url: &str, session: Option<&str>) -> Result<(), HttpError>;
 }
 
-/// The real client: 30 seconds per request, rustls, no cookies.
+/// The most one answer may hold: an asset's largest part, packed.
+pub const MAX_BODY: u64 = 512 * 1024 * 1024;
+
+/// The real client: 30 seconds per request, rustls, no cookies, and no
+/// answer read past `cap` bytes, whatever the server says.
 pub struct ReqwestHttp {
     client: reqwest::blocking::Client,
+    cap: u64,
 }
 
 impl ReqwestHttp {
     pub fn new() -> Result<Self, String> {
+        Self::with_cap(MAX_BODY)
+    }
+
+    pub fn with_cap(cap: u64) -> Result<Self, String> {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .user_agent(concat!("FileBrowser/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| error.to_string())?;
-        Ok(Self { client })
+        Ok(Self { client, cap })
     }
 
     fn send(
@@ -60,11 +69,10 @@ impl ReqwestHttp {
             .send()
             .map_err(|error| HttpError::new(None, error.to_string()))?;
         let status = response.status();
-        let bytes = response
-            .bytes()
-            .map_err(|error| HttpError::new(Some(status.as_u16()), error.to_string()))?;
+        let bytes = read_capped(response, self.cap)
+            .map_err(|message| HttpError::new(Some(status.as_u16()), message))?;
         if status.is_success() {
-            Ok(bytes.to_vec())
+            Ok(bytes)
         } else {
             Err(HttpError::new(
                 Some(status.as_u16()),
@@ -72,6 +80,24 @@ impl ReqwestHttp {
             ))
         }
     }
+}
+
+/// A body of at most `cap` bytes: a longer one (by its length or its bytes) is refused.
+fn read_capped(response: reqwest::blocking::Response, cap: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let too_long = || "Arbesk sent more than File Browser reads at once.".to_string();
+    if response.content_length().is_some_and(|length| length > cap) {
+        return Err(too_long());
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(cap + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > cap {
+        return Err(too_long());
+    }
+    Ok(bytes)
 }
 
 impl Http for ReqwestHttp {
@@ -279,6 +305,23 @@ mod tests {
         let error = ReqwestHttp::new().unwrap().get(&url).unwrap_err();
         server.join().unwrap();
         assert_eq!(error.status, Some(503));
+    }
+
+    #[test]
+    fn a_body_over_the_cap_is_refused() {
+        let (url, server) = serve_once("200 OK", "0123456789");
+        let error = ReqwestHttp::with_cap(9).unwrap().get(&url).unwrap_err();
+        server.join().unwrap();
+        assert_eq!(
+            error.message,
+            "Arbesk sent more than File Browser reads at once."
+        );
+        let (url, server) = serve_once("200 OK", "0123456789");
+        assert_eq!(
+            ReqwestHttp::with_cap(10).unwrap().get(&url).unwrap(),
+            b"0123456789"
+        );
+        server.join().unwrap();
     }
 
     #[test]

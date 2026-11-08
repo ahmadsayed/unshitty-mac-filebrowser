@@ -16,20 +16,32 @@ use crate::arbesk::http::Http;
 const BROTLI_MAGIC: &[u8] = b"ARB\x01";
 const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
 
-/// A stored payload as it was before Arbesk packed it.
-pub fn unpack(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+pub const TOO_LARGE: &str = "Arbesk sent a file larger than File Browser reads.";
+/// The most a manifest may hold once unpacked.
+pub const JSON_CAP: u64 = 16 * 1024 * 1024;
+/// The most one part of an asset may hold once unpacked.
+pub const PART_CAP: u64 = 512 * 1024 * 1024;
+
+/// A stored payload as it was before Arbesk packed it, at most `cap` bytes:
+/// a few packed bytes can stand for gigabytes, so unpacking stops there.
+pub fn unpack(bytes: Vec<u8>, cap: u64) -> Result<Vec<u8>, String> {
     let damaged = |_| "Arbesk sent a damaged file.".to_string();
     let mut out = Vec::new();
     if let Some(packed) = bytes.strip_prefix(BROTLI_MAGIC) {
         brotli::Decompressor::new(packed, 4096)
+            .take(cap + 1)
             .read_to_end(&mut out)
             .map_err(damaged)?;
     } else if bytes.starts_with(GZIP_MAGIC) {
         flate2::read::GzDecoder::new(bytes.as_slice())
+            .take(cap + 1)
             .read_to_end(&mut out)
             .map_err(damaged)?;
     } else {
-        return Ok(bytes);
+        out = bytes;
+    }
+    if out.len() as u64 > cap {
+        return Err(TOO_LARGE.into());
     }
     Ok(out)
 }
@@ -102,6 +114,8 @@ pub struct Gateway<'a> {
     http: &'a dyn Http,
     base: String,
     cache: ManifestCache,
+    json_cap: u64,
+    part_cap: u64,
 }
 
 impl<'a> Gateway<'a> {
@@ -110,17 +124,33 @@ impl<'a> Gateway<'a> {
             http,
             base: base.trim_end_matches('/').to_string(),
             cache,
+            json_cap: JSON_CAP,
+            part_cap: PART_CAP,
         }
     }
 
-    /// The content at `cid`, unpacked.
-    pub fn bytes(&self, cid: &str) -> Result<Vec<u8>, String> {
+    /// The same gateway with other caps (tests use small ones).
+    #[cfg(test)]
+    pub fn with_caps(self, json_cap: u64, part_cap: u64) -> Self {
+        Self {
+            json_cap,
+            part_cap,
+            ..self
+        }
+    }
+
+    fn fetch(&self, cid: &str, cap: u64) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
         let packed = self
             .http
             .get(&url)
             .map_err(|error| format!("Arbesk's storage could not be reached: {}", error.message))?;
-        unpack(packed)
+        unpack(packed, cap)
+    }
+
+    /// The content at `cid`, unpacked.
+    pub fn bytes(&self, cid: &str) -> Result<Vec<u8>, String> {
+        self.fetch(cid, self.part_cap)
     }
 
     /// The JSON document at `cid`, from the cache when it is there.
@@ -133,7 +163,7 @@ impl<'a> Gateway<'a> {
         {
             return Ok(value);
         }
-        let bytes = self.bytes(cid)?;
+        let bytes = self.fetch(cid, self.json_cap)?;
         let value = serde_json::from_slice(&bytes)
             .map_err(|_| "Arbesk sent a manifest File Browser can't read.".to_string())?;
         self.cache.put(cid, &bytes);
@@ -195,15 +225,38 @@ mod tests {
     #[test]
     fn unpack_undoes_a_brotli_frame_gzip_or_nothing() {
         let text = b"{\"name\":\"Box\"}".to_vec();
-        assert_eq!(unpack(brotli_framed(&text)).unwrap(), text);
-        assert_eq!(unpack(gzipped(&text)).unwrap(), text);
-        assert_eq!(unpack(text.clone()).unwrap(), text);
-        assert_eq!(unpack(Vec::new()).unwrap(), Vec::<u8>::new());
+        assert_eq!(unpack(brotli_framed(&text), 1 << 20).unwrap(), text);
+        assert_eq!(unpack(gzipped(&text), 1 << 20).unwrap(), text);
+        assert_eq!(unpack(text.clone(), 1 << 20).unwrap(), text);
+        assert_eq!(unpack(Vec::new(), 1 << 20).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn unpacking_stops_at_its_cap() {
+        let zeros = vec![0u8; 1 << 20];
+        for packed in [brotli_framed(&zeros), gzipped(&zeros)] {
+            assert!(packed.len() < 64 * 1024, "a small payload that inflates");
+            assert_eq!(unpack(packed.clone(), 1 << 20).unwrap().len(), 1 << 20);
+            assert_eq!(unpack(packed, (1 << 20) - 1).unwrap_err(), TOO_LARGE);
+        }
+        assert_eq!(unpack(vec![1u8; 11], 10).unwrap_err(), TOO_LARGE);
+        assert_eq!(unpack(vec![1u8; 10], 10).unwrap().len(), 10);
+    }
+
+    #[test]
+    fn a_manifest_over_its_cap_is_refused_and_not_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = format!("{{\"name\":\"{}\"}}", "x".repeat(200));
+        let http = FakeHttp::new(move |_| Ok(brotli_framed(big.as_bytes())));
+        let gateway = gateway_over(&http, dir.path()).with_caps(100, 1 << 20);
+        assert_eq!(gateway.json("bafyM").unwrap_err(), TOO_LARGE);
+        assert!(!dir.path().join("bafyM").exists());
+        assert_eq!(gateway.bytes("bafyP").unwrap().len(), 211);
     }
 
     #[test]
     fn a_broken_brotli_frame_is_an_error() {
-        assert!(unpack(b"ARB\x01not brotli at all".to_vec()).is_err());
+        assert!(unpack(b"ARB\x01not brotli at all".to_vec(), 1 << 20).is_err());
     }
 
     fn gateway_over<'a>(http: &'a FakeHttp, dir: &std::path::Path) -> Gateway<'a> {
