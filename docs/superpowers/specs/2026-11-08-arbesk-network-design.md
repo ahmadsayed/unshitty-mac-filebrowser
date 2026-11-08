@@ -14,10 +14,11 @@ once with an email and the code Arbesk emails, then browse it from Network.
 - Opening a collection lists its **assets as files**: `<name>.gltf` or
   `<name>.3mf`, in the list and grid views.
 - **Space** shows the existing 3D preview of the selected asset; double-click
-  opens it with the default app; Copy and drag copy it out to a local folder.
+  opens it with the default app (a copy in the app cache).
 
 Out of scope for this version: every write (New Folder, Rename, Paste or drop
-in, Move to Trash, Delete), version history, editor-shared collections from
+in, Move to Trash, Delete); copying or dragging items out, which SSH servers
+and shares don't offer yet either ("Copying from Arbesk comes next."); version history, editor-shared collections from
 other chains, search inside Arbesk, thumbnails in the grid. Arbesk's own
 repository is not changed.
 
@@ -87,28 +88,29 @@ with the same name both show, since their ids differ. The backend reads only
 the ids.
 
 **D5. A new place kind, read-only everywhere.** `paths.ts` gains an `arbesk`
-row (`placeOf`, `SCHEMES`, crumbs: the root crumb shows the email), and
+row (`placeOf`, `SCHEMES`, crumbs: the account itself is one crumb, "Arbesk", like "Google Drive"), and
 `isRemotePath` includes it. `locations.ts` gains `LocationKind` `"arbesk"`:
 read-only, remote, no recursive search, no versions, no new items.
-`item-actions.ts` gives it the SSH server's answers (copy yes; cut, paste,
-rename, trash, delete, star no), and `tests/item-actions-matrix.test.ts`
+`item-actions.ts` gives it the SSH server's answers (cut, copy, paste,
+rename, trash, delete and star refused; `copyOutRefusalOf` says "Copying
+from Arbesk comes next."), and `tests/item-actions-matrix.test.ts`
 pins what each surface offers there. `place.rs` gains `Kind::Arbesk`:
 `writable` and `transfer` refuse it as a target, `local_only` skips it.
 
-**D6. Listing.** A collection folder's size column is its asset count, read
-from the collection manifest; an asset's size and date are unknown until it
-is built, so the size column shows "—" and the date column shows the
-manifest's `timestamp` when it has one, "—" otherwise. Manifests are
+**D6. Listing.** Arbesk's manifests carry no date and an asset's size is
+known only once it is built, so an asset's size and date columns are empty,
+as a remote folder's item count already is (`locations.ts` gains
+`knowsSizes(kind)`, false for `"arbesk"`; the status bar then says
+"“name” selected" without a size). Manifests are
 content-addressed, so they are cached on disk by CID without expiry (capped
 by bytes, oldest dropped first); `tokenURI` and the indexer are asked again
 on every listing and on Reload. Requests run at most 8 at a time.
 
-**D7. Open, copy out and preview share one built file.** An asset's built
+**D7. Open and preview share one built file.** An asset's built
 file goes to the app cache, named by its asset manifest CID (a new version
-has a new CID). `open_target`, copy out, and `preview_bytes` all ask for it,
+has a new CID). `open_target` and `preview_bytes` both ask for it,
 so Space then double-click downloads once. The copy is pruned by
 `downloads.rs` like other remote downloads (edited copies go to the Trash).
-Copy out places it through `placement.rs` like a Drive download.
 
 **D8. The 3D preview opens remote items of this kind only.** `showPreview`'s
 "Preview isn't available for remote items." becomes a `locations.ts` rule,
@@ -152,8 +154,7 @@ same message.
   Arbesk asset, and the Connect dialog's email step. Every new command gets
   a case in `tests/mock-core.test.ts`.
 - **Real app (the human, with their account):** connect with email + code,
-  browse collections, Space on a glTF and a 3MF asset, open one, copy one
-  to Desktop. macOS's browser hand-off is unverified from Linux; a
+  browse collections, Space on a glTF and a 3MF asset, and open one. macOS's browser hand-off is unverified from Linux; a
   `needs-verification` issue lists it.
 
 ## Files
