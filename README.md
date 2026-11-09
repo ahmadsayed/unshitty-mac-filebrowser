@@ -179,7 +179,9 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
   in listings; a scene's links to assets on another chain are left out of
   its preview.
 - Keep Versions may miss changes made while the app is closed.
-- Linux: image thumbnails only (no Quick Look).
+- Linux: the app makes image thumbnails only (no Quick Look); videos, PDFs
+  and documents show a thumbnail when GNOME Files or another app has already
+  made one.
 - DMG installation supports application bundles, not `.pkg` installers or
   bundled scripts; administrator elevation and a custom encrypted-image prompt
   are not provided.

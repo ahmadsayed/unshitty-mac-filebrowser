@@ -1,14 +1,21 @@
-//! File thumbnails for the grid and list views, cached as PNGs on disk.
+//! File thumbnails for the grid and list views, cached on disk.
+//!
+//! A thumbnail the desktop already made is used as it is: on Linux, the
+//! shared freedesktop cache (`~/.cache/thumbnails`, which GNOME Files and
+//! other apps fill) is read, never written, and an entry counts only while
+//! its URI and modification time match the file's.
 //!
 //! On macOS they come from Quick Look (`qlmanage`), which covers images
 //! (HEIC included), video, PDF and office documents and runs out of process.
 //! If Quick Look can't help, or on other systems, common image formats are
 //! decoded directly — in this process, so decoding is serialized and large
-//! files are skipped rather than allowed to balloon the app's memory.
+//! files are skipped rather than allowed to balloon the app's memory. A
+//! decoded picture is kept as a small JPEG, or as PNG if it is transparent.
 //!
 //! Cache entries are keyed on path, size, modification time and requested
 //! size, so editing a file produces a fresh thumbnail. Files that have no
 //! thumbnail leave an empty `.none` marker so they aren't retried each time.
+//! The cache is pruned at startup by age and kept under `MAX_CACHE_BYTES`.
 //!
 //! The view cancels requests for items it no longer shows: a cancelled
 //! request kills its Quick Look helper or skips its decode, and leaves
@@ -50,16 +57,20 @@ pub const CANCELLED: &str = "Cancelled.";
 /// `thumbnail_unless` for a request that is never cancelled.
 #[cfg(test)]
 fn thumbnail(path: &Path, size: u32, cache_dir: &Path) -> Result<Option<PathBuf>, String> {
-    thumbnail_unless(path, size, cache_dir, &|| false)
+    thumbnail_unless(path, size, cache_dir, None, &|| false)
 }
 
 /// Path of a PNG thumbnail no larger than `size`×`size` for `path`, creating
 /// it in `cache_dir` if needed. `Ok(None)` means this file has no thumbnail;
 /// `Err(CANCELLED)` that `stop` said the view no longer wants it.
+///
+/// `shared` is the desktop's thumbnail cache (`~/.cache/thumbnails`), read
+/// only; `None` where there is none (macOS).
 pub fn thumbnail_unless(
     path: &Path,
     size: u32,
     cache_dir: &Path,
+    shared: Option<&Path>,
     stop: &dyn Fn() -> bool,
 ) -> Result<Option<PathBuf>, String> {
     let meta =
@@ -67,20 +78,30 @@ pub fn thumbnail_unless(
     if !meta.is_file() {
         return Ok(None);
     }
-    let key = cache_key(path, &meta, size);
-    let out = cache_dir.join(format!("{}.png", key));
-    let none = cache_dir.join(format!("{}.none", key));
-    if out.exists() {
-        return Ok(Some(out));
+    let base = cache_dir.join(cache_key(path, &meta, size));
+    // JPEG for most; PNG for transparent pictures, Quick Look's, and every
+    // entry made before JPEG.
+    for ext in ["jpg", "png"] {
+        let out = base.with_extension(ext);
+        if out.exists() {
+            return Ok(Some(out));
+        }
     }
+    // Before the marker: the desktop may have made one since (a video).
+    if let Some(found) = shared.and_then(|dir| shared_thumbnail(path, &meta, size, dir)) {
+        return Ok(Some(found));
+    }
+    let none = base.with_extension("none");
     if none.exists() {
         return Ok(None);
     }
     fs::create_dir_all(cache_dir).map_err(|e| format!("Cannot create thumbnail cache: {}", e))?;
 
-    if (cfg!(target_os = "macos") && quick_look(path, size, &out, stop))
-        || decode_image(path, size, &out, stop)
-    {
+    let png = base.with_extension("png");
+    if cfg!(target_os = "macos") && quick_look(path, size, &png, stop) {
+        return Ok(Some(png));
+    }
+    if let Some(out) = decode_image(path, size, &base, stop) {
         return Ok(Some(out));
     }
     // A cancelled request says nothing about the file: don't remember it
@@ -162,10 +183,11 @@ static DECODES_WAITING: AtomicUsize = AtomicUsize::new(0);
 const MAX_PIXELS: u64 = 80_000_000;
 
 /// Decode a common image format directly (respecting EXIF rotation) and
-/// shrink it to fit `size`. Small images are kept at their own size.
+/// shrink it to fit `size`. Small images are kept at their own size. Writes
+/// `base` with the extension of the format it chose, and returns that path.
 /// A request cancelled while it waits for its turn is skipped.
-fn decode_image(path: &Path, size: u32, out: &Path, stop: &dyn Fn() -> bool) -> bool {
-    one_decode_at_a_time(|| !stop() && decode_image_now(path, size, out))
+fn decode_image(path: &Path, size: u32, base: &Path, stop: &dyn Fn() -> bool) -> Option<PathBuf> {
+    one_decode_at_a_time(|| if stop() { None } else { decode_image_now(path, size, base) })
 }
 
 /// Runs `decode` once no other decode is running, so only one image is in
@@ -185,19 +207,111 @@ fn one_decode_at_a_time<T>(decode: impl FnOnce() -> T) -> T {
     decoded
 }
 
-fn decode_image_now(path: &Path, size: u32, out: &Path) -> bool {
-    let Some(img) = image::ImageReader::open(path)
+/// JPEG quality of the thumbnails the app decodes: small (a 256 px photo is
+/// ~15 KB, against ~120 KB as PNG) with no visible loss at icon sizes.
+const JPEG_QUALITY: u8 = 80;
+
+fn decode_image_now(path: &Path, size: u32, base: &Path) -> Option<PathBuf> {
+    let img = image::ImageReader::open(path)
         .ok()
-        .and_then(|reader| shrunk(reader, size))
-    else {
+        .and_then(|reader| shrunk(reader, size))?;
+    let tmp = base.with_extension("tmp");
+    let (out, written) = if is_transparent(&img) {
+        let out = base.with_extension("png");
+        (out, img.save_with_format(&tmp, image::ImageFormat::Png).is_ok())
+    } else {
+        (base.with_extension("jpg"), save_jpeg(&img, &tmp))
+    };
+    if !written {
+        let _ = fs::remove_file(&tmp);
+        return None;
+    }
+    fs::rename(&tmp, &out).ok()?;
+    Some(out)
+}
+
+/// Whether any pixel of `img` lets the background through: JPEG has no
+/// alpha, and would show it black. A screenshot's alpha channel is usually
+/// all opaque, which JPEG keeps as it is.
+fn is_transparent(img: &image::DynamicImage) -> bool {
+    img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p.0[3] < 255)
+}
+
+fn save_jpeg(img: &image::DynamicImage, out: &Path) -> bool {
+    let Ok(file) = fs::File::create(out) else {
         return false;
     };
-    let tmp = out.with_extension("tmp");
-    if img.save_with_format(&tmp, image::ImageFormat::Png).is_err() {
-        let _ = fs::remove_file(&tmp);
+    let mut writer = std::io::BufWriter::new(file);
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, JPEG_QUALITY);
+    img.to_rgb8().write_with_encoder(encoder).is_ok() && std::io::Write::flush(&mut writer).is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// The desktop's shared thumbnails, read only (freedesktop Thumbnail
+// Managing Standard): `<dir>/<size folder>/<md5 of the file URI>.png`
+// ---------------------------------------------------------------------------
+
+/// The shared cache's folders and the largest side of their thumbnails.
+const SHARED_SIZES: [(&str, u32); 4] =
+    [("normal", 128), ("large", 256), ("x-large", 512), ("xx-large", 1024)];
+
+/// The desktop's thumbnail of `path`, at least `size` pixels, if it is
+/// current: made for this file's URI at its present modification time.
+/// Only the PNG's text is read; nothing in `shared` is written.
+fn shared_thumbnail(path: &Path, meta: &fs::Metadata, size: u32, shared: &Path) -> Option<PathBuf> {
+    let uri = crate::platform::path_to_file_uri(path);
+    let name = format!("{}.png", md5_hex(&uri));
+    let mtime = meta.modified().ok()?.duration_since(SystemTime::UNIX_EPOCH).ok()?;
+    SHARED_SIZES
+        .iter()
+        .filter(|(_, side)| *side >= size)
+        .map(|(folder, _)| shared.join(folder).join(&name))
+        .find(|candidate| shared_is_current(candidate, &uri, mtime))
+}
+
+fn md5_hex(text: &str) -> String {
+    use md5::{Digest, Md5};
+    Md5::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Whether the shared thumbnail at `candidate` names `uri` and `mtime`
+/// (`Thumb::URI`, `Thumb::MTime`); missing or unreadable is not current.
+fn shared_is_current(candidate: &Path, uri: &str, mtime: Duration) -> bool {
+    let Some(text) = png_text(candidate) else {
+        return false;
+    };
+    let field = |key: &str| text.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+    field("Thumb::URI") == Some(uri) && field("Thumb::MTime").is_some_and(|t| same_mtime(t, mtime))
+}
+
+/// A `Thumb::MTime` against the file's: whole seconds, as GNOME writes it,
+/// or with a fraction, compared to the microsecond.
+fn same_mtime(text: &str, mtime: Duration) -> bool {
+    let (secs, fraction) = text.trim().split_once('.').unwrap_or((text.trim(), ""));
+    if secs.parse::<u64>().ok() != Some(mtime.as_secs()) {
         return false;
     }
-    fs::rename(&tmp, out).is_ok()
+    if fraction.is_empty() {
+        return true;
+    }
+    let micros: String = fraction.chars().chain(std::iter::repeat('0')).take(6).collect();
+    micros.parse::<u32>().ok() == Some(mtime.subsec_micros())
+}
+
+/// The text chunks before a PNG's image data, as keyword and text.
+fn png_text(path: &Path) -> Option<Vec<(String, String)>> {
+    let file = fs::File::open(path).ok()?;
+    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    decoder.set_ignore_text_chunk(false);
+    let reader = decoder.read_info().ok()?;
+    let info = reader.info();
+    let mut text: Vec<(String, String)> = info
+        .uncompressed_latin1_text
+        .iter()
+        .map(|t| (t.keyword.clone(), t.text.clone()))
+        .collect();
+    text.extend(info.utf8_text.iter().filter_map(|t| Some((t.keyword.clone(), t.get_text().ok()?))));
+    Some(text)
 }
 
 /// A thumbnail of the image in `bytes` as PNG, at most `size` pixels square
@@ -269,26 +383,42 @@ fn release_free_memory() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn release_free_memory() {}
 
-/// Delete cache entries older than `max_age`; run once at startup.
-pub fn prune(cache_dir: &Path, max_age: Duration) {
+/// The most the thumbnail cache keeps on disk; past it, `prune` deletes
+/// the oldest entries.
+pub const MAX_CACHE_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Delete cache entries older than `max_age`, then the oldest files until
+/// the rest fit in `max_bytes`; run once at startup.
+pub fn prune(cache_dir: &Path, max_age: Duration, max_bytes: u64) {
     let Ok(entries) = fs::read_dir(cache_dir) else {
         return;
     };
     let now = SystemTime::now();
+    let mut kept: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
     for entry in entries.flatten() {
-        let old = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| now.duration_since(t).ok())
-            .is_some_and(|age| age > max_age);
-        if old {
-            let p = entry.path();
-            let _ = if p.is_dir() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let modified = meta.modified().unwrap_or(now);
+        let p = entry.path();
+        if now.duration_since(modified).is_ok_and(|age| age > max_age) {
+            let _ = if meta.is_dir() {
                 fs::remove_dir_all(&p)
             } else {
                 fs::remove_file(&p)
             };
+        } else if meta.is_file() {
+            kept.push((modified, meta.len(), p));
+        }
+    }
+    let mut total: u64 = kept.iter().map(|(_, len, _)| len).sum();
+    kept.sort();
+    for (_, len, p) in kept {
+        if total <= max_bytes {
+            break;
+        }
+        if fs::remove_file(&p).is_ok() {
+            total -= len;
         }
     }
 }
@@ -538,8 +668,8 @@ mod tests {
             .map(|p| {
                 let cache = cache.clone();
                 std::thread::spawn(move || {
-                    let out = cache.join(p.file_name().unwrap());
-                    assert!(decode_image(&p, 96, &out, &|| false));
+                    let out = decode_image(&p, 96, &cache.join(p.file_stem().unwrap()), &|| false)
+                        .expect("decoded");
                     assert_eq!(image::image_dimensions(&out).unwrap(), (96, 96));
                 })
             })
@@ -653,7 +783,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let src = dir.path().join("photo.png");
         write_png(&src, 300, 300);
-        let out = dir.path().join("thumb.png");
+        let out = dir.path().join("thumb");
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let turn = DECODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let waiting = {
@@ -663,8 +793,8 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         stop.store(true, Ordering::SeqCst);
         drop(turn);
-        assert!(!waiting.join().unwrap());
-        assert!(!out.exists());
+        assert!(waiting.join().unwrap().is_none());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "nothing but the photo");
     }
 
     #[test]
@@ -673,7 +803,7 @@ mod tests {
         let src = dir.path().join("photo.png");
         write_png(&src, 300, 300);
         let cache = dir.path().join("cache");
-        assert_eq!(thumbnail_unless(&src, 128, &cache, &|| true), Err(CANCELLED.to_string()));
+        assert_eq!(thumbnail_unless(&src, 128, &cache, None, &|| true), Err(CANCELLED.to_string()));
         let left = fs::read_dir(&cache).map(|d| d.count()).unwrap_or(0);
         assert_eq!(left, 0, "no thumbnail and no .none marker");
         // Asked again later, it is made as usual.
@@ -701,10 +831,225 @@ mod tests {
     fn prune_removes_only_old_entries() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("fresh.png"), b"x").unwrap();
-        prune(dir.path(), Duration::from_secs(3600));
+        prune(dir.path(), Duration::from_secs(3600), u64::MAX);
         assert!(dir.path().join("fresh.png").exists());
         std::thread::sleep(Duration::from_millis(20));
-        prune(dir.path(), Duration::from_millis(1));
+        prune(dir.path(), Duration::from_millis(1), u64::MAX);
         assert!(!dir.path().join("fresh.png").exists());
+    }
+
+    // ---- The desktop's shared thumbnails (read only) and the cache's formats
+
+    /// A thumbnail in the desktop's shared cache, as GNOME's thumbnailer
+    /// writes it: `<shared>/<folder>/<md5 of the URI>.png`, with the URI and
+    /// modification time as text. `None` leaves that text out.
+    fn write_shared(
+        shared: &Path,
+        folder: &str,
+        uri: &str,
+        mtime: Option<&str>,
+        uri_text: Option<&str>,
+    ) -> PathBuf {
+        use md5::{Digest, Md5};
+        let dir = shared.join(folder);
+        fs::create_dir_all(&dir).unwrap();
+        let name: String = Md5::digest(uri.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        let out = dir.join(format!("{name}.png"));
+        let mut encoder = png::Encoder::new(fs::File::create(&out).unwrap(), 4, 3);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.add_text_chunk("Software".into(), "GNOME::ThumbnailFactory".into()).unwrap();
+        if let Some(mtime) = mtime {
+            encoder.add_text_chunk("Thumb::MTime".into(), mtime.into()).unwrap();
+        }
+        if let Some(uri) = uri_text {
+            encoder.add_text_chunk("Thumb::URI".into(), uri.into()).unwrap();
+        }
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[200; 4 * 3 * 3]).unwrap();
+        out
+    }
+
+    fn mtime_secs(path: &Path) -> String {
+        let modified = fs::metadata(path).unwrap().modified().unwrap();
+        modified.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs().to_string()
+    }
+
+    /// Every file under `dir` with its length and modification time.
+    fn snapshot(dir: &Path) -> Vec<(PathBuf, u64, SystemTime)> {
+        let mut found = Vec::new();
+        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let meta = entry.metadata().unwrap();
+            if meta.is_dir() {
+                found.extend(snapshot(&entry.path()));
+            } else {
+                found.push((entry.path(), meta.len(), meta.modified().unwrap()));
+            }
+        }
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn a_current_desktop_thumbnail_is_used_as_it_is() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("My photo #1.jpg");
+        write_png(&src, 300, 200);
+        let (shared, cache) = (dir.path().join("thumbnails"), dir.path().join("cache"));
+        let uri = crate::platform::path_to_file_uri(&src);
+        let large = write_shared(&shared, "large", &uri, Some(&mtime_secs(&src)), Some(&uri));
+
+        let found = thumbnail_unless(&src, 256, &cache, Some(&shared), &|| false).unwrap();
+        assert_eq!(found, Some(large.clone()));
+        // A smaller request takes the larger one when its own size is missing.
+        let small = thumbnail_unless(&src, 128, &cache, Some(&shared), &|| false).unwrap();
+        assert_eq!(small, Some(large));
+        assert!(snapshot(&cache).is_empty(), "nothing decoded, nothing copied");
+    }
+
+    #[test]
+    fn a_stale_foreign_or_smaller_desktop_thumbnail_is_not_used() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("photo.png");
+        write_png(&src, 300, 200);
+        let uri = crate::platform::path_to_file_uri(&src);
+        let now = mtime_secs(&src);
+        let older = (now.parse::<u64>().unwrap() - 60).to_string();
+        let cases: [(&str, Option<&str>, Option<&str>); 5] = [
+            ("large", Some(&older), Some(&uri)), // the file changed since
+            ("large", Some(&now), Some("file:///elsewhere.png")), // another file's
+            ("large", None, Some(&uri)),         // no time to check
+            ("large", Some(&now), None),         // no URI to check
+            ("normal", Some(&now), Some(&uri)),  // smaller than asked
+        ];
+        for (i, (folder, mtime, uri_text)) in cases.into_iter().enumerate() {
+            let shared = dir.path().join(format!("thumbnails-{i}"));
+            let shared_file = write_shared(&shared, folder, &uri, mtime, uri_text);
+            let cache = dir.path().join(format!("cache-{i}"));
+            let got = thumbnail_unless(&src, 256, &cache, Some(&shared), &|| false)
+                .unwrap()
+                .expect("decoded instead");
+            assert_ne!(got, shared_file, "case {i}");
+            assert!(got.starts_with(&cache), "case {i}");
+        }
+    }
+
+    #[test]
+    fn a_desktop_thumbnail_is_found_for_a_file_the_app_cannot_decode() {
+        // A video: the app has no decoder for it, the desktop made one.
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("clip.mp4");
+        fs::write(&src, b"not a picture").unwrap();
+        let (shared, cache) = (dir.path().join("thumbnails"), dir.path().join("cache"));
+        if cfg!(not(target_os = "macos")) {
+            let none = thumbnail_unless(&src, 256, &cache, Some(&shared), &|| false).unwrap();
+            assert_eq!(none, None);
+        }
+        // Made later (GNOME Files opened the folder): used despite the marker.
+        let uri = crate::platform::path_to_file_uri(&src);
+        let made = write_shared(&shared, "x-large", &uri, Some(&mtime_secs(&src)), Some(&uri));
+        let found = thumbnail_unless(&src, 256, &cache, Some(&shared), &|| false).unwrap();
+        assert_eq!(found, Some(made));
+    }
+
+    #[test]
+    fn a_desktop_thumbnail_time_matches_to_the_second_or_microsecond() {
+        let t = Duration::new(1_790_758_491, 500_000);
+        assert!(same_mtime("1790758491", t), "whole seconds, as GNOME writes it");
+        assert!(same_mtime(" 1790758491 ", t));
+        assert!(same_mtime("1790758491.0005", t));
+        assert!(same_mtime("1790758491.000500999", t));
+        assert!(!same_mtime("1790758491.5", t));
+        assert!(!same_mtime("1790758490", t));
+        assert!(!same_mtime("soon", t));
+        assert!(!same_mtime("", t));
+    }
+
+    #[test]
+    fn the_desktop_cache_is_never_written() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("photo.png");
+        write_png(&src, 300, 200);
+        let shared = dir.path().join("thumbnails");
+        let other = "file:///other.png";
+        write_shared(&shared, "large", other, Some("1"), Some(other));
+        let before = snapshot(&shared);
+        std::thread::sleep(Duration::from_millis(20));
+        let cache = dir.path().join("cache");
+        let made = thumbnail_unless(&src, 256, &cache, Some(&shared), &|| false).unwrap().unwrap();
+        assert!(made.starts_with(&cache));
+        assert_eq!(snapshot(&shared), before);
+        // A missing shared cache is not created either.
+        let absent = dir.path().join("no-thumbnails");
+        thumbnail_unless(&src, 128, &cache, Some(&absent), &|| false).unwrap();
+        assert!(!absent.exists());
+    }
+
+    #[test]
+    fn a_decoded_photo_is_kept_as_a_small_jpeg() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("photo.png");
+        write_png(&src, 800, 400);
+        let thumb = thumbnail(&src, 256, &dir.path().join("cache")).unwrap().unwrap();
+        assert_eq!(thumb.extension().unwrap(), "jpg");
+        let bytes = fs::read(&thumb).unwrap();
+        assert_eq!(image::guess_format(&bytes).unwrap(), image::ImageFormat::Jpeg);
+        assert_eq!(image::image_dimensions(&thumb).unwrap(), (256, 128));
+        // An opaque picture with an alpha channel (a screenshot) is a JPEG too.
+        let shot = dir.path().join("shot.png");
+        image::RgbaImage::from_pixel(300, 200, image::Rgba([10, 20, 30, 255])).save(&shot).unwrap();
+        let thumb = thumbnail(&shot, 128, &dir.path().join("cache")).unwrap().unwrap();
+        assert_eq!(thumb.extension().unwrap(), "jpg");
+    }
+
+    #[test]
+    fn a_picture_with_transparency_stays_png() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("logo.png");
+        let alpha = |x: u32| if x < 150 { 0 } else { 255 };
+        image::RgbaImage::from_fn(300, 200, |x, _| image::Rgba([200, 0, 0, alpha(x)]))
+            .save(&src)
+            .unwrap();
+        let thumb = thumbnail(&src, 128, &dir.path().join("cache")).unwrap().unwrap();
+        assert_eq!(thumb.extension().unwrap(), "png");
+        assert!(image::open(&thumb).unwrap().color().has_alpha());
+    }
+
+    #[test]
+    fn a_png_thumbnail_cached_before_is_still_used() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("photo.png");
+        write_png(&src, 300, 200);
+        let cache = dir.path().join("cache");
+        fs::create_dir(&cache).unwrap();
+        let key = cache_key(&src, &fs::metadata(&src).unwrap(), 128);
+        let old = cache.join(format!("{key}.png"));
+        write_png(&old, 128, 85);
+        assert_eq!(thumbnail(&src, 128, &cache).unwrap(), Some(old));
+        assert_eq!(snapshot(&cache).len(), 1, "not made again");
+    }
+
+    #[test]
+    fn pruning_keeps_the_cache_under_its_size_oldest_first() {
+        let dir = tempdir().unwrap();
+        let now = SystemTime::now();
+        let names = ["oldest.jpg", "older.png", "newer.jpg", "newest.none"];
+        for (i, name) in names.iter().enumerate() {
+            let path = dir.path().join(name);
+            let len = if name.ends_with("none") { 0 } else { 100 };
+            fs::write(&path, vec![0u8; len]).unwrap();
+            let age = Duration::from_secs(3600 * (4 - i as u64));
+            let file = fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(now - age).unwrap();
+        }
+        prune(dir.path(), Duration::from_secs(86_400), 250);
+        let left: Vec<String> = snapshot(dir.path())
+            .into_iter()
+            .map(|(p, _, _)| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, ["newer.jpg", "newest.none", "older.png"]);
+        prune(dir.path(), Duration::from_secs(86_400), 100);
+        assert!(!dir.path().join("older.png").exists());
+        assert!(dir.path().join("newer.jpg").exists());
     }
 }

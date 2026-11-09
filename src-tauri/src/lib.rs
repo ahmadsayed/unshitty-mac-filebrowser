@@ -1478,6 +1478,15 @@ fn thumbnail_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
         .map(|d| d.join("thumbnails"))
 }
 
+/// The desktop's shared thumbnail cache, read only: `$XDG_CACHE_HOME/thumbnails`
+/// (`~/.cache/thumbnails`) on Linux; none on macOS.
+fn shared_thumbnail_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    app.path().cache_dir().ok().map(|d| d.join("thumbnails"))
+}
+
 /// Where opened versions are materialized as read-only copies.
 fn opened_versions_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
@@ -1539,12 +1548,13 @@ async fn cancellable(
     .unwrap_or_default()
 }
 
-/// `thumbnail` for a local file: Quick Look or the image decoder, through
-/// the disk cache.
+/// `thumbnail` for a local file: the desktop's own thumbnail (Linux), Quick
+/// Look or the image decoder, through the disk cache.
 fn local_thumbnail(app: &tauri::AppHandle, path: &str, size: u32, stop: &dyn Fn() -> bool) -> Vec<u8> {
+    let shared = shared_thumbnail_dir(app);
     thumbnail_dir(app)
         .and_then(|dir| {
-            thumbnails::thumbnail_unless(Path::new(path), size, &dir, stop)
+            thumbnails::thumbnail_unless(Path::new(path), size, &dir, shared.as_deref(), stop)
                 .ok()
                 .flatten()
         })
@@ -2227,10 +2237,15 @@ pub fn run() {
             std::thread::spawn(move || {
                 handle.state::<VersionsState>().startup();
             });
-            // Drop thumbnails nobody has needed for two months.
+            // Drop thumbnails nobody has needed for two months, and the
+            // oldest ones past the cache's size.
             if let Some(dir) = thumbnail_dir(app.handle()) {
                 std::thread::spawn(move || {
-                    thumbnails::prune(&dir, std::time::Duration::from_secs(60 * 86_400))
+                    thumbnails::prune(
+                        &dir,
+                        std::time::Duration::from_secs(60 * 86_400),
+                        thumbnails::MAX_CACHE_BYTES,
+                    )
                 });
             }
             // Drop read-only copies opened from Versions… after a week.

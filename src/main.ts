@@ -32,6 +32,7 @@ import {
 import { entryIcon, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { appIconKey } from "./native-icons";
 import { GRID_SIZES, ItemIcons, LIST_SIZES, THUMB_KINDS } from "./item-icons";
+import { thumbType } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
@@ -4618,7 +4619,7 @@ async function previewThumbnailEntry(entry: Entry, seq: number, at: PreviewAt): 
       previewEmpty(entry, "No preview available.");
       return;
     }
-    previewUrl = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+    previewUrl = URL.createObjectURL(new Blob([bytes], { type: thumbType(bytes) }));
     const image = document.createElement("img");
     image.src = previewUrl;
     image.alt = entry.name;

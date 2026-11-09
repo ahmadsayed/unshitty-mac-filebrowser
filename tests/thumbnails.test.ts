@@ -12,7 +12,7 @@ vi.mock("../src/api", () => ({
   },
 }));
 
-const { cachedThumb, keepOnly, requestThumb, thumbKey } = await import("../src/thumbnails");
+const { cachedThumb, keepOnly, requestThumb, thumbKey, thumbType } = await import("../src/thumbnails");
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -91,4 +91,23 @@ test("a cancelled request's answer is neither cached nor announced", async () =>
   requestThumb(key, "/gone.jpg", 128, (url) => ready.push(url));
   expect(calls.map((c) => c.path)).toEqual(["/gone.jpg", "/gone.jpg"]);
   expect(calls[1].ticket).not.toBe(calls[0].ticket);
+});
+
+test("a thumbnail is shown as the image type its bytes are", async () => {
+  // The backend keeps decoded photos as JPEG, transparent pictures and the
+  // desktop's own thumbnails as PNG.
+  const types: string[] = [];
+  vi.mocked(URL.createObjectURL).mockImplementation((blob) => {
+    types.push((blob as Blob).type);
+    return "blob:test";
+  });
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]).buffer;
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]).buffer;
+  requestThumb(thumbKey("/photo.jpg", 1, 10, 128), "/photo.jpg", 128, () => {});
+  requestThumb(thumbKey("/logo.png", 1, 10, 128), "/logo.png", 128, () => {});
+  calls[0].resolve(jpeg);
+  calls[1].resolve(png);
+  await flush();
+  expect(types).toEqual(["image/jpeg", "image/png"]);
+  expect(thumbType(new ArrayBuffer(2))).toBe("image/png");
 });
