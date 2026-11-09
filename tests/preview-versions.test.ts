@@ -18,10 +18,20 @@ test("deletion markers are not versions", () => {
   // Newest first, as the backend lists them.
   const rows = [row(3, 300, { current: true }), row(2, 200), row(0, 0, { deleted: true, recorded_at: 150 }), row(1, 100)];
   expect(fromLocal(rows)).toEqual([
-    { id: "1", date: 100_000, current: false },
-    { id: "2", date: 200_000, current: false },
-    { id: "3", date: 300_000, current: true },
+    { id: "1", date: 100_000, current: false, size: 10 },
+    { id: "2", date: 200_000, current: false, size: 10 },
+    { id: "3", date: 300_000, current: true, size: 10 },
   ]);
+});
+
+test("the file on disk is the current version when no captured one matches it", () => {
+  // Newest row a deletion marker: the file was recreated and not captured yet.
+  const rows = [row(0, 0, { deleted: true, recorded_at: 400 }), row(2, 200), row(1, 100)];
+  const versions = fromLocal(rows, 500);
+  expect(versions.map((v) => v.id)).toEqual(["1", "2", "current"]);
+  expect(versions.at(-1)).toMatchObject({ date: 500_000, current: true });
+  // With a current row, nothing is added.
+  expect(fromLocal([row(2, 200, { current: true }), row(1, 100)], 500).map((v) => v.id)).toEqual(["1", "2"]);
 });
 
 test("Arbesk versions: the newest is current", () => {

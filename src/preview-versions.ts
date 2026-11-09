@@ -15,18 +15,28 @@ export interface PreviewVersion {
   date: number | null;
   /** The file or asset as it is now. */
   current: boolean;
+  /** Its size in bytes, when the history says. */
+  size?: number;
 }
 
 /** How many Keep Versions rows the preview reads, as Versions… does. */
 export const LOCAL_VERSION_LIMIT = 1000;
 
+/** The id of the file on disk when no captured version matches it. */
+export const ON_DISK = "current";
+
 /** A Keep Versions history (newest first, as `list_versions` gives it) as
- *  versions oldest first, without its deletion markers. */
-export function fromLocal(rows: VersionInfo[]): PreviewVersion[] {
-  return rows
+ *  versions oldest first, without its deletion markers. When no captured
+ *  version is the file as it is now (changed since, recreated, or too large
+ *  to capture), the file on disk, last modified at `modified` (seconds), is
+ *  the newest. */
+export function fromLocal(rows: VersionInfo[], modified = 0): PreviewVersion[] {
+  const versions: PreviewVersion[] = rows
     .filter((row) => !row.deleted)
-    .map((row) => ({ id: String(row.id), date: row.mtime * 1000, current: row.current }))
+    .map((row) => ({ id: String(row.id), date: row.mtime * 1000, current: row.current, size: row.size }))
     .reverse();
+  if (versions.length && !versions.some((v) => v.current)) versions.push({ id: ON_DISK, date: modified * 1000, current: true });
+  return versions;
 }
 
 /** An Arbesk asset's saves (oldest first): the last one is the asset now. */
@@ -91,11 +101,23 @@ export function drawVersionControl(
   date.textContent = versionDate(versions[shown]);
   label.append(title, date);
   const note: MenuItem[] = more ? [{ heading: `Showing the newest ${LOCAL_VERSION_LIMIT.toLocaleString("en-US")} versions.` }] : [];
-  label.addEventListener("click", () => openMenu(label, [...note, ...versionMenu(versions, shown, pick)]));
-  host.replaceChildren(
+  label.addEventListener("click", () => openVersionMenu(label, [...note, ...versionMenu(versions, shown, pick)]));
+  const buttons = [
     stepButton("go-previous", "Older Version", shown === 0, () => pick(shown - 1)),
     label,
     stepButton("go-next", "Newer Version", shown === versions.length - 1, () => pick(shown + 1)),
-  );
+  ];
+  // Keep the keyboard where it was: the same button, or the list when that
+  // button is now disabled at an end of the history.
+  const focused = [...host.children].indexOf(document.activeElement as Element);
+  host.replaceChildren(...buttons);
   host.hidden = false;
+  if (focused >= 0) (buttons[focused].disabled ? label : buttons[focused]).focus();
+}
+
+/** The list of versions, scrolled to the one shown. */
+function openVersionMenu(label: HTMLElement, items: MenuItem[]): void {
+  openMenu(label, items, { className: "preview-version-menu" });
+  const shown = document.querySelector(".preview-version-menu .radio-dot")?.closest("button");
+  shown?.scrollIntoView?.({ block: "nearest" });
 }

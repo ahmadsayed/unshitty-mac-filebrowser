@@ -189,6 +189,54 @@ test("a version that fails says so; the others still show", async () => {
   await key("Escape");
 });
 
+test("the list scrolls, for a long history", async () => {
+  await goTo(UNTITLED);
+  await preview("Cube.gltf");
+  await until(() => !control().hidden);
+  await click(control().querySelector<HTMLButtonElement>(".preview-version-label")!);
+  expect(document.querySelector(".popover .menu.preview-version-menu")).toBeTruthy();
+  await key("Escape", { target: document.querySelector(".popover .menu")! });
+  await key("Escape");
+});
+
+test("a step keeps the keyboard on the control, and Escape still closes", async () => {
+  await goTo(UNTITLED);
+  await preview("Cube.gltf");
+  await until(() => !control().hidden);
+  older().focus();
+  await step(older());
+  expect(document.activeElement).toBe(older());
+  // At the oldest version, Older Version is disabled: the keyboard goes to the list.
+  await step(older());
+  expect(older().disabled).toBe(true);
+  expect(document.activeElement).toBe(control().querySelector(".preview-version-label"));
+  await key("Escape", { target: document.activeElement! });
+  expect($("#preview-layer").hidden).toBe(true);
+});
+
+test("stepping back to a version reuses its copy", async () => {
+  await goTo(VERSIONED);
+  await preview("notes.txt");
+  await until(() => !control().hidden);
+  const before = calls().count("open_version");
+  await step(older());
+  await step(newer());
+  await step(older());
+  expect(calls().count("open_version") - before).toBe(1);
+  await key("Escape");
+});
+
+test("a version with no viewer isn't copied", async () => {
+  await goTo(VERSIONED);
+  await preview("archive.zip");
+  await until(() => !control().hidden);
+  const before = calls().count("open_version");
+  await step(older());
+  expect($("#preview-body .preview-empty")?.textContent).toContain("No preview available.");
+  expect(calls().count("open_version")).toBe(before);
+  await key("Escape");
+});
+
 test("one version, no control", async () => {
   await goTo(VERSIONED);
   await preview("image.png");

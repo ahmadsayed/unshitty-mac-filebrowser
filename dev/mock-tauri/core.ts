@@ -61,6 +61,7 @@ const tree: Record<string, Node> = {
           "notes.txt": f(2_100, 2 * 3600),
           "image.png": f(120_000, day),
           "large.txt": f(2_000_000, day),
+          "archive.zip": f(5_000_000, day),
           ".versions": d({ "index.sqlite": f(12_000, 3600) }),
         }),
       }, 1 * day),
@@ -1475,6 +1476,7 @@ function mockVersions(path: string) {
   }
   if (path.endsWith("/image.png")) return [v(1, 120_000, day, true)];
   if (path.endsWith("/large.txt")) return [v(2, 2_000_000, 60, true), v(1, 1_900_000, 120)];
+  if (path.endsWith("/archive.zip")) return [v(2, 5_000_000, day, true), v(1, 4_000_000, 2 * day)];
   return [];
 }
 

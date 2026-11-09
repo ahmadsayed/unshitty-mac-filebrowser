@@ -4426,20 +4426,23 @@ interface PreviewAt {
   arbeskVersion?: string | null;
 }
 
-/** An item's versions, oldest first, and whether only the newest were read. */
-type VersionList = { versions: PreviewVersion[]; more: boolean };
+/** An item's versions, oldest first, whether only the newest were read, and
+ *  the read-only copies made for older local versions, by id, so stepping
+ *  back to one reuses its copy. */
+type VersionList = { versions: PreviewVersion[]; more: boolean; copies: Map<string, Promise<string>> };
 
 /** An Arbesk asset's saves, or a file's history in a folder that keeps versions. */
 async function previewVersionsOf(entry: Entry): Promise<VersionList> {
-  if (locationKind(entry.path, trashPath) === "arbesk") return { versions: fromArbeskSaves(await arbeskVersions(entry.path)), more: false };
-  if (entry.is_symlink || !insideVersionedRoot(entry.path, versionedRootPath)) return { versions: [], more: false };
+  const copies = new Map<string, Promise<string>>();
+  if (locationKind(entry.path, trashPath) === "arbesk") return { versions: fromArbeskSaves(await arbeskVersions(entry.path)), more: false, copies };
+  if (entry.is_symlink || !insideVersionedRoot(entry.path, versionedRootPath)) return { versions: [], more: false, copies };
   const [rows, total] = await Promise.all([listVersions(entry.path, LOCAL_VERSION_LIMIT, 0), versionCount(entry.path)]);
-  return { versions: fromLocal(rows), more: total > rows.length };
+  return { versions: fromLocal(rows, entry.modified), more: total > rows.length, copies };
 }
 
 /** The version control, once the item's versions are known and there are two or more. */
 async function loadPreviewVersions(entry: Entry, seq: number): Promise<void> {
-  const list = await previewVersionsOf(entry).catch((): VersionList => ({ versions: [], more: false }));
+  const list = await previewVersionsOf(entry).catch((): VersionList => ({ versions: [], more: false, copies: new Map() }));
   if (previewStale(seq) || list.versions.length < 2) return;
   drawPreviewVersions(entry, list, list.versions.length - 1);
 }
@@ -4452,9 +4455,14 @@ function drawPreviewVersions(entry: Entry, list: VersionList, shown: number): vo
 async function showPreviewVersion(entry: Entry, list: VersionList, index: number): Promise<void> {
   const seq = resetPreviewBody();
   drawPreviewVersions(entry, list, index);
+  const refusal = versionRefusal(entry, list.versions[index]);
+  if (refusal) {
+    previewEmpty(entry, refusal);
+    return;
+  }
   previewLoading(entry, seq);
   try {
-    const at = await previewAtVersion(entry, list.versions[index]);
+    const at = await previewAtVersion(entry, list, list.versions[index]);
     if (previewStale(seq)) return;
     await previewEntry(entry, seq, fileKind(entry.name), at);
   } catch {
@@ -4463,13 +4471,29 @@ async function showPreviewVersion(entry: Entry, list: VersionList, index: number
   }
 }
 
+/** Why an older local version can't be shown, said before a copy of it is
+ *  made: the preview has no viewer for its kind, or it is over the 3D limit. */
+function versionRefusal(entry: Entry, version: PreviewVersion): string | null {
+  if (version.current || locationKind(entry.path, trashPath) === "arbesk") return null;
+  const kind = fileKind(entry.name);
+  const model = modelFormat(entry.name);
+  if (!model && kind !== "text" && kind !== "code" && !THUMB_KINDS.has(kind)) return "No preview available.";
+  return model && (version.size ?? 0) > MODEL_PREVIEW_LIMIT ? "This file is too large to preview." : null;
+}
+
 /** Where `version` of the item is read from: an older local version is
- *  materialized as the read-only copy Versions… → Open makes. */
-async function previewAtVersion(entry: Entry, version: PreviewVersion): Promise<PreviewAt> {
+ *  materialized once as the read-only copy Versions… → Open makes. */
+async function previewAtVersion(entry: Entry, list: VersionList, version: PreviewVersion): Promise<PreviewAt> {
   if (version.current) return {};
   if (locationKind(entry.path, trashPath) === "arbesk") return { arbeskVersion: version.id };
-  const name = restoreName(entry.path, Math.round((version.date ?? 0) / 1000));
-  return { readPath: await openVersion(entry.path, Number(version.id), name) };
+  let copy = list.copies.get(version.id);
+  if (!copy) {
+    copy = openVersion(entry.path, Number(version.id), restoreName(entry.path, Math.round((version.date ?? 0) / 1000)));
+    // A copy that failed is asked for again next time.
+    copy.catch(() => list.copies.delete(version.id));
+    list.copies.set(version.id, copy);
+  }
+  return { readPath: await copy };
 }
 
 function previewStale(seq: number): boolean {

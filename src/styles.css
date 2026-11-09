@@ -913,6 +913,12 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   padding-bottom: 2px;
 }
 
+/* The list of versions can be long (50 Arbesk saves, 1,000 local versions): it scrolls. */
+.menu.preview-version-menu {
+  max-height: min(60vh, 480px);
+  overflow-y: auto;
+}
+
 .preview-version-title {
   font-weight: 600;
 }

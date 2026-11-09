@@ -55,7 +55,7 @@ test("list_dir lists, hides dotfiles, and reports errors like the backend", asyn
 test("item_counts summarises folders: count, versioned, null when unreadable", async () => {
   expect(
     await invoke("item_counts", { paths: [`${HOME}/Desktop`, `${HOME}/Documents/Versioned`, "/nope"], showHidden: false }),
-  ).toEqual([{ count: 1, versioned: false }, { count: 3, versioned: true }, null]);
+  ).toEqual([{ count: 1, versioned: false }, { count: 4, versioned: true }, null]);
 });
 
 test("item_counts logs what it was asked, answers null for remote folders, and can be held", async () => {
@@ -400,7 +400,7 @@ test("the Keep Versions commands", async () => {
   expect(await invoke("versioned_root", { path: `${HOME}/Documents/VersionedNot` })).toBeNull();
   expect(await namesIn(V, true)).not.toContain(".versions");
   const props = await invoke<{ item_count: number }>("file_properties", { path: V });
-  expect(props.item_count).toBe(3);
+  expect(props.item_count).toBe(4);
   expect(await invoke<unknown[]>("list_versions", { path: `${V}/notes.txt` })).toHaveLength(4);
   expect(await invoke("version_count", { path: `${V}/image.png` })).toBe(1);
   expect(await invoke("version_count", { path: `${V}/large.txt` })).toBe(2);
