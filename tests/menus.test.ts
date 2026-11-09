@@ -3,7 +3,7 @@
 // navigation inside a menu; Restore From Trash and Properties.
 import { beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, menuLabels, mouse, names, respond, selectedNames, settle, title, hit } from "./app";
+import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, menuLabels, mouse, names, respond, selectedNames, settle, title, hit, rightClick } from "./app";
 
 const HOME = "/Users/me";
 
@@ -11,11 +11,6 @@ beforeAll(async () => {
   await boot();
   await key("1", { mod: true });
 });
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 const place = (label: string) => $$(".sidebar-row").find((r) => r.textContent?.trim() === label)!;
 

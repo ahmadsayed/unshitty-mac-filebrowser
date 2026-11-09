@@ -5,9 +5,10 @@
 // rules (src/item-actions.ts) existed, and passing on it, so the refactor
 // could show it changed nothing. "Kept:" marks a difference between surfaces
 // that the shared rules preserve on purpose: each is a decision for later.
-import { beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, click, closeOverlays, dialogHeading, goTo, hit, item, key, mouse, names, open, settle } from "./app";
+// The rows are split across three test files so they run in parallel.
+import { vi } from "vitest";
+import { invoke } from "../../dev/mock-tauri/core";
+import { $, $$, boot, click, closeOverlays, dialogHeading, goTo, hit, item, key, mouse, names, open, settle, rightClick } from "../app";
 
 const HOME = "/Users/me";
 const TRASH = `${HOME}/.Trash`;
@@ -25,7 +26,8 @@ const calls = () =>
     __mockCalls: { count(cmd: string): number; failNext(cmd: string, error: string): void; reset(): void };
   }).__mockCalls;
 
-beforeAll(async () => {
+/** The matrix's folders, Trash, received share, server and accounts, then the app. */
+export async function setupMatrix(): Promise<void> {
   for (const dir of [HERE, `${HERE}/Sub`, SOURCE, `${HOME}/Old`, `${HOME}/Old/Inner`]) await invoke("make_dir", { path: dir });
   for (const file of [`${HERE}/note.txt`, `${SOURCE}/clip.txt`]) await invoke("create_file", { path: file });
   await invoke("trash_entries", { paths: [`${HOME}/Old`] });
@@ -39,13 +41,6 @@ beforeAll(async () => {
   await invoke("arbesk_connect_finish", { flowId: arbesk.flow_id });
   await boot();
   await key("1", { mod: true }); // the list view, whose rows have a star
-});
-
-beforeEach(closeOverlays);
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
 }
 
 /** The open menu's labels, with "(off)" after a disabled one. */
@@ -118,7 +113,7 @@ interface Row {
 }
 
 /** Everything a place offers for its item `wanted` (default: the first); `go` opens the place. */
-async function row(go: () => Promise<void>, wanted?: string): Promise<Row> {
+export async function row(go: () => Promise<void>, wanted?: string): Promise<Row> {
   await armClipboard();
   await go();
   const name = wanted ?? names()[0];
@@ -187,7 +182,9 @@ const ARBESK_COPY = "toast “Copying Arbesk collections comes next.”";
 const READ_ONLY_PASTE = "toast “Shared folders are read only.”";
 
 // prettier-ignore
-const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, expected: Row]> = {
+export type MatrixCase = [go: () => Promise<void>, item: string | undefined, expected: Row];
+
+const ROWS: Record<string, MatrixCase> = {
   "a file in a folder": [() => goTo(HERE), "note.txt", {
     item: ["Open", "Preview", "Open With…", "Send with QR Code…", "Cut", "Copy", "Duplicate", "Create Link", "Compress…", "Rename…", "Star", "Move to Trash", "Properties"],
     background: FOLDER_BACKGROUND,
@@ -352,8 +349,26 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
   }],
 };
 
-for (const [name, [go, wanted, expected]] of Object.entries(ROWS)) {
-  test(`${name}: every surface`, async () => {
-    expect(await row(go, wanted)).toEqual(expected);
-  });
-}
+const group = (names: string[]): Record<string, MatrixCase> =>
+  Object.fromEntries(names.map((name) => [name, ROWS[name]]));
+
+/** Places on this computer: folders, pseudo places and the Trash. */
+export const LOCAL_ROWS = group(["a file in a folder", "a folder in a folder", "Recent", "Starred", "the Trash"]);
+
+/** Network's own rows and the folders they open. */
+export const NETWORK_ROWS = group([
+  "a received share in Network",
+  "an SSH server in Network",
+  "Google Drive in Network",
+  "Arbesk in Network",
+  "Google Drive",
+]);
+
+/** Remote places' contents and the Trash's folder. */
+export const REMOTE_ROWS = group([
+  "a collection in an Arbesk account",
+  "an Arbesk collection",
+  "a folder inside the Trash",
+  "a received share",
+  "an SSH server",
+]);

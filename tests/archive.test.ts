@@ -1,6 +1,6 @@
 // Archive extraction: into a new folder and here, with no overwrite.
 import { beforeAll, expect, test } from "vitest";
-import { boot, chooseMenu, goTo, item, key, menuLabels, mouse, names, open, settle, title } from "./app";
+import { boot, chooseMenu, goTo, item, key, menuLabels, names, open, settle, title, rightClick } from "./app";
 
 const HOME = "/Users/me";
 const DOWNLOADS = `${HOME}/Downloads`;
@@ -9,11 +9,6 @@ beforeAll(async () => {
   await boot();
   await key("1", { mod: true });
 });
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 test("an archive offers Extract Here and Extract to a new folder", async () => {
   await goTo(DOWNLOADS);

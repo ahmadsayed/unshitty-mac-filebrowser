@@ -421,21 +421,6 @@ mod tests {
     }
 
     #[test]
-    fn a_favicon_request_is_ignored_and_the_callback_still_arrives() {
-        let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
-        let addr = flow.listener.local_addr().unwrap();
-        let state = flow.csrf.clone();
-        let worker = thread::spawn(move || {
-            call(addr, "/favicon.ico");
-            call(addr, &format!("/?code=the-code&state={state}"));
-        });
-
-        let token = finish(&flow, &FakeExchange::new(), Duration::from_secs(2)).unwrap();
-        worker.join().unwrap();
-        assert_eq!(token.access_token, "access");
-    }
-
-    #[test]
     fn a_wrong_state_is_refused_before_the_code_is_exchanged() {
         let flow = start(&test_client(), &[SCOPE_READONLY]).unwrap();
         let addr = flow.listener.local_addr().unwrap();

@@ -17,6 +17,9 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // Reuse the jsdom setup in each worker while keeping every test file's
+    // module graph separate, as the app needs a fresh mock per file.
+    pool: "vmThreads",
     include: ["tests/**/*.test.ts"],
     setupFiles: ["tests/setup.ts"],
     coverage: {

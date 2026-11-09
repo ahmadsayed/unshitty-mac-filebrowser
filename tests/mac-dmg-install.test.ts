@@ -1,12 +1,8 @@
 import { beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, boot, chooseMenu, closeOverlays, dialogHeading, goTo, hit, key, menuLabels, mouse, respond, toasts } from "./app";
+import { $, boot, chooseMenu, closeOverlays, dialogHeading, goTo, key, menuLabels, respond, toasts, rightClick } from "./app";
 
 const HOME = "/Users/me";
-async function rightClick(name: string): Promise<void> {
-  await mouse(hit(name), "mousedown", { button: 2 });
-  await mouse(hit(name), "contextmenu", { button: 2 });
-}
 beforeAll(async () => {
   await boot();
   await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/Sample.dmg`, overwrite: false });

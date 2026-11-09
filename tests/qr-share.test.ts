@@ -1,18 +1,17 @@
 // Send with QR Code: the menu item on one local file, the dialog's code,
 // link and status as a phone downloads, and stopping when it closes.
-import { beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { fileShareMock } from "../dev/mock-tauri/core";
 import { downloadsText, statusText } from "../src/qr-share";
-import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, hit, key, menuLabels, mouse, respond, settle, toasts } from "./app";
+import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, hit, key, menuLabels, respond, settle, toasts, rightClick } from "./app";
 
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
+// The dialog polls every 500 ms; advance that interval instead of sleeping.
+vi.useFakeTimers({ toFake: ["setInterval"] });
+afterAll(() => vi.useRealTimers());
 
 /** Let the dialog poll (every 500 ms) at least once more. */
 const poll = async () => {
-  await new Promise((r) => setTimeout(r, 550));
+  await vi.advanceTimersByTimeAsync(500);
   await settle();
 };
 

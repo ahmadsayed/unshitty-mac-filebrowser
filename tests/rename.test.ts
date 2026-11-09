@@ -1,7 +1,7 @@
 // Batch rename: find/replace, prefix/suffix across a multi-selection.
 import { beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, chooseMenu, click, dialogHeading, goTo, item, key, menuLabels, mouse, names, respond, settle, type, hit } from "./app";
+import { $, $$, boot, chooseMenu, click, dialogHeading, goTo, item, key, menuLabels, mouse, names, respond, settle, type, hit, rightClick } from "./app";
 
 const HOME = "/Users/me";
 const DOCS = `${HOME}/Documents`;
@@ -10,11 +10,6 @@ beforeAll(async () => {
   await boot();
   await key("1", { mod: true });
 });
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 test("several selected files get a prefix and a suffix before the extension", async () => {
   await goTo(DOCS);

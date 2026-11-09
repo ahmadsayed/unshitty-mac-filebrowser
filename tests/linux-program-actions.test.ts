@@ -1,13 +1,8 @@
 import { beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, chooseMenu, closeOverlays, dialogHeading, goTo, hit, key, menuLabels, mouse, respond, settle, toasts, type } from "./app";
+import { $, $$, boot, chooseMenu, closeOverlays, dialogHeading, goTo, key, menuLabels, respond, settle, toasts, type, rightClick } from "./app";
 
 const HOME = "/Users/me";
-async function rightClick(name: string): Promise<void> {
-  await mouse(hit(name), "mousedown", { button: 2 });
-  await mouse(hit(name), "contextmenu", { button: 2 });
-}
-
 beforeAll(async () => {
   Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (X11; Linux x86_64)", configurable: true });
   await boot();

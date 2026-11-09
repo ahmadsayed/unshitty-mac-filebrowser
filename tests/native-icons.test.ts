@@ -5,7 +5,7 @@
 // keep the app's icons.
 import { beforeAll, expect, test, vi } from "vitest";
 import { invoke, nativeIconMock } from "../dev/mock-tauri/core";
-import { $, $$, boot, chooseMenu, click, closeOverlays, goTo, hit, installFakeCanvas, item, key, mouse, settle } from "./app";
+import { $, $$, boot, chooseMenu, click, closeOverlays, goTo, hit, installFakeCanvas, item, key, settle, rightClick } from "./app";
 
 let blobs = 0;
 const place = (label: string) => $$(".sidebar-row").find((row) => row.textContent?.trim() === label)!;
@@ -139,11 +139,6 @@ test("Network keeps the app's icons and doesn't ask", async () => {
 });
 
 // Dialogs ask for their one icon and swap it in when it arrives.
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 test("Open With shows each app's own icon", async () => {
   await goTo("/Users/me/Documents");

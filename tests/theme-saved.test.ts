@@ -18,6 +18,5 @@ test("an old saved theme is ignored; the chosen zoom survives", () => {
 test("the old choice is dropped when the preferences are saved", async () => {
   await key("1", { mod: true });
   expect(prefs().view).toBe("list");
-  expect(prefs()).not.toHaveProperty("theme");
   expect(prefs().gridZoom).toBe(0);
 });

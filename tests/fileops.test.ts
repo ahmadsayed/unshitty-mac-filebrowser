@@ -1,6 +1,6 @@
 // Duplicate, Create Link and Compress, all beside the selection.
 import { beforeAll, expect, test } from "vitest";
-import { $, $$, boot, chooseMenu, click, dialogHeading, goTo, item, key, mouse, names, respond, settle, hit } from "./app";
+import { $, $$, boot, chooseMenu, click, dialogHeading, goTo, item, key, names, respond, settle, hit, rightClick } from "./app";
 
 const HOME = "/Users/me";
 const DOCS = `${HOME}/Documents`;
@@ -9,11 +9,6 @@ beforeAll(async () => {
   await boot();
   await key("1", { mod: true });
 });
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 test("Duplicate makes a copy and Create Link makes a symlink", async () => {
   await goTo(DOCS);

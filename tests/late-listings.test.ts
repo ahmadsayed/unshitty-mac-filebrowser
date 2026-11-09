@@ -3,7 +3,7 @@
 // holds a command's calls until the test releases them, in the order they
 // were made, so each test sets the order.
 import { beforeAll, beforeEach, expect, test } from "vitest";
-import { $, $$, boot, click, closeOverlays, goTo, key, menuLabels, mouse, names, settle, title, toasts } from "./app";
+import { $, $$, boot, click, closeOverlays, goTo, key, menuLabels, names, settle, title, toasts, rightClick } from "./app";
 
 const HOME = "/Users/me";
 const VERSIONED = `${HOME}/Documents/Versioned`;
@@ -11,11 +11,6 @@ const VERSIONED = `${HOME}/Documents/Versioned`;
 type MockCalls = { hold(cmd: string): void; release(cmd: string): void; failNext(cmd: string, error: string): void; reset(): void };
 const calls = () => (globalThis as unknown as { __mockCalls: MockCalls }).__mockCalls;
 const place = (label: string) => $$(".sidebar-row").find((row) => row.textContent?.trim() === label)!;
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 beforeAll(async () => {
   await boot();
