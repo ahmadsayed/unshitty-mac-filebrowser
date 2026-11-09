@@ -7,6 +7,7 @@
 pub mod accounts;
 pub mod chain;
 pub mod compose;
+pub mod scene;
 pub mod http;
 pub mod ipfs;
 pub mod location;
