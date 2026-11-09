@@ -218,9 +218,67 @@ pub fn build(
 
 /// The scene of the asset at `path`: each stored model once, with every
 /// place it goes (`scene::resolve`).
-pub fn scene(http: &dyn Http, site: &Site, path: &str, cache_dir: &Path) -> Result<Scene, String> {
+pub fn scene(
+    http: &dyn Http,
+    site: &Site,
+    path: &str,
+    version: Option<&str>,
+    cache_dir: &Path,
+) -> Result<Scene, String> {
     let (reader, cid) = open_asset(http, site, path, cache_dir)?;
-    Ok(resolve(&cid, &reader))
+    let Some(version) = version else {
+        return Ok(resolve(&cid, &reader));
+    };
+    if !chain(&reader, &cid).iter().any(|(id, _)| id == version) {
+        return Err("This version is not in the asset.".into());
+    }
+    Ok(resolve(version, &reader))
+}
+
+/// How many saves of an asset are read back, as the Studio's `walkManifestChain`.
+pub const MAX_VERSIONS: usize = 50;
+
+/// One save of an asset: its manifest's CID, and when it was saved (ms).
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+pub struct Version {
+    pub id: String,
+    pub timestamp: Option<i64>,
+}
+
+/// The saves of the asset at `path`, oldest first: its manifest and the ones
+/// before it (`prev_asset_manifest_cid`), the newest `MAX_VERSIONS`, up to
+/// one that can't be read.
+pub fn versions(
+    http: &dyn Http,
+    site: &Site,
+    path: &str,
+    cache_dir: &Path,
+) -> Result<Vec<Version>, String> {
+    let (reader, cid) = open_asset(http, site, path, cache_dir)?;
+    let saves = chain(&reader, &cid)
+        .into_iter()
+        .map(|(id, manifest)| Version {
+            id,
+            timestamp: manifest["timestamp"].as_i64(),
+        });
+    Ok(saves.collect())
+}
+
+/// The manifests from `cid` back through `prev_asset_manifest_cid`, oldest first.
+fn chain(reader: &Reader, cid: &str) -> Vec<(String, Value)> {
+    let mut saves = Vec::new();
+    let mut next = Some(cid.to_string());
+    while let Some(id) = next.filter(|_| saves.len() < MAX_VERSIONS) {
+        let Ok(manifest) = reader.gateway.json(&id) else {
+            break;
+        };
+        next = manifest["prev_asset_manifest_cid"]
+            .as_str()
+            .map(String::from);
+        saves.push((id, manifest));
+    }
+    saves.reverse();
+    saves
 }
 
 /// The file the preview loads for the part `key` of `scene` (as `scene`
@@ -718,6 +776,22 @@ mod tests {
             json!({ "type": "collection", "name": "Rooms", "assets": { "t1": "bafyTable" } }),
         );
         w.tokens.insert(4, "bafyC4".into());
+        // History (token 5): asset h1 saved three times, the first save a 3MF.
+        let save = |source: &str, timestamp: i64, prev: Option<&str>| {
+            let mut manifest = json!({ "name": "Chair", "timestamp": timestamp, "scene": { "nodes": [{ "source": { "cid": source } }] } });
+            if let Some(prev) = prev {
+                manifest["prev_asset_manifest_cid"] = json!(prev);
+            }
+            manifest
+        };
+        w.put("bafyH1", save("bafySrc3mf", 1000, None));
+        w.put("bafyH2", save("bafySrcGltf", 2000, Some("bafyH1")));
+        w.put("bafyH3", save("bafySrcGltf", 3000, Some("bafyH2")));
+        w.put(
+            "bafyC5",
+            json!({ "type": "collection", "name": "History", "assets": { "h1": "bafyH3" } }),
+        );
+        w.tokens.insert(5, "bafyC5".into());
         w
     }
 
@@ -729,8 +803,17 @@ mod tests {
         asset_path(&rooms(), "t1", "Table", "gltf")
     }
 
+    fn history() -> String {
+        asset_path(
+            &collection_path(ADDRESS, "5", "History"),
+            "h1",
+            "Chair",
+            "gltf",
+        )
+    }
+
     fn table_scene(http: &FakeHttp, cache_dir: &Path) -> Scene {
-        scene(http, &site(), &table(), cache_dir).unwrap()
+        scene(http, &site(), &table(), None, cache_dir).unwrap()
     }
 
     fn arbesk(world: Arc<Mutex<World>>) -> FakeHttp {
@@ -957,7 +1040,7 @@ mod tests {
     fn the_table_asset_resolves_to_two_parts() {
         let cache = tempfile::tempdir().unwrap();
         let http = arbesk(Arc::new(Mutex::new(world())));
-        let resolved = scene(&http, &site(), &table(), cache.path()).unwrap();
+        let resolved = scene(&http, &site(), &table(), None, cache.path()).unwrap();
         let parts: Vec<(&str, &str, usize)> = resolved
             .parts
             .iter()
@@ -969,7 +1052,7 @@ mod tests {
             [("bafySrcTable", "glb", 1), ("bafySrcGltf", "glb", 2)]
         );
         assert_eq!(resolved.parts[1].placements[0].matrix[12], 2.57);
-        assert!(scene(&http, &site(), &rooms(), cache.path()).is_err());
+        assert!(scene(&http, &site(), &rooms(), None, cache.path()).is_err());
     }
 
     #[test]
@@ -978,8 +1061,86 @@ mod tests {
         let mut w = world();
         w.only_via.insert(1, "0xLINK".into());
         let http = arbesk(Arc::new(Mutex::new(w)));
-        let resolved = scene(&http, &site(), &table(), cache.path()).unwrap();
+        let resolved = scene(&http, &site(), &table(), None, cache.path()).unwrap();
         assert_eq!(resolved.parts.len(), 2);
+    }
+
+    #[test]
+    fn an_assets_versions_are_its_manifest_chain_oldest_first() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let found = versions(&http, &site(), &history(), cache.path()).unwrap();
+        let ids: Vec<&str> = found.iter().map(|v| v.id.as_str()).collect();
+        assert_eq!(ids, ["bafyH1", "bafyH2", "bafyH3"]);
+        let stamps: Vec<Option<i64>> = found.iter().map(|v| v.timestamp).collect();
+        assert_eq!(stamps, [Some(1000), Some(2000), Some(3000)]);
+        // An asset saved once has one version.
+        assert_eq!(
+            versions(&http, &site(), &table(), cache.path())
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_chain_stops_at_fifty() {
+        let cache = tempfile::tempdir().unwrap();
+        let mut w = world();
+        for i in 0..60 {
+            let mut manifest = json!({ "timestamp": i, "scene": { "nodes": [] } });
+            if i > 0 {
+                manifest["prev_asset_manifest_cid"] = json!(format!("bafyL{}", i - 1));
+            }
+            w.put(&format!("bafyL{i}"), manifest);
+        }
+        w.put(
+            "bafyC5",
+            json!({ "type": "collection", "assets": { "h1": "bafyL59" } }),
+        );
+        let http = arbesk(Arc::new(Mutex::new(w)));
+        let found = versions(&http, &site(), &history(), cache.path()).unwrap();
+        assert_eq!(found.len(), MAX_VERSIONS);
+        assert_eq!(found.last().unwrap().id, "bafyL59");
+        assert_eq!(found[0].id, "bafyL10");
+    }
+
+    #[test]
+    fn a_chain_stops_where_a_manifest_cant_be_read() {
+        let cache = tempfile::tempdir().unwrap();
+        let mut w = world();
+        w.failing.insert("bafyH1".into());
+        let http = arbesk(Arc::new(Mutex::new(w)));
+        let found = versions(&http, &site(), &history(), cache.path()).unwrap();
+        let ids: Vec<&str> = found.iter().map(|v| v.id.as_str()).collect();
+        assert_eq!(ids, ["bafyH2", "bafyH3"]);
+    }
+
+    #[test]
+    fn an_older_version_resolves_its_own_scene() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let keys = |version: Option<&str>| {
+            let resolved = scene(&http, &site(), &history(), version, cache.path()).unwrap();
+            resolved
+                .parts
+                .iter()
+                .map(|p| (p.key.clone(), p.format))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(keys(Some("bafyH1")), [("bafySrc3mf".to_string(), "3mf")]);
+        assert_eq!(keys(None), [("bafySrcGltf".to_string(), "glb")]);
+        assert_eq!(keys(Some("bafyH3")), keys(None));
+    }
+
+    #[test]
+    fn a_version_outside_the_chain_is_refused() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let error = scene(&http, &site(), &history(), Some("bafyA1"), cache.path()).unwrap_err();
+        assert_eq!(error, "This version is not in the asset.");
+        let read = |cid: &str| http.requests().iter().any(|r| r.url.ends_with(cid));
+        assert!(!read("bafyA1"));
     }
 
     #[test]
@@ -996,7 +1157,7 @@ mod tests {
         w.put("bafyC4", json!({ "type": "collection", "name": "Rooms", "assets": { "t1": "bafyTable", "t2": "bafyBench", "t3": "bafyCorner" } }));
         let http = arbesk(Arc::new(Mutex::new(w)));
         let corner = asset_path(&rooms(), "t3", "Corner", "3mf");
-        let resolved = scene(&http, &site(), &corner, cache.path()).unwrap();
+        let resolved = scene(&http, &site(), &corner, None, cache.path()).unwrap();
         let keys: Vec<&str> = resolved.parts.iter().map(|p| p.key.as_str()).collect();
         assert_eq!(keys, ["bafySrc3mf"]);
     }
@@ -1005,7 +1166,7 @@ mod tests {
     fn a_part_does_not_resolve_the_scene_again() {
         let cache = tempfile::tempdir().unwrap();
         let http = arbesk(Arc::new(Mutex::new(world())));
-        let resolved = scene(&http, &site(), &table(), cache.path()).unwrap();
+        let resolved = scene(&http, &site(), &table(), None, cache.path()).unwrap();
         let chain_calls = |http: &FakeHttp| {
             http.requests()
                 .iter()

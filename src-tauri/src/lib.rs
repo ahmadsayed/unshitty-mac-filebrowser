@@ -617,17 +617,29 @@ async fn preview_bytes(app: tauri::AppHandle, path: String, limit: u64) -> Resul
 
 /// An Arbesk asset's scene for the Space preview: its parts and where each goes.
 #[tauri::command]
-async fn arbesk_scene(app: tauri::AppHandle, path: String) -> Result<arbesk::scene::Scene, String> {
-    blocking(move || app.state::<arbesk::ArbeskState>().scene(&path)).await?
+async fn arbesk_scene(app: tauri::AppHandle, path: String, version: Option<String>) -> Result<arbesk::scene::Scene, String> {
+    blocking(move || app.state::<arbesk::ArbeskState>().scene(&path, version.as_deref())).await?
+}
+
+/// An Arbesk asset's saves, oldest first, for the preview's versions.
+#[tauri::command]
+async fn arbesk_versions(app: tauri::AppHandle, path: String) -> Result<Vec<arbesk::service::Version>, String> {
+    blocking(move || app.state::<arbesk::ArbeskState>().versions(&path)).await?
 }
 
 /// One part of an Arbesk asset's scene, as the preview loads it (a GLB or a
 /// 3MF), at most `limit` bytes.
 #[tauri::command]
-async fn arbesk_part(app: tauri::AppHandle, path: String, key: String, limit: u64) -> Result<tauri::ipc::Response, String> {
+async fn arbesk_part(
+    app: tauri::AppHandle,
+    path: String,
+    version: Option<String>,
+    key: String,
+    limit: u64,
+) -> Result<tauri::ipc::Response, String> {
     let limit = limit.clamp(1, 512 * 1024 * 1024);
     let bytes = blocking(move || {
-        let file = app.state::<arbesk::ArbeskState>().part(&path, &key, &progress::Progress::default())?;
+        let file = app.state::<arbesk::ArbeskState>().part(&path, version.as_deref(), &key, &progress::Progress::default())?;
         fs_ops::preview_bytes(file.to_string_lossy().into_owned(), limit)
     })
     .await??;
@@ -2259,6 +2271,7 @@ pub fn run() {
             preview_text,
             preview_bytes,
             arbesk_scene,
+            arbesk_versions,
             arbesk_part,
             rename_many,
             set_permissions,
