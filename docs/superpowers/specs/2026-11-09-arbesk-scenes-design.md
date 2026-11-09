@@ -102,7 +102,8 @@ The asset's thumbnail is unchanged.
 `arbesk_scene`, then each part's bytes (`arbesk_part`), loads each part once
 (`loadModel`, GLB recognised by its bytes as now), and builds one group:
 for each placement, a clone of the part's object with the matrix, colour and
-scale. The group goes to `showModel` as a single model, so turning, zooming,
+scale; a skinned part's clone carries its own skeleton and bones, so it turns
+with the group. The group goes to `showModel` as a single model, so turning, zooming,
 the double-click pick and Reset View work on the whole scene. "Loading…"
 covers the wait (#228). One part failing to build or load is left out; all of
 them failing says "No preview available."

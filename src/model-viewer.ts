@@ -17,6 +17,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { unzipSync } from "three/addons/libs/fflate.module.js";
+import { clone as cloneWithSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import { isGlb, type ModelFormat } from "./models";
 import { sym } from "./icons";
 import { attachGestures } from "./model-gestures";
@@ -61,7 +62,9 @@ function placed(object: Object3D, middle: Vector3, placement: ScenePlacement): G
   const root = new Group();
   root.position.copy(middle).negate();
   root.scale.set(...placement.scale);
-  const copy = object.clone(true);
+  // A skinned model's skeleton must come with the copy: a plain clone shares
+  // the original's bones, so turning the copy would leave it in place.
+  const copy = cloneWithSkeleton(object);
   tint(copy, placement);
   root.add(copy);
   holder.add(root);
