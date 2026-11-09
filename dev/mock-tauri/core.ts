@@ -1657,13 +1657,13 @@ const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset
     name: "Untitled Collection",
     assets: [
       { id: "asset_1", name: "Cube", ext: "gltf", thumbnail: true },
-      // A scene: two copies of one model, the second 3 to the right and red, and a 3MF part.
+      // A scene: two copies of one model, the second 50 to the right (the model is 40 wide) and red, and a 3MF part.
       {
         id: "table",
         name: "Table",
         ext: "gltf",
         scene: [
-          { key: "box-src", format: "glb", copies: [{ x: 0 }, { x: 3, color: "#ff0000" }] },
+          { key: "box-src", format: "glb", copies: [{ x: 0 }, { x: 50, color: "#ff0000" }] },
           { key: "box-3mf", format: "3mf", copies: [{ x: 0 }] },
         ],
       },

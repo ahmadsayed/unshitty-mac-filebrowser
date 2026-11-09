@@ -250,7 +250,7 @@ test("an Arbesk asset too large to preview says so", async () => {
 });
 
 // An Arbesk scene: the mock's "Table" holds two copies of one model (the
-// second tinted red, 3 to the right) and a 3MF part.
+// second tinted red, 50 to the right) and a 3MF part.
 const ARBESK_UNTITLED = `arbesk://${ARBESK_MOCK_ADDRESS}/2~Untitled%20Collection`;
 
 test("Space shows an Arbesk scene: each part loaded once, a copy per placement", async () => {
@@ -260,7 +260,7 @@ test("Space shows an Arbesk scene: each part loaded once, a copy per placement",
   expect(calls().count("arbesk_part") - before).toBe(2);
   expect(viewer.showModel).toHaveBeenCalledTimes(1);
   const [, scene] = viewer.showModel.mock.calls[0] as [HTMLElement, Group];
-  expect(scene.children.map((copy) => copy.position.x)).toEqual([0, 3, 0]);
+  expect(scene.children.map((copy) => copy.position.x)).toEqual([0, 50, 0]);
   expect(triangles(scene)).toBe(3 * SAMPLE_TRIANGLES);
   await key("Escape");
 });

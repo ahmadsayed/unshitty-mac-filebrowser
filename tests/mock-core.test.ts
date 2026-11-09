@@ -1415,7 +1415,7 @@ test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend'
   const tablePath = `${root}/2~Untitled%20Collection/table~Table.gltf`;
   const scene = await invoke<MockScene>("arbesk_scene", { path: tablePath });
   expect(scene.parts.map((p) => [p.key, p.format, p.placements.length])).toEqual([["box-src", "glb", 2], ["box-3mf", "3mf", 1]]);
-  expect(scene.parts[0].placements[1]).toMatchObject({ matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 0, 0, 1], color: "#ff0000" });
+  expect(scene.parts[0].placements[1]).toMatchObject({ matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 50, 0, 0, 1], color: "#ff0000" });
   const part = new Uint8Array(await invoke<ArrayBuffer>("arbesk_part", { path: tablePath, key: "box-src", limit: 1 << 20 }));
   expect(new TextDecoder().decode(part.slice(0, 4))).toBe("glTF");
   await expect(invoke("arbesk_part", { path: tablePath, key: "nope", limit: 1 << 20 })).rejects.toBe("This part is not in the asset.");
