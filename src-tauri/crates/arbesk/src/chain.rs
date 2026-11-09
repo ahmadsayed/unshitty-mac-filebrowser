@@ -6,7 +6,7 @@
 
 use serde_json::{Value, json};
 
-use crate::arbesk::http::Http;
+use crate::http::Http;
 
 /// Which Arbesk deployment and chain an account lives on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,8 +173,8 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::abi_string;
     use super::*;
-    use crate::arbesk::http::HttpError;
-    use crate::arbesk::http::fake::{FakeHttp, Request, not_found};
+    use crate::http::HttpError;
+    use crate::http::fake::{FakeHttp, Request, not_found};
     use serde_json::json;
 
     const ORIGIN: &str = "https://arbesk.test";

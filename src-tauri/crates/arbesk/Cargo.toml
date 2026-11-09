@@ -1,0 +1,25 @@
+[package]
+name = "arbesk"
+version = "0.1.0"
+description = "Arbesk collections for File Browser: sign-in, listing, asset building and model upload"
+authors = ["you"]
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+percent-encoding = "2"
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+keyring = "4"
+getrandom = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
+data-encoding = "2"
+brotli = "9"
+flate2 = "1"
+
+[dev-dependencies]
+tempfile = "3"

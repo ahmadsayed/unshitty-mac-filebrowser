@@ -58,12 +58,15 @@ the place may be written. Then:
   `trash_ops::Trash`: the trash log, where an item came from (sidecar, log,
   Finder's Put Back), and both Trash layouts;
 - listing, counts, opening and reading go to `fs_ops.rs`, `cloud/` (Google
-  Drive), `share/` (iroh shares), `sftp.rs` (SSH, read only) and `arbesk/`
-  (Arbesk: its read path rebuilt from public sources, assets built into the
-  app cache to open, preview and copy out, each asset's saved thumbnail;
-  local model files copied in with Arbesk's own storage protocol, uploads
-  and the collection update through Arbesk's relay, under a session kept in
-  the keychain).
+  Drive), `share/` (iroh shares), `sftp.rs` (SSH, read only) and the
+  `crates/arbesk` workspace crate (Arbesk: its read path rebuilt from public
+  sources, assets built into the app cache to open, preview and copy out,
+  each asset's saved thumbnail; local model files copied in with Arbesk's
+  own storage protocol, uploads and the collection update through Arbesk's
+  relay, under a session kept in the keychain). `lib.rs` reaches it only
+  through the crate's facade (`Client`, `Account`, `Entry`, `Scene`,
+  `Version`, `Location`, `Progress`); the modules behind it are private, so
+  the feature can change or move without leaking into the app.
 
 Replace sends the old item to the Trash through `trash_ops::Trash` and, if
 the last rename fails, takes it back out and forgets its log entry. Every
@@ -79,6 +82,7 @@ between macOS and Linux too: XDG paths and volumes.
 | Allow or refuse an action in a kind of place | one cell in `item-actions.ts` |
 | A new kind of location (SMB, WebDAV) | a row in `paths.ts`, a kind in `locations.ts`, a `Kind` in `place.rs` |
 | A new online account provider (OneDrive, Dropbox) | a row in `providers.ts` and in `PROVIDER_ACTIONS` (`main.ts`), plus the location rows above |
+| Arbesk's listings, builds, versions or uploads | the private modules of `src-tauri/crates/arbesk`; expose a new type or method only through its `lib.rs` facade, and map it in `src-tauri/src/lib.rs` |
 | How copy, move or Replace behaves | `placement.rs` |
 | The trash log, Put Back, Restore, Empty Trash | `trash_ops::Trash` |
 | Something new that remembers paths | one holder in `path-refs.ts` |

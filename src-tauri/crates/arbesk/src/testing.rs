@@ -380,8 +380,8 @@ pub(crate) fn shapes() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arbesk::chain;
-    use crate::arbesk::http::Http;
+    use crate::chain;
+    use crate::http::Http;
 
     fn with_session() -> (Arc<Mutex<World>>, FakeHttp) {
         let state = Arc::new(Mutex::new(world()));

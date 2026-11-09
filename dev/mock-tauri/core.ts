@@ -1633,7 +1633,7 @@ function refuseWhileConnected(): void {
 const driveFlows = new Set<string>();
 let driveFlowSeq = 0;
 
-// ----- Arbesk: one account, two collections; copies of local models go in (src-tauri/src/arbesk/) -----
+// ----- Arbesk: one account, two collections; copies of local models go in (src-tauri/crates/arbesk/) -----
 
 /** The wallet address every mock sign-in resolves to. */
 export const ARBESK_MOCK_ADDRESS = `0x${"ab".repeat(20)}`;
@@ -1735,7 +1735,7 @@ function arbeskBytes(path: string, limit: number): Uint8Array {
 
 /**
  * copy_entry from Arbesk (place::copy): only an asset, only to a folder on
- * this computer or in Drive. Its file is built (ArbeskState::export), then placed
+ * this computer or in Drive. Its file is built (Client::export), then placed
  * as any copy is: a name taken asks first, and Replace trashes the old item.
  */
 function arbeskCopy(a: Args): string {
@@ -1798,7 +1798,7 @@ function arbeskTarget(to: string): { collection: (typeof ARBESK_COLLECTIONS)[num
   return { collection, dir, name };
 }
 
-/** The session a write needs, as ArbeskState::session_for answers; an
+/** The session a write needs, as Client::session_for answers; an
  *  expired one is refused once and forgotten, as a 401 does. */
 function arbeskSessionFor(): void {
   if (arbeskSession.expireNext) {
@@ -1818,7 +1818,7 @@ function freshArbeskId(): string {
 }
 
 /**
- * copy_entry into Arbesk (place::copy's IntoArbesk, ArbeskState::add): a
+ * copy_entry into Arbesk (place::copy's IntoArbesk, Client::add): a
  * local .gltf, .glb or .3mf becomes an asset named after the target, a .glb
  * stored as glTF. Refused in the backend's order: the source, the target,
  * the account, the session, the file, a taken name. Replace keeps the asset
@@ -1848,7 +1848,7 @@ function arbeskAdd(a: Args): string {
   return `${dir}/${arbeskSegment(asset.id, `${asset.name}.${asset.ext}`)}`;
 }
 
-/** Whether a pending name is listed in its collection (ArbeskState::exists). */
+/** Whether a pending name is listed in its collection (Client::exists). */
 function arbeskPendingExists(path: string): boolean {
   try {
     const { collection, name } = arbeskTarget(path);

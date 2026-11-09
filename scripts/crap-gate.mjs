@@ -100,7 +100,7 @@ function requireDist() {
 /** Run the Rust tests with coverage into `lcov`; failing tests fail the gate. */
 function rustCoverage(lcov) {
   console.log("crap-gate: Rust tests with coverage…");
-  const cov = run("cargo", ["llvm-cov", "--lcov", "--output-path", lcov], { cwd: join(ROOT, "src-tauri") });
+  const cov = run("cargo", ["llvm-cov", "--workspace", "--lcov", "--output-path", lcov], { cwd: join(ROOT, "src-tauri") });
   if (cov.status === 0) return;
   console.error(cov.stdout.split("\n").filter((l) => /FAILED|panicked|error/.test(l)).join("\n"));
   fail("the Rust tests failed, so there is no coverage to score");

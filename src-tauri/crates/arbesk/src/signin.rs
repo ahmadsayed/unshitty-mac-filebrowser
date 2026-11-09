@@ -19,11 +19,11 @@ use percent_encoding::utf8_percent_encode;
 use serde_json::{Value, json};
 use url::Url;
 
-use crate::arbesk::chain::Site;
-use crate::arbesk::http::Http;
-use crate::arbesk::session::Session;
-use crate::cloud::location::NAME_SET;
-use crate::cloud::loopback::{self, Waited};
+use crate::chain::Site;
+use crate::http::Http;
+use crate::session::Session;
+use crate::location::NAME_SET;
+use crate::callback::Waited;
 
 pub const NOT_CONFIRMED: &str = "Sign-in failed: Arbesk did not confirm this account.";
 const CANNOT_CHECK: &str = "Arbesk could not confirm this account. Try again later.";
@@ -82,7 +82,7 @@ pub fn start(site: &Site, email: &str) -> Result<Flow, String> {
         utf8_percent_encode(&email, NAME_SET)
     );
     Ok(Flow {
-        id: crate::cloud::accounts::new_account_id(),
+        id: crate::ids::new_account_id(),
         email,
         listener,
         sign_in_url,
@@ -141,7 +141,7 @@ pub fn finish(
     site: &Site,
     timeout: Duration,
 ) -> Result<SignedIn, String> {
-    let callback = loopback::wait_for_callback(
+    let callback = crate::callback::wait_for_callback(
         &flow.listener,
         timeout,
         || flow.is_cancelled(),
@@ -206,8 +206,8 @@ fn confirm(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arbesk::http::HttpError;
-    use crate::arbesk::http::fake::FakeHttp;
+    use crate::http::HttpError;
+    use crate::http::fake::FakeHttp;
     use serde_json::json;
     use std::io::{Read, Write};
     use std::net::TcpStream;

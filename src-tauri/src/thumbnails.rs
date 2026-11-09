@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, Cursor, Seek};
+use std::io::{BufRead, Seek};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -314,24 +314,6 @@ fn png_text(path: &Path) -> Option<Vec<(String, String)>> {
     Some(text)
 }
 
-/// A thumbnail of the image in `bytes` as PNG, at most `size` pixels square
-/// (a smaller image keeps its size); `None` when the bytes aren't an image
-/// the app decodes, or one too large to be worth it. For the pictures a
-/// remote place hands over: an Arbesk asset's thumbnail. A request
-/// cancelled while it waits for its turn is skipped.
-pub fn png_from_bytes(bytes: &[u8], size: u32, stop: &dyn Fn() -> bool) -> Option<Vec<u8>> {
-    let img = one_decode_at_a_time(|| {
-        if stop() {
-            return None;
-        }
-        shrunk(image::ImageReader::new(Cursor::new(bytes)), size)
-    })?;
-    let mut png = Vec::new();
-    img.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
-        .ok()?;
-    Some(png)
-}
-
 /// The image `reader` holds, turned upright (EXIF orientation) and shrunk
 /// to fit `size`.
 fn shrunk<R: BufRead + Seek>(reader: image::ImageReader<R>, size: u32) -> Option<image::DynamicImage> {
@@ -585,46 +567,6 @@ mod tests {
         let thumb = thumbnail(&src, 128, &cache).unwrap().expect("thumbnail");
         let (w, h) = image::image_dimensions(&thumb).unwrap();
         assert_eq!((w, h), (128, 64));
-    }
-
-    fn encoded(w: u32, h: u32, format: image::ImageFormat) -> Vec<u8> {
-        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(w, h, |x, y| {
-            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
-        }));
-        let mut bytes = Vec::new();
-        img.write_to(&mut std::io::Cursor::new(&mut bytes), format)
-            .unwrap();
-        bytes
-    }
-
-    fn png_size(png: &[u8]) -> (u32, u32) {
-        use image::GenericImageView;
-        assert_eq!(image::guess_format(png).unwrap(), image::ImageFormat::Png);
-        image::load_from_memory(png).unwrap().dimensions()
-    }
-
-    #[test]
-    fn image_bytes_become_a_png_that_fits_the_size() {
-        // Arbesk keeps its thumbnails as WebP.
-        let webp = encoded(800, 400, image::ImageFormat::WebP);
-        assert_eq!(png_size(&png_from_bytes(&webp, 128, &|| false).unwrap()), (128, 64));
-        // Smaller than asked: kept at its own size.
-        let small = encoded(40, 30, image::ImageFormat::Png);
-        assert_eq!(png_size(&png_from_bytes(&small, 128, &|| false).unwrap()), (40, 30));
-    }
-
-    #[test]
-    fn bytes_that_are_not_an_image_have_no_thumbnail() {
-        assert!(png_from_bytes(b"", 128, &|| false).is_none());
-        assert!(png_from_bytes(br#"{"not":"an image"}"#, 128, &|| false).is_none());
-        let png = encoded(64, 64, image::ImageFormat::Png);
-        assert!(png_from_bytes(&png[..png.len() / 2], 128, &|| false).is_none(), "cut short");
-    }
-
-    #[test]
-    fn a_cancelled_picture_is_not_decoded() {
-        let png = encoded(64, 64, image::ImageFormat::Png);
-        assert!(png_from_bytes(&png, 128, &|| true).is_none());
     }
 
     #[test]

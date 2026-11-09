@@ -1,3 +1,9 @@
+[workspace]
+members = ["crates/arbesk"]
+# `cargo test` from src-tauri keeps covering the app and its Arbesk crate.
+default-members = [".", "crates/arbesk"]
+resolver = "3"
+
 [package]
 name = "filebrowser"
 version = "0.8.1"
@@ -19,6 +25,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+arbesk = { version = "0.1.0", path = "crates/arbesk" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"

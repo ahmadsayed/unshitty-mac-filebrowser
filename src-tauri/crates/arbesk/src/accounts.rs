@@ -6,12 +6,12 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::arbesk::chain::Site;
-use crate::arbesk::location::account_path;
+use crate::chain::Site;
+use crate::location::account_path;
 
 /// One connected account: who signed in, their wallet, and where.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ArbeskAccount {
+pub struct Account {
     pub id: String,
     pub email: String,
     /// The wallet address, lower case: what every listing asks about.
@@ -22,7 +22,7 @@ pub struct ArbeskAccount {
     pub root_path: String,
 }
 
-impl ArbeskAccount {
+impl Account {
     pub fn site(&self) -> Site {
         Site {
             origin: self.origin.clone(),
@@ -35,7 +35,7 @@ impl ArbeskAccount {
 #[derive(Debug)]
 pub struct Accounts {
     path: PathBuf,
-    items: Vec<ArbeskAccount>,
+    items: Vec<Account>,
 }
 
 impl Accounts {
@@ -48,11 +48,11 @@ impl Accounts {
         Self { path, items }
     }
 
-    pub fn items(&self) -> &[ArbeskAccount] {
+    pub fn items(&self) -> &[Account] {
         &self.items
     }
 
-    pub fn get_by_address(&self, address: &str) -> Option<&ArbeskAccount> {
+    pub fn get_by_address(&self, address: &str) -> Option<&Account> {
         self.items
             .iter()
             .find(|account| account.address.eq_ignore_ascii_case(address))
@@ -65,13 +65,13 @@ impl Accounts {
         email: &str,
         address: &str,
         site: &Site,
-    ) -> Result<ArbeskAccount, String> {
+    ) -> Result<Account, String> {
         let address = address.to_ascii_lowercase();
         let known = self.items.iter().position(|a| {
             a.address == address && a.origin == site.origin && a.chain_id == site.chain_id
         });
-        let account = ArbeskAccount {
-            id: known.map_or_else(crate::cloud::accounts::new_account_id, |i| {
+        let account = Account {
+            id: known.map_or_else(crate::ids::new_account_id, |i| {
                 self.items[i].id.clone()
             }),
             email: email.to_string(),
@@ -89,7 +89,7 @@ impl Accounts {
     }
 
     /// Remove an account, returning it if it was connected.
-    pub fn remove(&mut self, id: &str) -> Result<Option<ArbeskAccount>, String> {
+    pub fn remove(&mut self, id: &str) -> Result<Option<Account>, String> {
         let Some(index) = self.items.iter().position(|account| account.id == id) else {
             return Ok(None);
         };
@@ -99,7 +99,7 @@ impl Accounts {
     }
 
     fn save(&self) -> Result<(), String> {
-        crate::config_store::write_json(&self.path, &self.items)
+        crate::store::write_json(&self.path, &self.items)
     }
 }
 

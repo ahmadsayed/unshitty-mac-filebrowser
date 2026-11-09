@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use serde_json::Value;
 
-pub use crate::arbesk::compose::Format;
+pub use crate::compose::Format;
 
 /// A 4×4 matrix, column-major, as the manifest's `transform_matrix`.
 pub type Matrix = [f64; 16];

@@ -1,9 +1,9 @@
-// Reference fixtures for src-tauri/src/arbesk/compose.rs and decompose.rs:
+// Reference fixtures for src-tauri/crates/arbesk/src/compose.rs and decompose.rs:
 // Arbesk's own asset-core stores each sample model (decompose into an
 // in-memory IPFS) and rebuilds it (compose), so the Rust code is checked
 // against Arbesk's in both directions.
 // Run with Bun from this repository, given an Arbesk checkout:
-//   bun scripts/make-arbesk-fixtures.ts ~/Projects/arbesk src-tauri/tests/fixtures/arbesk
+//   bun scripts/make-arbesk-fixtures.ts ~/Projects/arbesk src-tauri/crates/arbesk/tests/fixtures/arbesk
 // Writes <out>/<case>/{input.<ext>, source.json, cids/<cid>, names.json,
 // expected.<ext>}; names.json maps each part's CID to the file name
 // asset-core uploaded it as.

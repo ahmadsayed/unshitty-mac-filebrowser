@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
-use crate::arbesk::ipfs::Gateway;
+use crate::ipfs::Gateway;
 
 pub const UNKNOWN_FORMAT: &str = "This asset uses an Arbesk format File Browser can't read yet.";
 
@@ -490,8 +490,8 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arbesk::http::fake::{FakeHttp, not_found};
-    use crate::arbesk::ipfs::{Gateway, ManifestCache};
+    use crate::http::fake::{FakeHttp, not_found};
+    use crate::ipfs::{Gateway, ManifestCache};
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use std::io::Read;

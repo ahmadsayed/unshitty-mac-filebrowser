@@ -43,11 +43,6 @@ fn unchanged(copy: &Path, meta: &fs::Metadata) -> bool {
     saved.is_some() && saved == fingerprint(meta)
 }
 
-/// Whether `copy` is still exactly as [`mark`] left it.
-pub fn is_unchanged(copy: &Path) -> bool {
-    fs::metadata(copy).is_ok_and(|meta| unchanged(copy, &meta))
-}
-
 /// Prune the downloads under `base` that nobody has touched for `max_age`:
 /// unchanged copies and unfinished `.part` files are deleted, other copies go
 /// to `trash`. Folders left empty are removed; `base` itself stays.
@@ -201,6 +196,11 @@ mod tests {
             !named_part.exists(),
             "unchanged, so deleted rather than trashed"
         );
+    }
+
+    /// Whether `copy` is still exactly as [`mark`] left it.
+    fn is_unchanged(copy: &Path) -> bool {
+        fs::metadata(copy).is_ok_and(|meta| unchanged(copy, &meta))
     }
 
     #[test]

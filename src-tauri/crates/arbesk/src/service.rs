@@ -8,17 +8,17 @@ use std::sync::{Condvar, Mutex};
 
 use serde_json::Value;
 
-use crate::arbesk::chain::{self, CHAIN_UNREACHABLE, ChainConfig, Site};
-use crate::arbesk::compose::{
+use crate::chain::{self, CHAIN_UNREACHABLE, ChainConfig, Site};
+use crate::compose::{
     Format, UNKNOWN_FORMAT, compose, compose_preview, format_of, is_child_ref, source_cid,
 };
-use crate::arbesk::http::Http;
-use crate::arbesk::ipfs::{Gateway, ManifestCache, STORAGE_UNREACHABLE, in_parallel};
-use crate::arbesk::location::{ArbeskPath, asset_path_named, collection_path, parse};
-use crate::arbesk::scene::{Links, Scene, resolve};
-use crate::fs_ops::Entry;
+use crate::http::Http;
+use crate::ipfs::{Gateway, ManifestCache, STORAGE_UNREACHABLE, in_parallel};
+use crate::location::{ArbeskPath, asset_path_named, collection_path, parse};
+use crate::scene::{Links, Scene, resolve};
+use crate::Entry;
 use crate::progress::Progress;
-use crate::thumbnails::png_from_bytes;
+use crate::image::png_from_bytes;
 
 /// How many requests a listing runs at once.
 const PARALLEL: usize = 8;
@@ -396,7 +396,7 @@ fn build_file(
 ) -> Result<PathBuf, String> {
     let target = dir.join(name);
     let _held = builds.hold(dir.to_path_buf());
-    if crate::downloads::is_unchanged(&target) {
+    if crate::cache::is_unchanged(&target) {
         return Ok(target);
     }
     // Someone edited the copy at `target`: theirs stays, a fresh one goes beside it.
@@ -712,7 +712,6 @@ fn entry(name: String, path: String, is_dir: bool, manifest: &Value) -> Entry {
         modified: manifest["timestamp"].as_i64().map_or(0, |ms| ms / 1000),
         is_hidden: false,
         is_symlink: false,
-        cloud: None,
     }
 }
 
@@ -748,30 +747,30 @@ fn save(target: &Path, bytes: &[u8]) -> Result<(), String> {
     // Its own staging name, so no other writer can truncate it.
     let part = dir.join(format!(".{name}.{}.part", unique_folder()));
     let written =
-        std::fs::write(&part, bytes).and_then(|()| crate::placement::rename_new(&part, target));
+        std::fs::write(&part, bytes).and_then(|()| crate::cache::rename_new(&part, target));
     if let Err(error) = written {
         let _ = std::fs::remove_file(&part);
         // Another build placed the same file first: it is the one to open.
         if error.kind() == std::io::ErrorKind::AlreadyExists
-            && crate::downloads::is_unchanged(target)
+            && crate::cache::is_unchanged(target)
         {
             return Ok(());
         }
         return Err(failed(error));
     }
-    crate::downloads::mark(target);
+    crate::cache::mark(target);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arbesk::chain::CHAIN_UNREACHABLE;
-    use crate::arbesk::compose::UNKNOWN_FORMAT;
-    use crate::arbesk::http::fake::FakeHttp;
-    use crate::arbesk::ipfs::STORAGE_UNREACHABLE;
-    use crate::arbesk::location::{asset_path, collection_path};
-    use crate::arbesk::testing::{ADDRESS, ORIGIN, STAMP_MS, arbesk, fixture, shapes, site, world};
+    use crate::chain::CHAIN_UNREACHABLE;
+    use crate::compose::UNKNOWN_FORMAT;
+    use crate::http::fake::FakeHttp;
+    use crate::ipfs::STORAGE_UNREACHABLE;
+    use crate::location::{asset_path, collection_path};
+    use crate::testing::{ADDRESS, ORIGIN, STAMP_MS, arbesk, fixture, shapes, site, world};
     use serde_json::{Value, json};
     use std::collections::HashSet;
     use std::path::Path;
@@ -856,11 +855,7 @@ mod tests {
             names(&entries),
             ["Box.3mf", "Box.gltf", "Linked.gltf", "Odd"]
         );
-        assert!(
-            entries
-                .iter()
-                .all(|entry| !entry.is_dir && entry.size == 0 && entry.cloud.is_none())
-        );
+        assert!(entries.iter().all(|entry| !entry.is_dir && entry.size == 0));
         let gltf = entries
             .iter()
             .find(|entry| entry.name == "Box.gltf")
@@ -1170,12 +1165,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(built, cache.path().join("arbesk/bafySrcGltf/part.glb"));
-        assert!(crate::downloads::is_unchanged(&built));
+        assert!(crate::cache::is_unchanged(&built));
         let theirs: Value = serde_json::from_slice(
             &std::fs::read(fixture("glb-box").join("expected.gltf")).unwrap(),
         )
         .unwrap();
-        crate::arbesk::compose::testing::assert_same_model(
+        crate::compose::testing::assert_same_model(
             &std::fs::read(&built).unwrap(),
             &theirs,
         );
@@ -1264,11 +1259,11 @@ mod tests {
             &std::fs::read(fixture("glb-box").join("expected.gltf")).unwrap(),
         )
         .unwrap();
-        crate::arbesk::compose::testing::assert_same_model(
+        crate::compose::testing::assert_same_model(
             &std::fs::read(&built).unwrap(),
             &theirs,
         );
-        assert!(crate::downloads::is_unchanged(&built));
+        assert!(crate::cache::is_unchanged(&built));
 
         let part_fetches = |http: &FakeHttp| {
             http.requests()
@@ -1395,7 +1390,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ours, theirs);
-        assert!(crate::downloads::is_unchanged(&exported));
+        assert!(crate::cache::is_unchanged(&exported));
         assert_eq!(export_of(&gltf).unwrap(), exported);
         // The preview's GLB is another file beside it.
         let preview = build(&http, &site(), &gltf, cache.path(), &Progress::default(), &Builds::default()).unwrap();
@@ -1501,8 +1496,8 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
             match &request.body {
-                Some(body) => crate::arbesk::http::Http::post_json(&slow, &request.url, body, None),
-                None => crate::arbesk::http::Http::get(&slow, &request.url),
+                Some(body) => crate::http::Http::post_json(&slow, &request.url, body, None),
+                None => crate::http::Http::get(&slow, &request.url),
             }
         });
         let builds = Builds::default();
@@ -1544,7 +1539,7 @@ mod tests {
                 .count(),
             1
         );
-        assert!(crate::downloads::is_unchanged(first.as_ref().unwrap()));
+        assert!(crate::cache::is_unchanged(first.as_ref().unwrap()));
     }
 
     #[test]
