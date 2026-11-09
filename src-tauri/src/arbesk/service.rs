@@ -9,7 +9,9 @@ use std::sync::{Condvar, Mutex};
 use serde_json::Value;
 
 use crate::arbesk::chain::{self, CHAIN_UNREACHABLE, ChainConfig, Site};
-use crate::arbesk::compose::{UNKNOWN_FORMAT, compose, format_of, is_child_ref, source_cid};
+use crate::arbesk::compose::{
+    UNKNOWN_FORMAT, compose_preview, format_of, is_child_ref, source_cid,
+};
 use crate::arbesk::http::Http;
 use crate::arbesk::ipfs::{Gateway, ManifestCache, STORAGE_UNREACHABLE, in_parallel};
 use crate::arbesk::location::{ArbeskPath, asset_path_named, collection_path, parse};
@@ -178,8 +180,9 @@ pub fn studio_url(site: &Site, path: &str) -> Result<String, String> {
     Ok(format!("{}/studio?{query}", site.origin))
 }
 
-/// The asset at `path` as a file in `cache_dir/arbesk`, built once per
-/// version (its manifest CID) and reused while nobody has changed it.
+/// The file the Space preview loads for the asset at `path` (a `.glb` for a
+/// glTF asset, the `.3mf` for a 3MF one) in `cache_dir/arbesk`, built once
+/// per version (its manifest CID) and reused while nobody has changed it.
 pub fn build(
     http: &dyn Http,
     site: &Site,
@@ -204,7 +207,7 @@ pub fn build(
     let source = reader.gateway.json(&source_cid(&manifest, cid))?;
     let name = file_name(
         &display_name(&manifest, &asset_id),
-        format_of(&source)?.ext(),
+        format_of(&source)?.preview_ext(),
     );
     let dir = cache_dir.join("arbesk").join(cid);
     let target = dir.join(&name);
@@ -219,7 +222,7 @@ pub fn build(
     } else {
         target
     };
-    let bytes = compose(&reader.gateway, &source)?;
+    let bytes = compose_preview(&reader.gateway, &source)?;
     progress.check()?;
     save(&target, &bytes)?;
     Ok(target)
@@ -818,13 +821,16 @@ mod tests {
         )
         .unwrap();
         assert!(built.starts_with(cache.path().join("arbesk")));
-        assert_eq!(built.file_name().unwrap(), "Box.gltf");
-        let ours: Value = serde_json::from_slice(&std::fs::read(&built).unwrap()).unwrap();
+        // The preview's file is a GLB: what Arbesk's .gltf holds, without base64.
+        assert_eq!(built.file_name().unwrap(), "Box.glb");
         let theirs: Value = serde_json::from_slice(
             &std::fs::read(fixture("glb-box").join("expected.gltf")).unwrap(),
         )
         .unwrap();
-        assert_eq!(ours, theirs);
+        crate::arbesk::compose::testing::assert_same_model(
+            &std::fs::read(&built).unwrap(),
+            &theirs,
+        );
         assert!(crate::downloads::is_unchanged(&built));
 
         let part_fetches = |http: &FakeHttp| {

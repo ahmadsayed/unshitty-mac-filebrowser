@@ -1,6 +1,6 @@
 import { encodeCloudName, isUnder, placeOf, type Place } from "../../src/paths";
 import { fold } from "../../src/search";
-import { sample3mf, sampleEmbeddedGltf, sampleModelBytes } from "./models";
+import { sample3mf, sampleGlb, sampleModelBytes } from "./models";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
 // It serves a fake, in-memory home folder.
@@ -1691,7 +1691,8 @@ function arbeskBytes(path: string, limit: number): Uint8Array {
   const asset = arbeskAsset(path);
   if (asset.huge) throw "This file is too large to preview.";
   if (asset.ext === "3mf") return sample3mf();
-  const bytes = sampleEmbeddedGltf();
+  // As the backend builds an Arbesk glTF for the preview: one binary GLB.
+  const bytes = sampleGlb();
   if (bytes.length > limit) throw "This file is too large to preview.";
   return bytes;
 }

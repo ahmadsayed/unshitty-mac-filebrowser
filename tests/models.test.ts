@@ -1,7 +1,8 @@
 // Which files the 3D preview takes, and which companion files a .gltf may
 // load (src/models.ts).
 import { expect, test } from "vitest";
-import { companionPath, gltfCompanions, modelFormat } from "../src/models";
+import { companionPath, gltfCompanions, isGlb, modelFormat } from "../src/models";
+import { sampleGlb, sampleGltf } from "../dev/mock-tauri/models";
 
 test.each([
   ["bracket.stl", "stl"],
@@ -47,4 +48,11 @@ test("a .gltf's companions are its buffers' and images' files, each once, withou
   expect(gltfCompanions({})).toEqual([]);
   expect(gltfCompanions(null)).toEqual([]);
   expect(gltfCompanions({ buffers: [{ uri: 7 }] })).toEqual([]);
+});
+
+test("a GLB is known by its first bytes, whatever its name", () => {
+  expect(isGlb(sampleGlb().slice().buffer)).toBe(true);
+  expect(isGlb(sampleGltf("box.bin").slice().buffer)).toBe(false);
+  expect(isGlb(new Uint8Array([0x67, 0x6c, 0x54]).buffer)).toBe(false);
+  expect(isGlb(new ArrayBuffer(0))).toBe(false);
 });

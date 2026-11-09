@@ -1397,8 +1397,9 @@ test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend'
   expect(await invoke("open_target", { path: gltf, op: "" })).toEqual({ kind: "url", url: "https://promptscad.com/studio?asset=1&assetId=box-g" });
   const model = new Uint8Array(await invoke<ArrayBuffer>("preview_bytes", { path: threeMf, limit: 1 << 20 }));
   expect([...model.slice(0, 2)]).toEqual([0x50, 0x4b]);
-  const json = JSON.parse(new TextDecoder().decode(await invoke<ArrayBuffer>("preview_bytes", { path: gltf, limit: 1 << 20 })));
-  expect(json.buffers.every((b: { uri: string }) => b.uri.startsWith("data:"))).toBe(true);
+  // A glTF asset previews as one binary GLB, as the backend builds it.
+  const glb = new Uint8Array(await invoke<ArrayBuffer>("preview_bytes", { path: gltf, limit: 1 << 20 }));
+  expect(new TextDecoder().decode(glb.slice(0, 4))).toBe("glTF");
   await expect(invoke("preview_bytes", { path: big, limit: 1 << 20 })).rejects.toBe("This file is too large to preview.");
   // The thumbnail Box.gltf was saved with; Box.3mf has none, which is no error.
   installFakeCanvas();

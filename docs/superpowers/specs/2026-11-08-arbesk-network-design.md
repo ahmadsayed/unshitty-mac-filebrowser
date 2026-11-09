@@ -114,7 +114,12 @@ content-addressed, so they are cached on disk by CID without expiry (capped
 by bytes, oldest dropped first); `tokenURI` and the indexer are asked again
 on every listing and on Reload. Requests run at most 8 at a time.
 
-**D7. Preview builds the file; Open goes to the Studio.** Opening an asset
+**D7. Preview builds a file; Open goes to the Studio.** For the preview, a
+glTF asset is built as one binary `.glb` (`compose_preview`: every buffer
+and image in one BIN chunk), not the `.gltf` with base64 `data:` URIs that
+`compose` builds, which large assets made too heavy for the webview to
+parse; the listing keeps `.gltf`, and the preview tells a GLB by its bytes
+(changed 2026-11-09). Opening an asset
 (`open_target`) answers with its Studio link,
 `{origin}/studio?asset=<token>&assetId=<id>`, which the app opens in the
 browser as it does a Google Docs file (changed 2026-11-09 at the human's

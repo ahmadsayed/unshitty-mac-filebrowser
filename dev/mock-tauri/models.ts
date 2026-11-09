@@ -105,13 +105,6 @@ export function sampleGltf(binName: string): Uint8Array {
   return text(JSON.stringify(sampleGltfJson(binName)));
 }
 
-/** The box as one self-contained .gltf, its buffer a data: URI: how Arbesk's
- *  assets are built. */
-export function sampleEmbeddedGltf(): Uint8Array {
-  const bin = btoa(String.fromCharCode(...sampleGltfBin()));
-  return text(JSON.stringify(sampleGltfJson(`data:application/octet-stream;base64,${bin}`)));
-}
-
 const pad4 = (bytes: Uint8Array, fill: number) => {
   const out = new Uint8Array(Math.ceil(bytes.length / 4) * 4).fill(fill);
   out.set(bytes);
