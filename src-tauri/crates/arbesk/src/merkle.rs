@@ -34,13 +34,14 @@ pub(crate) fn leaf(
     Ok(keccak(&packed))
 }
 
-/// The root of `leaves`, in the order asset-core gives them. Empty: zero.
+/// The root of `leaves`. OpenZeppelin sorts leaves by their hash before
+/// building the tree, so the list's order doesn't matter. Empty: zero.
 pub(crate) fn root(leaves: &[[u8; 32]]) -> [u8; 32] {
     if leaves.is_empty() {
         return [0; 32];
     }
-    let tree = tree(leaves);
-    tree[0]
+    let leaves: Vec<_> = sorted(leaves).into_iter().map(|(_, leaf)| leaf).collect();
+    tree(&leaves)[0]
 }
 
 /// The proof for `leaves[index]`, bottom-up.
@@ -48,8 +49,14 @@ pub(crate) fn proof(leaves: &[[u8; 32]], index: usize) -> Vec<[u8; 32]> {
     if leaves.is_empty() || index >= leaves.len() {
         return Vec::new();
     }
-    let tree = tree(leaves);
-    let mut at = 2 * leaves.len() - 2 - index;
+    let sorted = sorted(leaves);
+    let position = sorted
+        .iter()
+        .position(|(original, _)| *original == index)
+        .unwrap_or(0);
+    let leaves: Vec<_> = sorted.into_iter().map(|(_, leaf)| leaf).collect();
+    let tree = tree(&leaves);
+    let mut at = 2 * leaves.len() - 2 - position;
     let mut proof = Vec::new();
     while at > 0 {
         let sibling = if at % 2 == 0 { at - 1 } else { at + 1 };
@@ -57,6 +64,14 @@ pub(crate) fn proof(leaves: &[[u8; 32]], index: usize) -> Vec<[u8; 32]> {
         at = (at - 1) / 2;
     }
     proof
+}
+
+/// Leaves with their original index, sorted by hash as `SimpleMerkleTree.of`
+/// does by default.
+fn sorted(leaves: &[[u8; 32]]) -> Vec<(usize, [u8; 32])> {
+    let mut sorted: Vec<_> = leaves.iter().copied().enumerate().collect();
+    sorted.sort_by(|a, b| a.1.cmp(&b.1));
+    sorted
 }
 
 /// Whether `proof` takes `leaf` to `root`, with the contract's sorted pairs.
@@ -128,6 +143,8 @@ mod tests {
     const OWNER: &str = "0x00000000000000000000000000000000000000ab";
     const ALICE: &str = "0x1111111111111111111111111111111111111111";
     const BOB: &str = "0x2222222222222222222222222222222222222222";
+    const CAROL: &str = "0x3333333333333333333333333333333333333333";
+    const DAVE: &str = "0x4444444444444444444444444444444444444444";
 
     fn list(entries: &[(&str, u8)], version: u64) -> Vec<[u8; 32]> {
         entries
@@ -157,14 +174,51 @@ mod tests {
     }
 
     #[test]
+    fn trees_with_four_and_five_leaves_match_asset_core() {
+        // A complete tree, where asset-core's layout is less obvious than for
+        // one to three leaves.
+        let four = list(
+            &[(OWNER, EDITOR), (ALICE, VIEWER), (BOB, EDITOR), (CAROL, VIEWER)],
+            1,
+        );
+        assert_eq!(
+            hex(&root(&four)),
+            "0x9613ae516c83655231216d12489d0e9b6806e7e9a357072933c1e8fca301672b"
+        );
+        let five = list(
+            &[
+                (OWNER, EDITOR),
+                (ALICE, VIEWER),
+                (BOB, EDITOR),
+                (CAROL, VIEWER),
+                (DAVE, EDITOR),
+            ],
+            1,
+        );
+        assert_eq!(
+            hex(&root(&five)),
+            "0xede3869790fc1399ec6feacb77b9441a6a775d4ced1daf8cb730c5063895a6ad"
+        );
+    }
+
+    #[test]
     fn each_proof_verifies_against_the_root() {
-        let leaves = list(&[(OWNER, EDITOR), (ALICE, VIEWER), (BOB, EDITOR)], 1);
+        let leaves = list(
+            &[
+                (OWNER, EDITOR),
+                (ALICE, VIEWER),
+                (BOB, EDITOR),
+                (CAROL, VIEWER),
+                (DAVE, EDITOR),
+            ],
+            1,
+        );
         let root = root(&leaves);
         for (index, leaf) in leaves.iter().enumerate() {
             assert!(verify(&root, leaf, &proof(&leaves, index)), "{index}");
         }
         assert!(!verify(&root, &leaves[0], &proof(&leaves, 1)));
-        assert!(proof(&leaves, 3).is_empty());
+        assert!(proof(&leaves, 5).is_empty());
     }
 
     #[test]

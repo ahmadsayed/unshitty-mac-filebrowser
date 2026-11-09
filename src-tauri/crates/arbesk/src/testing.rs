@@ -161,6 +161,7 @@ pub(crate) fn world() -> World {
     );
     w.editor_lists.insert("1".into(), ("bafyEditors1".into(), 1));
     w.users.insert("alice@example.com".into(), ALICE.into());
+    w.users.insert("me@example.com".into(), ADDRESS.into());
     // Rooms (token 4, not the account's own): a table scene, its own
     // model raised and scaled, and two links to Shapes' Box.
     w.put_fixture("gltf-image", "bafySrcTable");

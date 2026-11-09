@@ -100,6 +100,15 @@ pub fn add(
         .map(|node| merkle::hex(node))
         .collect();
 
+    if address.eq_ignore_ascii_case(caller) {
+        // Never let the caller turn their own editor role off: the last
+        // editor doing that would leave the collection with no one to manage it.
+        return Err(if role == merkle::EDITOR {
+            already(role)
+        } else {
+            "You can't change your own role.".into()
+        });
+    }
     let member = list
         .iter()
         .position(|editor| editor.address.eq_ignore_ascii_case(&address));
@@ -207,6 +216,10 @@ fn relay(
     let body = json!({
         "op": "updateEditors",
         "tokenId": token_id,
+        // The relay authorizes from the top level, the contract call from
+        // `params`; both need the proof for a caller who isn't the owner.
+        "requiredRole": caller_role,
+        "proof": caller_proof,
         "params": {
             "newRoot": new_root,
             "newListUri": list_cid,
@@ -326,6 +339,9 @@ mod tests {
         assert_eq!(body["params"]["newListUri"], "bafyUp0");
         assert_eq!(body["params"]["callerRole"], merkle::EDITOR);
         assert_eq!(body["params"]["callerProof"], json!([]));
+        // The relay's own authorization reads the proof from the top level.
+        assert_eq!(body["requiredRole"], merkle::EDITOR);
+        assert_eq!(body["proof"], json!([]));
     }
 
     #[test]
@@ -345,6 +361,19 @@ mod tests {
         assert_eq!(state.lock().unwrap().editor_lists[TOKEN].1, 3);
         assert_eq!(
             share(&http, dir.path(), "alice@example.com", merkle::EDITOR).unwrap_err(),
+            "That account is already an editor."
+        );
+    }
+
+    #[test]
+    fn the_caller_cannot_change_their_own_role() {
+        let (_state, http, dir) = signed_in();
+        assert_eq!(
+            share(&http, dir.path(), "me@example.com", merkle::VIEWER).unwrap_err(),
+            "You can't change your own role."
+        );
+        assert_eq!(
+            share(&http, dir.path(), "me@example.com", merkle::EDITOR).unwrap_err(),
             "That account is already an editor."
         );
     }

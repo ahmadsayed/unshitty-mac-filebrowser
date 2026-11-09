@@ -68,7 +68,7 @@ the place may be written. Then:
   through Arbesk's relay, under a session kept in the keychain). `lib.rs`
   reaches it only
   through the crate's facade (`Client`, `Account`, `Entry`, `Scene`,
-  `Version`, `Location`, `Progress`); the modules behind it are private, so
+  `Version`, `Location`, `Progress`, `Shared`); the modules behind it are private, so
   the feature can change or move without leaking into the app.
 
 Replace sends the old item to the Trash through `trash_ops::Trash` and, if
