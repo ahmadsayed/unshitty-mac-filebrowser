@@ -7,10 +7,10 @@
 pub mod accounts;
 pub mod chain;
 pub mod compose;
-pub mod scene;
 pub mod http;
 pub mod ipfs;
 pub mod location;
+pub mod scene;
 pub mod service;
 pub mod signin;
 
@@ -136,6 +136,26 @@ impl ArbeskState {
             self.http()?,
             &site,
             path,
+            &self.cache_dir,
+            progress,
+            &self.builds,
+        )
+    }
+
+    /// `service::scene` for the account `path` belongs to.
+    pub fn scene(&self, path: &str) -> Result<scene::Scene, String> {
+        let site = self.site_for(parse(path)?.address())?;
+        service::scene(self.http()?, &site, path, &self.cache_dir)
+    }
+
+    /// `service::part` for the account `path` belongs to.
+    pub fn part(&self, path: &str, key: &str, progress: &Progress) -> Result<PathBuf, String> {
+        let site = self.site_for(parse(path)?.address())?;
+        service::part(
+            self.http()?,
+            &site,
+            path,
+            key,
             &self.cache_dir,
             progress,
             &self.builds,
