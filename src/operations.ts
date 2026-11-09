@@ -20,7 +20,8 @@ export interface ProgressUpdate {
   bytes: number;
   items: number;
   total: number | null;
-  phase: "preparing" | "working";
+  /** "saving": the work is done and a server is saving it (Arbesk's relay). */
+  phase: "preparing" | "working" | "saving";
   done: boolean;
 }
 
@@ -98,6 +99,8 @@ export function opDetail(op: Operation, now: number): string {
   if (op.state === "waiting") return "Waiting…";
   if (op.state === "preparing") return "Preparing…";
   if (op.state === "cancelling") return "Cancelling…";
+  // Only a copy into Arbesk saves this way; it can take minutes (spec D7).
+  if (op.current?.phase === "saving") return "Saving to Arbesk…";
   if (!op.totalBytes) return `${itemsDone(op)} of ${op.totalItems} files`;
   const done = bytesDone(op);
   const sizes = `${formatSize(done)} of ${formatSize(op.totalBytes)}`;

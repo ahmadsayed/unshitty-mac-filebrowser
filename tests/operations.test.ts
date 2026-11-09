@@ -42,6 +42,12 @@ test("the detail line names waiting, preparing and cancelling", () => {
   expect(opDetail(op({ state: "cancelling" }), 0)).toBe("Cancelling…");
 });
 
+test("while Arbesk's relay saves the change, the detail line says so", () => {
+  const saving = op({ totalBytes: 10e6, current: { bytes: 10e6, items: 0, total: null, phase: "saving", done: false } });
+  expect(opDetail(saving, 5000)).toBe("Saving to Arbesk…");
+  expect(opDetail({ ...saving, state: "cancelling" }, 5000)).toBe("Cancelling…");
+});
+
 test("byte progress shows sizes, and time left only after 2 s", () => {
   const running = op({ totalBytes: 80.1e6, doneBytes: 12.4e6 });
   expect(opDetail(running, 1000)).toBe("12.4 MB of 80.1 MB");

@@ -263,6 +263,11 @@ export async function arbeskConnectFinish(flowId: string): Promise<ArbeskAccount
   return invoke<ArbeskAccount>("arbesk_connect_finish", { flowId });
 }
 
+/** Whether copying into the account `path` belongs to can start without a new sign-in. */
+export async function arbeskSignedIn(path: string): Promise<boolean> {
+  return invoke<boolean>("arbesk_signed_in", { path });
+}
+
 export async function arbeskConnectCancel(flowId: string): Promise<void> {
   return invoke<void>("arbesk_connect_cancel", { flowId });
 }

@@ -962,7 +962,7 @@ type Args = Record<string, unknown>;
 // Operation progress (spec 2026-10-25-operation-progress)
 // ---------------------------------------------------------------------------
 
-type MockUpdate = { bytes: number; items: number; total: number | null; phase: "preparing" | "working"; done: boolean };
+type MockUpdate = { bytes: number; items: number; total: number | null; phase: "preparing" | "working" | "saving"; done: boolean };
 
 /** Stand-in for Tauri's `Channel`: the backend calls `onmessage`. */
 export class Channel<T> {
@@ -1633,7 +1633,7 @@ function refuseWhileConnected(): void {
 const driveFlows = new Set<string>();
 let driveFlowSeq = 0;
 
-// ----- Arbesk: one account, two collections, read only (src-tauri/src/arbesk/) -----
+// ----- Arbesk: one account, two collections; copies of local models go in (src-tauri/src/arbesk/) -----
 
 /** The wallet address every mock sign-in resolves to. */
 export const ARBESK_MOCK_ADDRESS = `0x${"ab".repeat(20)}`;
@@ -1757,6 +1757,107 @@ function arbeskCopy(a: Args): string {
   return to;
 }
 
+const ARBESK_ONLY_MODELS = "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.";
+const ARBESK_PASTE_INTO = "Paste into a collection.";
+const ARBESK_SIGN_IN = "Sign in to Arbesk again to copy files into it.";
+const ARBESK_TOO_LARGE = "This file is too large for Arbesk (100 MB at most).";
+const ARBESK_MAX_UPLOAD = 100 * 1024 * 1024;
+
+/** The session copies into Arbesk need (D4): tests take it away, or let the next write find it expired. */
+const arbeskSession = { signedIn: true, expireNext: false };
+(globalThis as Record<string, unknown>).__mockArbesk = {
+  get signedIn() {
+    return arbeskSession.signedIn;
+  },
+  set signedIn(value: boolean) {
+    arbeskSession.signedIn = value;
+  },
+  /** The next write is refused as Arbesk refuses an expired session (401), which forgets it. */
+  expireOnce() {
+    arbeskSession.expireNext = true;
+  },
+};
+let arbeskAssetSeq = 0;
+
+/** The collection and listed name of a copy's target, `<collection>/~<name>`
+ *  (location::parse_target). */
+function arbeskTarget(to: string): { collection: (typeof ARBESK_COLLECTIONS)[number]; dir: string; name: string } {
+  const trimmed = to.replace(/\/+$/, "");
+  const dir = trimmed.slice(0, trimmed.lastIndexOf("/"));
+  const last = trimmed.slice(dir.length + 1);
+  let name = "";
+  try {
+    name = last.startsWith("~") ? decodeURIComponent(last.slice(1)) : "";
+  } catch {
+    /* a malformed escape names nothing */
+  }
+  const { token, asset } = arbeskIds(dir);
+  if (!name || !token || asset) throw ARBESK_PASTE_INTO;
+  const collection = ARBESK_COLLECTIONS.find((c) => c.token === token);
+  if (!collection) throw "The chain refused this collection.";
+  return { collection, dir, name };
+}
+
+/** The session a write needs, as ArbeskState::session_for answers; an
+ *  expired one is refused once and forgotten, as a 401 does. */
+function arbeskSessionFor(): void {
+  if (arbeskSession.expireNext) {
+    arbeskSession.expireNext = false;
+    arbeskSession.signedIn = false;
+  }
+  if (!arbeskSession.signedIn) throw ARBESK_SIGN_IN;
+}
+
+/** A new asset's id, as the Studio makes one: `asset_<n>`, not yet taken. */
+function freshArbeskId(): string {
+  const taken = new Set(ARBESK_COLLECTIONS.flatMap((c) => c.assets.map((a) => a.id)));
+  let id: string;
+  do id = `asset_${++arbeskAssetSeq}`;
+  while (taken.has(id));
+  return id;
+}
+
+/**
+ * copy_entry into Arbesk (place::copy's IntoArbesk, ArbeskState::add): a
+ * local .gltf, .glb or .3mf becomes an asset named after the target, a .glb
+ * stored as glTF. Refused in the backend's order: the source, the target,
+ * the account, the session, the file, a taken name. Replace keeps the asset
+ * and saves the file as its next version (D3).
+ */
+function arbeskAdd(a: Args): string {
+  const from = str(a, "from");
+  if (placeOf(from) !== "local") throw ARBESK_ONLY_MODELS;
+  localPath(from);
+  const { collection, dir, name } = arbeskTarget(str(a, "to"));
+  arbeskSessionFor();
+  const source = lookup(from);
+  if (!source || source.dir || !/\.(gltf|glb|3mf)$/i.test(from)) throw ARBESK_ONLY_MODELS;
+  if (source.size > ARBESK_MAX_UPLOAD) throw ARBESK_TOO_LARGE;
+  const ext: MockAsset["ext"] = /\.3mf$/i.test(from) ? "3mf" : "gltf";
+  const taken = collection.assets.find((asset) => `${asset.name}.${asset.ext}` === name);
+  if (taken && !a.overwrite) throw `Target already exists: ${name}`;
+  (a.onProgress as Channel<MockUpdate> | undefined)?.onmessage({ bytes: source.size, items: 0, total: null, phase: "saving", done: false });
+  if (taken) {
+    const saves = taken.saves ?? { prefix: taken.id, count: 1 };
+    taken.saves = { ...saves, count: saves.count + 1 };
+    return `${dir}/${arbeskSegment(taken.id, name)}`;
+  }
+  const dot = name.lastIndexOf(".");
+  const asset: MockAsset = { id: freshArbeskId(), name: (dot > 0 ? name.slice(0, dot) : name) || "Uploaded Asset", ext };
+  collection.assets.push(asset);
+  return `${dir}/${arbeskSegment(asset.id, `${asset.name}.${asset.ext}`)}`;
+}
+
+/** Whether a pending name is listed in its collection (ArbeskState::exists). */
+function arbeskPendingExists(path: string): boolean {
+  try {
+    const { collection, name } = arbeskTarget(path);
+    return collection.assets.some((asset) => `${asset.name}.${asset.ext}` === name);
+  } catch {
+    return false;
+  }
+}
+
 /** The thumbnail an asset was saved with, as PNG: a shaded cube on the
  *  Studio's backdrop, 16:9 and at most 512 x 288 like the Studio's (the
  *  backend never enlarges one). Empty when it has none or can't be read,
@@ -1855,7 +1956,17 @@ const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
       root_path: `arbesk://${ARBESK_MOCK_ADDRESS}`,
     };
     arbeskAccountList = [...arbeskAccountList.filter((item) => item !== known), account];
+    // Signing in keeps a new session (D4).
+    arbeskSession.signedIn = true;
     return { ...account };
+  },
+  arbesk_signed_in: (a) => {
+    try {
+      arbeskIds(str(a, "path"));
+    } catch {
+      return false;
+    }
+    return arbeskSession.signedIn;
   },
   arbesk_connect_cancel: (a) => void arbeskFlows.delete(str(a, "flowId")),
   arbesk_disconnect: (a) => {
@@ -2416,10 +2527,12 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
   path_exists: (a) => {
     const path = str(a, "path");
     if (placeOf(path) === "drive") return drivePathExists(path);
+    if (placeOf(path) === "arbesk") return arbeskPendingExists(path);
     return isLocal(path) && lookup(path) !== undefined;
   },
   copy_entry: (a) => {
     if (placeOf(str(a, "from")) === "arbesk") return arbeskCopy(a);
+    if (placeOf(str(a, "to")) === "arbesk") return arbeskAdd(a);
     return transferRoute(a) === "drive" ? driveTransfer(a, false) : (transfer(a, false), str(a, "to"));
   },
   move_entry: (a) => (transferRoute(a) === "drive" ? driveTransfer(a, true) : (transfer(a, true), str(a, "to"))),

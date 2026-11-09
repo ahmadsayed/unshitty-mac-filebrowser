@@ -155,12 +155,13 @@ export function isArbeskModelFile(path: string): boolean {
 }
 
 /** Why `paths` can't be pasted or dropped into `dir` in Arbesk, in order:
- *  a cut or move, a folder that isn't a collection, a file that isn't a model on
- *  this computer. Null when only copies of model files go into a collection. */
-export function arbeskPasteRefusal(dir: string, paths: readonly string[], moving: boolean): string | null {
+ *  a cut or move, a folder that isn't a collection, an item that isn't a model
+ *  file on this computer (any of `dirs`, the folders among `paths`, whatever
+ *  its name). Null when only copies of model files go into a collection. */
+export function arbeskPasteRefusal(dir: string, paths: readonly string[], moving: boolean, dirs: ReadonlySet<string> = new Set()): string | null {
   if (moving) return "Arbesk is read only.";
   if (!isArbeskCollection(dir)) return "Paste into a collection.";
-  if (!paths.every(isArbeskModelFile)) return "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.";
+  if (!paths.every((path) => !dirs.has(path) && isArbeskModelFile(path))) return "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.";
   return null;
 }
 

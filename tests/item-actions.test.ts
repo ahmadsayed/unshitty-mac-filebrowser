@@ -58,6 +58,8 @@ test("paste into Arbesk: copies of model files into a collection only", () => {
   expect(refusal("paste", into(["/Users/me/a.glb"], true))).toBe("Arbesk is read only.");
   expect(refusal("paste", into(["/Users/me/a.txt"]))).toBe("Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.");
   expect(refusal("paste", { kind: "arbesk", items: [], dir: "arbesk://0xab", paths: ["/Users/me/a.glb"] })).toBe("Paste into a collection.");
+  // A folder named like a model is still a folder.
+  expect(refusal("paste", { ...into(["/Users/me/Kit.glb"]), dirs: new Set(["/Users/me/Kit.glb"]) })).toBe("Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.");
 });
 
 test("rename: never in Recent, Starred or Network, which mix folders", () => {

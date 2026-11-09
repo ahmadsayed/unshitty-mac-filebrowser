@@ -37,6 +37,8 @@ export interface Here {
   dir?: string;
   /** A paste that moves (Cut, a forced-move drag): Arbesk takes copies only. */
   moving?: boolean;
+  /** The folders among `paths`, which Arbesk never takes. */
+  dirs?: ReadonlySet<string>;
 }
 
 /** null: allowed; "": refused quietly; any other text: refused with that toast. */
@@ -52,7 +54,7 @@ const ARBESK_READ_ONLY: Verdict = "Arbesk is read only.";
  *  Arbesk say why not (Arbesk takes copies of model files into a collection). Kept: an SSH server says "Shared folders are read only." */
 const paste = (here: Here): Verdict => {
   if (kindAcceptsNewItems(here.kind)) return OK;
-  if (here.kind === "arbesk") return arbeskPasteRefusal(here.dir ?? "", here.paths ?? [], here.moving ?? false);
+  if (here.kind === "arbesk") return arbeskPasteRefusal(here.dir ?? "", here.paths ?? [], here.moving ?? false, here.dirs);
   return isReadOnlyKind(here.kind) ? READ_ONLY : QUIET;
 };
 

@@ -171,6 +171,13 @@ test("the paste refusal for an Arbesk folder, in order", () => {
   expect(arbeskPasteRefusal(COLLECTION, [...model, "/Users/me/b.3mf"], false)).toBeNull();
 });
 
+test("a folder is never a model, whatever its name", () => {
+  const folder = "/Users/me/Kit.glb";
+  expect(arbeskPasteRefusal(COLLECTION, [folder], false, new Set([folder]))).toBe(ONLY_MODELS);
+  expect(arbeskPasteRefusal(COLLECTION, ["/Users/me/a.3mf", folder], false, new Set([folder]))).toBe(ONLY_MODELS);
+  expect(arbeskPasteRefusal(COLLECTION, [folder], false, new Set(["/Users/me/other.glb"]))).toBeNull();
+});
+
 test("a .glb is listed as a .gltf once it is in Arbesk", () => {
   expect(arbeskTargetName("Box.GLB")).toBe("Box.gltf");
   expect(arbeskTargetName("Box.glb")).toBe("Box.gltf");

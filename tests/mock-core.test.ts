@@ -1472,3 +1472,61 @@ test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend'
   expect((await invoke<ArrayBuffer>("thumbnail", { path: gltf, size: 64 })).byteLength).toBe(0);
   delete (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
 });
+
+test("copy_entry puts a local model into an Arbesk collection, with the backend's refusals", async () => {
+  const { ARBESK_MOCK_ADDRESS: address } = await import("../dev/mock-tauri/core");
+  const mock = (globalThis as unknown as { __mockArbesk: { signedIn: boolean; expireOnce(): void } }).__mockArbesk;
+  const start = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  const account = await invoke<{ id: string }>("arbesk_connect_finish", { flowId: start.flow_id });
+  const root = `arbesk://${address}`;
+  const set = `${root}/2~Untitled%20Collection`;
+  await invoke("make_dir", { path: `${HOME}/Up` });
+  for (const name of ["Box.glb", "Tray.3mf", "notes.txt"]) await invoke("create_file", { path: `${HOME}/Up/${name}` });
+  await invoke("make_dir", { path: `${HOME}/Up/Kit.glb` });
+  const listed = async () => (await invoke<Array<{ name: string; path: string }>>("list_dir", { path: set, showHidden: false })).map((r) => r.name);
+  const ONLY = "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.";
+  const PASTE = "Paste into a collection.";
+  const SIGN_IN = "Sign in to Arbesk again to copy files into it.";
+
+  expect(await invoke("arbesk_signed_in", { path: set })).toBe(true);
+  expect(await invoke("path_exists", { path: `${set}/~Box.gltf` })).toBe(false);
+  // A .glb is stored as glTF: listed under the name the paste asked for.
+  const box = await invoke<string>("copy_entry", { from: `${HOME}/Up/Box.glb`, to: `${set}/~Box.gltf`, overwrite: false });
+  expect(box).toMatch(new RegExp(`^${set}/asset_\\d+~Box\\.gltf$`));
+  const tray = await invoke<string>("copy_entry", { from: `${HOME}/Up/Tray.3mf`, to: `${set}/~Tray.3mf`, overwrite: false });
+  expect(await listed()).toEqual(["Cube.gltf", "Table.gltf", "Box.gltf", "Tray.3mf"]);
+  expect(await invoke("path_exists", { path: `${set}/~Box.gltf` })).toBe(true);
+  expect(tray).not.toBe(box);
+
+  // A taken name asks first; Replace keeps the asset and adds a version.
+  await expect(invoke("copy_entry", { from: `${HOME}/Up/Box.glb`, to: `${set}/~Box.gltf`, overwrite: false })).rejects.toBe("Target already exists: Box.gltf");
+  expect(await invoke("copy_entry", { from: `${HOME}/Up/Box.glb`, to: `${set}/~Box.gltf`, overwrite: true })).toBe(box);
+  expect((await invoke<unknown[]>("arbesk_versions", { path: box })).length).toBe(2);
+  expect(await listed()).toEqual(["Cube.gltf", "Table.gltf", "Box.gltf", "Tray.3mf"]);
+
+  // The refusals, in the backend's order; moving in is never allowed.
+  await expect(invoke("move_entry", { from: `${HOME}/Up/Box.glb`, to: `${set}/~Moved.gltf`, overwrite: false })).rejects.toBe("Arbesk is read only.");
+  await expect(invoke("copy_entry", { from: "gdrive://mock/x~Box.glb", to: `${set}/~B.gltf`, overwrite: false })).rejects.toBe(ONLY);
+  await expect(invoke("copy_entry", { from: `${HOME}/Up/Box.glb`, to: `${root}/~B.gltf`, overwrite: false })).rejects.toBe(PASTE);
+  await expect(invoke("copy_entry", { from: `${HOME}/Up/Box.glb`, to: `${set}/B.gltf`, overwrite: false })).rejects.toBe(PASTE);
+  await expect(invoke("copy_entry", { from: `${HOME}/Up/notes.txt`, to: `${set}/~notes.txt`, overwrite: false })).rejects.toBe(ONLY);
+  await expect(invoke("copy_entry", { from: `${HOME}/Up/Kit.glb`, to: `${set}/~Kit.gltf`, overwrite: false })).rejects.toBe(ONLY);
+  await expect(invoke("copy_entry", { from: `${HOME}/Up/Gone.glb`, to: `${set}/~Gone.gltf`, overwrite: false })).rejects.toBe(ONLY);
+
+  // No session: refused before the file is read; an expired one fails once and is forgotten.
+  mock.signedIn = false;
+  expect(await invoke("arbesk_signed_in", { path: set })).toBe(false);
+  await expect(invoke("copy_entry", { from: `${HOME}/Up/notes.txt`, to: `${set}/~notes.txt`, overwrite: false })).rejects.toBe(SIGN_IN);
+  const again = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  await invoke("arbesk_connect_finish", { flowId: again.flow_id });
+  expect(await invoke("arbesk_signed_in", { path: set })).toBe(true);
+  mock.expireOnce();
+  expect(await invoke("arbesk_signed_in", { path: set })).toBe(true);
+  await expect(invoke("copy_entry", { from: `${HOME}/Up/Tray.3mf`, to: `${set}/~Tray 2.3mf`, overwrite: false })).rejects.toBe(SIGN_IN);
+  expect(await invoke("arbesk_signed_in", { path: set })).toBe(false);
+  mock.signedIn = true;
+
+  await invoke("arbesk_disconnect", { account: account.id });
+  expect(await invoke("arbesk_signed_in", { path: set })).toBe(false);
+  await expect(invoke("copy_entry", { from: `${HOME}/Up/Box.glb`, to: `${set}/~Box.gltf`, overwrite: true })).rejects.toBe("Connect this Arbesk account first.");
+});
