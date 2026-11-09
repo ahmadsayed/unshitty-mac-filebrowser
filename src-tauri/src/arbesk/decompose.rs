@@ -60,13 +60,16 @@ pub struct Part {
 }
 
 /// A model file split as Arbesk stores it; the composite is uploaded last
-/// (`stored_json` of `fill`'s result) as `composite_name`.
+/// (`stored_json(&fill(..), composite_compressed)`) as `composite_name`.
+/// As the Studio writes it: a glTF composite brotli-framed (its decomposer
+/// asks for compression), a 3MF composite raw (its decomposer doesn't).
 #[derive(Debug, Clone)]
 pub struct Decomposed {
     pub format: Format,
     pub composite: Value,
     pub parts: Vec<Part>,
     pub composite_name: String,
+    pub composite_compressed: bool,
 }
 
 // ---- Dispatch -------------------------------------------------------------
@@ -125,7 +128,7 @@ pub fn decompose(file: &Path, asset_name: &str) -> Result<Decomposed, String> {
             (
                 Format::ThreeMf,
                 composite,
-                format!("{base}_composite.3mf.json.br"),
+                format!("{base}_composite.3mf.json"),
             )
         }
     };
@@ -134,6 +137,7 @@ pub fn decompose(file: &Path, asset_name: &str) -> Result<Decomposed, String> {
         composite,
         parts: uploads.parts,
         composite_name,
+        composite_compressed: format == Format::Gltf,
     })
 }
 
@@ -287,11 +291,14 @@ pub fn brotli_framed(bytes: &[u8], quality: u32) -> Vec<u8> {
     out
 }
 
-/// A JSON document as asset-core's `writeJSON` stores it: compact,
-/// brotli-framed at quality 11.
-pub fn stored_json(value: &Value) -> Vec<u8> {
+/// A JSON document as the Studio's `writeJSONToIPFS` stores it: compact,
+/// brotli-framed at quality 11 when asked to compress, else raw.
+pub fn stored_json(value: &Value, compress: bool) -> Vec<u8> {
     let text = serde_json::to_vec(value).expect("JSON of a Value");
-    brotli_framed(&text, JSON_QUALITY)
+    match compress {
+        true => brotli_framed(&text, JSON_QUALITY),
+        false => text,
+    }
 }
 
 // ---- Parts -----------------------------------------------------------------
@@ -1252,13 +1259,13 @@ mod tests {
             "3mf-box",
             "3mf",
             Format::ThreeMf,
-            "composite_composite.3mf.json.br",
+            "composite_composite.3mf.json",
         ),
         (
             "3mf-thumbnail",
             "3mf",
             Format::ThreeMf,
-            "composite_composite.3mf.json.br",
+            "composite_composite.3mf.json",
         ),
     ];
 
@@ -1290,6 +1297,8 @@ mod tests {
             }
             assert_eq!(ours.format, format, "{case}");
             assert_eq!(ours.composite_name, composite_name, "{case}");
+            // The Studio compresses a glTF composite only.
+            assert_eq!(ours.composite_compressed, format == Format::Gltf, "{case}");
         }
     }
 
@@ -1323,7 +1332,8 @@ mod tests {
         assert_eq!(ours.composite_name, "red_box__composite.gltf.br");
         let ours = decompose(&fixture("3mf-thumbnail").join("input.3mf"), "Red Box!").unwrap();
         assert_eq!(ours.parts[0].file_name, "red_box__thumbnail.png");
-        assert_eq!(ours.composite_name, "red_box__composite.3mf.json.br");
+        assert_eq!(ours.composite_name, "red_box__composite.3mf.json");
+        assert!(!ours.composite_compressed);
     }
 
     fn write(path: &Path, bytes: &[u8]) {
@@ -1372,6 +1382,7 @@ mod tests {
         assert_eq!(raw(&ours.parts[0].stored), box_bin());
         assert_eq!(raw(&ours.parts[1].stored), red_png());
         assert_eq!(ours.composite_name, "box_composite.gltf.br");
+        assert!(ours.composite_compressed);
     }
 
     #[test]
@@ -1542,11 +1553,15 @@ mod tests {
     }
 
     #[test]
-    fn json_is_stored_brotli_framed() {
+    fn json_is_stored_raw_or_brotli_framed() {
         let value = json!({"a": [1, 2, 3], "b": "text"});
-        let stored = stored_json(&value);
+        let stored = stored_json(&value, true);
         assert!(stored.starts_with(b"ARB\x01"));
         assert_eq!(raw(&stored), serde_json::to_vec(&value).unwrap());
+        assert_eq!(
+            stored_json(&value, false),
+            serde_json::to_vec(&value).unwrap()
+        );
         assert_eq!(raw(&brotli_framed(b"bytes", 5)), b"bytes");
     }
 }
