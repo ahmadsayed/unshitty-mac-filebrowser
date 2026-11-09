@@ -46,6 +46,7 @@ pub struct ArbeskState {
     accounts: Mutex<Accounts>,
     flows: Mutex<HashMap<String, Arc<Flow>>>,
     builds: service::Builds,
+    scenes: scene::Scenes,
     thumbnails: service::Thumbnails,
 }
 
@@ -78,6 +79,7 @@ impl ArbeskState {
             accounts,
             flows: Mutex::new(HashMap::new()),
             builds: service::Builds::default(),
+            scenes: scene::Scenes::default(),
             thumbnails: service::Thumbnails::default(),
         }
     }
@@ -99,10 +101,16 @@ impl ArbeskState {
         Ok(account.site())
     }
 
+    /// How to reach the account `path` belongs to.
+    fn reach(&self, path: &str) -> Result<(&dyn Http, Site), String> {
+        let site = self.site_for(parse(path)?.address())?;
+        Ok((self.http()?, site))
+    }
+
     /// `service::list` for the account `path` belongs to.
     pub fn list(&self, path: &str) -> Result<Vec<Entry>, String> {
-        let site = self.site_for(parse(path)?.address())?;
-        service::list(self.http()?, &site, path, &self.cache_dir, &self.thumbnails)
+        let (http, site) = self.reach(path)?;
+        service::list(http, &site, path, &self.cache_dir, &self.thumbnails)
     }
 
     /// `service::thumbnail` for the account `path` belongs to, as PNG bytes:
@@ -142,19 +150,23 @@ impl ArbeskState {
         )
     }
 
-    /// `service::scene` for the account `path` belongs to.
+    /// `service::scene` for the account `path` belongs to, kept for `part`.
     pub fn scene(&self, path: &str) -> Result<scene::Scene, String> {
-        let site = self.site_for(parse(path)?.address())?;
-        service::scene(self.http()?, &site, path, &self.cache_dir)
+        let (http, site) = self.reach(path)?;
+        let resolved = service::scene(http, &site, path, &self.cache_dir)?;
+        Ok(self.scenes.keep(path, resolved).as_ref().clone())
     }
 
     /// `service::part` for the account `path` belongs to.
     pub fn part(&self, path: &str, key: &str, progress: &Progress) -> Result<PathBuf, String> {
-        let site = self.site_for(parse(path)?.address())?;
+        let (http, site) = self.reach(path)?;
+        let scene = self
+            .scenes
+            .get_or_keep(path, || service::scene(http, &site, path, &self.cache_dir))?;
         service::part(
-            self.http()?,
+            http,
             &site,
-            path,
+            &scene,
             key,
             &self.cache_dir,
             progress,

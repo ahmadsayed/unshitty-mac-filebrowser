@@ -223,23 +223,22 @@ pub fn scene(http: &dyn Http, site: &Site, path: &str, cache_dir: &Path) -> Resu
     Ok(resolve(&cid, &reader))
 }
 
-/// The file the preview loads for the part `key` of the asset at `path`:
-/// `cache_dir/arbesk/<key>/part.<glb|3mf>`, built once and reused while
-/// nobody has changed it. A key the asset's scene doesn't hold is refused.
+/// The file the preview loads for the part `key` of `scene` (as `scene`
+/// resolved it): `cache_dir/arbesk/<key>/part.<glb|3mf>`, built once and
+/// reused while nobody has changed it. A key the scene doesn't hold is refused.
 pub fn part(
     http: &dyn Http,
     site: &Site,
-    path: &str,
+    scene: &Scene,
     key: &str,
     cache_dir: &Path,
     progress: &Progress,
     builds: &Builds,
 ) -> Result<PathBuf, String> {
     progress.check()?;
-    let (reader, cid) = open_asset(http, site, path, cache_dir)?;
-    let scene = resolve(&cid, &reader);
     let found = scene.parts.iter().find(|part| part.key == key);
     let found = found.ok_or("This part is not in the asset.")?;
+    let reader = Reader::open(http, site, cache_dir)?;
     let source = reader.gateway.json(key)?;
     let dir = cache_dir.join("arbesk").join(key);
     let name = format!("part.{}", found.format);
@@ -261,8 +260,9 @@ fn open_asset<'a>(
     else {
         return Err(format!("“{path}” is a folder, not a file."));
     };
-    let reader = Reader::open(http, site, cache_dir)?;
+    let mut reader = Reader::open(http, site, cache_dir)?;
     let (cid, _) = reader.asset_manifest(&token_id, &asset_id)?;
+    reader.own_token = Some(token_id);
     Ok((reader, cid))
 }
 
@@ -302,7 +302,29 @@ impl Links for Reader<'_> {
     /// deployment's when it names none), then the asset in it. Links to
     /// another chain aren't followed.
     fn linked(&self, child_ref: &Value) -> Result<String, String> {
-        let collection = &child_ref["collection"];
+        let manifest = match &child_ref["collection"] {
+            // The opened asset's own collection, as the Studio's "self".
+            Value::String(own) if own == "self" => {
+                self.collection_manifest(self.own_token.as_deref().ok_or(UNKNOWN_FORMAT)?)?
+            }
+            collection => self.linked_collection(collection)?,
+        };
+        let asset = child_ref["assetID"].as_str().unwrap_or_default();
+        manifest["assets"][asset]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| "This asset is no longer in the collection.".into())
+    }
+
+    fn format(&self, source_cid: &str) -> Result<Format, String> {
+        format_of(&self.gateway.json(source_cid)?)
+    }
+}
+
+impl Reader<'_> {
+    /// The manifest of the collection a link names, through the link's own
+    /// contract (the deployment's when it names none).
+    fn linked_collection(&self, collection: &Value) -> Result<Value, String> {
         if number(&collection["chainId"]) != Some(self.site.chain_id) {
             return Err("This link is to another chain.".into());
         }
@@ -316,18 +338,8 @@ impl Links for Reader<'_> {
         if let Some(contract) = collection["contractAddress"].as_str() {
             chain.contract = contract.to_string();
         }
-        let manifest = self
-            .gateway
-            .json(&chain::token_uri(self.http, &chain, &token)?)?;
-        let asset = child_ref["assetID"].as_str().unwrap_or_default();
-        manifest["assets"][asset]
-            .as_str()
-            .map(String::from)
-            .ok_or_else(|| "This asset is no longer in the collection.".into())
-    }
-
-    fn format(&self, source_cid: &str) -> Result<Format, String> {
-        format_of(&self.gateway.json(source_cid)?)
+        self.gateway
+            .json(&chain::token_uri(self.http, &chain, &token)?)
     }
 }
 
@@ -378,6 +390,8 @@ struct Reader<'a> {
     site: &'a Site,
     chain: ChainConfig,
     gateway: Gateway<'a>,
+    /// The opened asset's collection token, for links to "self".
+    own_token: Option<String>,
 }
 
 impl<'a> Reader<'a> {
@@ -389,6 +403,7 @@ impl<'a> Reader<'a> {
             site,
             chain,
             gateway,
+            own_token: None,
         })
     }
 
@@ -714,6 +729,10 @@ mod tests {
         asset_path(&rooms(), "t1", "Table", "gltf")
     }
 
+    fn table_scene(http: &FakeHttp, cache_dir: &Path) -> Scene {
+        scene(http, &site(), &table(), cache_dir).unwrap()
+    }
+
     fn arbesk(world: Arc<Mutex<World>>) -> FakeHttp {
         FakeHttp::new(move |request| {
             let w = world.lock().unwrap();
@@ -964,13 +983,57 @@ mod tests {
     }
 
     #[test]
+    fn a_link_to_self_is_in_the_assets_own_collection() {
+        let cache = tempfile::tempdir().unwrap();
+        let mut w = world();
+        w.put_asset("bafyBench", Some("Bench"), "bafySrc3mf");
+        w.put(
+            "bafyCorner",
+            json!({ "name": "Corner", "timestamp": STAMP_MS, "scene": { "nodes": [
+            { "child_ref": { "collection": "self", "assetID": "t2" } }
+        ] } }),
+        );
+        w.put("bafyC4", json!({ "type": "collection", "name": "Rooms", "assets": { "t1": "bafyTable", "t2": "bafyBench", "t3": "bafyCorner" } }));
+        let http = arbesk(Arc::new(Mutex::new(w)));
+        let corner = asset_path(&rooms(), "t3", "Corner", "3mf");
+        let resolved = scene(&http, &site(), &corner, cache.path()).unwrap();
+        let keys: Vec<&str> = resolved.parts.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(keys, ["bafySrc3mf"]);
+    }
+
+    #[test]
+    fn a_part_does_not_resolve_the_scene_again() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let resolved = scene(&http, &site(), &table(), cache.path()).unwrap();
+        let chain_calls = |http: &FakeHttp| {
+            http.requests()
+                .iter()
+                .filter(|r| r.url == "https://rpc.test")
+                .count()
+        };
+        let before = chain_calls(&http);
+        part(
+            &http,
+            &site(),
+            &resolved,
+            "bafySrcGltf",
+            cache.path(),
+            &Progress::default(),
+            &Builds::default(),
+        )
+        .unwrap();
+        assert_eq!(chain_calls(&http), before);
+    }
+
+    #[test]
     fn a_part_is_built_once_and_reused() {
         let cache = tempfile::tempdir().unwrap();
         let http = arbesk(Arc::new(Mutex::new(world())));
         let built = part(
             &http,
             &site(),
-            &table(),
+            &table_scene(&http, cache.path()),
             "bafySrcGltf",
             cache.path(),
             &Progress::default(),
@@ -997,7 +1060,7 @@ mod tests {
         let again = part(
             &http,
             &site(),
-            &table(),
+            &table_scene(&http, cache.path()),
             "bafySrcGltf",
             cache.path(),
             &Progress::default(),
@@ -1015,7 +1078,7 @@ mod tests {
             let error = part(
                 &http,
                 &site(),
-                &table(),
+                &table_scene(&http, cache.path()),
                 key,
                 cache.path(),
                 &Progress::default(),

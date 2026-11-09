@@ -4,7 +4,8 @@
 //! right-handed coordinates, with the node's colour and scale. The Studio's
 //! own loader (`scene-loader.ts`) is the reference.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -20,6 +21,15 @@ pub const IDENTITY: Matrix = [
 
 /// How many links deep a scene is followed, as the Studio's `MAX_CHILD_ASSET_DEPTH`.
 pub const MAX_LINK_DEPTH: usize = 5;
+
+/// At most this many copies in one scene: links multiply, and a scene of
+/// links to links could ask for millions.
+pub const MAX_PLACEMENTS: usize = 2_000;
+
+/// Until 2026-10-17 06:19:37 UTC the Studio drew a 3MF at one unit per
+/// millimetre, so an older manifest places its 3MF parts in millimetres
+/// (the Studio's `normalizeLegacy3mfPlacements`); now it draws them in metres.
+pub const LEGACY_3MF_CUTOFF_MS: i64 = 1_792_217_977_000;
 
 /// One place a part goes.
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -45,6 +55,43 @@ pub struct Part {
 #[derive(Serialize, Debug, Clone, PartialEq, Default)]
 pub struct Scene {
     pub parts: Vec<Part>,
+}
+
+/// The scenes the preview resolved lately, by path, so each of its parts
+/// is checked against the scene without resolving it again.
+#[derive(Default)]
+pub struct Scenes(Mutex<HashMap<String, Arc<Scene>>>);
+
+/// How many scenes are kept: the previews of the last few assets.
+const KEPT_SCENES: usize = 8;
+
+impl Scenes {
+    pub fn keep(&self, path: &str, scene: Scene) -> Arc<Scene> {
+        let mut kept = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if kept.len() >= KEPT_SCENES && !kept.contains_key(path) {
+            kept.clear();
+        }
+        let scene = Arc::new(scene);
+        kept.insert(path.to_string(), scene.clone());
+        scene
+    }
+
+    fn get(&self, path: &str) -> Option<Arc<Scene>> {
+        let kept = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        kept.get(path).cloned()
+    }
+
+    /// The scene kept for `path`, else the one `make` resolves, kept.
+    pub fn get_or_keep(
+        &self,
+        path: &str,
+        make: impl FnOnce() -> Result<Scene, String>,
+    ) -> Result<Arc<Scene>, String> {
+        match self.get(path) {
+            Some(scene) => Ok(scene),
+            None => Ok(self.keep(path, make()?)),
+        }
+    }
 }
 
 /// What resolving needs from Arbesk.
@@ -90,6 +137,8 @@ pub fn resolve(asset_cid: &str, links: &dyn Links) -> Scene {
         links,
         scene: Scene::default(),
         seen: HashSet::new(),
+        linked: HashMap::new(),
+        placed: 0,
     };
     walk.asset(asset_cid, &IDENTITY, 0);
     walk.scene
@@ -100,6 +149,9 @@ struct Walk<'a> {
     scene: Scene,
     /// Manifest CIDs on the way down: one met again is a loop.
     seen: HashSet<String>,
+    /// Each link's manifest CID, by the link: one asked once.
+    linked: HashMap<String, Option<String>>,
+    placed: usize,
 }
 
 impl Walk<'_> {
@@ -116,19 +168,26 @@ impl Walk<'_> {
             return;
         }
         self.seen.insert(cid.to_string());
+        let millimetres = manifest["timestamp"]
+            .as_i64()
+            .is_some_and(|t| t < LEGACY_3MF_CUTOFF_MS);
         let nodes = manifest
             .pointer("/scene/nodes")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
         for node in &nodes {
-            self.node(node, parent, depth);
+            self.node(node, parent, depth, millimetres);
         }
         self.seen.remove(cid);
     }
 
-    fn node(&mut self, node: &Value, parent: &Matrix, depth: usize) {
-        let here = multiply(parent, &node_matrix(node));
+    fn node(&mut self, node: &Value, parent: &Matrix, depth: usize, millimetres: bool) {
+        let mut own = node_matrix(node);
+        if millimetres && node["source"]["format"] == "3mf" && node.get("child_ref").is_none() {
+            own[12..15].iter_mut().for_each(|t| *t *= 0.001);
+        }
+        let here = multiply(parent, &own);
         if let Some(child_ref) = node.get("child_ref") {
             self.link(child_ref, &here, depth);
         } else if let Some(source) = node.pointer("/source/cid").and_then(Value::as_str) {
@@ -144,7 +203,12 @@ impl Walk<'_> {
         if depth >= MAX_LINK_DEPTH {
             return;
         }
-        let Ok(cid) = self.links.linked(child_ref) else {
+        let links = self.links;
+        let asked = self
+            .linked
+            .entry(child_ref.to_string())
+            .or_insert_with(|| links.linked(child_ref).ok());
+        let Some(cid) = asked.clone() else {
             return;
         };
         if !self.seen.contains(&cid) {
@@ -154,8 +218,22 @@ impl Walk<'_> {
 
     /// One more place for the source at `key`.
     fn place(&mut self, key: &str, matrix: &Matrix, post: &Value) {
-        let Ok(format) = self.links.format(key) else {
+        if self.placed >= MAX_PLACEMENTS {
             return;
+        }
+        let index = match self.scene.parts.iter().position(|part| part.key == key) {
+            Some(index) => index,
+            None => {
+                let Ok(format) = self.links.format(key) else {
+                    return;
+                };
+                self.scene.parts.push(Part {
+                    key: key.to_string(),
+                    format: format.preview_ext(),
+                    placements: Vec::new(),
+                });
+                self.scene.parts.len() - 1
+            }
         };
         let placement = Placement {
             matrix: to_right_handed(matrix).to_vec(),
@@ -167,14 +245,8 @@ impl Walk<'_> {
                     .unwrap_or(1.0)
             }),
         };
-        match self.scene.parts.iter_mut().find(|part| part.key == key) {
-            Some(part) => part.placements.push(placement),
-            None => self.scene.parts.push(Part {
-                key: key.to_string(),
-                format: format.preview_ext(),
-                placements: vec![placement],
-            }),
-        }
+        self.placed += 1;
+        self.scene.parts[index].placements.push(placement);
     }
 }
 
@@ -201,7 +273,6 @@ fn mesh_colors(post: &Value) -> BTreeMap<String, String> {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::collections::HashMap;
 
     const fn translation(x: f64, y: f64, z: f64) -> Matrix {
         [
@@ -222,6 +293,9 @@ mod tests {
         manifests: HashMap<String, Value>,
         links: HashMap<String, String>,
         formats: HashMap<String, Format>,
+        /// How many times `linked` and `format` were asked.
+        asked: std::cell::Cell<usize>,
+        formats_asked: std::cell::Cell<usize>,
     }
 
     impl Fake {
@@ -246,6 +320,7 @@ mod tests {
                 .ok_or_else(|| format!("no manifest {cid}"))
         }
         fn linked(&self, child_ref: &Value) -> Result<String, String> {
+            self.asked.set(self.asked.get() + 1);
             let id = child_ref["assetID"].as_str().unwrap_or_default();
             self.links
                 .get(id)
@@ -253,6 +328,7 @@ mod tests {
                 .ok_or_else(|| format!("no link {id}"))
         }
         fn format(&self, source_cid: &str) -> Result<Format, String> {
+            self.formats_asked.set(self.formats_asked.get() + 1);
             self.formats
                 .get(source_cid)
                 .copied()
@@ -482,5 +558,96 @@ mod tests {
             &scene.parts[0].placements[0].matrix,
             &translation(0.0, 0.0, 5.0)
         ));
+    }
+
+    #[test]
+    fn a_link_is_asked_once_however_often_it_is_placed() {
+        let mut fake = Fake::default();
+        let chairs: Vec<Value> = (0..4)
+            .map(|i| link_node("chair", translation(f64::from(i), 0.0, 0.0)))
+            .collect();
+        fake.asset("bafyA", json!(chairs));
+        fake.asset("bafyChair", json!([source_node("bafyS", None)]));
+        fake.link("chair", "bafyChair");
+        fake.source("bafyS", Format::Gltf);
+        assert_eq!(resolve("bafyA", &fake).parts[0].placements.len(), 4);
+        assert_eq!((fake.asked.get(), fake.formats_asked.get()), (1, 1));
+    }
+
+    #[test]
+    fn placements_stop_at_the_cap() {
+        let mut fake = Fake::default();
+        fake.asset("bafyA", json!(vec![link_node("row", IDENTITY); 60]));
+        fake.asset("bafyRow", json!(vec![source_node("bafyS", None); 60]));
+        fake.link("row", "bafyRow");
+        fake.source("bafyS", Format::Gltf);
+        let scene = resolve("bafyA", &fake);
+        assert_eq!(scene.parts[0].placements.len(), MAX_PLACEMENTS);
+    }
+
+    fn three_mf_node(y: f64) -> Value {
+        json!({ "source": { "cid": "bafy3", "format": "3mf" }, "transform_matrix": m(translation(0.0, y, 0.0)) })
+    }
+
+    #[test]
+    fn a_3mf_placed_before_metres_moves_in_millimetres() {
+        let mut fake = Fake::default();
+        let nodes = json!([
+            three_mf_node(500.0),
+            source_node("bafyS", Some(translation(0.0, 2.0, 0.0)))
+        ]);
+        fake.manifests.insert(
+            "bafyOld".into(),
+            json!({ "timestamp": LEGACY_3MF_CUTOFF_MS - 1, "scene": { "nodes": nodes } }),
+        );
+        fake.manifests.insert(
+            "bafyNew".into(),
+            json!({ "timestamp": LEGACY_3MF_CUTOFF_MS, "scene": { "nodes": nodes } }),
+        );
+        fake.manifests
+            .insert("bafyUndated".into(), json!({ "scene": { "nodes": nodes } }));
+        fake.source("bafy3", Format::ThreeMf);
+        fake.source("bafyS", Format::Gltf);
+        let lift = |cid: &str| {
+            resolve(cid, &fake)
+                .parts
+                .iter()
+                .map(|p| p.placements[0].matrix[13])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(lift("bafyOld"), [0.5, 2.0]);
+        assert_eq!(lift("bafyNew"), [500.0, 2.0]);
+        assert_eq!(lift("bafyUndated"), [500.0, 2.0]);
+    }
+
+    #[test]
+    fn the_last_scenes_are_kept() {
+        let scenes = Scenes::default();
+        let one = |key: &str| Scene {
+            parts: vec![Part {
+                key: key.into(),
+                format: "glb",
+                placements: vec![],
+            }],
+        };
+        scenes.keep("a", one("x"));
+        assert_eq!(scenes.get("a").unwrap().parts[0].key, "x");
+        scenes.keep("a", one("y"));
+        assert_eq!(scenes.get("a").unwrap().parts[0].key, "y");
+        for i in 0..KEPT_SCENES {
+            scenes.keep(&format!("p{i}"), one("z"));
+        }
+        assert!(scenes.get("a").is_none());
+        assert!(scenes.get(&format!("p{}", KEPT_SCENES - 1)).is_some());
+        assert!(scenes.get("nowhere").is_none());
+        let last = format!("p{}", KEPT_SCENES - 1);
+        let made = scenes.get_or_keep(&last, || Err("not asked".into()));
+        assert_eq!(made.unwrap().parts[0].key, "z");
+        assert!(scenes.get_or_keep("new", || Err("refused".into())).is_err());
+        let made = scenes.get_or_keep("new", || Ok(one("n"))).unwrap();
+        assert_eq!(
+            (made.parts[0].key.as_str(), scenes.get("new").is_some()),
+            ("n", true)
+        );
     }
 }
