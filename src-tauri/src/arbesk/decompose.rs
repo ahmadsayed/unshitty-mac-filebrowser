@@ -39,10 +39,6 @@ fn missing(uri: &str) -> String {
     format!("“{uri}” can't be found.")
 }
 
-/// The most a 3MF may hold once unzipped: a few megabytes of zip can
-/// stand for gigabytes.
-const UNZIPPED_CAP: u64 = 1024 * 1024 * 1024;
-
 const IPFS: &str = "ipfs://";
 const HASH_ALGO: &str = "murmur3-128";
 const BROTLI_MAGIC: &[u8] = b"ARB\x01";
@@ -740,7 +736,7 @@ fn collect_image_tasks(
                 old_view: view,
                 range: Range {
                     start,
-                    end: start + int_or_zero(view_def, "byteLength"),
+                    end: start.saturating_add(int_or_zero(view_def, "byteLength")),
                 },
             })
         });
@@ -797,7 +793,9 @@ fn from_buffer_view(
         .get(int(view.get("buffer"))? as usize)?
         .as_ref()?;
     let start = (int_or_zero(view, "byteOffset") as usize).min(source.len());
-    let end = (start + int_or_zero(view, "byteLength") as usize).min(source.len());
+    let end = start
+        .saturating_add(int_or_zero(view, "byteLength") as usize)
+        .min(source.len());
     let bytes = source[start..end].to_vec();
     let mime = declared.or_else(|| detect_image_mime_type(&bytes));
     Some(Extracted { bytes, mime })
@@ -816,7 +814,12 @@ fn upload_images(
     for task in tasks {
         let ext = ext_from_mime_type(task.mime.as_deref());
         let name = format!("{base}_texture_{}.{ext}", task.index);
-        let image = &mut composite["images"][task.index];
+        let Some(image) = composite
+            .get_mut("images")
+            .and_then(|images| images.get_mut(task.index))
+        else {
+            continue;
+        };
         let mut entry = uploads.store(image, &task.bytes, &name);
         entry.remove("bufferView");
         let has_mime = entry.get("mimeType").is_some_and(truthy);
@@ -971,7 +974,13 @@ fn prune_buffer(
     }
     let pruned = splice_out_ranges(bytes, &merged);
     adjust_buffer_view_offsets(composite, buffer, &merged);
-    composite["buffers"][buffer as usize]["byteLength"] = json!(pruned.len());
+    let entry = composite
+        .get_mut("buffers")
+        .and_then(|buffers| buffers.get_mut(buffer as usize))
+        .and_then(Value::as_object_mut);
+    if let Some(entry) = entry {
+        entry.insert("byteLength".into(), json!(pruned.len()));
+    }
     buffer_bytes[buffer as usize] = Some(pruned);
 }
 
@@ -999,7 +1008,7 @@ fn views_of(composite: &Value, buffer: u64) -> impl Iterator<Item = &Value> {
 fn any_remaining_view_overlaps(composite: &Value, buffer: u64, ranges: &[Range]) -> bool {
     views_of(composite, buffer).any(|view| {
         let start = int_or_zero(view, "byteOffset");
-        let end = start + int_or_zero(view, "byteLength");
+        let end = start.saturating_add(int_or_zero(view, "byteLength"));
         ranges.iter().any(|r| !(end <= r.start || start >= r.end))
     })
 }
@@ -1027,12 +1036,10 @@ fn adjust_buffer_view_offsets(composite: &mut Value, buffer: u64, ranges: &[Rang
             continue;
         }
         let old = int_or_zero(view, "byteOffset");
-        let cut: u64 = ranges
-            .iter()
-            .filter(|r| r.end <= old)
-            .map(|r| r.end - r.start)
-            .sum();
-        view["byteOffset"] = json!(old - cut);
+        let cut: u64 = ranges.iter().filter(|r| r.end <= old).fold(0u64, |cut, r| {
+            cut.saturating_add(r.end.saturating_sub(r.start))
+        });
+        view["byteOffset"] = json!(old.saturating_sub(cut));
     }
 }
 
@@ -1062,7 +1069,9 @@ fn entry_name(raw: &[u8], named: Option<&str>) -> String {
 /// it: every entry, folders included, in the archive's order.
 fn unzip(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| NOT_3MF)?;
-    let mut budget = UNZIPPED_CAP;
+    // What goes up is the unzipped entries, so they count against
+    // MAX_UPLOAD (a few kilobytes of zip can stand for gigabytes).
+    let mut budget = MAX_UPLOAD;
     let mut entries = Vec::new();
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|_| NOT_3MF)?;
@@ -1463,6 +1472,82 @@ mod tests {
         let ours = decompose(&file, "Box").unwrap();
         assert_eq!(ours.composite["modelPath"], "3D/3dmodel.model");
         assert_eq!(ours.composite["modelRels"], Value::Null);
+    }
+
+    /// A GLB holding `json` and a BIN chunk of `bin`.
+    fn glb(json: &Value, bin: &[u8]) -> Vec<u8> {
+        let mut text = json.to_string().into_bytes();
+        text.resize(text.len().div_ceil(4) * 4, b' ');
+        let mut bin = bin.to_vec();
+        bin.resize(bin.len().div_ceil(4) * 4, 0);
+        let mut out = Vec::new();
+        let total = 12 + 8 + text.len() + 8 + bin.len();
+        for word in [0x46546c67, 2, total, text.len(), 0x4e4f534a] {
+            out.extend_from_slice(&(word as u32).to_le_bytes());
+        }
+        out.extend_from_slice(&text);
+        out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0x004e4942u32.to_le_bytes());
+        out.extend_from_slice(&bin);
+        out
+    }
+
+    /// Numbers and entries a GLB makes up never crash the app (the
+    /// release build aborts on a panic): they clamp as `subarray` does or
+    /// are refused.
+    #[test]
+    fn a_malformed_glb_is_never_a_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bad.glb");
+        let png = red_png();
+        let huge = json!({
+            "images": [{"bufferView": 0}],
+            "accessors": [{"bufferView": 1, "count": 1}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 1, "byteLength": 1e20},
+                {"buffer": 0, "byteOffset": 1e20, "byteLength": 1e20},
+            ],
+            "buffers": [{"byteLength": png.len()}],
+        });
+        let not_an_object = json!({
+            "images": [{"bufferView": 0}],
+            "bufferViews": [{"buffer": 0, "byteLength": png.len()}],
+            "buffers": ["x"],
+        });
+        for json in [huge, not_an_object] {
+            write(&file, &glb(&json, &png));
+            match decompose(&file, "Bad") {
+                Ok(_) => {}
+                Err(error) => assert_eq!(error, NOT_GLTF, "{json}"),
+            }
+        }
+    }
+
+    /// What a 3MF uploads is its unzipped entries: more than MAX_UPLOAD of
+    /// them is too large, however small the zip.
+    #[test]
+    fn a_3mf_counts_what_it_unzips_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bomb.3mf");
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in [
+            ("[Content_Types].xml", &b"<Types/>"[..]),
+            ("_rels/.rels", b"<Relationships/>"),
+            ("3D/3dmodel.model", b"<model/>"),
+        ] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.start_file("Metadata/zeros.bin", options).unwrap();
+        let chunk = vec![0u8; 1 << 20];
+        for _ in 0..MAX_UPLOAD >> 20 {
+            writer.write_all(&chunk).unwrap();
+        }
+        let package = writer.finish().unwrap().into_inner();
+        assert!((package.len() as u64) < MAX_UPLOAD / 100);
+        write(&file, &package);
+        assert_eq!(decompose(&file, "Bomb").err().as_deref(), Some(TOO_LARGE));
     }
 
     #[test]
