@@ -173,7 +173,8 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 - Google Drive: no Shared Drives, "Shared with me" or Drive-wide search.
 - Arbesk: read only (no upload, rename or delete); assets open in the
   Studio, and can't be opened, copied or dragged out as files yet; no sizes
-  in listings; live links to another collection's asset don't preview.
+  in listings; a scene's links to assets on another chain are left out of
+  its preview.
 - Keep Versions may miss changes made while the app is closed.
 - Linux: image thumbnails only (no Quick Look).
 - DMG installation supports application bundles, not `.pkg` installers or
