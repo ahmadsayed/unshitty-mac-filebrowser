@@ -81,6 +81,22 @@ pub fn asset_path_named(collection_path: &str, asset_id: &str, file_name: &str) 
     )
 }
 
+/// Where a copy into Arbesk goes: the collection and the listed name,
+/// from `arbesk://<address>/<token>~<name>/~<encoded name>`.
+pub fn parse_target(path: &str) -> Result<(String, String, String), String> {
+    let pending = || "Paste into a collection.".to_string();
+    let (parent, last) = path.trim_end_matches('/').rsplit_once('/').ok_or_else(pending)?;
+    let name = last.strip_prefix('~').filter(|name| valid_percent(name)).ok_or_else(pending)?;
+    let name = percent_decode_str(name).decode_utf8().map_err(|_| pending())?;
+    if name.is_empty() {
+        return Err(pending());
+    }
+    match parse(parent)? {
+        ArbeskPath::Collection { address, token_id } => Ok((address, token_id, name.into_owned())),
+        _ => Err(pending()),
+    }
+}
+
 fn segment(id: &str, name: &str) -> String {
     format!("{}~{}", encode(id), encode(name))
 }
@@ -144,6 +160,30 @@ mod tests {
     use super::*;
 
     const ADDRESS: &str = "0x00000000000000000000000000000000000000ab";
+
+    #[test]
+    fn a_pending_name_in_a_collection_is_a_target() {
+        let collection = collection_path(ADDRESS, "12", "My Set");
+        assert_eq!(
+            parse_target(&format!("{collection}/~Box%20%2F%20x.gltf")).unwrap(),
+            (ADDRESS.into(), "12".into(), "Box / x.gltf".into())
+        );
+        let asset = asset_path(&collection, "a1", "Box", "gltf");
+        let account = account_path(ADDRESS);
+        let pending = "Paste into a collection.";
+        for bad in [
+            format!("{account}/~Box.gltf"),
+            format!("{asset}/~Box.gltf"),
+            format!("{collection}/~"),
+            format!("{collection}/Box.gltf"),
+            format!("{collection}/~%zz"),
+            collection.clone(),
+            account.clone(),
+        ] {
+            assert_eq!(parse_target(&bad).unwrap_err(), pending, "{bad}");
+        }
+        assert!(parse_target("arbesk://bad/~x").is_err());
+    }
 
     #[test]
     fn an_account_round_trips() {

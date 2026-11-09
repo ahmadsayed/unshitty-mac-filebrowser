@@ -849,16 +849,22 @@ async fn drive_transfer(
 #[tauri::command]
 async fn path_exists(app: tauri::AppHandle, path: String) -> bool {
     blocking(move || {
-        exists_at(&path, |path| cloud::service::path_exists(&app.state::<CloudState>(), path))
+        exists_at(
+            &path,
+            |path| cloud::service::path_exists(&app.state::<CloudState>(), path),
+            |path| app.state::<arbesk::ArbeskState>().exists(path),
+        )
     })
     .await
     .unwrap_or(false)
 }
 
-/// `path_exists`: Drive paths through `drive`, the others on disk.
-fn exists_at(path: &str, drive: impl FnOnce(&str) -> bool) -> bool {
+/// `path_exists`: Drive paths through `drive`, Arbesk's (a name pending in a
+/// collection) through `arbesk`, the others on disk.
+fn exists_at(path: &str, drive: impl FnOnce(&str) -> bool, arbesk: impl FnOnce(&str) -> bool) -> bool {
     match place::kind(path) {
         Kind::Drive => drive(path),
+        Kind::Arbesk => arbesk(path),
         _ => place::local(path).is_ok_and(|path| fs_ops::path_exists(path.to_string_lossy().into())),
     }
 }
@@ -925,6 +931,12 @@ async fn copy_routed(
 ) -> Result<String, String> {
     if route == Route::Drive {
         return drive_transfer(app, from, to, overwrite, false, progress).await;
+    }
+    if route == Route::IntoArbesk {
+        return blocking(move || {
+            app.state::<arbesk::ArbeskState>().add(&to, Path::new(&from), overwrite, &progress)
+        })
+        .await?;
     }
     blocking(move || {
         let state = app.state::<VersionsState>();
@@ -1734,14 +1746,23 @@ async fn arbesk_connect_finish(app: tauri::AppHandle, flow_id: String) -> Result
     blocking(move || app.state::<arbesk::ArbeskState>().connect_finish(&flow_id)).await?
 }
 
+/// Whether copying into the account `path` belongs to can start without a
+/// new sign-in.
+/// It reads the keychain, which can stop for an unlock prompt: off the main thread.
+#[tauri::command]
+async fn arbesk_signed_in(app: tauri::AppHandle, path: String) -> Result<bool, String> {
+    blocking(move || app.state::<arbesk::ArbeskState>().signed_in(&path)).await
+}
+
 #[tauri::command]
 fn arbesk_connect_cancel(state: tauri::State<arbesk::ArbeskState>, flow_id: String) {
     state.connect_cancel(&flow_id);
 }
 
+/// It ends the session on Arbesk's server (up to 30 s) and clears the keychain.
 #[tauri::command]
-fn arbesk_disconnect(state: tauri::State<arbesk::ArbeskState>, account: String) -> Result<(), String> {
-    state.disconnect(&account)
+async fn arbesk_disconnect(app: tauri::AppHandle, account: String) -> Result<(), String> {
+    blocking(move || app.state::<arbesk::ArbeskState>().disconnect(&account)).await?
 }
 
 #[derive(serde::Serialize)]
@@ -2247,7 +2268,11 @@ pub fn run() {
                 std::env::var("FILEBROWSER_RELAY").ok(),
             ));
             app.manage(CloudState::new(&config_dir));
-            app.manage(arbesk::ArbeskState::new(cache_dir.clone(), config_dir.join("arbesk_accounts.json")));
+            app.manage(arbesk::ArbeskState::new(
+                cache_dir.clone(),
+                config_dir.join("arbesk_accounts.json"),
+                config_dir.join("tokens"),
+            ));
             app.manage(sftp::SftpState::new(
                 config_dir.join("sftp_known_hosts"),
                 home,
@@ -2381,6 +2406,7 @@ pub fn run() {
             arbesk_connect_start,
             arbesk_connect_finish,
             arbesk_connect_cancel,
+            arbesk_signed_in,
             arbesk_disconnect,
             share_identity,
             set_share_name,
@@ -2534,14 +2560,18 @@ mod dispatch_tests {
     #[test]
     fn path_exists_asks_drive_and_looks_on_disk_for_the_rest() {
         let f = fixture();
-        assert!(exists_at(&f.file, |_| panic!("not Drive")));
-        assert!(!exists_at(&format!("{}/gone", f.folder), |_| panic!("not Drive")));
-        assert!(exists_at(DRIVE, |path| path == DRIVE));
-        assert!(!exists_at(BAD_DRIVE, |_| false));
+        let no = |_: &str| -> bool { panic!("not Drive or Arbesk") };
+        assert!(exists_at(&f.file, no, no));
+        assert!(!exists_at(&format!("{}/gone", f.folder), no, no));
+        assert!(exists_at(DRIVE, |path| path == DRIVE, no));
+        assert!(!exists_at(BAD_DRIVE, |_| false, no));
         for path in [SHARE, BAD_SHARE, SFTP, BAD_SFTP] {
-            assert!(!exists_at(path, |_| panic!("not Drive")), "{path}");
+            assert!(!exists_at(path, no, no), "{path}");
         }
-        assert!(!exists_at(RELATIVE, |_| panic!("not Drive")));
+        assert!(!exists_at(RELATIVE, no, no));
+        let pending = "arbesk://0x00000000000000000000000000000000000000ab/1~Set/~Box.gltf";
+        assert!(exists_at(pending, no, |path| path == pending));
+        assert!(!exists_at(pending, no, |_| false));
     }
 
     #[test]

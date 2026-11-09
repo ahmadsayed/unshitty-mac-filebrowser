@@ -7,9 +7,9 @@
 //! one Arbesk accepts, and the address must be the callback's. So only the
 //! typed email's own address is ever kept. What this doesn't prove is that
 //! the session was made by this sign-in (Arbesk resolves any email for any
-//! session, and has no "who am I"): enough for reading, which needs only the
-//! address, not for anything that would act with the session. The session
-//! is then ended.
+//! session, and has no "who am I"). The session of a confirmed sign-in is
+//! kept (`session.rs`) to copy files into Arbesk; one that isn't confirmed
+//! is ended.
 
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,11 +21,14 @@ use url::Url;
 
 use crate::arbesk::chain::Site;
 use crate::arbesk::http::Http;
+use crate::arbesk::session::Session;
 use crate::cloud::location::NAME_SET;
 use crate::cloud::loopback::{self, Waited};
 
 pub const NOT_CONFIRMED: &str = "Sign-in failed: Arbesk did not confirm this account.";
 const CANNOT_CHECK: &str = "Arbesk could not confirm this account. Try again later.";
+/// How long a session lasts when the callback doesn't say.
+const SESSION_FALLBACK_MS: i64 = 24 * 60 * 60 * 1000;
 /// As long as `besk login` waits for the browser.
 pub const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -92,6 +95,7 @@ pub fn start(site: &Site, email: &str) -> Result<Flow, String> {
 /// What Arbesk's page sends back.
 struct Callback {
     token: String,
+    expires_at_ms: i64,
     address: String,
     email: String,
 }
@@ -103,21 +107,40 @@ fn parse_callback(url: &Url) -> Option<Callback> {
             .map(|(_, value)| value.into_owned())
     };
     let token = param("token").filter(|token| !token.is_empty())?;
+    let expires_at_ms = param("expiresAt")
+        .and_then(|at| at.parse().ok())
+        .unwrap_or_else(|| now_ms() + SESSION_FALLBACK_MS);
     Some(Callback {
         token,
+        expires_at_ms,
         address: param("address").unwrap_or_default(),
         email: param("email").unwrap_or_default(),
     })
 }
 
-/// Wait for the browser, then have Arbesk confirm the callback; the email
-/// and the lower-case address of the account that signed in.
+/// A confirmed sign-in: the email and lower-case address of the account, and
+/// the session it made, kept to act as the account.
+#[derive(Debug)]
+pub struct SignedIn {
+    pub email: String,
+    pub address: String,
+    pub session: Session,
+}
+
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as i64)
+}
+
+/// Wait for the browser, then have Arbesk confirm the callback. A session
+/// that isn't confirmed is ended; a confirmed one is handed back to keep.
 pub fn finish(
     flow: &Flow,
     http: &dyn Http,
     site: &Site,
     timeout: Duration,
-) -> Result<(String, String), String> {
+) -> Result<SignedIn, String> {
     let callback = loopback::wait_for_callback(
         &flow.listener,
         timeout,
@@ -130,13 +153,24 @@ pub fn finish(
         Waited::TimedOut => "Sign-in timed out. Try again.".to_string(),
         Waited::Io(error) => format!("Arbesk sign-in failed: {error}"),
     })?;
-    let confirmed = confirm(http, site, &flow.email, &callback);
-    // Reading needs no session: end the one the sign-in made, whatever came of it.
-    let _ = http.delete(
-        &format!("{}/api/v1/sessions", site.origin),
-        Some(&callback.token),
-    );
-    confirmed.map(|address| (flow.email.clone(), address))
+    match confirm(http, site, &flow.email, &callback) {
+        Ok(address) => Ok(SignedIn {
+            email: flow.email.clone(),
+            address,
+            session: Session {
+                token: callback.token,
+                expires_at_ms: callback.expires_at_ms,
+            },
+        }),
+        Err(error) => {
+            // Nothing is kept for a session Arbesk didn't confirm: end it.
+            let _ = http.delete(
+                &format!("{}/api/v1/sessions", site.origin),
+                Some(&callback.token),
+            );
+            Err(error)
+        }
+    }
 }
 
 /// The callback's address, once Arbesk accepts its session and resolves
@@ -221,7 +255,7 @@ mod tests {
         })
     }
 
-    fn sign_in(http: &FakeHttp, targets: Vec<String>) -> Result<(String, String), String> {
+    fn sign_in(http: &FakeHttp, targets: Vec<String>) -> Result<SignedIn, String> {
         let flow = start(&site(), "Me@Example.com ").unwrap();
         let port = port_of(&flow);
         let sender = thread::spawn(move || targets.iter().for_each(|target| call(port, target)));
@@ -251,24 +285,62 @@ mod tests {
     }
 
     #[test]
-    fn a_confirmed_callback_signs_in_and_ends_the_session() {
+    fn a_confirmed_sign_in_keeps_its_session() {
         let http = backend(Ok(
             json!({ "exists": true, "address": ADDRESS.to_uppercase().replace("0X", "0x") }),
         ));
-        let got = sign_in(&http, vec![callback("tok", ADDRESS, "me@example.com")]).unwrap();
-        assert_eq!(got, ("me@example.com".to_string(), ADDRESS.to_string()));
+        let target = "/?token=tok&expiresAt=1762000000000&address=".to_string()
+            + ADDRESS
+            + "&email=me%40example.com";
+        let got = sign_in(&http, vec![target]).unwrap();
+        assert_eq!(
+            (got.email.as_str(), got.address.as_str()),
+            ("me@example.com", ADDRESS)
+        );
+        assert_eq!(
+            got.session,
+            Session {
+                token: "tok".into(),
+                expires_at_ms: 1_762_000_000_000
+            }
+        );
         let requests = http.requests();
+        assert_eq!(requests.len(), 1, "{requests:?}");
         assert_eq!(
             requests[0].url,
             format!("{ORIGIN}/api/v1/users/resolve-email")
         );
         assert_eq!(requests[0].body, Some(json!({ "email": "me@example.com" })));
         assert_eq!(requests[0].session.as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn a_missing_or_unreadable_expiry_is_a_day_from_now() {
+        for target in [
+            format!("/?token=tok&address={ADDRESS}&email=me%40example.com"),
+            format!("/?token=tok&expiresAt=soon&address={ADDRESS}&email=me%40example.com"),
+        ] {
+            let http = backend(Ok(json!({ "exists": true, "address": ADDRESS })));
+            let before = now_ms();
+            let got = sign_in(&http, vec![target]).unwrap();
+            let day = 24 * 60 * 60 * 1000;
+            assert!(got.session.expires_at_ms >= before + day);
+            assert!(got.session.expires_at_ms <= now_ms() + day);
+        }
+    }
+
+    #[test]
+    fn an_unconfirmed_sign_in_ends_the_session_it_was_handed() {
+        let http = backend(Ok(json!({ "exists": false })));
+        let got = sign_in(&http, vec![callback("tok", ADDRESS, "me@example.com")]);
+        assert_eq!(got.unwrap_err(), NOT_CONFIRMED);
+        let requests = http.requests();
+        let last = requests.last().unwrap();
         assert_eq!(
-            (requests[1].method, requests[1].url.as_str()),
+            (last.method, last.url.as_str()),
             ("DELETE", format!("{ORIGIN}/api/v1/sessions").as_str())
         );
-        assert_eq!(requests[1].session.as_deref(), Some("tok"));
+        assert_eq!(last.session.as_deref(), Some("tok"));
     }
 
     #[test]

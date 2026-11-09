@@ -51,6 +51,12 @@ export function isArbeskAsset(path: string): boolean {
   return isArbeskPath(path) && path.slice(ARBESK_PREFIX.length).split("/").filter(Boolean).length === 3;
 }
 
+/** Whether `path` is an Arbesk collection, the one place files are copied into:
+ *  `arbesk://<address>/<token>~<name>`. */
+export function isArbeskCollection(path: string): boolean {
+  return isArbeskPath(path) && path.slice(ARBESK_PREFIX.length).split("/").filter(Boolean).length === 2;
+}
+
 /** The wallet address an Arbesk path belongs to: its account key. */
 export function arbeskAccountKey(path: string): string {
   return path.slice(ARBESK_PREFIX.length).split("/")[0] ?? "";
@@ -358,7 +364,7 @@ const SCHEMES: Record<Place, Scheme> = {
     // Ids decide and names follow a `~`, as in Drive; the account is the top.
     name: (path) => cloudSegmentName(path.replace(/\/+$/, "").split("/").pop() ?? ""),
     parent: (path) => remoteParent(path, ARBESK_PREFIX, (key) => `${ARBESK_PREFIX}${key}`),
-    // Nothing is ever made in Arbesk: a child is named only as Drive names one.
+    // A child is a pending `~name`, as in Drive: where a copy into a collection goes.
     child: joinCloudPath,
     segments: (path) =>
       remoteSegments(path, "arbesk", ARBESK_PREFIX, {

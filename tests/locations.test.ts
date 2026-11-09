@@ -4,6 +4,9 @@
 import { expect, test } from "vitest";
 import {
   acceptsNewItems,
+  arbeskPasteRefusal,
+  arbeskTargetName,
+  isArbeskModelFile,
   copyOutRefusal,
   isInTrash,
   isLocalFile,
@@ -144,6 +147,47 @@ test("the copy-out refusal, in the first item's words", () => {
   expect(copyOutRefusal(["sftp://me@host/a.txt", "share://r1/b"])).toBe("Copying from SSH servers comes next.");
   expect(copyOutRefusal(["/Users/me/a.txt", "sftp://me@host/b"])).toBe("Copying out of a shared folder comes next.");
   expect(copyOutRefusal([])).toBeNull();
+});
+
+const COLLECTION = "arbesk://0x00000000000000000000000000000000000000ab/1~S";
+const ONLY_MODELS = "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.";
+
+test("only .gltf, .glb and .3mf files on this computer are Arbesk model files", () => {
+  for (const ok of ["/Users/me/a.gltf", "/Users/me/B.GLB", "/Users/me/c.3Mf"]) expect(isArbeskModelFile(ok), ok).toBe(true);
+  for (const no of ["/Users/me/a.txt", "/Users/me/gltf", "/Users/me/a.gltf.bak", "gdrive://acct/x~a.glb", "share://r1/a.glb", "sftp://me@host/a.glb", `${COLLECTION}/a~B.gltf`]) {
+    expect(isArbeskModelFile(no), no).toBe(false);
+  }
+});
+
+test("the paste refusal for an Arbesk folder, in order", () => {
+  const model = ["/Users/me/a.glb"];
+  expect(arbeskPasteRefusal(COLLECTION, model, true)).toBe("Arbesk is read only.");
+  expect(arbeskPasteRefusal("arbesk://0x00000000000000000000000000000000000000ab", model, true)).toBe("Arbesk is read only.");
+  expect(arbeskPasteRefusal("arbesk://0x00000000000000000000000000000000000000ab", model, false)).toBe("Paste into a collection.");
+  expect(arbeskPasteRefusal("", model, false)).toBe("Paste into a collection.");
+  expect(arbeskPasteRefusal(COLLECTION, ["/Users/me/a.glb", "/Users/me/a.txt"], false)).toBe(ONLY_MODELS);
+  expect(arbeskPasteRefusal(COLLECTION, ["gdrive://acct/x~a.glb"], false)).toBe(ONLY_MODELS);
+  expect(arbeskPasteRefusal(COLLECTION, [], false)).toBeNull();
+  expect(arbeskPasteRefusal(COLLECTION, [...model, "/Users/me/b.3mf"], false)).toBeNull();
+});
+
+test("a folder is never a model, whatever its name", () => {
+  const folder = "/Users/me/Kit.glb";
+  expect(arbeskPasteRefusal(COLLECTION, [folder], false, new Set([folder]))).toBe(ONLY_MODELS);
+  expect(arbeskPasteRefusal(COLLECTION, ["/Users/me/a.3mf", folder], false, new Set([folder]))).toBe(ONLY_MODELS);
+  expect(arbeskPasteRefusal(COLLECTION, [folder], false, new Set(["/Users/me/other.glb"]))).toBeNull();
+});
+
+test("a .glb is listed as a .gltf once it is in Arbesk", () => {
+  expect(arbeskTargetName("Box.GLB")).toBe("Box.gltf");
+  expect(arbeskTargetName("Box.glb")).toBe("Box.gltf");
+  expect(arbeskTargetName("a.b.glb")).toBe("a.b.gltf");
+  expect(arbeskTargetName("Box.gltf")).toBe("Box.gltf");
+  expect(arbeskTargetName("Box.3mf")).toBe("Box.3mf");
+  // Arbesk lists the extension in lower case; the stem keeps its case.
+  expect(arbeskTargetName("Box.GLTF")).toBe("Box.gltf");
+  expect(arbeskTargetName("Box.3MF")).toBe("Box.3mf");
+  expect(arbeskTargetName("MyBox.3Mf")).toBe("MyBox.3mf");
 });
 
 test("a local file, and a local regular file, for the menu items that run or send one", () => {

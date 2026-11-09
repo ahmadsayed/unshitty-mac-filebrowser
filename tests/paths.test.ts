@@ -4,7 +4,7 @@ import { expect, test } from "vitest";
 import {
   childPath, cloudSegmentName, decodeSegment, homeFolder, isCloudRoot, isKnownPath, isUnder, isWithin, joinCloudPath, joinSharePath, joinSftpPath,
   isCloudPath, isRemotePath, isShareLink, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket,
-  isSharePath, isSftpPath, resolveTypedPath, isArbeskPath, isArbeskAsset, arbeskAccountKey,
+  isSharePath, isSftpPath, resolveTypedPath, isArbeskPath, isArbeskAsset, isArbeskCollection, arbeskAccountKey,
 } from "../src/paths";
 
 const HOME = "/Users/me";
@@ -285,6 +285,15 @@ test("an Arbesk asset is the third level, below its collection", () => {
   expect(isArbeskAsset(`${account}/1~S/a~B.gltf/`)).toBe(true);
   for (const path of [account, `${account}/`, `${account}/1~S`, `${account}/1~S/`, "/Users/me/1~S/a~B.gltf", "gdrive://acct/1~S/a~B.gltf", "arbesk://"]) {
     expect(isArbeskAsset(path), path).toBe(false);
+  }
+});
+
+test("an Arbesk collection is the second level, below its account", () => {
+  const account = "arbesk://0x00000000000000000000000000000000000000ab";
+  expect(isArbeskCollection(`${account}/1~S`)).toBe(true);
+  expect(isArbeskCollection(`${account}/1~S/`)).toBe(true);
+  for (const path of [account, `${account}/`, `${account}/1~S/a~B.gltf`, "/Users/me/1~S", "gdrive://acct/1~S", "arbesk://"]) {
+    expect(isArbeskCollection(path), path).toBe(false);
   }
 });
 

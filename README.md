@@ -86,8 +86,10 @@ one out on its own platform.
   email and the code Arbesk emails you, then browse your collections as
   folders, each asset with the thumbnail it was saved with; press Space on
   a `.gltf` or `.3mf` asset to see the model, open it to edit it in
-  Arbesk's Studio in your browser, or copy it to a folder or Google Drive
-  ([details](docs/arbesk.md)).
+  Arbesk's Studio in your browser, or copy it to a folder or Google Drive.
+  Copy a `.gltf`, `.glb` or `.3mf` file from this computer and paste it
+  into a collection to add it to Arbesk, after a confirmation, since files
+  in Arbesk are public ([details](docs/arbesk.md)).
 - **Trash done right:** Undo (⌘Z), Restore (also for items trashed in Finder),
   and nothing is ever deleted without asking.
 - **Check for Updates** (main menu): the AppImage and the Mac app download,
@@ -175,8 +177,11 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
   image dragged from a web page isn't downloaded. Files dropped from another
   app are copied, never moved; Google Drive items can't be dragged out.
 - Google Drive: no Shared Drives, "Shared with me" or Drive-wide search.
-- Arbesk: read only (no upload, rename or delete); assets open in the
-  Studio, not as files, and only their newest version can be copied out;
+- Arbesk: only `.gltf`, `.glb` and `.3mf` files from this computer can be
+  copied in (up to 100 MB, no folders, no Cut or drag that moves, no rename
+  or delete), and only to Arbesk's own storage, not a local Arbesk's; a
+  copy gets no thumbnail until it is saved in the Studio; assets open in
+  the Studio, not as files, and only their newest version can be copied out;
   collections, and scenes that link to other assets, can't be copied yet,
   nor dragged to other apps; no sizes in listings; a scene's links to
   assets on another chain are left out of its preview.

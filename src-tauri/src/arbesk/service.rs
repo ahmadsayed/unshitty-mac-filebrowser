@@ -504,7 +504,7 @@ impl Drop for Held<'_> {
 }
 
 /// What an account's chain and gateway say, read through one manifest cache.
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     http: &'a dyn Http,
     site: &'a Site,
     chain: ChainConfig,
@@ -514,7 +514,11 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    fn open(http: &'a dyn Http, site: &'a Site, cache_dir: &Path) -> Result<Self, String> {
+    pub(crate) fn open(
+        http: &'a dyn Http,
+        site: &'a Site,
+        cache_dir: &Path,
+    ) -> Result<Self, String> {
         let chain = chain::config(http, site)?;
         let gateway = Gateway::new(http, &chain.gateway, manifest_cache(cache_dir));
         Ok(Self {
@@ -527,8 +531,64 @@ impl<'a> Reader<'a> {
     }
 
     fn collection_manifest(&self, token_id: &str) -> Result<Value, String> {
-        self.gateway
-            .json(&chain::token_uri(self.http, &self.chain, token_id)?)
+        Ok(self.collection_manifest_with_cid(token_id)?.1)
+    }
+
+    /// The CID collection `token_id` points at now (its `tokenURI`, read
+    /// afresh) and the manifest there.
+    pub(crate) fn collection_manifest_with_cid(
+        &self,
+        token_id: &str,
+    ) -> Result<(String, Value), String> {
+        let cid = chain::token_uri(self.http, &self.chain, token_id)?;
+        let manifest = self.gateway.json(&cid)?;
+        Ok((cid, manifest))
+    }
+
+    /// The asset ids, manifest CIDs and listed names (as [`list`] shows
+    /// them) of `collection`'s assets that can be read, in id order.
+    pub(crate) fn listed_names(
+        &self,
+        collection: &Value,
+    ) -> Result<Vec<(String, String, String)>, String> {
+        let assets = asset_cids(collection);
+        let rows = in_parallel(&assets, PARALLEL, |(id, cid)| {
+            self.listed_name(id, cid)
+                .map(|name| (id.clone(), cid.clone(), name))
+        });
+        let mut named = Vec::new();
+        for row in rows {
+            match row {
+                Ok(row) => named.push(row),
+                Err(error) if unreachable(&error) => return Err(error),
+                Err(_) => {}
+            }
+        }
+        Ok(named)
+    }
+
+    /// The asset manifest at `cid`.
+    pub(crate) fn manifest_at(&self, cid: &str) -> Result<Value, String> {
+        self.gateway.json(cid)
+    }
+
+    /// An asset's listed name: its name with its format's extension; a live
+    /// link shows as glTF, an unknown format without an extension.
+    fn listed_name(&self, asset_id: &str, cid: &str) -> Result<String, String> {
+        let manifest = self.gateway.json(cid)?;
+        self.name_of(&manifest, asset_id, cid)
+    }
+
+    fn name_of(&self, manifest: &Value, asset_id: &str, cid: &str) -> Result<String, String> {
+        let ext = if is_child_ref(manifest) {
+            Some("gltf")
+        } else {
+            format_of(&self.gateway.json(&source_cid(manifest, cid))?)
+                .ok()
+                .map(|format| format.ext())
+        };
+        let base = display_name(manifest, asset_id);
+        Ok(ext.map_or_else(|| base.clone(), |ext| format!("{base}.{ext}")))
     }
 
     /// The CID and manifest of asset `asset_id` in collection `token_id`.
@@ -559,9 +619,7 @@ impl<'a> Reader<'a> {
 
     fn collection_entry(&self, address: &str, token_id: &str) -> Result<Entry, String> {
         let manifest = self.collection_manifest(token_id)?;
-        let name = text(&manifest["name"])
-            .unwrap_or(UNTITLED_COLLECTION)
-            .to_string();
+        let name = collection_name(&manifest);
         let path = collection_path(address, token_id, &name);
         Ok(entry(name, path, true, &manifest))
     }
@@ -574,12 +632,7 @@ impl<'a> Reader<'a> {
         thumbs: &Thumbnails,
     ) -> Result<Vec<Entry>, String> {
         let manifest = self.collection_manifest(token_id)?;
-        let assets: Vec<(String, String)> = manifest["assets"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .filter_map(|(id, cid)| Some((id.clone(), cid.as_str()?.to_string())))
-            .collect();
+        let assets = asset_cids(&manifest);
         readable(in_parallel(&assets, PARALLEL, |(id, cid)| {
             let entry = self.asset_entry(path, id, cid)?;
             thumbs.remember(asset_key(address, token_id, id), entry.1);
@@ -587,9 +640,8 @@ impl<'a> Reader<'a> {
         }))
     }
 
-    /// An asset's row: its name with its format's extension; a live link
-    /// shows as glTF, an unknown format without an extension. With it,
-    /// where its thumbnail is.
+    /// An asset's row, under its listed name ([`Reader::listed_name`]);
+    /// with it, where its thumbnail is.
     fn asset_entry(
         &self,
         collection: &str,
@@ -597,15 +649,7 @@ impl<'a> Reader<'a> {
         cid: &str,
     ) -> Result<(Entry, Option<Stored>), String> {
         let manifest = self.gateway.json(cid)?;
-        let ext = if is_child_ref(&manifest) {
-            Some("gltf")
-        } else {
-            format_of(&self.gateway.json(&source_cid(&manifest, cid))?)
-                .ok()
-                .map(|format| format.ext())
-        };
-        let base = display_name(&manifest, asset_id);
-        let name = ext.map_or_else(|| base.clone(), |ext| format!("{base}.{ext}"));
+        let name = self.name_of(&manifest, asset_id, cid)?;
         let path = asset_path_named(collection, asset_id, &name);
         let thumbnail = self.stored_thumbnail(&manifest);
         Ok((entry(name, path, false, &manifest), thumbnail))
@@ -620,16 +664,33 @@ fn readable(rows: Vec<Result<Entry, String>>) -> Result<Vec<Entry>, String> {
     for row in rows {
         match row {
             Ok(entry) => entries.push(entry),
-            Err(error)
-                if error.starts_with(CHAIN_UNREACHABLE)
-                    || error.starts_with(STORAGE_UNREACHABLE) =>
-            {
-                return Err(error);
-            }
+            Err(error) if unreachable(&error) => return Err(error),
             Err(_) => {}
         }
     }
     Ok(entries)
+}
+
+/// The chain or the storage didn't answer: not a row's own failure.
+fn unreachable(error: &str) -> bool {
+    error.starts_with(CHAIN_UNREACHABLE) || error.starts_with(STORAGE_UNREACHABLE)
+}
+
+/// A collection manifest's assets: each id and its manifest's CID.
+fn asset_cids(collection: &Value) -> Vec<(String, String)> {
+    collection["assets"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(id, cid)| Some((id.clone(), cid.as_str()?.to_string())))
+        .collect()
+}
+
+/// A collection's name as its folder shows it.
+pub(crate) fn collection_name(manifest: &Value) -> String {
+    text(&manifest["name"])
+        .unwrap_or(UNTITLED_COLLECTION)
+        .to_string()
 }
 
 fn text(value: &Value) -> Option<&str> {
@@ -706,155 +767,15 @@ fn save(target: &Path, bytes: &[u8]) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::arbesk::chain::CHAIN_UNREACHABLE;
-    use crate::arbesk::chain::testing::abi_string;
     use crate::arbesk::compose::UNKNOWN_FORMAT;
-    use crate::arbesk::http::HttpError;
-    use crate::arbesk::http::fake::{FakeHttp, not_found};
+    use crate::arbesk::http::fake::FakeHttp;
     use crate::arbesk::ipfs::STORAGE_UNREACHABLE;
     use crate::arbesk::location::{asset_path, collection_path};
+    use crate::arbesk::testing::{ADDRESS, ORIGIN, STAMP_MS, arbesk, fixture, shapes, site, world};
     use serde_json::{Value, json};
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
-
-    const ORIGIN: &str = "https://arbesk.test";
-    const ADDRESS: &str = "0x00000000000000000000000000000000000000ab";
-    const STAMP_MS: i64 = 1_762_000_000_000;
-
-    fn site() -> Site {
-        Site {
-            origin: ORIGIN.into(),
-            chain_id: 84532,
-        }
-    }
-
-    /// What the fake Arbesk holds: IPFS content by CID, each token's
-    /// manifest CID, the index's answer, and CIDs whose fetch fails.
-    #[derive(Default)]
-    struct World {
-        files: HashMap<String, Vec<u8>>,
-        tokens: HashMap<u64, String>,
-        owned: Vec<String>,
-        failing: HashSet<String>,
-        rpc_down: bool,
-        /// Tokens the chain answers only through this contract.
-        only_via: HashMap<u64, String>,
-    }
-
-    fn fixture(case: &str) -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/arbesk")
-            .join(case)
-    }
-
-    impl World {
-        fn put(&mut self, cid: &str, value: Value) {
-            self.files
-                .insert(cid.into(), value.to_string().into_bytes());
-        }
-
-        /// A fixture's stored source and parts, under `cid` for the source.
-        /// A source that holds all its parts has no `cids/` (git keeps no
-        /// empty folder).
-        fn put_fixture(&mut self, case: &str, cid: &str) {
-            self.files.insert(
-                cid.into(),
-                std::fs::read(fixture(case).join("source.json")).unwrap(),
-            );
-            for part in std::fs::read_dir(fixture(case).join("cids"))
-                .into_iter()
-                .flatten()
-                .flatten()
-            {
-                let name = part.file_name().to_string_lossy().into_owned();
-                self.files.insert(name, std::fs::read(part.path()).unwrap());
-            }
-        }
-
-        /// Gives the asset manifest at `asset` a thumbnail stored at `cid`, as
-        /// the Studio saves one: a WebP picture and its metadata.
-        fn put_thumbnail(&mut self, asset: &str, cid: &str, width: u32, height: u32) {
-            let mut manifest: Value = serde_json::from_slice(&self.files[asset]).unwrap();
-            manifest["thumbnail"] = json!({ "cid": cid, "mime": "image/webp", "path": "thumbnail.webp", "width": width, "height": height });
-            self.put(asset, manifest);
-            self.files.insert(cid.into(), webp(width, height));
-        }
-
-        /// An asset manifest that wraps the source at `source`.
-        fn put_asset(&mut self, cid: &str, name: Option<&str>, source: &str) {
-            let mut manifest = json!({ "type": "asset", "timestamp": STAMP_MS, "scene": { "nodes": [{ "source": { "cid": source } }] } });
-            if let Some(name) = name {
-                manifest["name"] = json!(name);
-            }
-            self.put(cid, manifest);
-        }
-    }
-
-    /// Shapes (token 1): Box as glTF and as 3MF, a live link, an asset of an
-    /// unknown format and one whose manifest is gone; an untitled collection
-    /// (token 2); token 3 points at a manifest that can't be read.
-    fn world() -> World {
-        let mut w = World::default();
-        w.put_fixture("glb-box", "bafySrcGltf");
-        w.put_fixture("3mf-box", "bafySrc3mf");
-        w.put(
-            "bafySrcOdd",
-            json!({ "arbesk_format": "composite-example" }),
-        );
-        w.put_asset("bafyA1", Some("Box"), "bafySrcGltf");
-        w.put_asset("bafyA2", Some("Box"), "bafySrc3mf");
-        w.put_asset("bafyA4", Some("Odd"), "bafySrcOdd");
-        w.put("bafyA3", json!({ "name": "Linked", "scene": { "nodes": [{ "child_ref": { "assetID": "x" } }] } }));
-        w.put_thumbnail("bafyA1", "bafyThumb", 512, 384);
-        w.put(
-            "bafyC1",
-            json!({ "type": "collection", "name": "Shapes", "timestamp": STAMP_MS, "assets": {
-                "a1": "bafyA1", "a2": "bafyA2", "a3": "bafyA3", "a4": "bafyA4", "a5": "bafyGone"
-            } }),
-        );
-        w.put(
-            "bafyC2",
-            json!({ "type": "collection", "assets": { "u1": "bafyA1" } }),
-        );
-        w.tokens.insert(1, "bafyC1".into());
-        w.tokens.insert(2, "bafyC2".into());
-        w.tokens.insert(3, "bafyGone".into());
-        w.owned = vec!["1".into(), "2".into(), "3".into()];
-        // Rooms (token 4, not the account's own): a table scene, its own
-        // model raised and scaled, and two links to Shapes' Box.
-        w.put_fixture("gltf-image", "bafySrcTable");
-        let link = |x: f64| {
-            json!({ "transform_matrix": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, 1.95, 0.0, 1.0],
-            "child_ref": { "collection": { "chainId": 84532, "contractAddress": "0xLINK", "tokenId": "1" }, "assetID": "a1" } })
-        };
-        w.put("bafyTable", json!({ "name": "Table", "timestamp": STAMP_MS, "scene": { "nodes": [
-            { "source": { "cid": "bafySrcTable", "format": "gltf" }, "transform_matrix": [4.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 1.27, 0.0, 1.0] },
-            link(-2.57), link(2.08),
-            { "child_ref": { "collection": { "chainId": 1, "tokenId": "1" }, "assetID": "a1" } }
-        ] } }));
-        w.put(
-            "bafyC4",
-            json!({ "type": "collection", "name": "Rooms", "assets": { "t1": "bafyTable" } }),
-        );
-        w.tokens.insert(4, "bafyC4".into());
-        // History (token 5): asset h1 saved three times, the first save a 3MF.
-        let save = |source: &str, timestamp: i64, prev: Option<&str>| {
-            let mut manifest = json!({ "name": "Chair", "timestamp": timestamp, "scene": { "nodes": [{ "source": { "cid": source } }] } });
-            if let Some(prev) = prev {
-                manifest["prev_asset_manifest_cid"] = json!(prev);
-            }
-            manifest
-        };
-        w.put("bafyH1", save("bafySrc3mf", 1000, None));
-        w.put("bafyH2", save("bafySrcGltf", 2000, Some("bafyH1")));
-        w.put("bafyH3", save("bafySrcGltf", 3000, Some("bafyH2")));
-        w.put(
-            "bafyC5",
-            json!({ "type": "collection", "name": "History", "assets": { "h1": "bafyH3" } }),
-        );
-        w.tokens.insert(5, "bafyC5".into());
-        w
-    }
 
     fn rooms() -> String {
         collection_path(ADDRESS, "4", "Rooms")
@@ -877,63 +798,6 @@ mod tests {
         scene(http, &site(), &table(), None, cache_dir).unwrap()
     }
 
-    fn arbesk(world: Arc<Mutex<World>>) -> FakeHttp {
-        FakeHttp::new(move |request| {
-            let w = world.lock().unwrap();
-            let url = request.url.as_str();
-            if url == format!("{ORIGIN}/api/v1/config") {
-                let config = json!({
-                    "ipfsGatewayUrl": "https://gw.test/ipfs/",
-                    "networkConfigs": { "84532": { "contractAddress": "0xC0", "rpcUrl": "https://rpc.test" } }
-                });
-                return Ok(config.to_string().into_bytes());
-            }
-            if url.starts_with(&format!("{ORIGIN}/api/v1/indexer/owned")) {
-                return Ok(json!({ "owned": w.owned }).to_string().into_bytes());
-            }
-            if url.starts_with(&format!("{ORIGIN}/api/v1/indexer/shared")) {
-                return Ok(json!({ "shared": [] }).to_string().into_bytes());
-            }
-            if url == "https://rpc.test" && w.rpc_down {
-                return Err(HttpError::new(None, "connection refused"));
-            }
-            if url == "https://rpc.test" {
-                let call = &request.body.as_ref().unwrap()["params"][0];
-                let data = call["data"].as_str().unwrap().to_string();
-                let token = u64::from_str_radix(&data[data.len() - 16..], 16).unwrap();
-                let through = w
-                    .only_via
-                    .get(&token)
-                    .is_none_or(|contract| call["to"] == contract.as_str());
-                let answer = match w.tokens.get(&token).filter(|_| through) {
-                    Some(cid) => json!({ "result": abi_string(&format!("ipfs://{cid}")) }),
-                    None => json!({ "error": { "message": "execution reverted" } }),
-                };
-                return Ok(answer.to_string().into_bytes());
-            }
-            let cid = url
-                .strip_prefix("https://gw.test/ipfs/")
-                .ok_or_else(not_found)?;
-            if w.failing.contains(cid) {
-                return Err(HttpError::new(Some(502), "Bad gateway"));
-            }
-            w.files.get(cid).cloned().ok_or_else(not_found)
-        })
-    }
-
-    /// A WebP picture, the format the Studio stores thumbnails in.
-    fn webp(width: u32, height: u32) -> Vec<u8> {
-        let picture = image::DynamicImage::new_rgb8(width, height);
-        let mut bytes = Vec::new();
-        picture
-            .write_to(
-                &mut std::io::Cursor::new(&mut bytes),
-                image::ImageFormat::WebP,
-            )
-            .unwrap();
-        bytes
-    }
-
     fn names(entries: &[Entry]) -> Vec<String> {
         let mut names: Vec<String> = entries.iter().map(|entry| entry.name.clone()).collect();
         names.sort();
@@ -950,10 +814,6 @@ mod tests {
             }
         }
         found
-    }
-
-    fn shapes() -> String {
-        collection_path(ADDRESS, "1", "Shapes")
     }
 
     #[test]

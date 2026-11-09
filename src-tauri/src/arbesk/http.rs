@@ -1,6 +1,7 @@
 //! The HTTP requests Arbesk needs, behind [`Http`] so tests never open a
 //! socket: GETs (config, token index, IPFS gateway), JSON POSTs (JSON-RPC,
-//! the sign-in check) and one DELETE (ending the sign-in's session).
+//! the sign-in check, Arbesk's slow relay), multipart POSTs (the pre-signed
+//! upload URLs) and one DELETE (ending the sign-in's session).
 
 use std::time::Duration;
 
@@ -29,16 +30,87 @@ pub trait Http: Send + Sync {
         body: &serde_json::Value,
         session: Option<&str>,
     ) -> Result<Vec<u8>, HttpError>;
+    /// POST `body` as JSON like [`Http::post_json`], waiting up to four
+    /// minutes: Arbesk's wallet relay answers when its transaction is mined.
+    fn post_json_slow(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        session: Option<&str>,
+    ) -> Result<Vec<u8>, HttpError>;
+    /// POST a `multipart/form-data` body: `fields`, then `bytes` as the part
+    /// `file` named `file_name`.
+    fn post_multipart(
+        &self,
+        url: &str,
+        file_name: &str,
+        bytes: &[u8],
+        fields: &[(&str, &str)],
+        session: Option<&str>,
+    ) -> Result<Vec<u8>, HttpError>;
     fn delete(&self, url: &str, session: Option<&str>) -> Result<(), HttpError>;
+}
+
+/// A `multipart/form-data` body, built by hand: `fields` in order, then the
+/// `file` part (`application/octet-stream`), closed with `--boundary--`.
+pub fn multipart_body(
+    boundary: &str,
+    file_name: &str,
+    bytes: &[u8],
+    fields: &[(&str, &str)],
+) -> Vec<u8> {
+    let mut body = Vec::with_capacity(bytes.len() + 256);
+    for (name, value) in fields {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    let file_name = quoted_file_name(file_name);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    body
+}
+
+/// How long the relay and uploads may take: four minutes.
+const SLOW_TIMEOUT_SECS: u64 = 240;
+
+/// The slowest upload rate an upload is given time for: 64 KiB/s.
+const UPLOAD_BYTES_PER_SEC: u64 = 64 * 1024;
+
+/// How long an upload of `len` bytes may take: four minutes, plus the time
+/// it takes at `UPLOAD_BYTES_PER_SEC` (100 MB: about half an hour). A fixed
+/// limit would fail a large part on a slow link, and no limit would wait
+/// on a stalled one for ever.
+fn upload_timeout(len: usize) -> Duration {
+    Duration::from_secs(SLOW_TIMEOUT_SECS + len as u64 / UPLOAD_BYTES_PER_SEC)
+}
+
+/// `name` safe inside `filename="…"`: `"`, CR and LF percent-encoded, as
+/// browsers send them.
+fn quoted_file_name(name: &str) -> String {
+    name.replace('"', "%22")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
 }
 
 /// The most one answer may hold: an asset's largest part, packed.
 pub const MAX_BODY: u64 = 512 * 1024 * 1024;
 
-/// The real client: 30 seconds per request, rustls, no cookies, and no
-/// answer read past `cap` bytes, whatever the server says.
+/// The real client: 30 seconds per request (four minutes for the relay,
+/// longer for a large upload: `upload_timeout`), rustls, no cookies, and no answer read past `cap` bytes,
+/// whatever the server says.
 pub struct ReqwestHttp {
     client: reqwest::blocking::Client,
+    slow: reqwest::blocking::Client,
     cap: u64,
 }
 
@@ -48,12 +120,18 @@ impl ReqwestHttp {
     }
 
     pub fn with_cap(cap: u64) -> Result<Self, String> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent(concat!("FileBrowser/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|error| error.to_string())?;
-        Ok(Self { client, cap })
+        let client_with = |timeout: u64| {
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(timeout))
+                .user_agent(concat!("FileBrowser/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .map_err(|error| error.to_string())
+        };
+        Ok(Self {
+            client: client_with(30)?,
+            slow: client_with(SLOW_TIMEOUT_SECS)?,
+            cap,
+        })
     }
 
     fn send(
@@ -67,7 +145,8 @@ impl ReqwestHttp {
         };
         let response = request
             .send()
-            .map_err(|error| HttpError::new(None, error.to_string()))?;
+            // Without the URL: an upload's is a one-use pre-signed address.
+            .map_err(|error| HttpError::new(None, error.without_url().to_string()))?;
         let status = response.status();
         let bytes = read_capped(response, self.cap)
             .map_err(|message| HttpError::new(Some(status.as_u16()), message))?;
@@ -114,6 +193,39 @@ impl Http for ReqwestHttp {
         self.send(self.client.post(url).json(body), session)
     }
 
+    fn post_json_slow(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        session: Option<&str>,
+    ) -> Result<Vec<u8>, HttpError> {
+        self.send(self.slow.post(url).json(body), session)
+    }
+
+    fn post_multipart(
+        &self,
+        url: &str,
+        file_name: &str,
+        bytes: &[u8],
+        fields: &[(&str, &str)],
+        session: Option<&str>,
+    ) -> Result<Vec<u8>, HttpError> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let boundary = format!("----FileBrowser{nanos:x}");
+        let request = self
+            .slow
+            .post(url)
+            .timeout(upload_timeout(bytes.len()))
+            .header(
+                "Content-Type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(multipart_body(&boundary, file_name, bytes, fields));
+        self.send(request, session)
+    }
+
     fn delete(&self, url: &str, session: Option<&str>) -> Result<(), HttpError> {
         self.send(self.client.delete(url), session).map(|_| ())
     }
@@ -132,6 +244,10 @@ pub mod fake {
         pub url: String,
         pub body: Option<serde_json::Value>,
         pub session: Option<String>,
+        /// The uploaded file of a multipart POST.
+        pub data: Option<Vec<u8>>,
+        /// The other form fields of a multipart POST.
+        pub fields: Vec<(String, String)>,
     }
 
     type Answer = Box<dyn Fn(&Request) -> Result<Vec<u8>, HttpError> + Send + Sync>;
@@ -169,6 +285,8 @@ pub mod fake {
                 url: url.into(),
                 body: None,
                 session: None,
+                data: None,
+                fields: Vec::new(),
             })
         }
 
@@ -184,6 +302,38 @@ pub mod fake {
                 url: url.into(),
                 body: Some(body.clone()),
                 session,
+                data: None,
+                fields: Vec::new(),
+            })
+        }
+
+        fn post_json_slow(
+            &self,
+            url: &str,
+            body: &serde_json::Value,
+            session: Option<&str>,
+        ) -> Result<Vec<u8>, HttpError> {
+            self.post_json(url, body, session)
+        }
+
+        fn post_multipart(
+            &self,
+            url: &str,
+            _file_name: &str,
+            bytes: &[u8],
+            fields: &[(&str, &str)],
+            session: Option<&str>,
+        ) -> Result<Vec<u8>, HttpError> {
+            self.call(Request {
+                method: "POST",
+                url: url.into(),
+                body: None,
+                session: session.map(String::from),
+                data: Some(bytes.to_vec()),
+                fields: fields
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
             })
         }
 
@@ -194,6 +344,8 @@ pub mod fake {
                 url: url.into(),
                 body: None,
                 session,
+                data: None,
+                fields: Vec::new(),
             })
             .map(|_| ())
         }
@@ -325,6 +477,65 @@ mod tests {
     }
 
     #[test]
+    fn multipart_body_has_fields_then_the_file() {
+        let body = multipart_body("XB", "a.bin", b"\x00\x01data", &[("network", "public")]);
+        let expected: Vec<u8> = [
+            &b"--XB\r\nContent-Disposition: form-data; name=\"network\"\r\n\r\npublic\r\n"[..],
+            b"--XB\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.bin\"\r\n",
+            b"Content-Type: application/octet-stream\r\n\r\n",
+            b"\x00\x01data\r\n--XB--\r\n",
+        ]
+        .concat();
+        assert_eq!(body, expected);
+    }
+
+    #[test]
+    fn a_file_name_cannot_break_out_of_its_quotes() {
+        let body = multipart_body("XB", "a\"b\r\nc.bin", b"x", &[]);
+        let text = String::from_utf8(body).unwrap();
+        assert!(text.contains("filename=\"a%22b%0D%0Ac.bin\"\r\n"), "{text}");
+    }
+
+    #[test]
+    fn an_upload_may_take_longer_the_larger_it_is() {
+        assert_eq!(upload_timeout(0), Duration::from_secs(240));
+        assert_eq!(upload_timeout(64 * 1024), Duration::from_secs(241));
+        // 100 MB at 64 KiB/s, on top of the four minutes.
+        assert_eq!(
+            upload_timeout(100 * 1024 * 1024),
+            Duration::from_secs(240 + 1600)
+        );
+    }
+
+    #[test]
+    fn a_multipart_post_sends_the_form_and_the_session() {
+        let (url, server) = serve_once("200 OK", "{}");
+        ReqwestHttp::new()
+            .unwrap()
+            .post_multipart(&url, "a.bin", b"abc", &[("network", "public")], Some("tok"))
+            .unwrap();
+        let head = server.join().unwrap().to_ascii_lowercase();
+        assert!(head.starts_with("post / "), "{head}");
+        assert!(
+            head.contains("content-type: multipart/form-data; boundary="),
+            "{head}"
+        );
+        assert!(head.contains("authorization: session tok"), "{head}");
+    }
+
+    #[test]
+    fn a_slow_json_post_sends_json() {
+        let (url, server) = serve_once("200 OK", "{}");
+        ReqwestHttp::new()
+            .unwrap()
+            .post_json_slow(&url, &serde_json::json!({ "op": "x" }), Some("tok"))
+            .unwrap();
+        let head = server.join().unwrap().to_ascii_lowercase();
+        assert!(head.contains("content-type: application/json"), "{head}");
+        assert!(head.contains("authorization: session tok"), "{head}");
+    }
+
+    #[test]
     fn an_unreachable_server_has_no_status() {
         let port = TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -336,5 +547,20 @@ mod tests {
             .get(&format!("http://127.0.0.1:{port}"))
             .unwrap_err();
         assert_eq!(error.status, None);
+    }
+
+    /// A transport failure's message never carries the URL: an upload's is a
+    /// one-use pre-signed address, and the message reaches a toast.
+    #[test]
+    fn a_transport_error_does_not_name_the_url() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}/secret-presigned-path?sig=abc");
+        let error = ReqwestHttp::new().unwrap().get(&url).unwrap_err();
+        assert!(!error.message.contains("secret-presigned-path"), "{}", error.message);
+        assert!(!error.message.contains("sig=abc"), "{}", error.message);
     }
 }

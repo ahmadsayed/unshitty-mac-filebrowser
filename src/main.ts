@@ -20,7 +20,7 @@ import {
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
   previewBytes, previewText, thumbnail, arbeskScene, arbeskPart, arbeskVersions, listVersions, versionCount, openVersion,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
-  arbeskAccounts, arbeskConnectStart, arbeskConnectFinish, arbeskConnectCancel, arbeskDisconnect,
+  arbeskAccounts, arbeskConnectStart, arbeskConnectFinish, arbeskConnectCancel, arbeskDisconnect, arbeskSignedIn,
   driveClientStatus, driveClientSet, driveClientClear,
   openExternal,
   setPermissions,
@@ -56,9 +56,9 @@ import { companionPath, gltfCompanions, isGlb, modelFormat, type ModelFormat } f
 import { accountOf, fromArbesk, fromDrive, PROVIDERS, providerOf, withAccount, withoutAccount, type Account, type ProviderActions, type ProviderId } from "./providers";
 import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
-import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, knowsSizes, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
+import { acceptsNewItems, arbeskPasteRefusal, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, knowsSizes, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
-import { childPath, cloudAccountKey, homeFolder, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
+import { childPath, cloudAccountKey, homeFolder, isArbeskCollection, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -2707,9 +2707,23 @@ const readOnlyLocationMenu = (): MenuItem[] => [
   ...arbeskLocationMenu(),
 ];
 
+/** Paste, in a collection only: the one place Arbesk takes files. */
+const arbeskPasteItem = (): MenuItem[] =>
+  isArbeskCollection(location) ? [{ label: "Paste", disabled: !clipboard, action: () => paste(location) }] : [];
+
+/** Arbesk's background menu: read only, but a collection takes a paste. */
+const arbeskBackgroundMenu = (): MenuItem[] => [
+  { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
+  { label: "Reload", action: () => void reload() },
+  ...arbeskPasteItem(),
+  { separator: true },
+  { label: "Select All", action: selectAll },
+];
+
 /** Arbesk's location menu: its arbesk:// address means nothing outside the app. */
 const arbeskLocationMenu = (): MenuItem[] => [
   { label: "Reload", action: () => void reload() },
+  ...arbeskPasteItem(),
   { separator: true },
   { label: "Select All", disabled: !hasEntries(location), action: selectAll },
 ];
@@ -2727,7 +2741,7 @@ const BACKGROUND_MENUS: Record<LocationKind, () => MenuItem[]> = {
   "in-trash": () => [openCurrentFolderWithItem(), { separator: true }, { label: "Select All", action: selectAll }],
   share: readOnlyBackgroundMenu,
   sftp: readOnlyBackgroundMenu,
-  arbesk: readOnlyBackgroundMenu,
+  arbesk: arbeskBackgroundMenu,
   drive: () => [
     { label: "New Folder…", action: promptNewFolder },
     { separator: true },
@@ -3115,6 +3129,14 @@ function refreshCutMarks(): void {
 
 type ConflictChoice = "replace" | "skip" | "keepboth" | "cancel";
 
+/** What Replace does, in the conflict dialog: in Arbesk it saves the file as
+ *  the asset's next version (spec D3), elsewhere the old item goes to the Trash. */
+function conflictBody(kind: "file" | "folder", destDir: string): string {
+  const where = `Another ${kind} with the same name already exists in “${locationName(destDir)}”.`;
+  if (placeOf(destDir) === "arbesk") return `${where} Replacing it saves your file as its newest version; the earlier ones stay in its history.`;
+  return `${where} Replacing it moves the existing ${kind} to the Trash.`;
+}
+
 /** GNOME-style conflict dialog. Resolves with the choice and whether to apply it to the rest. */
 function askConflict(name: string, isDir: boolean, destDir: string, remaining: number): Promise<{ choice: ConflictChoice; all: boolean }> {
   return new Promise((resolve) => {
@@ -3129,7 +3151,7 @@ function askConflict(name: string, isDir: boolean, destDir: string, remaining: n
     }
     openDialog({
       heading: `Replace ${kind} “${name}”?`,
-      body: `Another ${kind} with the same name already exists in “${locationName(destDir)}”. Replacing it moves the existing ${kind} to the Trash.`,
+      body: conflictBody(kind, destDir),
       extra,
       responses: [
         { id: "skip", label: "Skip" },
@@ -3172,6 +3194,7 @@ function transferOperation(paths: string[], moving: boolean, destDir: string, ca
  */
 async function runTransfer(paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string): Promise<boolean> {
   if (isPseudo(destDir)) return false;
+  if (placeOf(destDir) === "arbesk" && !(await readyForArbesk(paths, dirs, paths.some(move), destDir))) return false;
   // The user's selection as of this paste; see transferBatch's end.
   const intent = selection.intent;
   const batch = { cancelled: false, started: false, measuring: false };
@@ -3195,6 +3218,90 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
   });
   transferChain = run.catch(() => {});
   return run;
+}
+
+// ---------------------------------------------------------------------------
+// Copying into Arbesk (spec 2026-11-09-arbesk-copy-in, D1, D2, D4)
+// ---------------------------------------------------------------------------
+
+/** The error a copy into Arbesk ends with when it needs a new sign-in. */
+const ARBESK_SIGN_IN = "Sign in to Arbesk again to copy files into it.";
+
+/**
+ * Before a paste or drop into Arbesk starts: refuse what it can't take, in
+ * one toast (D1; a drop from another app reaches here unchecked); confirm
+ * that the files go public (D2); sign in first when the account has no
+ * session (D4). False when nothing should start.
+ */
+async function readyForArbesk(paths: string[], dirs: ReadonlySet<string>, moving: boolean, destDir: string): Promise<boolean> {
+  const why = arbeskPasteRefusal(destDir, paths, moving, dirs);
+  if (why) {
+    showToast(why);
+    return false;
+  }
+  if (!(await confirmArbeskCopy())) return false;
+  if (await arbeskSignedIn(destDir).catch(() => false)) return true;
+  return connectArbesk(await arbeskAccountFor(destDir), { stay: true });
+}
+
+/** Copy to Arbesk?: asked before every paste or drop into it; Cancel is the default. */
+function confirmArbeskCopy(): Promise<boolean> {
+  return new Promise((resolve) => {
+    openDialog({
+      heading: "Copy to Arbesk?",
+      body: "Files in Arbesk are public: anyone with their address can download them, and they can't be removed from IPFS.",
+      responses: [
+        { id: "cancel", label: "Cancel" },
+        { id: "copy", label: "Copy", style: "suggested" },
+      ],
+      defaultResponse: "cancel",
+      closeResponse: "cancel",
+      onResponse: (id) => resolve(id === "copy"),
+    });
+  });
+}
+
+/** The Arbesk account `path` belongs to, loading the accounts when it isn't known yet. */
+async function arbeskAccountFor(path: string): Promise<Account | undefined> {
+  if (!accountOf(path, accounts)) await refreshAccounts();
+  return accountOf(path, accounts);
+}
+
+/**
+ * A batch into Arbesk signs in again at most once, when an item finds its
+ * session gone (D4); the items after it reuse the answer. Null elsewhere.
+ */
+function signInAgainOnce(destDir: string): (() => Promise<boolean>) | null {
+  if (placeOf(destDir) !== "arbesk") return null;
+  let asked: Promise<boolean> | null = null;
+  const ask = async () => {
+    const account = await arbeskAccountFor(destDir);
+    // Online Accounts says "Sign in again" until it does.
+    if (account) signInNeeded.add(accountRef(account));
+    return connectArbesk(account, { stay: true });
+  };
+  return () => (asked ??= ask());
+}
+
+/** One item of a batch; one that failed for want of an Arbesk session is
+ *  tried once more after `signIn` succeeds. A sign-in that is cancelled
+ *  stops the batch, so the items after it don't fail one by one. */
+async function transferSigningIn(
+  op: Operation, from: string, to: string, overwrite: boolean, moving: boolean,
+  signIn: (() => Promise<boolean>) | null, batch: { cancelled: boolean },
+): Promise<string> {
+  const before = { bytes: op.doneBytes, items: op.doneItems };
+  try {
+    return await transferItem(op, from, to, overwrite, moving);
+  } catch (err) {
+    if (!signIn || cleanError(err) !== ARBESK_SIGN_IN) throw err;
+    if (!(await signIn())) batch.cancelled = true;
+    if (batch.cancelled) throw err;
+    // The failed attempt's progress isn't counted twice.
+    op.doneBytes = before.bytes;
+    op.doneItems = before.items;
+    return transferItem(op, from, to, overwrite, moving);
+  }
 }
 
 /** Measure the batch for its progress total; items only when that fails. */
@@ -3279,11 +3386,14 @@ async function transferBatch(
   const errors: string[] = [];
   let anyMove = false;
   let applyToAll: ConflictChoice | null = null;
+  const signIn = signInAgainOnce(destDir);
 
   for (let i = 0; i < paths.length && !batch.cancelled; i++) {
     const from = paths[i];
     // A Drive name can be "a/b" or "..": locally it must stay one plain name.
-    const name = isCloud(from) && !isCloud(destDir) ? safeLocalName(basename(from)) : basename(from);
+    const base = isCloud(from) && !isCloud(destDir) ? safeLocalName(basename(from)) : basename(from);
+    // A .glb is stored as glTF: its listed name, which a clash is checked against.
+    const name = placeOf(destDir) === "arbesk" ? arbeskTargetName(base) : base;
     const isDir = dirs.has(from);
     const moving = move(from);
     anyMove ||= moving;
@@ -3314,7 +3424,7 @@ async function transferBatch(
     }
 
     try {
-      done.push(await transferItem(op, from, to, overwrite, moving));
+      done.push(await transferSigningIn(op, from, to, overwrite, moving, signIn, batch));
       showLanded(destDir);
     } catch (err) {
       // A cancel is not a failure: no toast, finished items stay.
@@ -3335,8 +3445,9 @@ async function transferBatch(
 }
 
 async function paste(destDir: string): Promise<void> {
-  if (refuse("paste", { kind: locationKind(destDir, trashPath), items: [] }) || !clipboard) return;
+  if (!clipboard) return;
   const { paths, dirs, mode } = clipboard;
+  if (refuse("paste", { kind: locationKind(destDir, trashPath), items: [], paths, dir: destDir, moving: mode === "cut", dirs })) return;
   const pasting = clipboard;
   const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir);
   // A cut is only consumed once every item has been dealt with. Its paths
@@ -3584,8 +3695,11 @@ function volumeRoot(path: string): string {
 }
 
 /** The operation a drop would do, or null if it would do nothing useful. */
-function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, devices?: Map<string, number>): DropOp | null {
+function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, devices?: Map<string, number>, dirs?: ReadonlySet<string>): DropOp | null {
   const dir = target.dir;
+  // A collection in Arbesk takes only copies of model files; a forced move or a folder says no.
+  const forceMoveKey = isMac ? mods.metaKey : mods.shiftKey;
+  if (placeOf(dir) === "arbesk") return arbeskPasteRefusal(dir, sources, forceMoveKey && !(isMac ? mods.altKey : mods.ctrlKey), dirs) === null ? "copy" : null;
   if (isReadOnlyLocation(dir) || copyOutRefusal(sources) !== null) return null;
   // Into itself or its own subfolder: refused.
   if (sources.some((src) => isWithin(dir, src))) return null;
@@ -3782,7 +3896,7 @@ function updateDrag(): void {
     });
   }
   const known = new Map([...d.devices].filter(([, v]) => v !== -1));
-  const op = target ? dropOp(target, d.paths, d.mods, known) : null;
+  const op = target ? dropOp(target, d.paths, d.mods, known, d.dirs) : null;
 
   // Hovering a folder for a moment opens it, so the drop can go deeper.
   if (target?.dir !== d.target?.dir) {
@@ -3847,8 +3961,11 @@ function localDropPaths(paths: string[]): string[] {
 
 /** What a drop from another app does. It copies where an internal drag
  * would move: the system shows a copy cursor, and the other app's window
- * keeps its files. The Trash still trashes. Modifier keys aren't reported. */
+ * keeps its files. The Trash still trashes. Modifier keys aren't reported.
+ * Into Arbesk it copies, and the copy says in words what Arbesk can't take
+ * (the system showed a copy cursor, so silence would look like a lost drop). */
 function externalDropOp(target: DropTarget, sources: string[], own: boolean, devices?: Map<string, number>): DropOp | null {
+  if (placeOf(target.dir) === "arbesk") return "copy";
   const op = dropOp(target, sources, { altKey: false, metaKey: false, ctrlKey: false, shiftKey: false }, devices);
   // The window's own drag that left it and came back keeps the window's rule.
   return op === "move" && !own ? "copy" : op;
@@ -5442,9 +5559,9 @@ const PROVIDER_ACTIONS: Record<ProviderId, ProviderActions> = {
     links: (account) => [{ label: "Change Client…", action: () => void changeDriveClient(account) }],
   },
   arbesk: {
-    connect: () => connectArbesk(),
-    // Nothing expires (no credential is kept), but connecting again is how an email changes.
-    signIn: (account) => connectArbesk(account),
+    connect: () => void connectArbesk(),
+    // The session copies into Arbesk need; connecting again is also how an email changes.
+    signIn: (account) => void connectArbesk(account),
     disconnect: (account) => confirmDisconnectArbesk(account),
     links: () => [],
   },
@@ -5608,9 +5725,15 @@ function openConnectDialog(
 /**
  * Connect an Arbesk account as `besk login` does: the email, then Arbesk's
  * own page in the browser, where the code Arbesk emails is typed. The app
- * keeps only the email and wallet address Arbesk confirms.
+ * keeps the email and wallet address Arbesk confirms, and the session for
+ * copying into it (in the keychain). Resolves true once connected, false on
+ * Cancel; with `stay` (a paste signing in) it doesn't open the account.
  */
-function connectArbesk(reconnect?: Account): void {
+function connectArbesk(reconnect?: Account, opts: { stay?: boolean } = {}): Promise<boolean> {
+  return new Promise((resolve) => openArbeskConnect(reconnect, opts.stay ?? false, resolve));
+}
+
+function openArbeskConnect(reconnect: Account | undefined, stay: boolean, resolve: (connected: boolean) => void): void {
   let flowId: string | null = null;
   const extra = document.createElement("div");
   extra.className = "connect-fields";
@@ -5635,6 +5758,7 @@ function connectArbesk(reconnect?: Account): void {
     busy: { liveWhileBusy: ["cancel"], status },
     onResponse: async (id) => {
       if (id === "cancel") {
+        resolve(false);
         if (flowId) await arbeskConnectCancel(flowId).catch(() => {});
         return;
       }
@@ -5645,9 +5769,11 @@ function connectArbesk(reconnect?: Account): void {
         await openExternal(start.sign_in_url);
         const account = await arbeskConnectFinish(start.flow_id);
         accounts = withAccount(accounts, fromArbesk(account));
+        signInNeeded.delete(accountRef(fromArbesk(account)));
         dialog.close();
         showToast(`Connected to ${account.email}`);
-        await navigate(account.root_path);
+        resolve(true);
+        if (!stay) await navigate(account.root_path);
       } catch (err) {
         const message = cleanError(err);
         status.textContent = /cancelled/i.test(message) ? "" : message;

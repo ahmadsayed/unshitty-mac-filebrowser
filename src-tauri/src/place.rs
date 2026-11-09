@@ -100,6 +100,9 @@ pub enum Route {
     Drive,
     /// On this computer: both sides are local paths.
     Local,
+    /// Into an Arbesk collection: only a copy of a local model file
+    /// ([`copy`] alone answers it).
+    IntoArbesk,
 }
 
 /// Where a copy, move or rename from `from` to `to` runs, or why it can't:
@@ -127,9 +130,12 @@ pub struct CopyRoute {
 }
 
 /// [`transfer`] for a copy, which may also take an Arbesk asset out to this
-/// computer or Drive. A move never does: Arbesk is read only. Collections
-/// can't be copied yet.
+/// computer or Drive, or a local file into an Arbesk collection. A move never
+/// does: Arbesk is read only. Collections can't be copied yet.
 pub fn copy(from: &str, to: &str) -> Result<CopyRoute, String> {
+    if kind(to) == Kind::Arbesk && kind(from) != Kind::Arbesk {
+        return into_arbesk(from, to);
+    }
     if kind(from) != Kind::Arbesk {
         return transfer(from, to).map(|route| CopyRoute { route, from_arbesk: false });
     }
@@ -144,6 +150,17 @@ pub fn copy(from: &str, to: &str) -> Result<CopyRoute, String> {
         Route::Local
     };
     Ok(CopyRoute { route, from_arbesk: true })
+}
+
+/// A copy of the local file `from` to the pending name `to` in an Arbesk
+/// collection. What the file is, is checked where it is read.
+fn into_arbesk(from: &str, to: &str) -> Result<CopyRoute, String> {
+    if kind(from) != Kind::Local {
+        return Err("Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.".into());
+    }
+    local(from)?;
+    arbesk::location::parse_target(to)?;
+    Ok(CopyRoute { route: Route::IntoArbesk, from_arbesk: false })
 }
 
 /// Every path as a file on this computer, or the first refusal.
@@ -309,7 +326,6 @@ mod tests {
         // Anything else stays as `transfer` answers, and only a copy takes an asset out.
         for (from, to, refusal) in [
             (asset, asset, ARBESK_READ_ONLY.to_string()),
-            (a, ARBESK, ARBESK_READ_ONLY.into()),
             (asset, "share://r1/b", SHARE_READ_ONLY.into()),
             (asset, "sftp://me@host/b", SFTP_READ_ONLY.into()),
             (asset, "rel/Box.gltf", "“rel/Box.gltf” is not a local file.".into()),
@@ -320,7 +336,28 @@ mod tests {
             assert_eq!(copy(from, to).unwrap_err(), refusal, "{from} -> {to}");
         }
         assert!(copy("arbesk://0xab", b).is_err());
+        assert_eq!(transfer(a, &format!("{ARBESK}/~Box.gltf")).unwrap_err(), ARBESK_READ_ONLY);
         assert_eq!(transfer(asset, b).unwrap_err(), ARBESK_READ_ONLY);
+    }
+
+    #[test]
+    fn a_copy_may_take_a_local_file_into_an_arbesk_collection() {
+        let (a, pending) = ("/Users/me/Box.glb", format!("{ARBESK}/~Box.glb"));
+        let account = "arbesk://0x00000000000000000000000000000000000000ab";
+        assert_eq!(copy(a, &pending), Ok(CopyRoute { route: Route::IntoArbesk, from_arbesk: false }));
+        let only = "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.";
+        let paste = "Paste into a collection.";
+        for (from, to, refusal) in [
+            (a, ARBESK.to_string(), paste),
+            (a, format!("{account}/~Box.glb"), paste),
+            ("gdrive://acct/root~x", pending.clone(), only),
+            ("share://r1/a", pending.clone(), only),
+            ("sftp://me@host/a", pending.clone(), only),
+        ] {
+            assert_eq!(copy(from, &to).unwrap_err(), refusal, "{from} -> {to}");
+        }
+        assert_eq!(copy("rel/Box.glb", &pending).unwrap_err(), "“rel/Box.glb” is not a local file.");
+        assert_eq!(transfer(a, &pending).unwrap_err(), ARBESK_READ_ONLY);
     }
 
     #[test]

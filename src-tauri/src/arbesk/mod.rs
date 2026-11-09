@@ -1,28 +1,37 @@
-//! Arbesk (promptscad.com) accounts in Network, read only: sign in with an
+//! Arbesk (promptscad.com) accounts in Network: sign in with an
 //! email and the code Arbesk emails, then browse the account's collections
 //! as folders and their assets as glTF and 3MF files. Arbesk's read path is
 //! rebuilt here from public sources (the backend's config and token index,
-//! the chain's `tokenURI`, the IPFS gateway); nothing is written to Arbesk.
+//! the chain's `tokenURI`, the IPFS gateway). The one write is a local
+//! model copied into a collection (`write`): uploaded to IPFS through
+//! Arbesk's upload URLs and saved through its wallet relay, with the
+//! session kept from sign-in.
 
 pub mod accounts;
 pub mod chain;
 pub mod compose;
+pub mod decompose;
 pub mod http;
 pub mod ipfs;
 pub mod location;
 pub mod scene;
 pub mod service;
+pub mod session;
 pub mod signin;
+#[cfg(test)]
+pub(crate) mod testing;
+pub mod write;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::arbesk::accounts::{Accounts, ArbeskAccount};
 use crate::arbesk::chain::Site;
 use crate::arbesk::http::{Http, ReqwestHttp};
-use crate::arbesk::location::parse;
-use crate::arbesk::signin::{CALLBACK_TIMEOUT, Flow};
+use crate::arbesk::location::{parse, parse_target};
+use crate::arbesk::session::{Session, SessionStore};
+use crate::arbesk::signin::{CALLBACK_TIMEOUT, Flow, now_ms};
 use crate::fs_ops::Entry;
 use crate::progress::Progress;
 
@@ -44,10 +53,13 @@ pub struct ArbeskState {
     http: Result<Arc<dyn Http>, String>,
     cache_dir: PathBuf,
     accounts: Mutex<Accounts>,
+    sessions: Box<dyn SessionStore>,
     flows: Mutex<HashMap<String, Arc<Flow>>>,
     builds: service::Builds,
     scenes: scene::Scenes,
     thumbnails: service::Thumbnails,
+    /// One for the app's whole run: it remembers writes that may still land.
+    locks: write::CollectionLocks,
 }
 
 /// The key a scene is kept under: its asset and version.
@@ -62,30 +74,45 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl ArbeskState {
-    pub fn new(cache_dir: PathBuf, accounts_file: PathBuf) -> Self {
+    pub fn new(cache_dir: PathBuf, accounts_file: PathBuf, sessions_dir: PathBuf) -> Self {
         let http = ReqwestHttp::new().map(|http| Arc::new(http) as Arc<dyn Http>);
-        Self::with(http, cache_dir, accounts_file)
+        let sessions = Box::new(session::KeyringSessions::new(sessions_dir));
+        Self::with(http, cache_dir, accounts_file, sessions)
     }
 
     #[cfg(test)]
     pub fn with_http(http: Arc<dyn Http>, cache_dir: PathBuf, accounts_file: PathBuf) -> Self {
-        Self::with(Ok(http), cache_dir, accounts_file)
+        let sessions = Box::new(session::MemorySessions::default());
+        Self::with(Ok(http), cache_dir, accounts_file, sessions)
+    }
+
+    #[cfg(test)]
+    pub fn with_sessions(
+        http: Arc<dyn Http>,
+        cache_dir: PathBuf,
+        accounts_file: PathBuf,
+        sessions: Box<dyn SessionStore>,
+    ) -> Self {
+        Self::with(Ok(http), cache_dir, accounts_file, sessions)
     }
 
     fn with(
         http: Result<Arc<dyn Http>, String>,
         cache_dir: PathBuf,
         accounts_file: PathBuf,
+        sessions: Box<dyn SessionStore>,
     ) -> Self {
         let accounts = Mutex::new(Accounts::load(accounts_file));
         Self {
             http,
             cache_dir,
             accounts,
+            sessions,
             flows: Mutex::new(HashMap::new()),
             builds: service::Builds::default(),
             scenes: scene::Scenes::default(),
             thumbnails: service::Thumbnails::default(),
+            locks: write::CollectionLocks::default(),
         }
     }
 
@@ -230,12 +257,102 @@ impl ArbeskState {
         let site = sign_in_site();
         let signed_in = signin::finish(&flow, self.http()?, &site, CALLBACK_TIMEOUT);
         lock(&self.flows).remove(flow_id);
-        let (email, address) = signed_in?;
+        let signed_in = signed_in?;
         // Cancel may have come while Arbesk was confirming: it still cancels.
         if flow.is_cancelled() {
+            self.end_session(&site, &signed_in.session);
             return Err("Sign-in was cancelled.".into());
         }
-        lock(&self.accounts).connect(&email, &address, &site)
+        let account = lock(&self.accounts).connect(&signed_in.email, &signed_in.address, &site)?;
+        if let Err(error) = self.sessions.save(&account.id, &signed_in.session) {
+            // Without a kept session the account still reads; copying in asks to sign in again.
+            self.sessions.delete(&account.id);
+            self.end_session(&site, &signed_in.session);
+            eprintln!("Arbesk: the session was not kept: {error}");
+        }
+        Ok(account)
+    }
+
+    /// Ask Arbesk to end `session`; a failure changes nothing here.
+    fn end_session(&self, site: &Site, session: &Session) {
+        if let Ok(http) = self.http() {
+            let _ = http.delete(
+                &format!("{}/api/v1/sessions", site.origin),
+                Some(&session.token),
+            );
+        }
+    }
+
+    /// The id of the account `path` belongs to.
+    fn account_id(&self, path: &str) -> Option<String> {
+        let address = parse(path).ok()?.address().to_string();
+        lock(&self.accounts)
+            .get_by_address(&address)
+            .map(|account| account.id.clone())
+    }
+
+    /// The token to act as the account `path` belongs to, while Arbesk still
+    /// accepts it.
+    pub fn session_for(&self, path: &str) -> Result<String, String> {
+        let kept = self
+            .account_id(path)
+            .and_then(|id| self.sessions.load(&id))
+            .filter(|session| session.expires_at_ms > now_ms() + 60_000);
+        kept.map(|session| session.token)
+            .ok_or_else(|| "Sign in to Arbesk again to copy files into it.".to_string())
+    }
+
+    /// Whether copying into the account `path` belongs to can start.
+    pub fn signed_in(&self, path: &str) -> bool {
+        self.session_for(path).is_ok()
+    }
+
+    /// Copy the local model `file` to the pending name `to` in a collection
+    /// (`write::add`): the new asset's path. Arbesk's 401 ends the session.
+    pub fn add(
+        &self,
+        to: &str,
+        file: &Path,
+        overwrite: bool,
+        progress: &Progress,
+    ) -> Result<String, String> {
+        let (address, token_id, name) = parse_target(to)?;
+        let site = self.site_for(&address)?;
+        let account = location::account_path(&address);
+        let session = self.session_for(&account)?;
+        let target = write::Target { address, token_id, name };
+        let added = write::add(
+            self.http()?,
+            &site,
+            &session,
+            &target,
+            file,
+            overwrite,
+            progress,
+            &self.cache_dir,
+            &self.locks,
+        );
+        if added.as_ref().err().is_some_and(|error| error == write::SIGN_IN) {
+            self.forget_session(&account);
+        }
+        added
+    }
+
+    /// Whether the collection of the pending name `path` lists that name.
+    pub fn exists(&self, path: &str) -> bool {
+        let Ok((address, token_id, name)) = parse_target(path) else {
+            return false;
+        };
+        let collection = location::collection_path(&address, &token_id, "");
+        self.list(&collection)
+            .is_ok_and(|entries| entries.iter().any(|entry| entry.name == name))
+    }
+
+    /// Drop the session of `path`'s account, after Arbesk refused it.
+    pub fn forget_session(&self, path: &str) {
+        if let Some(id) = self.account_id(path) {
+            self.sessions.delete(&id);
+        }
     }
 
     pub fn connect_cancel(&self, flow_id: &str) {
@@ -244,9 +361,15 @@ impl ArbeskState {
         }
     }
 
-    /// Forget the account; nothing on Arbesk changes.
+    /// Forget the account and end its session; nothing else on Arbesk changes.
     pub fn disconnect(&self, id: &str) -> Result<(), String> {
-        lock(&self.accounts).remove(id)?;
+        let removed = lock(&self.accounts).remove(id)?;
+        if let Some(account) = removed {
+            if let Some(session) = self.sessions.load(id) {
+                self.end_session(&account.site(), &session);
+            }
+        }
+        self.sessions.delete(id);
         // Where its assets' thumbnails are is no longer needed.
         self.thumbnails.clear();
         Ok(())
@@ -257,6 +380,7 @@ impl ArbeskState {
 mod tests {
     use super::*;
     use crate::arbesk::http::fake::FakeHttp;
+    use crate::arbesk::session::MemorySessions;
 
     const ORIGIN: &str = "https://promptscad.com";
 
@@ -330,6 +454,126 @@ mod tests {
             state.site_for(ADDRESS).unwrap_err(),
             "Connect this Arbesk account first."
         );
+    }
+
+    /// A state whose sessions the test can look into.
+    fn state_with_sessions(
+        http: Arc<FakeHttp>,
+        dir: &std::path::Path,
+    ) -> (ArbeskState, MemorySessions) {
+        let sessions = MemorySessions::default();
+        let state = ArbeskState::with_sessions(
+            http,
+            dir.join("cache"),
+            dir.join("arbesk_accounts.json"),
+            Box::new(sessions.clone()),
+        );
+        (state, sessions)
+    }
+
+    #[test]
+    fn connecting_saves_the_session_and_disconnect_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let http = confirming();
+        let (state, sessions) = state_with_sessions(http.clone(), dir.path());
+        let (flow_id, url) = state.connect_start("me@example.com").unwrap();
+        let browser = browser_returns(&url, "me%40example.com");
+        let account = state.connect_finish(&flow_id).unwrap();
+        browser.join().unwrap();
+        let kept = sessions.load(&account.id).unwrap();
+        assert_eq!(kept.token, "t");
+        assert!(kept.expires_at_ms > signin::now_ms());
+        assert!(
+            !std::fs::read_to_string(dir.path().join("arbesk_accounts.json"))
+                .unwrap()
+                .contains("\"t\"")
+        );
+        assert!(http.requests().iter().all(|r| r.method != "DELETE"));
+        let path = format!("arbesk://{ADDRESS}");
+        assert!(state.signed_in(&path));
+        assert_eq!(state.session_for(&path).unwrap(), "t");
+
+        state.disconnect(&account.id).unwrap();
+        let requests = http.requests();
+        let last = requests.last().unwrap();
+        assert_eq!(
+            (last.method, last.url.as_str()),
+            ("DELETE", format!("{ORIGIN}/api/v1/sessions").as_str())
+        );
+        assert_eq!(last.session.as_deref(), Some("t"));
+        assert_eq!(sessions.load(&account.id), None);
+    }
+
+    #[test]
+    fn a_missing_or_expiring_session_asks_for_a_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, sessions) = state_with_sessions(confirming(), dir.path());
+        let (flow_id, url) = state.connect_start("me@example.com").unwrap();
+        let browser = browser_returns(&url, "me%40example.com");
+        let account = state.connect_finish(&flow_id).unwrap();
+        browser.join().unwrap();
+        let path = format!("arbesk://{ADDRESS}/1~Set");
+        let again = "Sign in to Arbesk again to copy files into it.";
+
+        sessions.delete(&account.id);
+        assert_eq!(state.session_for(&path).unwrap_err(), again);
+        assert!(!state.signed_in(&path));
+
+        let soon = Session {
+            token: "t".into(),
+            expires_at_ms: signin::now_ms() + 30_000,
+        };
+        sessions.save(&account.id, &soon).unwrap();
+        assert_eq!(state.session_for(&path).unwrap_err(), again);
+
+        let later = Session {
+            expires_at_ms: signin::now_ms() + 3_600_000,
+            ..soon
+        };
+        sessions.save(&account.id, &later).unwrap();
+        assert_eq!(state.session_for(&path).unwrap(), "t");
+
+        state.forget_session(&path);
+        assert_eq!(sessions.load(&account.id), None);
+        // An account that isn't connected has no session either.
+        let other = "arbesk://0x00000000000000000000000000000000000000cd";
+        assert_eq!(state.session_for(other).unwrap_err(), again);
+    }
+
+    #[test]
+    fn exists_knows_a_listed_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = ArbeskState::with_http(
+            Arc::new(testing::arbesk(Arc::new(Mutex::new(testing::world())))),
+            dir.path().join("cache"),
+            dir.path().join("a.json"),
+        );
+        state.accounts.lock().unwrap().connect("me@example.com", testing::ADDRESS, &testing::site()).unwrap();
+        let shapes = testing::shapes();
+        assert!(state.exists(&format!("{shapes}/~Box.gltf")));
+        assert!(!state.exists(&format!("{shapes}/~New.gltf")));
+        assert!(!state.exists(&shapes));
+        assert!(!state.exists("arbesk://bad/~x"));
+    }
+
+    #[test]
+    fn a_401_forgets_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut world = testing::world();
+        world.relay = testing::Relay::Status(401);
+        world.sessions.insert("t".into());
+        let http = Arc::new(testing::arbesk(Arc::new(Mutex::new(world))));
+        let (state, sessions) = state_with_sessions(http, dir.path());
+        let account = state.accounts.lock().unwrap().connect("me@example.com", testing::ADDRESS, &testing::site()).unwrap();
+        let kept = Session { token: "t".into(), expires_at_ms: signin::now_ms() + 3_600_000 };
+        sessions.save(&account.id, &kept).unwrap();
+        let file = testing::fixture("glb-box").join("input.glb");
+        let to = format!("{}/~Fresh.glb", testing::shapes());
+        let error = state.add(&to, &file, false, &Progress::default()).unwrap_err();
+        assert_eq!(error, write::SIGN_IN);
+        assert_eq!(sessions.load(&account.id), None);
+        // Without a session nothing is asked.
+        assert_eq!(state.add(&to, &file, false, &Progress::default()).unwrap_err(), write::SIGN_IN);
     }
 
     #[test]
