@@ -137,6 +137,9 @@ test("Copy and Paste take assets out to a folder, asking when a name is taken", 
   await key("v", { mod: true });
   await settle(30);
   expect(dialogHeading()).toMatch(/Replace/);
+  expect($(".dialog-layer .dialog-text").textContent).toBe(
+    "Another file with the same name already exists in “Models”. Replacing it moves the existing file to the Trash.",
+  );
   await key("Enter");
   await settle(30);
   expect(dialogHeading()).toMatch(/Replace/);
@@ -296,6 +299,10 @@ test("a .glb pastes as its listed .gltf name: a clash asks, Keep Both and Replac
   for (const copy of ["Box (copy).gltf", "Box (copy 2).gltf"]) {
     await pasteAndConfirm();
     expect(dialogHeading()).toBe("Replace file “Box.gltf”?");
+    // Replace in Arbesk saves a version: nothing goes to the Trash.
+    expect($(".dialog-layer .dialog-text").textContent).toBe(
+      "Another file with the same name already exists in “Untitled Collection”. Replacing it saves your file as its newest version; the earlier ones stay in its history.",
+    );
     await respond("Keep Both");
     await vi.waitFor(() => expect(names()).toContain(copy), { timeout: 2000 });
   }

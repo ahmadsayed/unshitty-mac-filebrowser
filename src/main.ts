@@ -3115,6 +3115,14 @@ function refreshCutMarks(): void {
 
 type ConflictChoice = "replace" | "skip" | "keepboth" | "cancel";
 
+/** What Replace does, in the conflict dialog: in Arbesk it saves the file as
+ *  the asset's next version (spec D3), elsewhere the old item goes to the Trash. */
+function conflictBody(kind: "file" | "folder", destDir: string): string {
+  const where = `Another ${kind} with the same name already exists in “${locationName(destDir)}”.`;
+  if (placeOf(destDir) === "arbesk") return `${where} Replacing it saves your file as its newest version; the earlier ones stay in its history.`;
+  return `${where} Replacing it moves the existing ${kind} to the Trash.`;
+}
+
 /** GNOME-style conflict dialog. Resolves with the choice and whether to apply it to the rest. */
 function askConflict(name: string, isDir: boolean, destDir: string, remaining: number): Promise<{ choice: ConflictChoice; all: boolean }> {
   return new Promise((resolve) => {
@@ -3129,7 +3137,7 @@ function askConflict(name: string, isDir: boolean, destDir: string, remaining: n
     }
     openDialog({
       heading: `Replace ${kind} “${name}”?`,
-      body: `Another ${kind} with the same name already exists in “${locationName(destDir)}”. Replacing it moves the existing ${kind} to the Trash.`,
+      body: conflictBody(kind, destDir),
       extra,
       responses: [
         { id: "skip", label: "Skip" },
