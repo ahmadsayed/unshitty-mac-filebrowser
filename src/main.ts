@@ -18,7 +18,7 @@ import {
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
   trashInfo, restoreEntry, deletePermanently, emptyTrash, cancelOperation, measure, listVolumes, trashDir, fileProperties, folderSize,
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
-  previewBytes, previewText, thumbnail, arbeskScene, arbeskPart,
+  previewBytes, previewText, thumbnail, arbeskScene, arbeskPart, arbeskVersions, listVersions, versionCount, openVersion,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
   arbeskAccounts, arbeskConnectStart, arbeskConnectFinish, arbeskConnectCancel, arbeskDisconnect,
   driveClientStatus, driveClientSet, driveClientClear,
@@ -37,7 +37,8 @@ import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
 import { cleanError, closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { checkForUpdates } from "./updates";
-import { addVersionRows, insideVersionedRoot, showDeletedFiles, showVersions } from "./versions";
+import { addVersionRows, insideVersionedRoot, restoreName, showDeletedFiles, showVersions } from "./versions";
+import { LOCAL_VERSION_LIMIT, drawVersionControl, fromArbeskSaves, fromLocal, type PreviewVersion } from "./preview-versions";
 import { macDmgItems } from "./mac-dmg";
 import { showOpenWith as showOpenWithDialog } from "./open-with";
 import { linuxProgramItems } from "./linux-programs";
@@ -285,6 +286,7 @@ let previewLayer: HTMLElement;
 let previewName: HTMLElement;
 let previewBody: HTMLElement;
 let previewActionsEl: HTMLElement;
+let previewVersionsEl: HTMLElement;
 
 // SECURITY: escape HTML entities in user-derived strings before innerHTML insertion
 export function escapeHtml(text: string): string {
@@ -4332,16 +4334,25 @@ const MODEL_PREVIEW_LIMIT = 256 * 1024 * 1024;
 
 function closePreview(): void {
   if (!previewLayer) return;
-  previewSeq += 1;
+  resetPreviewBody();
   previewLayer.hidden = true;
-  previewLoaded();
-  previewBody.replaceChildren();
   previewActionsEl.replaceChildren();
   previewName.textContent = "";
+  previewVersionsEl.hidden = true;
+  previewVersionsEl.replaceChildren();
+}
+
+/** Empty the preview's content (to show another version of the same item):
+ *  what was loading for the old content is stale from now on. The new seq. */
+function resetPreviewBody(): number {
+  previewSeq += 1;
+  previewLoaded();
+  previewBody.replaceChildren();
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = null;
   modelView?.dispose();
   modelView = null;
+  return previewSeq;
 }
 
 /** The item's icon over a line of text: why there is no preview, or, with a
@@ -4402,24 +4413,80 @@ async function showPreview(entry: Entry): Promise<void> {
     return;
   }
   previewLoading(entry, seq);
+  void loadPreviewVersions(entry, seq);
   await previewEntry(entry, seq, fileKind(entry.name));
+}
+
+// ---- Versions in the preview -------------------------------------------------
+
+/** Where the preview reads a version from: an older local version's
+ *  read-only copy, or an Arbesk save. Empty: the item as it is now. */
+interface PreviewAt {
+  readPath?: string;
+  arbeskVersion?: string | null;
+}
+
+/** An item's versions, oldest first, and whether only the newest were read. */
+type VersionList = { versions: PreviewVersion[]; more: boolean };
+
+/** An Arbesk asset's saves, or a file's history in a folder that keeps versions. */
+async function previewVersionsOf(entry: Entry): Promise<VersionList> {
+  if (locationKind(entry.path, trashPath) === "arbesk") return { versions: fromArbeskSaves(await arbeskVersions(entry.path)), more: false };
+  if (entry.is_symlink || !insideVersionedRoot(entry.path, versionedRootPath)) return { versions: [], more: false };
+  const [rows, total] = await Promise.all([listVersions(entry.path, LOCAL_VERSION_LIMIT, 0), versionCount(entry.path)]);
+  return { versions: fromLocal(rows), more: total > rows.length };
+}
+
+/** The version control, once the item's versions are known and there are two or more. */
+async function loadPreviewVersions(entry: Entry, seq: number): Promise<void> {
+  const list = await previewVersionsOf(entry).catch((): VersionList => ({ versions: [], more: false }));
+  if (previewStale(seq) || list.versions.length < 2) return;
+  drawPreviewVersions(entry, list, list.versions.length - 1);
+}
+
+function drawPreviewVersions(entry: Entry, list: VersionList, shown: number): void {
+  drawVersionControl(previewVersionsEl, list.versions, shown, list.more, (index) => void showPreviewVersion(entry, list, index));
+}
+
+/** Show version `index` of the item in place of what the preview shows. */
+async function showPreviewVersion(entry: Entry, list: VersionList, index: number): Promise<void> {
+  const seq = resetPreviewBody();
+  drawPreviewVersions(entry, list, index);
+  previewLoading(entry, seq);
+  try {
+    const at = await previewAtVersion(entry, list.versions[index]);
+    if (previewStale(seq)) return;
+    await previewEntry(entry, seq, fileKind(entry.name), at);
+  } catch {
+    if (previewStale(seq)) return;
+    previewEmpty(entry, "No preview available.");
+  }
+}
+
+/** Where `version` of the item is read from: an older local version is
+ *  materialized as the read-only copy Versions… → Open makes. */
+async function previewAtVersion(entry: Entry, version: PreviewVersion): Promise<PreviewAt> {
+  if (version.current) return {};
+  if (locationKind(entry.path, trashPath) === "arbesk") return { arbeskVersion: version.id };
+  const name = restoreName(entry.path, Math.round((version.date ?? 0) / 1000));
+  return { readPath: await openVersion(entry.path, Number(version.id), name) };
 }
 
 function previewStale(seq: number): boolean {
   return seq !== previewSeq || Boolean(previewLayer.hidden);
 }
 
-async function previewEntry(entry: Entry, seq: number, kind: FileKind): Promise<void> {
+async function previewEntry(entry: Entry, seq: number, kind: FileKind, at: PreviewAt = {}): Promise<void> {
   const model = modelFormat(entry.name);
-  if (model) return previewModelEntry(entry, seq, model);
-  if (kind === "text" || kind === "code") return previewTextEntry(entry, seq);
-  if (THUMB_KINDS.has(kind)) return previewThumbnailEntry(entry, seq);
+  if (model) return previewModelEntry(entry, seq, model, at);
+  if (kind === "text" || kind === "code") return previewTextEntry(entry, seq, at);
+  if (THUMB_KINDS.has(kind)) return previewThumbnailEntry(entry, seq, at);
   previewEmpty(entry, "No preview available.");
 }
 
-async function previewTextEntry(entry: Entry, seq: number): Promise<void> {
+async function previewTextEntry(entry: Entry, seq: number, at: PreviewAt): Promise<void> {
   try {
-    const result = await previewText(entry.path, 200_000);
+    const result = await previewText(at.readPath ?? entry.path, 200_000);
     if (previewStale(seq)) return;
     const pre = document.createElement("pre");
     pre.textContent = result.text + (result.truncated ? "\n…" : "");
@@ -4436,10 +4503,11 @@ async function previewTextEntry(entry: Entry, seq: number): Promise<void> {
  * now, in its own chunk. Without WebGL, or for a file it can't read, the
  * preview says there is none.
  */
-async function previewModelEntry(entry: Entry, seq: number, named: ModelFormat): Promise<void> {
-  if (locationKind(entry.path, trashPath) === "arbesk") return previewArbeskScene(entry, seq);
+async function previewModelEntry(entry: Entry, seq: number, named: ModelFormat, at: PreviewAt): Promise<void> {
+  if (locationKind(entry.path, trashPath) === "arbesk") return previewArbeskScene(entry, seq, at.arbeskVersion ?? null);
   try {
-    const bytes = await previewBytes(entry.path, MODEL_PREVIEW_LIMIT);
+    // A .gltf's companions come from the item's own folder, as they are now.
+    const bytes = await previewBytes(at.readPath ?? entry.path, MODEL_PREVIEW_LIMIT);
     // The bytes decide over the name: an Arbesk .gltf previews as a GLB.
     const format: ModelFormat = named === "gltf" && isGlb(bytes) ? "glb" : named;
     const companions = format === "gltf" ? await readGltfCompanions(entry.path, bytes) : new Map<string, ArrayBuffer>();
@@ -4459,9 +4527,9 @@ async function previewModelEntry(entry: Entry, seq: number, named: ModelFormat):
  * goes; each part is loaded once and copied to every place. A part that
  * fails is left out; with none, the preview says why.
  */
-async function previewArbeskScene(entry: Entry, seq: number): Promise<void> {
+async function previewArbeskScene(entry: Entry, seq: number, version: string | null): Promise<void> {
   const viewer = await import("./model-viewer");
-  const { parts, tooLarge } = await loadArbeskParts(entry.path, seq, viewer).catch(() => ({ parts: [], tooLarge: false }));
+  const { parts, tooLarge } = await loadArbeskParts(entry.path, version, seq, viewer).catch(() => ({ parts: [], tooLarge: false }));
   if (previewStale(seq)) return;
   if (!parts.length) {
     previewEmpty(entry, tooLarge ? "This file is too large to preview." : "No preview available.");
@@ -4478,8 +4546,8 @@ async function previewArbeskScene(entry: Entry, seq: number): Promise<void> {
 
 /** Each part of the scene at `path`, loaded once, at most MODEL_PREVIEW_LIMIT
  *  bytes in all; none more once the preview has moved on. */
-async function loadArbeskParts(path: string, seq: number, viewer: typeof import("./model-viewer")) {
-  const scene = await arbeskScene(path);
+async function loadArbeskParts(path: string, version: string | null, seq: number, viewer: typeof import("./model-viewer")) {
+  const scene = await arbeskScene(path, version);
   const parts: { object: import("three").Object3D; placements: import("./model-viewer").ScenePlacement[] }[] = [];
   let left = MODEL_PREVIEW_LIMIT;
   let tooLarge = false;
@@ -4490,7 +4558,7 @@ async function loadArbeskParts(path: string, seq: number, viewer: typeof import(
       break;
     }
     try {
-      const bytes = await arbeskPart(path, part.key, left);
+      const bytes = await arbeskPart(path, part.key, left, version);
       left -= bytes.byteLength;
       parts.push({ object: await viewer.loadScenePart(bytes), placements: part.placements });
     } catch (err) {
@@ -4515,9 +4583,9 @@ async function readGltfCompanions(path: string, bytes: ArrayBuffer): Promise<Map
   return found;
 }
 
-async function previewThumbnailEntry(entry: Entry, seq: number): Promise<void> {
+async function previewThumbnailEntry(entry: Entry, seq: number, at: PreviewAt): Promise<void> {
   try {
-    const bytes = await thumbnail(entry.path, 1024);
+    const bytes = await thumbnail(at.readPath ?? entry.path, 1024);
     if (previewStale(seq)) return;
     if (!bytes.byteLength) {
       previewEmpty(entry, "No preview available.");
@@ -5730,6 +5798,7 @@ async function init(): Promise<void> {
   previewName = $("#preview-name");
   previewBody = $("#preview-body");
   previewActionsEl = $("#preview-actions");
+  previewVersionsEl = $("#preview-versions");
   // Escape on a preview button, or Escape or Space on a 3D model being
   // turned: the view's own keys don't see them.
   previewLayer.addEventListener("keydown", (event) => {

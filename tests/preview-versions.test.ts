@@ -1,7 +1,7 @@
 // One list of versions for the Space preview, from a Keep Versions history or
 // an Arbesk asset's saves (src/preview-versions.ts).
 import { expect, test, vi } from "vitest";
-import { fromArbesk, fromLocal, versionMenu, versionTitle, type PreviewVersion } from "../src/preview-versions";
+import { fromArbeskSaves, fromLocal, versionMenu, versionTitle, type PreviewVersion } from "../src/preview-versions";
 import type { VersionInfo } from "../src/api";
 
 const row = (id: number, mtime: number, over: Partial<VersionInfo> = {}): VersionInfo => ({
@@ -25,11 +25,11 @@ test("deletion markers are not versions", () => {
 });
 
 test("Arbesk versions: the newest is current", () => {
-  expect(fromArbesk([{ id: "a", timestamp: 5 }, { id: "b", timestamp: null }])).toEqual([
+  expect(fromArbeskSaves([{ id: "a", timestamp: 5 }, { id: "b", timestamp: null }])).toEqual([
     { id: "a", date: 5, current: false },
     { id: "b", date: null, current: true },
   ]);
-  expect(fromArbesk([])).toEqual([]);
+  expect(fromArbeskSaves([])).toEqual([]);
 });
 
 test("titles count from the oldest", () => {

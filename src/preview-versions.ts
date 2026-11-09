@@ -1,9 +1,11 @@
 // Versions in the Space preview: one list, oldest first, whether it comes
-// from a Keep Versions history or an Arbesk asset's saves, and the words the
-// preview's version control uses. No DOM here; main.ts draws the control.
+// from a Keep Versions history or an Arbesk asset's saves, and the control
+// in the preview's header that steps through it. main.ts shows the version
+// picked.
 import type { ArbeskVersion, VersionInfo } from "./api";
 import { formatDate } from "./format";
-import type { MenuItem } from "./ui";
+import { sym } from "./icons";
+import { openMenu, type MenuItem } from "./ui";
 
 /** One version the preview can show. */
 export interface PreviewVersion {
@@ -28,7 +30,7 @@ export function fromLocal(rows: VersionInfo[]): PreviewVersion[] {
 }
 
 /** An Arbesk asset's saves (oldest first): the last one is the asset now. */
-export function fromArbesk(rows: ArbeskVersion[]): PreviewVersion[] {
+export function fromArbeskSaves(rows: ArbeskVersion[]): PreviewVersion[] {
   return rows.map((row, i) => ({ id: row.id, date: row.timestamp, current: i === rows.length - 1 }));
 }
 
@@ -52,4 +54,48 @@ export function versionMenu(versions: PreviewVersion[], shown: number, pick: (in
       action: () => pick(index),
     }))
     .reverse();
+}
+
+/** One header button with only an icon: its words go to its tooltip and to screen readers. */
+function stepButton(icon: string, label: string, disabled: boolean, onClick: () => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.className = "flat-btn";
+  button.innerHTML = sym(icon);
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.disabled = disabled;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+/**
+ * Draw the control in `host`: Older Version, the shown version's title over
+ * its date (a button opening the list), Newer Version. `more` says the list
+ * holds only the newest versions. `pick` shows another one.
+ */
+export function drawVersionControl(
+  host: HTMLElement,
+  versions: PreviewVersion[],
+  shown: number,
+  more: boolean,
+  pick: (index: number) => void,
+): void {
+  const label = document.createElement("button");
+  label.className = "flat-btn preview-version-label";
+  label.setAttribute("aria-haspopup", "menu");
+  const title = document.createElement("span");
+  title.className = "preview-version-title";
+  title.textContent = versionTitle(shown, versions.length);
+  const date = document.createElement("span");
+  date.className = "preview-version-date";
+  date.textContent = versionDate(versions[shown]);
+  label.append(title, date);
+  const note: MenuItem[] = more ? [{ heading: `Showing the newest ${LOCAL_VERSION_LIMIT.toLocaleString("en-US")} versions.` }] : [];
+  label.addEventListener("click", () => openMenu(label, [...note, ...versionMenu(versions, shown, pick)]));
+  host.replaceChildren(
+    stepButton("go-previous", "Older Version", shown === 0, () => pick(shown - 1)),
+    label,
+    stepButton("go-next", "Newer Version", shown === versions.length - 1, () => pick(shown + 1)),
+  );
+  host.hidden = false;
 }
