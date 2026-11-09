@@ -4338,6 +4338,7 @@ function closePreview(): void {
   previewLayer.hidden = true;
   previewActionsEl.replaceChildren();
   previewName.textContent = "";
+  previewName.hidden = false;
   previewVersionsEl.hidden = true;
   previewVersionsEl.replaceChildren();
 }
@@ -4448,7 +4449,9 @@ async function loadPreviewVersions(entry: Entry, seq: number): Promise<void> {
 }
 
 function drawPreviewVersions(entry: Entry, list: VersionList, shown: number): void {
-  drawVersionControl(previewVersionsEl, list.versions, shown, list.more, (index) => void showPreviewVersion(entry, list, index));
+  // The control is the header's title now: the name goes into it.
+  previewName.hidden = true;
+  drawVersionControl(previewVersionsEl, entry.name, list.versions, shown, list.more, (index) => void showPreviewVersion(entry, list, index));
 }
 
 /** Show version `index` of the item in place of what the preview shows. */

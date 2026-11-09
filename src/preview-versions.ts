@@ -79,12 +79,14 @@ function stepButton(icon: string, label: string, disabled: boolean, onClick: () 
 }
 
 /**
- * Draw the control in `host`: Older Version, the shown version's title over
- * its date (a button opening the list), Newer Version. `more` says the list
- * holds only the newest versions. `pick` shows another one.
+ * Draw the control in `host`, the header's centred title: Older Version, the
+ * item's `name` over "Version N of M · date" (a button opening the list),
+ * Newer Version. `more` says the list holds only the newest versions. `pick`
+ * shows another one.
  */
 export function drawVersionControl(
   host: HTMLElement,
+  name: string,
   versions: PreviewVersion[],
   shown: number,
   more: boolean,
@@ -93,13 +95,10 @@ export function drawVersionControl(
   const label = document.createElement("button");
   label.className = "flat-btn preview-version-label";
   label.setAttribute("aria-haspopup", "menu");
-  const title = document.createElement("span");
-  title.className = "preview-version-title";
-  title.textContent = versionTitle(shown, versions.length);
-  const date = document.createElement("span");
-  date.className = "preview-version-date";
-  date.textContent = versionDate(versions[shown]);
-  label.append(title, date);
+  label.innerHTML = `<span class="preview-title-name"></span><span class="preview-version-subtitle"><span class="preview-version-title"></span><span class="preview-version-date"></span></span>`;
+  label.querySelector(".preview-title-name")!.textContent = name;
+  label.querySelector(".preview-version-title")!.textContent = versionTitle(shown, versions.length);
+  label.querySelector(".preview-version-date")!.textContent = versionDate(versions[shown]);
   const note: MenuItem[] = more ? [{ heading: `Showing the newest ${LOCAL_VERSION_LIMIT.toLocaleString("en-US")} versions.` }] : [];
   label.addEventListener("click", () => openVersionMenu(label, [...note, ...versionMenu(versions, shown, pick)]));
   const buttons = [

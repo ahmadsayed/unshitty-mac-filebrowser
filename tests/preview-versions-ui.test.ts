@@ -89,6 +89,25 @@ test("an Arbesk asset with three saves shows Version 3 of 3", async () => {
   await key("Escape");
 });
 
+test("the name is the centred title, the version its subtitle", async () => {
+  await goTo(UNTITLED);
+  await preview("Cube.gltf");
+  await until(() => !control().hidden);
+  const label = control().querySelector(".preview-version-label")!;
+  // One title in the header: the name, with the version under it.
+  expect(label.querySelector(".preview-title-name")?.textContent).toBe("Cube.gltf");
+  expect(label.querySelector(".preview-version-subtitle")?.textContent).toMatch(/^Version 3 of 3/);
+  expect($("#preview-name").hidden).toBe(true);
+  await key("Escape");
+  // An item without versions shows its name alone again.
+  await goTo(VERSIONED);
+  await preview("image.png");
+  await settle(30);
+  expect($("#preview-name").hidden).toBe(false);
+  expect($("#preview-name").textContent).toBe("image.png");
+  await key("Escape");
+});
+
 test("Older Version shows the older save", async () => {
   await goTo(UNTITLED);
   await preview("Cube.gltf");
