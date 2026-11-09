@@ -50,6 +50,9 @@ pub struct Part {
     /// What the preview gets: "glb" or "3mf".
     pub format: &'static str,
     pub placements: Vec<Placement>,
+    /// Stored as the model file itself (older saves), not as a source to compose.
+    #[serde(skip)]
+    pub raw: bool,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Default)]
@@ -164,7 +167,7 @@ impl Walk<'_> {
             .iter()
             .any(|key| manifest.get(key).is_some())
         {
-            self.place(cid, parent, &Value::Null);
+            self.place(cid, parent, &Value::Null, None);
             return;
         }
         self.seen.insert(cid.to_string());
@@ -195,6 +198,7 @@ impl Walk<'_> {
                 source,
                 &here,
                 node.get("post_processor").unwrap_or(&Value::Null),
+                raw_format(&node["source"]),
             );
         }
     }
@@ -217,20 +221,26 @@ impl Walk<'_> {
     }
 
     /// One more place for the source at `key`.
-    fn place(&mut self, key: &str, matrix: &Matrix, post: &Value) {
+    /// `raw` is the preview format of a source stored as the model file itself.
+    fn place(&mut self, key: &str, matrix: &Matrix, post: &Value, raw: Option<&'static str>) {
         if self.placed >= MAX_PLACEMENTS {
             return;
         }
         let index = match self.scene.parts.iter().position(|part| part.key == key) {
             Some(index) => index,
             None => {
-                let Ok(format) = self.links.format(key) else {
-                    return;
+                let format = match raw {
+                    Some(format) => format,
+                    None => match self.links.format(key) {
+                        Ok(format) => format.preview_ext(),
+                        Err(_) => return,
+                    },
                 };
                 self.scene.parts.push(Part {
                     key: key.to_string(),
-                    format: format.preview_ext(),
+                    format,
                     placements: Vec::new(),
+                    raw: raw.is_some(),
                 });
                 self.scene.parts.len() - 1
             }
@@ -247,6 +257,18 @@ impl Walk<'_> {
         };
         self.placed += 1;
         self.scene.parts[index].placements.push(placement);
+    }
+}
+
+/// The preview format of a source that is the model file itself, as older
+/// saves store it (the Studio's raw GLB and raw 3MF loads): a `glb`, or a
+/// `3mf` whose path isn't the stored form's `composite.3mf.json`.
+fn raw_format(source: &Value) -> Option<&'static str> {
+    let path = source["path"].as_str().unwrap_or_default();
+    match source["format"].as_str() {
+        Some("glb") => Some("glb"),
+        Some("3mf") if !path.ends_with(".json") => Some("3mf"),
+        _ => None,
     }
 }
 
@@ -628,6 +650,7 @@ mod tests {
                 key: key.into(),
                 format: "glb",
                 placements: vec![],
+                raw: false,
             }],
         };
         scenes.keep("a", one("x"));
@@ -649,5 +672,33 @@ mod tests {
             (made.parts[0].key.as_str(), scenes.get("new").is_some()),
             ("n", true)
         );
+    }
+
+    #[test]
+    fn an_older_saves_raw_file_is_a_part_by_its_format() {
+        // Older saves name the model file itself: a GLB, or a zipped 3MF.
+        let mut fake = Fake::default();
+        let raw = |cid: &str, path: &str, format: &str| json!({ "source": { "cid": cid, "path": path, "format": format } });
+        fake.asset(
+            "bafyA",
+            json!([
+                raw("bafyGlb", "asset.glb", "glb"),
+                raw("bafy3mf", "asset.3mf", "3mf")
+            ]),
+        );
+        let scene = resolve("bafyA", &fake);
+        let parts: Vec<(&str, &str, bool)> = scene
+            .parts
+            .iter()
+            .map(|p| (p.key.as_str(), p.format, p.raw))
+            .collect();
+        assert_eq!(parts, [("bafyGlb", "glb", true), ("bafy3mf", "3mf", true)]);
+        // Known from the node alone: nothing is fetched to tell.
+        assert_eq!(fake.formats_asked.get(), 0);
+        // A stored (composite) 3MF is not raw.
+        let mut stored = Fake::default();
+        stored.asset("bafyB", json!([raw("bafyC3", "composite.3mf.json", "3mf")]));
+        stored.source("bafyC3", Format::ThreeMf);
+        assert!(!resolve("bafyB", &stored).parts[0].raw);
     }
 }

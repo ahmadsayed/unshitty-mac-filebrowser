@@ -80,7 +80,9 @@ An asset saved more than once in the Studio has versions: each save points
 at the one before it. Space shows the newest, and ‹ and › in the preview's
 header step back through the saves (the newest 50, as the Studio reads
 them), each shown as its own scene. A model that didn't change between
-saves is downloaded once.
+saves is downloaded once. Older saves store the model file itself (a `.glb`, or
+a zipped `.3mf`) instead of a stored source; the preview shows those as
+they are, as the Studio does.
 
 A model stored in a way File Browser doesn't know yet says *This asset uses
 an Arbesk format File Browser can't read yet.* rather than showing a wrong

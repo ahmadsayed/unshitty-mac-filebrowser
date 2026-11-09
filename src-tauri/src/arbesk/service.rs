@@ -297,12 +297,34 @@ pub fn part(
     let found = scene.parts.iter().find(|part| part.key == key);
     let found = found.ok_or("This part is not in the asset.")?;
     let reader = Reader::open(http, site, cache_dir)?;
-    let source = reader.gateway.json(key)?;
     let dir = cache_dir.join("arbesk").join(key);
     let name = format!("part.{}", found.format);
+    if found.raw {
+        let format = found.format;
+        return build_file(&dir, &name, progress, builds, || {
+            raw_part(&reader.gateway, key, format)
+        });
+    }
+    let source = reader.gateway.json(key)?;
     build_file(&dir, &name, progress, builds, || {
         compose_preview(&reader.gateway, &source)
     })
+}
+
+/// The model file at `cid` as an older save stored it: a GLB, or a zipped
+/// 3MF, as `format` says; bytes that are neither are refused.
+fn raw_part(gateway: &Gateway, cid: &str, format: &str) -> Result<Vec<u8>, String> {
+    let bytes = gateway.bytes(cid)?;
+    let magic: &[u8] = if format == "glb" {
+        b"glTF"
+    } else {
+        b"PK\x03\x04"
+    };
+    if bytes.starts_with(magic) {
+        Ok(bytes)
+    } else {
+        Err(UNKNOWN_FORMAT.into())
+    }
 }
 
 /// The reader for the asset at `path`, and its manifest's CID.
@@ -1185,6 +1207,53 @@ mod tests {
         )
         .unwrap();
         assert_eq!(chain_calls(&http), before);
+    }
+
+    /// A raw GLB and a zipped 3MF, as older saves store the model file itself.
+    fn raw_glb() -> Vec<u8> {
+        let mut glb = b"glTF".to_vec();
+        glb.extend_from_slice(&[2, 0, 0, 0, 12, 0, 0, 0]);
+        glb
+    }
+
+    #[test]
+    fn an_older_saves_raw_file_previews_as_it_is() {
+        let cache = tempfile::tempdir().unwrap();
+        let mut w = world();
+        w.files.insert("bafyRawGlb".into(), raw_glb());
+        w.files
+            .insert("bafyRawZip".into(), b"PK\x03\x04rest".to_vec());
+        w.files.insert("bafyNotGlb".into(), b"<html>".to_vec());
+        w.put(
+            "bafyH1",
+            json!({ "timestamp": 1000, "scene": { "nodes": [
+            { "source": { "cid": "bafyRawGlb", "path": "asset.glb", "format": "glb" } },
+            { "source": { "cid": "bafyRawZip", "path": "asset.3mf", "format": "3mf" } },
+            { "source": { "cid": "bafyNotGlb", "path": "asset.glb", "format": "glb" } }
+        ] } }),
+        );
+        let http = arbesk(Arc::new(Mutex::new(w)));
+        let older = scene(&http, &site(), &history(), Some("bafyH1"), cache.path()).unwrap();
+        let build = |key: &str| {
+            part(
+                &http,
+                &site(),
+                &older,
+                key,
+                cache.path(),
+                &Progress::default(),
+                &Builds::default(),
+            )
+        };
+        let glb = build("bafyRawGlb").unwrap();
+        assert_eq!(glb, cache.path().join("arbesk/bafyRawGlb/part.glb"));
+        assert_eq!(std::fs::read(&glb).unwrap(), raw_glb());
+        assert_eq!(
+            std::fs::read(build("bafyRawZip").unwrap()).unwrap(),
+            b"PK\x03\x04rest"
+        );
+        // Bytes that aren't what the node says are refused, not shown as a model.
+        assert_eq!(build("bafyNotGlb").unwrap_err(), UNKNOWN_FORMAT);
     }
 
     #[test]
