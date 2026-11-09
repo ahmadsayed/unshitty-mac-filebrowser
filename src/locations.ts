@@ -4,7 +4,7 @@
 // Kept free of DOM and app state so every branch can be tested directly
 // (tests/locations.test.ts).
 
-import { isArbeskAsset, isWithin, placeOf, PSEUDO_PREFIX, type Place, type Pseudo } from "./paths";
+import { isArbeskAsset, isArbeskCollection, isWithin, placeOf, PSEUDO_PREFIX, type Place, type Pseudo } from "./paths";
 
 /** Every pseudo location starts with this, and Recent, Starred and Network
  *  (the places that aren't folders) are its names: spelled in paths.ts,
@@ -145,6 +145,28 @@ export function copyOutRefusalOf(kinds: readonly LocationKind[], paths: readonly
 /** `copyOutRefusalOf` for paths. */
 export function copyOutRefusal(paths: readonly string[]): string | null {
   return copyOutRefusalOf(paths.map((path) => locationKind(path, "")), paths);
+}
+
+const ARBESK_MODEL = /\.(gltf|glb|3mf)$/i;
+
+/** Whether `path` is a file Arbesk takes: a local `.gltf`, `.glb` or `.3mf`. */
+export function isArbeskModelFile(path: string): boolean {
+  return placeOf(path) === "local" && ARBESK_MODEL.test(path);
+}
+
+/** Why `paths` can't be pasted or dropped into `dir` in Arbesk, in order:
+ *  a cut or move, a folder that isn't a collection, a file that isn't a model on
+ *  this computer. Null when only copies of model files go into a collection. */
+export function arbeskPasteRefusal(dir: string, paths: readonly string[], moving: boolean): string | null {
+  if (moving) return "Arbesk is read only.";
+  if (!isArbeskCollection(dir)) return "Paste into a collection.";
+  if (!paths.every(isArbeskModelFile)) return "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.";
+  return null;
+}
+
+/** The name a copied file has once Arbesk lists it: a `.glb` is stored as glTF. */
+export function arbeskTargetName(name: string): string {
+  return name.replace(/\.glb$/i, ".gltf");
 }
 
 /** What the item actions below need to know about an item. */

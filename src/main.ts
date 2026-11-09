@@ -56,7 +56,7 @@ import { companionPath, gltfCompanions, isGlb, modelFormat, type ModelFormat } f
 import { accountOf, fromArbesk, fromDrive, PROVIDERS, providerOf, withAccount, withoutAccount, type Account, type ProviderActions, type ProviderId } from "./providers";
 import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
-import { acceptsNewItems, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, knowsSizes, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
+import { acceptsNewItems, arbeskPasteRefusal, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, knowsSizes, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
 import { childPath, cloudAccountKey, homeFolder, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
@@ -3283,7 +3283,9 @@ async function transferBatch(
   for (let i = 0; i < paths.length && !batch.cancelled; i++) {
     const from = paths[i];
     // A Drive name can be "a/b" or "..": locally it must stay one plain name.
-    const name = isCloud(from) && !isCloud(destDir) ? safeLocalName(basename(from)) : basename(from);
+    const base = isCloud(from) && !isCloud(destDir) ? safeLocalName(basename(from)) : basename(from);
+    // A .glb is stored as glTF: its listed name, which a clash is checked against.
+    const name = placeOf(destDir) === "arbesk" ? arbeskTargetName(base) : base;
     const isDir = dirs.has(from);
     const moving = move(from);
     anyMove ||= moving;
@@ -3335,8 +3337,9 @@ async function transferBatch(
 }
 
 async function paste(destDir: string): Promise<void> {
-  if (refuse("paste", { kind: locationKind(destDir, trashPath), items: [] }) || !clipboard) return;
+  if (!clipboard) return;
   const { paths, dirs, mode } = clipboard;
+  if (refuse("paste", { kind: locationKind(destDir, trashPath), items: [], paths, dir: destDir, moving: mode === "cut" })) return;
   const pasting = clipboard;
   const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir);
   // A cut is only consumed once every item has been dealt with. Its paths
@@ -3586,6 +3589,9 @@ function volumeRoot(path: string): string {
 /** The operation a drop would do, or null if it would do nothing useful. */
 function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, devices?: Map<string, number>): DropOp | null {
   const dir = target.dir;
+  // A collection in Arbesk takes only copies of model files; a forced move says no.
+  const forceMoveKey = isMac ? mods.metaKey : mods.shiftKey;
+  if (placeOf(dir) === "arbesk") return arbeskPasteRefusal(dir, sources, forceMoveKey && !(isMac ? mods.altKey : mods.ctrlKey)) === null ? "copy" : null;
   if (isReadOnlyLocation(dir) || copyOutRefusal(sources) !== null) return null;
   // Into itself or its own subfolder: refused.
   if (sources.some((src) => isWithin(dir, src))) return null;

@@ -273,7 +273,7 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     background: ["Show Hidden Files", "Reload", "Select All"],
     location: ["Reload", "Select All"],
     // Collections can't be copied out yet; only their assets.
-    keys: { copy: ARBESK_COPY, paste: "toast “Arbesk is read only.”", properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing" },
+    keys: { copy: ARBESK_COPY, paste: "toast “Paste into a collection.”", properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing" },
     drag: ARBESK_COPY,
     preview: ["Open"],
     star: false,
@@ -284,7 +284,8 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     location: ["Reload", "Select All"],
     // An asset copies out (its file is built first); ⌘D bookmarks the
     // collection, as on an SSH server; nothing else writes.
-    keys: { copy: "clipboard", paste: "toast “Arbesk is read only.”", properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing" },
+    keys: { copy: "clipboard", // Only model files go in: the clipboard's .txt is refused in D1's words.
+    paste: "toast “Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.”", properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing" },
     drag: "drag",
     preview: ["Open"],
     star: false,

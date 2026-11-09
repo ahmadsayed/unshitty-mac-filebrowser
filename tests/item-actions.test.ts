@@ -12,13 +12,14 @@ const Y = "✓";
 const N = "·";
 const R = "R";
 const A = "A";
-const SHOWN: Record<string, string | null> = { [Y]: null, [N]: "", [R]: "Shared folders are read only.", [A]: "Arbesk is read only." };
+const C = "C";
+const SHOWN: Record<string, string | null> = { [Y]: null, [N]: "", [R]: "Shared folders are read only.", [A]: "Arbesk is read only.", [C]: "Paste into a collection." };
 
 // Actions decided by the place they happen in (for paste: the folder pasted into).
 // prettier-ignore
 const BY_PLACE: Partial<Record<SharedAction, string[]>> = {
   //                 recent starred network trash in-trash share sftp arbesk drive folder
-  paste:             [N,    N,      N,      N,    N,       R,    R,   A,     Y,    Y],
+  paste:             [N,    N,      N,      N,    N,       R,    R,   C,     Y,    Y],
   // Kept: Network ✓, which only the backend refuses.
   trash:             [Y,    Y,      Y,      N,    N,       N,    N,   N,     Y,    Y],
   deletePermanently: [N,    N,      N,      Y,    Y,       N,    N,   N,     N,    N],
@@ -49,6 +50,15 @@ for (const [action, cells] of Object.entries(BY_ITEM) as [SharedAction, string[]
     expect(got).toEqual(cells.map((cell) => SHOWN[cell]));
   });
 }
+
+test("paste into Arbesk: copies of model files into a collection only", () => {
+  const collection = "arbesk://0x00000000000000000000000000000000000000ab/1~S";
+  const into = (paths: string[], moving = false): Here => ({ kind: "arbesk", items: [], dir: collection, paths, moving });
+  expect(refusal("paste", into(["/Users/me/a.glb"]))).toBeNull();
+  expect(refusal("paste", into(["/Users/me/a.glb"], true))).toBe("Arbesk is read only.");
+  expect(refusal("paste", into(["/Users/me/a.txt"]))).toBe("Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.");
+  expect(refusal("paste", { kind: "arbesk", items: [], dir: "arbesk://0xab", paths: ["/Users/me/a.glb"] })).toBe("Paste into a collection.");
+});
 
 test("rename: never in Recent, Starred or Network, which mix folders", () => {
   for (const kind of ["recent", "starred", "network"] as const) {

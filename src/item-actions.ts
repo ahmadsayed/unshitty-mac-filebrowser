@@ -9,7 +9,7 @@
 // A few cells keep a difference between surfaces exactly as it was; each is
 // marked "Kept:" and waits for a decision rather than being changed here.
 
-import { copyOutRefusalOf, isPseudoKind, isReadOnlyKind, isTrashKind, kindAcceptsNewItems, type LocationKind } from "./locations";
+import { arbeskPasteRefusal, copyOutRefusalOf, isPseudoKind, isReadOnlyKind, isTrashKind, kindAcceptsNewItems, type LocationKind } from "./locations";
 
 export type SharedAction =
   | "cut"
@@ -33,6 +33,10 @@ export interface Here {
   paths?: readonly string[];
   /** The items aren't in the folder on screen: search results, Recent, Starred. */
   elsewhere?: boolean;
+  /** A paste's folder (a drop's too), which Arbesk checks is a collection. */
+  dir?: string;
+  /** A paste that moves (Cut, a forced-move drag): Arbesk takes copies only. */
+  moving?: boolean;
 }
 
 /** null: allowed; "": refused quietly; any other text: refused with that toast. */
@@ -45,10 +49,10 @@ const ARBESK_READ_ONLY: Verdict = "Arbesk is read only.";
 
 /** Paste, by the kind of folder it pastes into: wherever New Folder can add
  *  (`kindAcceptsNewItems`, which keeps the Trash out); shares, servers and
- *  Arbesk say why not. Kept: an SSH server says "Shared folders are read only." */
+ *  Arbesk say why not (Arbesk takes copies of model files into a collection). Kept: an SSH server says "Shared folders are read only." */
 const paste = (here: Here): Verdict => {
   if (kindAcceptsNewItems(here.kind)) return OK;
-  if (here.kind === "arbesk") return ARBESK_READ_ONLY;
+  if (here.kind === "arbesk") return arbeskPasteRefusal(here.dir ?? "", here.paths ?? [], here.moving ?? false);
   return isReadOnlyKind(here.kind) ? READ_ONLY : QUIET;
 };
 

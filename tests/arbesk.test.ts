@@ -90,7 +90,7 @@ test("nothing in Arbesk can be written, renamed or cut", async () => {
   await settle();
   expect(toasts()).toContain("Arbesk is read only.");
 
-  // A local file on the clipboard can't be pasted into a collection.
+  // A local file on the clipboard isn't a model: refused before anything starts.
   await goTo("/Users/me/Desktop");
   await click(row("todo.txt"));
   await key("c", { mod: true });
@@ -101,7 +101,7 @@ test("nothing in Arbesk can be written, renamed or cut", async () => {
   await settle(20);
   await key("v", { mod: true });
   await settle();
-  expect(toasts()).toContain("Arbesk is read only.");
+  expect(toasts()).toContain("Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.");
   expect(names().sort()).toEqual(["Big.gltf", "Box.3mf", "Box.gltf"]);
 });
 
