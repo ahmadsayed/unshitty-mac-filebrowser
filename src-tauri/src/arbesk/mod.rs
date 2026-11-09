@@ -13,6 +13,8 @@ pub mod location;
 pub mod scene;
 pub mod service;
 pub mod signin;
+#[cfg(test)]
+pub(crate) mod testing;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

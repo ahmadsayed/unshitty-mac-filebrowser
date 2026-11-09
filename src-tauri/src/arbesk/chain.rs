@@ -326,6 +326,8 @@ mod tests {
                     "params": [{ "to": "0xC0", "data": encode_token_uri_call("7").unwrap() }, "latest"]
                 })),
                 session: None,
+                data: None,
+                fields: Vec::new(),
             }]
         );
     }
