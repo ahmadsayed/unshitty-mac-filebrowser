@@ -19,9 +19,11 @@ use crate::compose::Format;
 use crate::decompose::{Decomposed, decompose, fill, sanitize_file_name, stored_json};
 use crate::http::{Http, HttpError};
 use crate::location::{asset_path_named, collection_path};
-use crate::service::{Reader, collection_name};
-use crate::signin::now_ms;
+use crate::merkle;
 use crate::progress::{Phase, Progress};
+use crate::service::{Reader, collection_name};
+use crate::share::Editor;
+use crate::signin::now_ms;
 
 // ---- Wording ----------------------------------------------------------------
 
@@ -211,7 +213,7 @@ impl Default for CollectionLocks {
 }
 
 /// A write's hold on its collection, let go when dropped.
-struct Hold<'a> {
+pub(crate) struct Hold<'a> {
     locks: &'a CollectionLocks,
     key: String,
 }
@@ -223,7 +225,7 @@ impl CollectionLocks {
         self.take(address, token_id)
     }
 
-    fn take(&self, address: &str, token_id: &str) -> Hold<'_> {
+    pub(crate) fn take(&self, address: &str, token_id: &str) -> Hold<'_> {
         let key = format!("{}/{token_id}", address.to_ascii_lowercase());
         let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
         while held.contains(&key) {
@@ -420,6 +422,7 @@ pub fn add(
     let reader = Reader::open(http, site, cache_dir)?;
     let (_, collection) = an_object(reader.collection_manifest_with_cid(&target.token_id)?)?;
     claim(&reader, &collection, target, overwrite)?;
+    let editor_proof = editor_proof(&reader, target)?;
     let uploader = Uploader::new(http, site, session, split.parts.len() + 3, &target.name)?;
     let mut write = Write {
         http,
@@ -430,6 +433,7 @@ pub fn add(
         progress,
         reader,
         uploader,
+        editor_proof,
         name,
     };
     let source = write.upload_source(&split)?;
@@ -454,6 +458,30 @@ pub(crate) enum Outcome {
     Unsettled(String),
     /// Refused before it was sent, or reverted: nothing changed.
     Refused(String),
+}
+
+/// The caller's proof in the collection's current editor tree, for the relay.
+/// A collection with several editors needs it for every write; a Viewer (or
+/// an account that isn't listed) can't add.
+fn editor_proof(reader: &Reader, target: &Target) -> Result<Vec<String>, String> {
+    let (version, _, list) = reader.editor_list(&target.token_id)?;
+    let list: Vec<Editor> =
+        serde_json::from_value(list).map_err(|_| FORBIDDEN.to_string())?;
+    let index = list
+        .iter()
+        .position(|editor| editor.address.eq_ignore_ascii_case(&target.address))
+        .ok_or(FORBIDDEN)?;
+    if list[index].role != merkle::EDITOR {
+        return Err(FORBIDDEN.into());
+    }
+    let leaves: Vec<_> = list
+        .iter()
+        .map(|editor| merkle::leaf(&editor.address, editor.role, &target.token_id, version))
+        .collect::<Result<_, _>>()?;
+    Ok(merkle::proof(&leaves, index)
+        .iter()
+        .map(|node| merkle::hex(node))
+        .collect())
 }
 
 /// The asset listed as `target.name` in `collection` (its id and manifest
@@ -486,6 +514,8 @@ struct Write<'a> {
     progress: &'a Progress,
     reader: Reader<'a>,
     uploader: Uploader<'a>,
+    /// The caller's proof in the collection's current editor tree.
+    editor_proof: Vec<String>,
     /// The asset's name.
     name: String,
 }
@@ -602,14 +632,19 @@ impl Write<'_> {
     }
 
     /// Point the collection's token at `collection_cid` through Arbesk's
-    /// wallet relay, as the account's only editor (`proof: []`, spec D9).
+    /// wallet relay, as an editor of the collection (the owner alone was not
+    /// enough once a collection was shared).
     fn relay(&self, collection_cid: &str, asset_id: &str) -> Outcome {
         let body = json!({
             "op": "updateUri",
             "tokenId": self.target.token_id,
+            // The relay authorizes from the top level and the contract checks
+            // the proof passed in `params`.
+            "requiredRole": merkle::EDITOR,
+            "proof": self.editor_proof,
             "params": {
                 "newUri": collection_cid,
-                "proof": [],
+                "proof": self.editor_proof,
                 "assetScope": NO_SCOPE,
                 "assetId": asset_id,
             },
@@ -668,7 +703,7 @@ mod tests {
     use crate::http::fake::{FakeHttp, Request};
     use crate::location::asset_path;
     use crate::service::{self, Builds, Thumbnails};
-    use crate::testing::{ADDRESS, Relay, World, arbesk, fixture, shapes, site, world};
+    use crate::testing::{ADDRESS, ALICE, Relay, World, arbesk, fixture, shapes, site, world};
     use crate::progress::Phase;
     use std::collections::BTreeMap;
     use std::io::Read;
@@ -882,6 +917,57 @@ mod tests {
         fn delete(&self, url: &str, session: Option<&str>) -> Result<(), HttpError> {
             self.inner.delete(url, session)
         }
+    }
+
+    #[test]
+    fn a_shared_editor_sends_a_proof_when_adding() {
+        let (state, http, cache) = signed_in();
+        {
+            let mut world = state.lock().unwrap();
+            world.put(
+                "bafyEditorsShared",
+                json!([
+                    { "address": ADDRESS, "role": merkle::EDITOR },
+                    { "address": ALICE, "role": merkle::EDITOR }
+                ]),
+            );
+            world
+                .editor_lists
+                .insert("1".into(), ("bafyEditorsShared".into(), 1));
+        }
+        let mut target = into("1", "Shared.gltf");
+        target.address = ALICE.into();
+        add_to(&http, cache.path(), &target, &glb(), false, &Progress::default()).unwrap();
+        let relayed = sent(&http, RELAY);
+        let body = relayed[0].body.as_ref().unwrap();
+        assert_eq!(body["requiredRole"], merkle::EDITOR);
+        assert_eq!(body["proof"].as_array().unwrap().len(), 1);
+        assert_eq!(body["params"]["proof"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_viewer_cannot_add_to_a_collection() {
+        let (state, http, cache) = signed_in();
+        {
+            let mut world = state.lock().unwrap();
+            world.put(
+                "bafyEditorsViewer",
+                json!([
+                    { "address": ADDRESS, "role": merkle::EDITOR },
+                    { "address": ALICE, "role": merkle::VIEWER }
+                ]),
+            );
+            world
+                .editor_lists
+                .insert("1".into(), ("bafyEditorsViewer".into(), 1));
+        }
+        let mut target = into("1", "Viewer.gltf");
+        target.address = ALICE.into();
+        assert_eq!(
+            add_to(&http, cache.path(), &target, &glb(), false, &Progress::default()).unwrap_err(),
+            FORBIDDEN
+        );
+        assert!(sent(&http, UPLOAD_URLS).is_empty());
     }
 
     #[test]
@@ -1479,6 +1565,8 @@ mod tests {
         let body = relayed[0].body.as_ref().unwrap();
         assert_eq!(body["op"], "updateUri");
         assert_eq!(body["tokenId"], "1");
+        assert_eq!(body["requiredRole"], merkle::EDITOR);
+        assert_eq!(body["proof"], json!([]));
         let params = &body["params"];
         assert_eq!(params["proof"], json!([]));
         assert_eq!(params["assetScope"], format!("0x{}", "0".repeat(64)));

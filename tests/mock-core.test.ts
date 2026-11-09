@@ -1494,6 +1494,41 @@ test("arbesk_create_collection mints a named collection in the account only", as
   await invoke("arbesk_disconnect", { account: account.id });
 });
 
+test("arbesk_share_collection adds a collaborator by email and changes its role", async () => {
+  const { ARBESK_MOCK_ADDRESS: address } = await import("../dev/mock-tauri/core");
+  const mock = (globalThis as unknown as { __mockArbesk: { signedIn: boolean } }).__mockArbesk;
+  const start = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  const account = await invoke<{ id: string }>("arbesk_connect_finish", { flowId: start.flow_id });
+  const root = `arbesk://${address}`;
+  const shapes = `${root}/1~Shapes`;
+  expect(await invoke("arbesk_share_collection", { path: shapes, email: "alice@example.com", role: 1 })).toEqual({
+    address: expect.stringMatching(/^0x[0-9a-f]{40}$/),
+    role: 1,
+    added: true,
+  });
+  await expect(invoke("arbesk_share_collection", { path: shapes, email: "alice@example.com", role: 1 })).rejects.toBe(
+    "That account is already a viewer.",
+  );
+  expect(await invoke("arbesk_share_collection", { path: shapes, email: "alice@example.com", role: 2 })).toMatchObject({
+    role: 2,
+    added: false,
+  });
+  await expect(invoke("arbesk_share_collection", { path: shapes, email: "unknown@example.com", role: 1 })).rejects.toBe(
+    "No Arbesk account found for that email. They need to sign in to Arbesk at least once.",
+  );
+  await expect(invoke("arbesk_share_collection", { path: shapes, email: "not-an-email", role: 1 })).rejects.toBe("Enter an email address.");
+  await expect(invoke("arbesk_share_collection", { path: root, email: "alice@example.com", role: 1 })).rejects.toBe("Share a collection.");
+  await expect(invoke("arbesk_share_collection", { path: `${shapes}/a1~Box.gltf`, email: "alice@example.com", role: 1 })).rejects.toBe("Share a collection.");
+  await expect(invoke("arbesk_share_collection", { path: `${root}/99~Missing`, email: "alice@example.com", role: 1 })).rejects.toBe("The chain refused this collection.");
+  await expect(invoke("arbesk_share_collection", { path: shapes, email: "alice@example.com", role: 0 })).rejects.toBe("Choose Viewer or Editor.");
+  mock.signedIn = false;
+  await expect(invoke("arbesk_share_collection", { path: shapes, email: "bob@example.com", role: 1 })).rejects.toBe(
+    "Sign in to Arbesk again to share a collection.",
+  );
+  mock.signedIn = true;
+  await invoke("arbesk_disconnect", { account: account.id });
+});
+
 test("copy_entry puts a local model into an Arbesk collection, with the backend's refusals", async () => {
   const { ARBESK_MOCK_ADDRESS: address } = await import("../dev/mock-tauri/core");
   const mock = (globalThis as unknown as { __mockArbesk: { signedIn: boolean; expireOnce(): void } }).__mockArbesk;

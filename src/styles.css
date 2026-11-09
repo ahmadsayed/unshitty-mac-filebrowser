@@ -1913,6 +1913,9 @@ kbd {
   font-size: 9pt;
   opacity: var(--dim);
 }
+.compress-fields .check-hint {
+  margin-left: 0;
+}
 .badge.experimental {
   padding: 1px 7px;
   border-radius: 999px;

@@ -1761,6 +1761,7 @@ const ARBESK_ONLY_MODELS = "Only .gltf, .glb and .3mf files on this computer can
 const ARBESK_PASTE_INTO = "Paste into a collection.";
 const ARBESK_SIGN_IN = "Sign in to Arbesk again to copy files into it.";
 const ARBESK_CREATE_SIGN_IN = "Sign in to Arbesk again to create a collection.";
+const ARBESK_SHARE_SIGN_IN = "Sign in to Arbesk again to share a collection.";
 const ARBESK_TOO_LARGE = "This file is too large for Arbesk (100 MB at most).";
 const ARBESK_MAX_UPLOAD = 100 * 1024 * 1024;
 
@@ -1780,6 +1781,8 @@ const arbeskSession = { signedIn: true, expireNext: false };
 };
 let arbeskAssetSeq = 0;
 let arbeskCollectionSeq = 2;
+/** Each collection's collaborators, as sharing adds or changes them. */
+const arbeskCollaborators = new Map<string, Array<{ email: string; role: number }>>();
 
 /** The collection and listed name of a copy's target, `<collection>/~<name>`
  *  (location::parse_target). */
@@ -1972,6 +1975,28 @@ const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
     const created = String(++arbeskCollectionSeq);
     ARBESK_COLLECTIONS.push({ token: created, name, assets: [] });
     return `arbesk://${address}/${arbeskSegment(created, name)}`;
+  },
+  arbesk_share_collection: (a) => {
+    const { token, asset } = arbeskIds(str(a, "path"));
+    if (!token || asset) throw "Share a collection.";
+    if (!ARBESK_COLLECTIONS.some((collection) => collection.token === token)) throw "The chain refused this collection.";
+    arbeskSessionFor(ARBESK_SHARE_SIGN_IN);
+    const email = str(a, "email").trim().toLowerCase();
+    if (!email.includes("@")) throw "Enter an email address.";
+    if (email === "unknown@example.com") throw "No Arbesk account found for that email. They need to sign in to Arbesk at least once.";
+    const role = Number(a.role);
+    if (role !== 1 && role !== 2) throw "Choose Viewer or Editor.";
+    const list = arbeskCollaborators.get(token) ?? [];
+    const found = list.find((member) => member.email === email);
+    if (found?.role === role) throw `That account is already a${role === 2 ? "n editor" : " viewer"}.`;
+    const added = !found;
+    if (found) found.role = role;
+    else {
+      list.push({ email, role });
+      arbeskCollaborators.set(token, list);
+    }
+    const address = `0x${[...email].map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("").padEnd(40, "0").slice(0, 40)}`;
+    return { address, role, added };
   },
   arbesk_signed_in: (a) => {
     try {

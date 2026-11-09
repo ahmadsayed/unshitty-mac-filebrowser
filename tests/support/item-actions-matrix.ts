@@ -266,7 +266,7 @@ const ROWS: Record<string, MatrixCase> = {
     star: false,
   }],
   "a collection in an Arbesk account": [fromNetwork("Arbesk"), "Shapes", {
-    item: ["Open", "Copy (off)"],
+    item: ["Open", "Copy (off)", "Share Collection…"],
     background: ["New Collection…", "Show Hidden Files", "Reload", "Select All"],
     location: ["New Collection…", "Reload", "Select All"],
     // Collections can't be copied out yet; only their assets.
@@ -280,8 +280,8 @@ const ROWS: Record<string, MatrixCase> = {
   // here only: its rule refuses what isn't a model file, in D1's words.
   "an Arbesk collection": [async () => { await fromNetwork("Arbesk")(); await open("Shapes"); }, "Box.gltf", {
     item: ["Open", "Copy"],
-    background: ["Show Hidden Files", "Reload", "Paste", "Select All"],
-    location: ["Reload", "Paste", "Select All"],
+    background: ["Show Hidden Files", "Reload", "Paste", "Share Collection…", "Select All"],
+    location: ["Reload", "Paste", "Share Collection…", "Select All"],
     keys: {
       copy: "clipboard",
       paste: "toast “Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.”",

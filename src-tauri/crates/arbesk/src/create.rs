@@ -7,12 +7,12 @@
 use std::path::Path;
 
 use serde_json::{Value, json};
-use sha3::{Digest, Keccak256};
 
 use crate::chain::{self, Site};
 use crate::decompose::{sanitize_file_name, stored_json};
 use crate::http::{Http, HttpError};
 use crate::location::collection_path;
+use crate::merkle;
 use crate::service::Reader;
 use crate::signin::now_ms;
 use crate::write::{BUSY, Outcome, Uploader};
@@ -24,9 +24,6 @@ pub const FORBIDDEN: &str = "You can't create collections in this account.";
 /// The relay's 502: most often an expired CDP delegation.
 pub const RELAY_FAILED: &str =
     "Arbesk couldn't create the collection. Sign in again to renew its permission.";
-
-/// The role the account has in a new collection: `CollaboratorRole.Editor`.
-const EDITOR_ROLE: u8 = 2;
 
 fn exists(name: &str) -> String {
     format!("A collection named “{name}” already exists.")
@@ -67,7 +64,7 @@ pub fn create(
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let editor_list = json!([{ "address": address.to_ascii_lowercase(), "role": EDITOR_ROLE }]);
+    let editor_list = json!([{ "address": address.to_ascii_lowercase(), "role": merkle::EDITOR }]);
     let editor_root = editor_root(address, &token_id)?;
     let mut uploader = Uploader::new(http, site, session, 2, name)?;
     let collection_cid = uploader.upload(
@@ -112,49 +109,20 @@ fn collection_manifest(name: &str) -> Value {
 /// `keccak256(abi.encodePacked(address, string))` as a decimal number, as
 /// asset-core's `deriveNamedCollectionId` makes it.
 pub fn named_collection_id(address: &str, name: &str) -> Result<String, String> {
-    let mut packed = address_bytes(address)?.to_vec();
+    let mut packed = merkle::address_bytes(address)?.to_vec();
     packed.extend_from_slice(name.as_bytes());
-    Ok(chain::decimal(&keccak(&packed)))
+    Ok(chain::decimal(&merkle::keccak(&packed)))
 }
 
 /// The one-editor Merkle root for a new collection: a single leaf is the
 /// root (`computeRoot([...], token, 1)`).
 pub fn editor_root(address: &str, token_id: &str) -> Result<String, String> {
-    let mut leaf = address_bytes(address)?.to_vec();
-    leaf.push(EDITOR_ROLE);
-    leaf.extend_from_slice(&chain::uint256_word(token_id)?);
-    // Collection-wide editor scope: bytes32(0).
-    leaf.extend_from_slice(&[0; 32]);
-    // Editor-set version 1.
-    leaf.extend_from_slice(&chain::uint256_word("1")?);
-    Ok(hex(&keccak(&leaf)))
-}
-
-/// A wallet address's 20 bytes.
-fn address_bytes(address: &str) -> Result<[u8; 20], String> {
-    let digits = address
-        .strip_prefix("0x")
-        .filter(|digits| digits.len() == 40)
-        .ok_or_else(|| format!("“{address}” is not a wallet address."))?;
-    let mut bytes = [0u8; 20];
-    for (i, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&digits[i * 2..i * 2 + 2], 16)
-            .map_err(|_| format!("“{address}” is not a wallet address."))?;
-    }
-    Ok(bytes)
-}
-
-fn keccak(bytes: &[u8]) -> [u8; 32] {
-    Keccak256::digest(bytes).into()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut hex = String::with_capacity(2 + bytes.len() * 2);
-    hex.push_str("0x");
-    for byte in bytes {
-        hex.push_str(&format!("{byte:02x}"));
-    }
-    hex
+    Ok(merkle::hex(&merkle::leaf(
+        address,
+        merkle::EDITOR,
+        token_id,
+        1,
+    )?))
 }
 
 /// Mint the collection through Arbesk's wallet relay, as the Studio's
@@ -255,7 +223,7 @@ mod tests {
 
     #[test]
     fn a_wallet_address_is_twenty_bytes() {
-        assert!(address_bytes(ADDRESS).is_ok());
+        assert!(merkle::address_bytes(ADDRESS).is_ok());
         for bad in [
             "",
             "0x",
@@ -263,7 +231,7 @@ mod tests {
             "0x1234",
             "0xzz000000000000000000000000000000000000ab",
         ] {
-            assert!(address_bytes(bad).is_err(), "{bad}");
+            assert!(merkle::address_bytes(bad).is_err(), "{bad}");
         }
     }
 
