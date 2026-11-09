@@ -1,7 +1,7 @@
 // Properties → Permissions: choose the read/write/execute bits and apply them.
 import { beforeAll, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, boot, chooseMenu, click, dialogHeading, goTo, item, key, mouse, respond, settle } from "./app";
+import { $, boot, chooseMenu, click, dialogHeading, goTo, item, key, respond, settle, rightClick } from "./app";
 
 const HOME = "/Users/me";
 
@@ -9,11 +9,6 @@ beforeAll(async () => {
   await boot();
   await key("1", { mod: true });
 });
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 test("Permissions… changes the owner write bit", async () => {
   await goTo(`${HOME}/Desktop`);

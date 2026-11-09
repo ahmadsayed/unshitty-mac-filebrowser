@@ -2,7 +2,7 @@
 // Received shares in the same place are covered by share.test.ts.
 import { beforeAll, expect, test } from "vitest";
 import {
-  $, $$, boot, chooseMenu, click, dialogHeading, item, key, menuLabels, mouse, names, respond, settle, title, toasts, type,
+  $, $$, boot, chooseMenu, click, dialogHeading, item, key, menuLabels, mouse, names, respond, settle, title, toasts, type, rightClick,
 } from "./app";
 
 const sftp = () =>
@@ -16,11 +16,6 @@ beforeAll(async () => {
 });
 
 const place = (label: string) => $$(".sidebar-row").find((row) => row.textContent?.trim() === label)!;
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 /** Type an address into Network's bar and press Connect. */
 async function enterAddress(address: string): Promise<void> {

@@ -2,7 +2,7 @@
 // and keep the read-only milestone free of version markers and write actions.
 import { beforeAll, expect, test, vi } from "vitest";
 import { driveLog, invoke } from "../dev/mock-tauri/core";
-import { $, $$, accountGroups, boot, chooseAccountRow, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, menuLabels, mouse, names, openOnlineAccounts, respond, selectedNames, settle, toasts, type, hit } from "./app";
+import { $, $$, accountGroups, boot, chooseAccountRow, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, menuLabels, mouse, names, openOnlineAccounts, respond, selectedNames, settle, toasts, type, hit, rightClick } from "./app";
 
 beforeAll(async () => {
   await boot();
@@ -12,11 +12,6 @@ beforeAll(async () => {
 async function openNetwork(): Promise<void> {
   await click($$(".sidebar-row").find((row) => row.textContent?.trim() === "Network")!);
   await settle(20);
-}
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
 }
 
 test("Google Drive connects from Network and browses the mock drive", async () => {

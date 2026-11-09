@@ -116,6 +116,13 @@ export async function click(target: Element, init: MouseEventInit = {}): Promise
   await mouse(target, "click", init);
 }
 
+/** Open an item's context menu: a right press, then the contextmenu event. */
+export async function rightClick(target: Element | string): Promise<void> {
+  const el = typeof target === "string" ? hit(target) : target;
+  await mouse(el, "mousedown", { button: 2 });
+  await mouse(el, "contextmenu", { button: 2 });
+}
+
 /** Open a folder by double-clicking its item. */
 export async function open(name: string): Promise<void> {
   await mouse(hit(name), "dblclick");

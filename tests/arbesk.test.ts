@@ -3,7 +3,7 @@
 // backend can't answer for a moment.
 import { beforeAll, expect, test, vi } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, accountGroups, boot, chooseAccountRow, click, closeOverlays, dialogHeading, goTo, installFakeCanvas, key, menuLabels, mouse, names, open, openOnlineAccounts, respond, settle, toasts, type } from "./app";
+import { $, $$, accountGroups, boot, chooseAccountRow, click, closeOverlays, dialogHeading, goTo, installFakeCanvas, key, menuLabels, mouse, names, open, openOnlineAccounts, respond, settle, toasts, type, rightClick } from "./app";
 
 const calls = () =>
   (globalThis as unknown as { __mockCalls: { failNext(cmd: string, error: string): void } }).__mockCalls;
@@ -17,11 +17,6 @@ beforeAll(async () => {
 async function openNetwork(): Promise<void> {
   await click($$(".sidebar-row").find((row) => row.textContent?.trim() === "Network")!);
   await settle(20);
-}
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
 }
 
 const row = (name: string) => $$("#view .item").find((el) => el.querySelector(".name")?.textContent === name)!;

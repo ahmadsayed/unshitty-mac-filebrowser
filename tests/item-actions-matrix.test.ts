@@ -7,7 +7,7 @@
 // that the shared rules preserve on purpose: each is a decision for later.
 import { beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, click, closeOverlays, dialogHeading, goTo, hit, item, key, mouse, names, open, settle } from "./app";
+import { $, $$, boot, click, closeOverlays, dialogHeading, goTo, hit, item, key, mouse, names, open, settle, rightClick } from "./app";
 
 const HOME = "/Users/me";
 const TRASH = `${HOME}/.Trash`;
@@ -42,11 +42,6 @@ beforeAll(async () => {
 });
 
 beforeEach(closeOverlays);
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 /** The open menu's labels, with "(off)" after a disabled one. */
 function menu(): string[] {

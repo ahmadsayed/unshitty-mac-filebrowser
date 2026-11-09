@@ -3,17 +3,11 @@
 import { beforeAll, expect, test, vi } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
 import {
-  $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, menuLabels,
-  mouse, names, open, respond, settle, title, toasts, type,
+  $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, menuLabels, names, open, respond, settle, title, toasts, type, rightClick,
 } from "./app";
 
 const HOME = "/Users/me";
 const place = (label: string) => $$(".sidebar-row").find((row) => row.textContent?.trim() === label)!;
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 function resetShareMock(): void {
   (globalThis as unknown as { __mockShare: { reset(): void; setOnline(v: boolean): void } }).__mockShare.reset();

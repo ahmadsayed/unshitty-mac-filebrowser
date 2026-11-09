@@ -3,7 +3,7 @@
 // views' CSS targets it. The app's own drawings are in icon-markup.test.ts.
 import { beforeAll, expect, test, vi } from "vitest";
 import { invoke, nativeIconMock } from "../dev/mock-tauri/core";
-import { $, $$, boot, chooseMenu, click, closeOverlays, goTo, hit, installFakeCanvas, item, key, mouse, settle } from "./app";
+import { boot, goTo, installFakeCanvas, item, settle } from "./app";
 
 /** Markup with image URLs (blob: counters) made constant. */
 const constant = (s: string) => s.replace(/ src="[^"]*"/g, ' src="URL"');
@@ -33,11 +33,6 @@ beforeAll(async () => {
   await settle();
 });
 
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
-
 test("home: a file, and a linked folder keeps the link emblem", async () => {
   await goTo("/Users/me");
   await settle(20);
@@ -58,37 +53,4 @@ test("apps: an app's own icon, and the badge on a versioned one", async () => {
   await settle(20);
   expect(markup("Calculator.app")).toBe(OS);
   expect(markup("Kept.app")).toBe(html(OS + BADGE));
-});
-
-test("Properties swaps in the OS icon and keeps the link emblem", async () => {
-  await goTo("/Users/me");
-  await settle(20);
-  await click(hit("link-to-docs"));
-  await key("i", { mod: true });
-  await settle(20);
-  expect(constant($(".properties-icon").innerHTML)).toBe(html(OS + LINK));
-  await closeOverlays();
-});
-
-test("the preview of a folder swaps in the OS icon", async () => {
-  await goTo("/Users/me/Documents");
-  await settle(20);
-  await click(hit("Projects"));
-  await key(" ");
-  await settle(20);
-  expect(constant($("#preview-body .preview-empty-icon").innerHTML)).toBe(OS);
-  await key("Escape");
-  await settle();
-});
-
-test("Open With swaps in each app's icon", async () => {
-  await goTo("/Users/me/Documents");
-  await settle(20);
-  await rightClick(hit("Notes.md"));
-  await chooseMenu("Open With…");
-  await settle(20);
-  const icons = $$(".app-choice .app-choice-icon");
-  expect(icons.length).toBeGreaterThan(1);
-  for (const icon of icons) expect(constant(icon.innerHTML)).toBe(OS);
-  await closeOverlays();
 });

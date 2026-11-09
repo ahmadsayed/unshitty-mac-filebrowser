@@ -2,7 +2,7 @@
 // state, Restore Copy, Replace), Deleted Files…, and the Properties rows.
 import { beforeAll, expect, test } from "vitest";
 import { restoreName, restoreStamp } from "../src/versions";
-import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, mouse, names, respond, settle, toasts, type } from "./app";
+import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, names, respond, settle, toasts, type, rightClick } from "./app";
 
 const VERSIONED = "/Users/me/Documents/Versioned";
 
@@ -10,11 +10,6 @@ beforeAll(async () => {
   await boot();
   await key("1", { mod: true });
 });
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 async function openVersions(name: string): Promise<void> {
   await goTo(VERSIONED);

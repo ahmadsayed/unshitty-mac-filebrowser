@@ -4,7 +4,7 @@
 // Covers the Trash itself and folders inside it, through every surface.
 import { beforeAll, beforeEach, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, boot, click, closeOverlays, goTo, item, key, menuLabels, mouse, names, settle } from "./app";
+import { $, boot, click, closeOverlays, goTo, item, key, menuLabels, names, settle, rightClick } from "./app";
 
 const HOME = "/Users/me";
 const TRASH = `${HOME}/.Trash`;
@@ -20,11 +20,6 @@ beforeAll(async () => {
 });
 
 beforeEach(closeOverlays);
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 async function select(name: string): Promise<void> {
   await click(item(name));

@@ -3,12 +3,7 @@
 import { beforeAll, expect, test } from "vitest";
 import { fileShareMock } from "../dev/mock-tauri/core";
 import { downloadsText, statusText } from "../src/qr-share";
-import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, hit, key, menuLabels, mouse, respond, settle, toasts } from "./app";
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
+import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, hit, key, menuLabels, respond, settle, toasts, rightClick } from "./app";
 
 /** Let the dialog poll (every 500 ms) at least once more. */
 const poll = async () => {

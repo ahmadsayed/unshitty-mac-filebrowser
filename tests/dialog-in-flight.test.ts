@@ -4,7 +4,7 @@
 import { beforeAll, beforeEach, expect, test } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
 import {
-  $, $$, boot, chooseAccountRow, chooseMenu, click, closeOverlays, dialogHeading, goTo, hit, item, key, mouse, names, openOnlineAccounts, respond, settle, title, toasts, type,
+  $, $$, boot, chooseAccountRow, chooseMenu, click, closeOverlays, dialogHeading, goTo, hit, item, key, names, openOnlineAccounts, respond, settle, title, toasts, type, rightClick,
 } from "./app";
 
 const HOME = "/Users/me";
@@ -20,11 +20,6 @@ const sftp = () => (globalThis as unknown as { __mockSftp: { reset(): void; requ
 const button = (label: string) =>
   $$(".dialog-layer .dialog-responses button").find((b) => b.textContent?.trim() === label) as HTMLButtonElement;
 const message = () => $(".dialog-layer .field-message").textContent;
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 let folders = 0;
 /** A fresh folder holding `files`, shown in the view. */

@@ -1,6 +1,6 @@
 // Open With: list installed applications, search them, and launch the chosen one.
 import { afterEach, beforeAll, expect, test } from "vitest";
-import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, mouse, names, settle, type } from "./app";
+import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, item, key, names, settle, type, rightClick } from "./app";
 
 const HOME = "/Users/me";
 const NOTES = `${HOME}/Documents/Notes.md`;
@@ -20,11 +20,6 @@ afterEach(async () => {
   await closeOverlays();
   mockApps().reset();
 });
-
-async function rightClick(el: Element): Promise<void> {
-  await mouse(el, "mousedown", { button: 2 });
-  await mouse(el, "contextmenu", { button: 2 });
-}
 
 async function openWithDialog(): Promise<void> {
   await goTo(`${HOME}/Documents`);
