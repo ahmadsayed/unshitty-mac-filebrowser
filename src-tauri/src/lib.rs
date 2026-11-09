@@ -1,4 +1,3 @@
-mod arbesk;
 mod archive;
 mod cloud;
 mod config_store;
@@ -291,8 +290,25 @@ fn list_remote(
     match kind {
         Kind::Sftp => app.state::<sftp::SftpState>().list(path, show_hidden),
         Kind::Drive => cloud::service::list_dir(&app.state::<CloudState>(), path, show_hidden),
-        Kind::Arbesk => app.state::<arbesk::ArbeskState>().list(path),
+        Kind::Arbesk => app
+            .state::<arbesk::Client>()
+            .list(path)
+            .map(|entries| entries.into_iter().map(arbesk_entry).collect()),
         other => Err(format!("{other:?} paths are not handled here.")),
+    }
+}
+
+/// An Arbesk listing row as one of the app's own entries.
+fn arbesk_entry(entry: arbesk::Entry) -> fs_ops::Entry {
+    fs_ops::Entry {
+        name: entry.name,
+        path: entry.path,
+        is_dir: entry.is_dir,
+        size: entry.size,
+        modified: entry.modified,
+        is_hidden: entry.is_hidden,
+        is_symlink: entry.is_symlink,
+        cloud: None,
     }
 }
 
@@ -560,7 +576,7 @@ fn drive_target(app: &tauri::AppHandle, path: &str, progress: &progress::Progres
 /// An Arbesk asset opens in Arbesk's Studio, in the browser; the preview
 /// still builds its file (`preview_bytes`).
 fn arbesk_target(app: &tauri::AppHandle, path: &str, _progress: &progress::Progress) -> Result<OpenTarget, String> {
-    let url = app.state::<arbesk::ArbeskState>().studio_url(path)?;
+    let url = app.state::<arbesk::Client>().studio_url(path)?;
     Ok(OpenTarget::Url { url })
 }
 
@@ -617,14 +633,14 @@ async fn preview_bytes(app: tauri::AppHandle, path: String, limit: u64) -> Resul
 
 /// An Arbesk asset's scene for the Space preview: its parts and where each goes.
 #[tauri::command]
-async fn arbesk_scene(app: tauri::AppHandle, path: String, version: Option<String>) -> Result<arbesk::scene::Scene, String> {
-    blocking(move || app.state::<arbesk::ArbeskState>().scene(&path, version.as_deref())).await?
+async fn arbesk_scene(app: tauri::AppHandle, path: String, version: Option<String>) -> Result<arbesk::Scene, String> {
+    blocking(move || app.state::<arbesk::Client>().scene(&path, version.as_deref())).await?
 }
 
 /// An Arbesk asset's saves, oldest first, for the preview's versions.
 #[tauri::command]
-async fn arbesk_versions(app: tauri::AppHandle, path: String) -> Result<Vec<arbesk::service::Version>, String> {
-    blocking(move || app.state::<arbesk::ArbeskState>().versions(&path)).await?
+async fn arbesk_versions(app: tauri::AppHandle, path: String) -> Result<Vec<arbesk::Version>, String> {
+    blocking(move || app.state::<arbesk::Client>().versions(&path)).await?
 }
 
 /// One part of an Arbesk asset's scene, as the preview loads it (a GLB or a
@@ -639,7 +655,7 @@ async fn arbesk_part(
 ) -> Result<tauri::ipc::Response, String> {
     let limit = limit.clamp(1, 512 * 1024 * 1024);
     let bytes = blocking(move || {
-        let file = app.state::<arbesk::ArbeskState>().part(&path, version.as_deref(), &key, &progress::Progress::default())?;
+        let file = app.state::<arbesk::Client>().part(&path, version.as_deref(), &key, &progress::Progress::default())?;
         fs_ops::preview_bytes(file.to_string_lossy().into_owned(), limit)
     })
     .await??;
@@ -648,7 +664,7 @@ async fn arbesk_part(
 
 /// `preview_file_with` the app's Arbesk builds.
 fn preview_file(app: &tauri::AppHandle, path: &str) -> Result<String, String> {
-    preview_file_with(path, |path| app.state::<arbesk::ArbeskState>().build(path, &progress::Progress::default()))
+    preview_file_with(path, |path| app.state::<arbesk::Client>().build(path, &progress::Progress::default()))
 }
 
 /// The file on this computer whose bytes preview `path`: the file itself, or
@@ -733,7 +749,7 @@ fn path_infos(
     for (info, path) in out.iter_mut().zip(paths) {
         match place::kind(path) {
             Kind::Drive => *info = drive(path),
-            Kind::Arbesk => *info = arbesk::location::is_folder(path).map(|is_dir| fs_ops::PathInfo { is_dir, device: 0 }),
+            Kind::Arbesk => *info = arbesk::is_folder(path).map(|is_dir| fs_ops::PathInfo { is_dir, device: 0 }),
             _ => {}
         }
     }
@@ -852,7 +868,7 @@ async fn path_exists(app: tauri::AppHandle, path: String) -> bool {
         exists_at(
             &path,
             |path| cloud::service::path_exists(&app.state::<CloudState>(), path),
-            |path| app.state::<arbesk::ArbeskState>().exists(path),
+            |path| app.state::<arbesk::Client>().exists(path),
         )
     })
     .await
@@ -901,7 +917,7 @@ async fn copied_file(
     }
     let (app, progress) = (app.clone(), progress.clone());
     blocking(move || {
-        copy_source(from, true, |path| app.state::<arbesk::ArbeskState>().export(path, &progress))
+        copy_source(from, true, |path| app.state::<arbesk::Client>().export(path, &progress))
     })
     .await?
 }
@@ -934,7 +950,7 @@ async fn copy_routed(
     }
     if route == Route::IntoArbesk {
         return blocking(move || {
-            app.state::<arbesk::ArbeskState>().add(&to, Path::new(&from), overwrite, &progress)
+            app.state::<arbesk::Client>().add(&to, Path::new(&from), overwrite, &progress)
         })
         .await?;
     }
@@ -1572,7 +1588,7 @@ async fn thumbnail(
         Kind::Arbesk => {
             let handle = app.clone();
             cancellable(&app, &window, ticket, move |stop| {
-                handle.state::<arbesk::ArbeskState>().thumbnail(&path, size, stop)
+                handle.state::<arbesk::Client>().thumbnail(&path, size, stop)
             })
             .await
         }
@@ -1724,7 +1740,7 @@ async fn volumes() -> Result<Vec<platform::Volume>, String> {
 // ---- Arbesk ------------------------------------------------------------------
 
 #[tauri::command]
-fn arbesk_accounts(state: tauri::State<arbesk::ArbeskState>) -> Vec<arbesk::accounts::ArbeskAccount> {
+fn arbesk_accounts(state: tauri::State<arbesk::Client>) -> Vec<arbesk::Account> {
     state.accounts()
 }
 
@@ -1736,14 +1752,14 @@ struct ArbeskConnectStart {
 
 /// Start an Arbesk sign-in for `email`; the frontend opens `sign_in_url`.
 #[tauri::command]
-fn arbesk_connect_start(state: tauri::State<arbesk::ArbeskState>, email: String) -> Result<ArbeskConnectStart, String> {
+fn arbesk_connect_start(state: tauri::State<arbesk::Client>, email: String) -> Result<ArbeskConnectStart, String> {
     let (flow_id, sign_in_url) = state.connect_start(&email)?;
     Ok(ArbeskConnectStart { flow_id, sign_in_url })
 }
 
 #[tauri::command]
-async fn arbesk_connect_finish(app: tauri::AppHandle, flow_id: String) -> Result<arbesk::accounts::ArbeskAccount, String> {
-    blocking(move || app.state::<arbesk::ArbeskState>().connect_finish(&flow_id)).await?
+async fn arbesk_connect_finish(app: tauri::AppHandle, flow_id: String) -> Result<arbesk::Account, String> {
+    blocking(move || app.state::<arbesk::Client>().connect_finish(&flow_id)).await?
 }
 
 /// Whether copying into the account `path` belongs to can start without a
@@ -1751,18 +1767,18 @@ async fn arbesk_connect_finish(app: tauri::AppHandle, flow_id: String) -> Result
 /// It reads the keychain, which can stop for an unlock prompt: off the main thread.
 #[tauri::command]
 async fn arbesk_signed_in(app: tauri::AppHandle, path: String) -> Result<bool, String> {
-    blocking(move || app.state::<arbesk::ArbeskState>().signed_in(&path)).await
+    blocking(move || app.state::<arbesk::Client>().signed_in(&path)).await
 }
 
 #[tauri::command]
-fn arbesk_connect_cancel(state: tauri::State<arbesk::ArbeskState>, flow_id: String) {
+fn arbesk_connect_cancel(state: tauri::State<arbesk::Client>, flow_id: String) {
     state.connect_cancel(&flow_id);
 }
 
 /// It ends the session on Arbesk's server (up to 30 s) and clears the keychain.
 #[tauri::command]
 async fn arbesk_disconnect(app: tauri::AppHandle, account: String) -> Result<(), String> {
-    blocking(move || app.state::<arbesk::ArbeskState>().disconnect(&account)).await?
+    blocking(move || app.state::<arbesk::Client>().disconnect(&account)).await?
 }
 
 #[derive(serde::Serialize)]
@@ -2268,7 +2284,7 @@ pub fn run() {
                 std::env::var("FILEBROWSER_RELAY").ok(),
             ));
             app.manage(CloudState::new(&config_dir));
-            app.manage(arbesk::ArbeskState::new(
+            app.manage(arbesk::Client::new(
                 cache_dir.clone(),
                 config_dir.join("arbesk_accounts.json"),
                 config_dir.join("tokens"),
@@ -2555,6 +2571,23 @@ mod dispatch_tests {
         let out = path_infos(&paths, |_| panic!("not Drive"));
         let kinds: Vec<Option<bool>> = out.iter().map(|o| o.as_ref().map(|i| i.is_dir)).collect();
         assert_eq!(kinds, vec![Some(true), Some(true), Some(false), None]);
+    }
+
+    #[test]
+    fn an_arbesk_listing_row_becomes_an_app_entry() {
+        let entry = arbesk_entry(arbesk::Entry {
+            name: "Box.gltf".into(),
+            path: "arbesk://0xab/1~Set/a1~Box.gltf".into(),
+            is_dir: false,
+            size: 0,
+            modified: 1_762_000_000,
+            is_hidden: false,
+            is_symlink: false,
+        });
+        assert_eq!(entry.name, "Box.gltf");
+        assert_eq!(entry.path, "arbesk://0xab/1~Set/a1~Box.gltf");
+        assert!(!entry.is_dir && entry.size == 0 && entry.modified == 1_762_000_000);
+        assert!(!entry.is_hidden && !entry.is_symlink && entry.cloud.is_none());
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::Value;
 
-use crate::arbesk::http::Http;
+use crate::http::Http;
 
 const BROTLI_MAGIC: &[u8] = b"ARB\x01";
 const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
@@ -215,7 +215,7 @@ pub fn in_parallel<T: Sync, R: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arbesk::http::fake::{FakeHttp, not_found};
+    use crate::http::fake::{FakeHttp, not_found};
     use std::io::Write;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -188,8 +188,8 @@
         <text class="n" x="985.2" y="385">sftp.rs</text>
         <text class="s" x="985.2" y="401">SSH</text>
         <rect class="box" x="1073.6" y="366" width="86.4" height="44" rx="7"/>
-        <text class="n" x="1083.6" y="385">arbesk/</text>
-        <text class="s" x="1083.6" y="401">Arbesk</text>
+        <text class="n" x="1083.6" y="385">arbesk</text>
+        <text class="s" x="1083.6" y="401">Arbesk crate</text>
 
         <rect class="box" x="680" y="424" width="480" height="34" rx="7"/>
         <text class="row3" x="696" y="446">versions/ · properties · thumbnails · file_icons · recent · config_store</text>

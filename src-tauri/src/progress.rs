@@ -5,39 +5,16 @@
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use serde::Serialize;
 
-/// The error a cancelled operation ends with; the frontend treats it as a
-/// cancel, not a failure.
-pub const CANCELLED: &str = "Cancelled.";
+/// The counters, cancel flag and phases live in the `arbesk` crate, so its
+/// long operations report into the same [`Progress`] the app shows.
+pub use arbesk::{CANCELLED, Phase, Progress};
 
 /// Copies move data in slices this big, checking for a cancel in between.
 pub const SLICE: u64 = 1024 * 1024;
-
-/// No total known yet.
-const NO_TOTAL: u64 = u64::MAX;
-
-#[derive(Clone, Copy, Serialize, PartialEq, Eq, Debug)]
-#[serde(rename_all = "lowercase")]
-pub enum Phase {
-    Preparing,
-    Working,
-    /// The work is done and a server is saving it (Arbesk's relay).
-    Saving,
-}
-
-impl Phase {
-    /// The phase stored as `phase as u8`.
-    fn from_u8(stored: u8) -> Self {
-        [Phase::Preparing, Phase::Working, Phase::Saving]
-            .into_iter()
-            .find(|phase| *phase as u8 == stored)
-            .unwrap_or(Phase::Preparing)
-    }
-}
 
 /// What the frontend receives, at most every 100 ms and once at the end.
 #[derive(Clone, Serialize, PartialEq, Eq, Debug)]
@@ -49,77 +26,16 @@ pub struct ProgressUpdate {
     pub done: bool,
 }
 
-#[derive(Debug)]
-struct Counters {
-    bytes: AtomicU64,
-    items: AtomicU64,
-    total: AtomicU64,
-    phase: AtomicU8,
-    cancelled: AtomicBool,
-}
-
-impl Default for Counters {
-    fn default() -> Self {
-        Counters {
-            bytes: AtomicU64::new(0),
-            items: AtomicU64::new(0),
-            total: AtomicU64::new(NO_TOTAL),
-            phase: AtomicU8::new(Phase::Preparing as u8),
-            cancelled: AtomicBool::new(false),
-        }
-    }
-}
-
-/// Shared counters and a cancel flag; clones see the same values.
-#[derive(Clone, Default, Debug)]
-pub struct Progress(Arc<Counters>);
-
-impl Progress {
-    pub fn add_bytes(&self, n: u64) {
-        self.0.bytes.fetch_add(n, Ordering::Relaxed);
-    }
-
-    pub fn set_bytes(&self, n: u64) {
-        self.0.bytes.store(n, Ordering::Relaxed);
-    }
-
-    pub fn add_item(&self) {
-        self.0.items.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn set_total(&self, bytes: u64) {
-        self.0.total.store(bytes, Ordering::Relaxed);
-    }
-
-    pub fn set_phase(&self, phase: Phase) {
-        self.0.phase.store(phase as u8, Ordering::Relaxed);
-    }
-
-    pub fn cancel(&self) {
-        self.0.cancelled.store(true, Ordering::SeqCst);
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.0.cancelled.load(Ordering::SeqCst)
-    }
-
-    /// `Err("Cancelled.")` once cancelled; call between chunks and items.
-    pub fn check(&self) -> Result<(), String> {
-        if self.is_cancelled() {
-            Err(CANCELLED.into())
-        } else {
-            Ok(())
-        }
-    }
-
-    pub fn snapshot(&self) -> ProgressUpdate {
-        let total = self.0.total.load(Ordering::Relaxed);
-        ProgressUpdate {
-            bytes: self.0.bytes.load(Ordering::Relaxed),
-            items: self.0.items.load(Ordering::Relaxed),
-            total: (total != NO_TOTAL).then_some(total),
-            phase: Phase::from_u8(self.0.phase.load(Ordering::Relaxed)),
-            done: false,
+impl ProgressUpdate {
+    /// This reading of `progress`, as the frontend gets it.
+    fn of(progress: &Progress, done: bool) -> Self {
+        let snapshot = progress.snapshot();
+        Self {
+            bytes: snapshot.bytes,
+            items: snapshot.items,
+            total: snapshot.total,
+            phase: snapshot.phase,
+            done,
         }
     }
 }
@@ -165,12 +81,9 @@ pub fn ticker(
     every: std::time::Duration,
 ) {
     while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop.recv_timeout(every) {
-        send(progress.snapshot());
+        send(ProgressUpdate::of(progress, false));
     }
-    send(ProgressUpdate {
-        done: true,
-        ..progress.snapshot()
-    });
+    send(ProgressUpdate::of(progress, true));
 }
 
 /// The running operations by id, so `cancel_operation` can reach them.
@@ -224,8 +137,13 @@ mod tests {
         progress.add_bytes(4);
         progress.add_item();
         progress.set_total(10);
+        let snapshot = progress.snapshot();
         assert_eq!(
-            progress.snapshot(),
+            (snapshot.bytes, snapshot.items, snapshot.total, snapshot.phase),
+            (7, 1, Some(10), Phase::Preparing)
+        );
+        assert_eq!(
+            ProgressUpdate::of(&progress, false),
             ProgressUpdate {
                 bytes: 7,
                 items: 1,

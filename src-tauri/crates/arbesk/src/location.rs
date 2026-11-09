@@ -10,9 +10,32 @@
 //! Ids and names are percent-encoded with Drive's set, which encodes `~` and
 //! `/`, so the first `~` of a segment always ends its id.
 
-use percent_encoding::{percent_decode_str, utf8_percent_encode};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 
-use crate::cloud::location::{NAME_SET, valid_percent};
+/// Characters allowed literally in a display name. `~` is the id/name
+/// separator, so it is deliberately encoded (`%7E`).
+pub(crate) const NAME_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'.').remove(b'-').remove(b'_');
+
+/// Reject malformed `%XX` sequences instead of silently turning them into
+/// literal text; a bad URI should be reported, not guessed at.
+fn valid_percent(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len()
+                || !bytes[i + 1].is_ascii_hexdigit()
+                || !bytes[i + 2].is_ascii_hexdigit()
+            {
+                return false;
+            }
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    true
+}
 
 /// Every Arbesk location starts with this, and nothing else is Arbesk.
 pub const PREFIX: &str = "arbesk://";

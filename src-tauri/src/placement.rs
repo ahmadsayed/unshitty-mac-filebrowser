@@ -677,7 +677,7 @@ mod tests {
     /// content-addressed version objects. Test code is not scanned.
     #[test]
     fn only_listed_modules_call_std_fs_rename() {
-        const ALLOWED: [&str; 7] = [
+        const ALLOWED: [&str; 9] = [
             "placement.rs",       // rename_new's fallback, after its check
             "config_store.rs",    // pins.json, starred.json, flags.json saves
             "cloud/token.rs",     // Drive settings save
@@ -685,26 +685,37 @@ mod tests {
             "thumbnails.rs",      // the thumbnail cache
             "versions/mod.rs",    // .versions/meta.json save
             "versions/store.rs",  // an object is its bytes' hash
+            "crates/arbesk/src/cache.rs", // an asset's `.part`, renamed whole
+            "crates/arbesk/src/store.rs", // accounts and session saves
         ];
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let roots = [
+            (Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), String::new()),
+            (
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/arbesk/src"),
+                "crates/arbesk/src/".to_string(),
+            ),
+        ];
         let mut callers = Vec::new();
-        let mut folders = vec![src.clone()];
-        while let Some(folder) = folders.pop() {
-            for path in fs::read_dir(&folder).unwrap().flatten().map(|e| e.path()) {
-                if path.is_dir() {
-                    folders.push(path);
-                    continue;
-                }
-                let text = fs::read_to_string(&path).unwrap_or_default();
-                // The code up to the top-level test module, without comments.
-                let code = text.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
-                let calls = code
-                    .lines()
-                    .filter(|line| !line.trim_start().starts_with("//"))
-                    .any(|line| line.contains("fs::rename"));
-                let name = path.strip_prefix(&src).unwrap().to_string_lossy().to_string();
-                if calls && !ALLOWED.contains(&name.as_str()) {
-                    callers.push(name);
+        for (root, prefix) in roots {
+            let mut folders = vec![root.clone()];
+            while let Some(folder) = folders.pop() {
+                for path in fs::read_dir(&folder).unwrap().flatten().map(|e| e.path()) {
+                    if path.is_dir() {
+                        folders.push(path);
+                        continue;
+                    }
+                    let text = fs::read_to_string(&path).unwrap_or_default();
+                    // The code up to the top-level test module, without comments.
+                    let code = text.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
+                    let calls = code
+                        .lines()
+                        .filter(|line| !line.trim_start().starts_with("//"))
+                        .any(|line| line.contains("fs::rename"));
+                    let name =
+                        format!("{prefix}{}", path.strip_prefix(&root).unwrap().to_string_lossy());
+                    if calls && !ALLOWED.contains(&name.as_str()) {
+                        callers.push(name);
+                    }
                 }
             }
         }

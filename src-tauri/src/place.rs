@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{arbesk, cloud, share, sftp};
+use crate::{cloud, share, sftp};
 
 // ---- Kinds -------------------------------------------------------------------
 
@@ -40,7 +40,7 @@ pub enum Kind {
 /// The kind of place `path` names, from its scheme alone: a malformed
 /// remote path still has its scheme's kind, so its own parser refuses it.
 pub fn kind(path: &str) -> Kind {
-    if arbesk::location::is_arbesk(path) {
+    if arbesk::is_arbesk(path) {
         Kind::Arbesk
     } else if cloud::is_cloud(path) {
         Kind::Drive
@@ -125,7 +125,7 @@ pub fn transfer(from: &str, to: &str) -> Result<Route, String> {
 pub struct CopyRoute {
     pub route: Route,
     /// The source is an Arbesk asset: its file is built in the app cache and
-    /// copied from there (`ArbeskState::export`).
+    /// copied from there (`Client::export`).
     pub from_arbesk: bool,
 }
 
@@ -140,7 +140,7 @@ pub fn copy(from: &str, to: &str) -> Result<CopyRoute, String> {
         return transfer(from, to).map(|route| CopyRoute { route, from_arbesk: false });
     }
     writable(to)?;
-    if !matches!(arbesk::location::parse(from)?, arbesk::location::ArbeskPath::Asset { .. }) {
+    if !matches!(arbesk::parse(from)?, arbesk::Location::Asset { .. }) {
         return Err("Copying Arbesk collections comes next.".into());
     }
     let route = if kind(to) == Kind::Drive {
@@ -159,7 +159,7 @@ fn into_arbesk(from: &str, to: &str) -> Result<CopyRoute, String> {
         return Err("Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.".into());
     }
     local(from)?;
-    arbesk::location::parse_target(to)?;
+    arbesk::parse_target(to)?;
     Ok(CopyRoute { route: Route::IntoArbesk, from_arbesk: false })
 }
 
@@ -271,7 +271,7 @@ mod tests {
         }
         for path in ["arbesk://", "arbesk://0xab", "arbesk://0x00000000000000000000000000000000000000ab/x~Set"] {
             assert_eq!(kind(path), Kind::Arbesk);
-            assert!(arbesk::location::parse(path).is_err(), "{path}");
+            assert!(arbesk::parse(path).is_err(), "{path}");
         }
     }
 

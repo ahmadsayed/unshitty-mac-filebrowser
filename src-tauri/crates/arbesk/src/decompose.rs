@@ -20,7 +20,7 @@ use data_encoding::{BASE64_NOPAD, Encoding};
 use percent_encoding::percent_decode_str;
 use serde_json::{Map, Value, json};
 
-use crate::arbesk::compose::Format;
+use crate::compose::Format;
 
 /// The largest file (a `.gltf` with the files it reads) copied to Arbesk.
 pub const MAX_UPLOAD: u64 = 100 * 1024 * 1024;
@@ -1138,7 +1138,7 @@ fn decompose_3mf(bytes: &[u8], asset_name: &str, uploads: &mut Uploads) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arbesk::ipfs::unpack;
+    use crate::ipfs::unpack;
     use serde_json::json;
     use std::collections::HashMap;
     use std::io::Write;

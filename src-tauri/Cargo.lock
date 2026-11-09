@@ -115,6 +115,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "arbesk"
+version = "0.1.0"
+dependencies = [
+ "brotli",
+ "data-encoding",
+ "flate2",
+ "getrandom 0.4.3",
+ "image",
+ "keyring",
+ "percent-encoding",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+ "zip",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1562,6 +1581,7 @@ dependencies = [
 name = "filebrowser"
 version = "0.8.1"
 dependencies = [
+ "arbesk",
  "argon2",
  "bao-tree",
  "base64 0.23.1",

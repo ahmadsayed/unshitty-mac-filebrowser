@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cloud::token::write_private;
+use crate::store::write_private;
 
 /// An Arbesk session: its token and when Arbesk stops accepting it.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]

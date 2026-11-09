@@ -14,13 +14,13 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::arbesk::chain::Site;
-use crate::arbesk::compose::Format;
-use crate::arbesk::decompose::{Decomposed, decompose, fill, sanitize_file_name, stored_json};
-use crate::arbesk::http::{Http, HttpError};
-use crate::arbesk::location::{asset_path_named, collection_path};
-use crate::arbesk::service::{Reader, collection_name};
-use crate::arbesk::signin::now_ms;
+use crate::chain::Site;
+use crate::compose::Format;
+use crate::decompose::{Decomposed, decompose, fill, sanitize_file_name, stored_json};
+use crate::http::{Http, HttpError};
+use crate::location::{asset_path_named, collection_path};
+use crate::service::{Reader, collection_name};
+use crate::signin::now_ms;
 use crate::progress::{Phase, Progress};
 
 // ---- Wording ----------------------------------------------------------------
@@ -662,13 +662,13 @@ fn collection_key(collection: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arbesk::compose::testing::assert_same_model;
-    use crate::arbesk::decompose::decompose;
-    use crate::arbesk::http::HttpError;
-    use crate::arbesk::http::fake::{FakeHttp, Request};
-    use crate::arbesk::location::asset_path;
-    use crate::arbesk::service::{self, Builds, Thumbnails};
-    use crate::arbesk::testing::{ADDRESS, Relay, World, arbesk, fixture, shapes, site, world};
+    use crate::compose::testing::assert_same_model;
+    use crate::decompose::decompose;
+    use crate::http::HttpError;
+    use crate::http::fake::{FakeHttp, Request};
+    use crate::location::asset_path;
+    use crate::service::{self, Builds, Thumbnails};
+    use crate::testing::{ADDRESS, Relay, World, arbesk, fixture, shapes, site, world};
     use crate::progress::Phase;
     use std::collections::BTreeMap;
     use std::io::Read;

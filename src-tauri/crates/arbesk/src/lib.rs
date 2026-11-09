@@ -1,39 +1,66 @@
-//! Arbesk (promptscad.com) accounts in Network: sign in with an
-//! email and the code Arbesk emails, then browse the account's collections
-//! as folders and their assets as glTF and 3MF files. Arbesk's read path is
-//! rebuilt here from public sources (the backend's config and token index,
-//! the chain's `tokenURI`, the IPFS gateway). The one write is a local
-//! model copied into a collection (`write`): uploaded to IPFS through
-//! Arbesk's upload URLs and saved through its wallet relay, with the
-//! session kept from sign-in.
+//! Arbesk (promptscad.com) collections, for the File Browser. Sign in with an
+//! email and the code Arbesk emails, browse the account's collections as
+//! folders and their assets as glTF and 3MF files, build an asset to open or
+//! preview it, and copy a local model into a collection.
+//!
+//! Arbesk's read path is rebuilt from public sources (the deployment's config
+//! and token index, the chain's `tokenURI`, the IPFS gateway); the one write
+//! uploads to IPFS through Arbesk's upload URLs and saves through its wallet
+//! relay, with the session kept from sign-in. Every module below is an
+//! implementation detail: the app uses only the types and the [`Client`]
+//! re-exported here.
 
-pub mod accounts;
-pub mod chain;
-pub mod compose;
-pub mod decompose;
-pub mod http;
-pub mod ipfs;
-pub mod location;
-pub mod scene;
-pub mod service;
-pub mod session;
-pub mod signin;
+mod accounts;
+mod cache;
+mod callback;
+mod chain;
+mod compose;
+mod decompose;
+mod http;
+mod ids;
+mod image;
+mod ipfs;
+mod location;
+mod progress;
+mod scene;
+mod service;
+mod session;
+mod signin;
+mod store;
 #[cfg(test)]
 pub(crate) mod testing;
-pub mod write;
+mod write;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::arbesk::accounts::{Accounts, ArbeskAccount};
-use crate::arbesk::chain::Site;
-use crate::arbesk::http::{Http, ReqwestHttp};
-use crate::arbesk::location::{parse, parse_target};
-use crate::arbesk::session::{Session, SessionStore};
-use crate::arbesk::signin::{CALLBACK_TIMEOUT, Flow, now_ms};
-use crate::fs_ops::Entry;
-use crate::progress::Progress;
+use serde::Serialize;
+
+use crate::accounts::Accounts;
+use crate::chain::Site;
+use crate::http::{Http, ReqwestHttp};
+use crate::session::{Session, SessionStore};
+use crate::signin::{CALLBACK_TIMEOUT, Flow, now_ms};
+
+pub use accounts::Account;
+pub use location::{ArbeskPath as Location, is_arbesk, is_folder, parse, parse_target};
+pub use progress::{CANCELLED, Phase, Progress, Snapshot};
+pub use scene::Scene;
+pub use service::Version;
+
+/// A row in an account's or a collection's listing, with the same fields the
+/// app's own entries have, so it can be handed to the view unchanged.
+#[derive(Clone, Debug, Serialize)]
+pub struct Entry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub modified: i64,
+    pub is_hidden: bool,
+    pub is_symlink: bool,
+}
 
 /// Where new accounts sign in: Arbesk's public deployment on Base Sepolia.
 /// `FILEBROWSER_ARBESK_ORIGIN` points the app at another one (a local
@@ -47,9 +74,9 @@ fn sign_in_site() -> Site {
     }
 }
 
-/// What the app keeps for Arbesk: one HTTP client, the cache folder, the
-/// connected accounts and the sign-ins waiting for the browser.
-pub struct ArbeskState {
+/// What a [`Client`] keeps: one HTTP client, the cache folder, the connected
+/// accounts and the sign-ins waiting for the browser.
+pub struct Client {
     http: Result<Arc<dyn Http>, String>,
     cache_dir: PathBuf,
     accounts: Mutex<Accounts>,
@@ -73,7 +100,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-impl ArbeskState {
+impl Client {
     pub fn new(cache_dir: PathBuf, accounts_file: PathBuf, sessions_dir: PathBuf) -> Self {
         let http = ReqwestHttp::new().map(|http| Arc::new(http) as Arc<dyn Http>);
         let sessions = Box::new(session::KeyringSessions::new(sessions_dir));
@@ -120,7 +147,7 @@ impl ArbeskState {
         self.http.as_deref().map_err(Clone::clone)
     }
 
-    pub fn accounts(&self) -> Vec<ArbeskAccount> {
+    pub fn accounts(&self) -> Vec<Account> {
         lock(&self.accounts).items().to_vec()
     }
 
@@ -248,7 +275,7 @@ impl ArbeskState {
     }
 
     /// Wait for the browser, confirm the account and connect it.
-    pub fn connect_finish(&self, flow_id: &str) -> Result<ArbeskAccount, String> {
+    pub fn connect_finish(&self, flow_id: &str) -> Result<Account, String> {
         let flow = lock(&self.flows)
             .get(flow_id)
             .cloned()
@@ -379,8 +406,8 @@ impl ArbeskState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arbesk::http::fake::FakeHttp;
-    use crate::arbesk::session::MemorySessions;
+    use crate::http::fake::FakeHttp;
+    use crate::session::MemorySessions;
 
     const ORIGIN: &str = "https://promptscad.com";
 
@@ -417,7 +444,7 @@ mod tests {
     #[test]
     fn a_sign_in_connects_the_account_and_its_listing() {
         let dir = tempfile::tempdir().unwrap();
-        let state = ArbeskState::with_http(
+        let state = Client::with_http(
             confirming(),
             dir.path().join("cache"),
             dir.path().join("arbesk_accounts.json"),
@@ -460,9 +487,9 @@ mod tests {
     fn state_with_sessions(
         http: Arc<FakeHttp>,
         dir: &std::path::Path,
-    ) -> (ArbeskState, MemorySessions) {
+    ) -> (Client, MemorySessions) {
         let sessions = MemorySessions::default();
-        let state = ArbeskState::with_sessions(
+        let state = Client::with_sessions(
             http,
             dir.join("cache"),
             dir.join("arbesk_accounts.json"),
@@ -543,7 +570,7 @@ mod tests {
     #[test]
     fn exists_knows_a_listed_name() {
         let dir = tempfile::tempdir().unwrap();
-        let state = ArbeskState::with_http(
+        let state = Client::with_http(
             Arc::new(testing::arbesk(Arc::new(Mutex::new(testing::world())))),
             dir.path().join("cache"),
             dir.path().join("a.json"),
@@ -580,7 +607,7 @@ mod tests {
     fn cancelling_while_arbesk_confirms_connects_nothing() {
         let dir = tempfile::tempdir().unwrap();
         // Cancel arrives while Arbesk is being asked to confirm the account.
-        let cancel: Arc<std::sync::OnceLock<(Arc<ArbeskState>, String)>> = Arc::default();
+        let cancel: Arc<std::sync::OnceLock<(Arc<Client>, String)>> = Arc::default();
         let on_confirm = cancel.clone();
         let http = Arc::new(FakeHttp::new(move |request| {
             if request.method == "POST" {
@@ -592,7 +619,7 @@ mod tests {
             }
             Ok(b"{}".to_vec())
         }));
-        let state = Arc::new(ArbeskState::with_http(
+        let state = Arc::new(Client::with_http(
             http,
             dir.path().join("cache"),
             dir.path().join("a.json"),
@@ -611,7 +638,7 @@ mod tests {
     #[test]
     fn a_cancelled_sign_in_connects_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let state = ArbeskState::with_http(
+        let state = Client::with_http(
             confirming(),
             dir.path().join("cache"),
             dir.path().join("a.json"),
@@ -632,7 +659,7 @@ mod tests {
             panic!("nothing is asked before the account is known")
         }));
         let state =
-            ArbeskState::with_http(http, dir.path().join("cache"), dir.path().join("a.json"));
+            Client::with_http(http, dir.path().join("cache"), dir.path().join("a.json"));
         let path = "arbesk://0x00000000000000000000000000000000000000ab";
         assert_eq!(
             state.list(path).unwrap_err(),

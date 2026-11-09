@@ -13,6 +13,8 @@ pub const DIRS: [&str; 4] = ["sftp/sftp-open", "drive", "share-open", "arbesk"];
 /// How long a download may go untouched before it is pruned.
 pub const MAX_AGE: Duration = Duration::from_secs(7 * 86_400);
 
+// The Arbesk crate's `cache.rs` writes these marks too (asset builds), so the
+// suffix and the fingerprint must stay identical here.
 const MARK_SUFFIX: &str = ".downloaded";
 
 /// The hidden file beside `copy` that remembers it as downloaded.
@@ -41,11 +43,6 @@ pub fn mark(copy: &Path) {
 fn unchanged(copy: &Path, meta: &fs::Metadata) -> bool {
     let saved = mark_path(copy).and_then(|mark| fs::read_to_string(mark).ok());
     saved.is_some() && saved == fingerprint(meta)
-}
-
-/// Whether `copy` is still exactly as [`mark`] left it.
-pub fn is_unchanged(copy: &Path) -> bool {
-    fs::metadata(copy).is_ok_and(|meta| unchanged(copy, &meta))
 }
 
 /// Prune the downloads under `base` that nobody has touched for `max_age`:
@@ -201,6 +198,11 @@ mod tests {
             !named_part.exists(),
             "unchanged, so deleted rather than trashed"
         );
+    }
+
+    /// Whether `copy` is still exactly as [`mark`] left it.
+    fn is_unchanged(copy: &Path) -> bool {
+        fs::metadata(copy).is_ok_and(|meta| unchanged(copy, &meta))
     }
 
     #[test]
