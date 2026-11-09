@@ -52,7 +52,7 @@ pub fn create(
         return Err(NO_NAME.into());
     }
     let token_id = named_collection_id(address, name)?;
-    let reader = Reader::open(http, site, cache_dir)?;
+    let reader = Reader::open_fresh(http, site, cache_dir)?;
     match reader.collection_manifest_with_cid(&token_id) {
         Ok(_) => return Err(exists(name)),
         // `tokenURI` reverts for a token that was never minted.

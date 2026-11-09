@@ -61,7 +61,10 @@ the place may be written. Then:
   Drive), `share/` (iroh shares), `sftp.rs` (SSH, read only) and the
   `crates/arbesk` workspace crate (Arbesk: its read path rebuilt from public
   sources, assets built into the app cache to open, preview and copy out,
-  each asset's saved thumbnail; named collections created (a name minted
+  each asset's saved thumbnail kept on disk, manifests and thumbnails in a
+  bounded content-addressed cache, the deployment config kept briefly for
+  reads and fetched fresh by writes while `tokenURI` stays live; named
+  collections created (a name minted
   through the wallet relay), shared by email by adding a Viewer or Editor to
   the editor Merkle tree on IPFS and the chain, and local model files copied
   in with Arbesk's own storage protocol, uploads and the collection update

@@ -13,7 +13,7 @@ use crate::compose::{
     Format, UNKNOWN_FORMAT, compose, compose_preview, format_of, is_child_ref, source_cid,
 };
 use crate::http::Http;
-use crate::ipfs::{Gateway, ManifestCache, STORAGE_UNREACHABLE, in_parallel};
+use crate::ipfs::{FileCache, Gateway, ManifestCache, STORAGE_UNREACHABLE, in_parallel};
 use crate::location::{ArbeskPath, asset_path_named, collection_path, parse};
 use crate::scene::{Links, Scene, resolve};
 use crate::Entry;
@@ -24,6 +24,8 @@ use crate::image::png_from_bytes;
 const PARALLEL: usize = 8;
 /// The manifest cache's cap.
 const MANIFEST_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+/// The Arbesk thumbnail cache's cap.
+const THUMBNAIL_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 const UNTITLED_COLLECTION: &str = "Untitled Collection";
 
 /// The folder or file entries at `path`: an account's collections, or a
@@ -85,8 +87,53 @@ pub fn thumbnail(
     if stop() {
         return None;
     }
+    let cache_key = format!("{}-{size}.png", stored.cid);
+    if let Some(bytes) = thumbs.disk().and_then(|disk| disk.get(&cache_key)) {
+        if stop() {
+            return None;
+        }
+        if valid_png(&bytes, size) {
+            return Some(bytes);
+        }
+        // A damaged entry falls back to the gateway and is replaced.
+        if let Some(disk) = thumbs.disk() {
+            disk.remove(&cache_key);
+        }
+    }
     let gateway = Gateway::new(http, &stored.gateway, manifest_cache(cache_dir));
-    png_from_bytes(&gateway.image(&stored.cid).ok()?, size, stop)
+    let png = png_from_bytes(&gateway.image(&stored.cid).ok()?, size, stop)?;
+    if stop() {
+        return None;
+    }
+    if let Some(disk) = thumbs.disk() {
+        disk.put(&cache_key, &png);
+    }
+    Some(png)
+}
+
+/// Whether `bytes` is a PNG thumbnail no larger than `size` pixels: enough to
+/// trust a cached file. The header is read before any decode, so a corrupt
+/// entry cannot make the app allocate a huge image.
+fn valid_png(bytes: &[u8], size: u32) -> bool {
+    use image::ImageDecoder;
+    let Ok(reader) = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()
+    else {
+        return false;
+    };
+    if reader.format() != Some(image::ImageFormat::Png) {
+        return false;
+    }
+    let Ok(decoder) = reader.into_decoder() else {
+        return false;
+    };
+    let (width, height) = decoder.dimensions();
+    if width > size
+        || height > size
+        || u64::from(width) * u64::from(height) > crate::image::MAX_PIXELS
+    {
+        return false;
+    }
+    image::load_from_memory_with_format(bytes, image::ImageFormat::Png).is_ok()
 }
 
 /// The thumbnail of an asset no listing has shown, found through its collection.
@@ -109,6 +156,9 @@ fn find_thumbnail(
 #[derive(Default)]
 pub struct Thumbnails {
     known: Mutex<HashMap<String, Option<Stored>>>,
+    /// Decoded PNGs by content-addressed key; `None` in unit tests that do
+    /// not exercise the disk cache.
+    disk: Option<FileCache>,
 }
 
 /// An asset's key in [`Thumbnails`]: its account, token and asset ids. A
@@ -125,6 +175,21 @@ struct Stored {
 }
 
 impl Thumbnails {
+    /// The in-memory map plus a disk cache under `cache_dir`.
+    pub fn new(cache_dir: PathBuf) -> Self {
+        Self {
+            known: Mutex::new(HashMap::new()),
+            disk: Some(FileCache::new(
+                cache_dir.join("arbesk-thumbnails"),
+                THUMBNAIL_CACHE_BYTES,
+            )),
+        }
+    }
+
+    fn disk(&self) -> Option<&FileCache> {
+        self.disk.as_ref()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Option<Stored>>> {
         self.known.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -145,7 +210,8 @@ impl Thumbnails {
         self.lock().retain(|key, _| !key.starts_with(&prefix));
     }
 
-    /// Forget every thumbnail: an account was disconnected.
+    /// Forget every thumbnail: an account was disconnected. The disk cache is
+    /// content-addressed and stays; a CID's picture cannot change.
     pub fn clear(&self) {
         self.lock().clear();
     }
@@ -519,15 +585,35 @@ impl<'a> Reader<'a> {
         site: &'a Site,
         cache_dir: &Path,
     ) -> Result<Self, String> {
+        let chain = chain::config_cached(http, site, cache_dir)?;
+        Ok(Self::with_chain(http, site, chain, cache_dir))
+    }
+
+    /// A reader whose chain settings are read again: writes, creates and
+    /// shares must not build on a contract a redeploy has replaced.
+    pub(crate) fn open_fresh(
+        http: &'a dyn Http,
+        site: &'a Site,
+        cache_dir: &Path,
+    ) -> Result<Self, String> {
         let chain = chain::config(http, site)?;
+        Ok(Self::with_chain(http, site, chain, cache_dir))
+    }
+
+    fn with_chain(
+        http: &'a dyn Http,
+        site: &'a Site,
+        chain: ChainConfig,
+        cache_dir: &Path,
+    ) -> Self {
         let gateway = Gateway::new(http, &chain.gateway, manifest_cache(cache_dir));
-        Ok(Self {
+        Self {
             http,
             site,
             chain,
             gateway,
             own_token: None,
-        })
+        }
     }
 
     fn collection_manifest(&self, token_id: &str) -> Result<Value, String> {
@@ -587,8 +673,7 @@ impl<'a> Reader<'a> {
         self.gateway.json(cid)
     }
 
-    /// An asset's listed name: its name with its format's extension; a live
-    /// link shows as glTF, an unknown format without an extension.
+    /// An asset's listed name, the one a paste compares against.
     fn listed_name(&self, asset_id: &str, cid: &str) -> Result<String, String> {
         let manifest = self.gateway.json(cid)?;
         self.name_of(&manifest, asset_id, cid)
@@ -598,12 +683,16 @@ impl<'a> Reader<'a> {
         let ext = if is_child_ref(manifest) {
             Some("gltf")
         } else {
-            format_of(&self.gateway.json(&source_cid(manifest, cid))?)
-                .ok()
-                .map(|format| format.ext())
+            match listed_format(manifest) {
+                Some(format) => Some(format.ext()),
+                // Older or unusual manifests name no format: read the source
+                // as before.
+                None => format_of(&self.gateway.json(&source_cid(manifest, cid))?)
+                    .ok()
+                    .map(|format| format.ext()),
+            }
         };
-        let base = display_name(manifest, asset_id);
-        Ok(ext.map_or_else(|| base.clone(), |ext| format!("{base}.{ext}")))
+        Ok(name_with(manifest, asset_id, ext))
     }
 
     /// The CID and manifest of asset `asset_id` in collection `token_id`.
@@ -655,8 +744,7 @@ impl<'a> Reader<'a> {
         }))
     }
 
-    /// An asset's row, under its listed name ([`Reader::listed_name`]);
-    /// with it, where its thumbnail is.
+    /// An asset's row, under its listed name; with it, where its thumbnail is.
     fn asset_entry(
         &self,
         collection: &str,
@@ -669,6 +757,35 @@ impl<'a> Reader<'a> {
         let thumbnail = self.stored_thumbnail(&manifest);
         Ok((entry(name, path, false, &manifest), thumbnail))
     }
+}
+
+/// The format an asset manifest names for its source, if it names a format
+/// this app can build: the first source node's `source.format` (as the Studio
+/// and this app's copy-in record it), then `metadata.computed.format`. Any
+/// other value is left to the source manifest, so a source-only GLB or an
+/// unknown composite keeps today's result.
+fn listed_format(manifest: &Value) -> Option<Format> {
+    let listed = manifest
+        .pointer("/scene/nodes/0/source/format")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            manifest
+                .pointer("/metadata/computed/format")
+                .and_then(Value::as_str)
+        })?;
+    if listed.eq_ignore_ascii_case("gltf") {
+        Some(Format::Gltf)
+    } else if listed.eq_ignore_ascii_case("3mf") {
+        Some(Format::ThreeMf)
+    } else {
+        None
+    }
+}
+
+/// `manifest`'s name, with `ext` when it has one.
+fn name_with(manifest: &Value, asset_id: &str, ext: Option<&str>) -> String {
+    let base = display_name(manifest, asset_id);
+    ext.map_or(base.clone(), |ext| format!("{base}.{ext}"))
 }
 
 /// The rows that could be read. A row that can't be read is left out, but
@@ -785,7 +902,9 @@ mod tests {
     use crate::http::fake::FakeHttp;
     use crate::ipfs::STORAGE_UNREACHABLE;
     use crate::location::{asset_path, collection_path};
-    use crate::testing::{ADDRESS, ORIGIN, STAMP_MS, arbesk, fixture, shapes, site, world};
+    use crate::testing::{
+        self, ADDRESS, ORIGIN, STAMP_MS, arbesk, fixture, shapes, site, world,
+    };
     use serde_json::{Value, json};
     use std::collections::HashSet;
     use std::path::Path;
@@ -816,6 +935,160 @@ mod tests {
         let mut names: Vec<String> = entries.iter().map(|entry| entry.name.clone()).collect();
         names.sort();
         names
+    }
+
+    /// The fake world with one more asset in Shapes whose manifest names the
+    /// source's format.
+    fn world_with_listed_format(
+        cid: &str,
+        name: &str,
+        source: &str,
+        format: &str,
+    ) -> Arc<Mutex<testing::World>> {
+        let mut world = world();
+        world.put_asset_with_format(cid, Some(name), source, format);
+        world.add_asset("1", "z1", cid);
+        Arc::new(Mutex::new(world))
+    }
+
+    fn listed(http: &FakeHttp, cache: &Path) -> Vec<Entry> {
+        list(
+            http,
+            &site(),
+            &shapes(),
+            cache,
+            &Thumbnails::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_listed_format_avoids_the_source_manifest() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(world_with_listed_format(
+            "bafyBox3mf",
+            "Crate",
+            "bafyMissingSource",
+            "3mf",
+        ));
+        let entries = listed(&http, cache.path());
+        assert!(names(&entries).contains(&"Crate.3mf".to_string()));
+        assert!(
+            http.requests()
+                .iter()
+                .all(|request| !request.url.ends_with("bafyMissingSource"))
+        );
+    }
+
+    #[test]
+    fn a_listed_gltf_needs_no_source_fetch() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(world_with_listed_format(
+            "bafyBoxGltf",
+            "Crate",
+            "bafyMissingSource",
+            "gltf",
+        ));
+        let entries = listed(&http, cache.path());
+        assert!(names(&entries).contains(&"Crate.gltf".to_string()));
+        assert!(
+            http.requests()
+                .iter()
+                .all(|request| !request.url.ends_with("bafyMissingSource"))
+        );
+    }
+
+    #[test]
+    fn an_old_manifest_without_a_format_still_reads_its_source() {
+        assert_eq!(listed_format(&json!({ "scene": { "nodes": [{ "source": {} }] } })), None);
+        assert_eq!(
+            listed_format(&json!({ "scene": { "nodes": [{ "source": { "format": "3mf" } }] } })),
+            Some(Format::ThreeMf)
+        );
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let entries = listed(&http, cache.path());
+        assert!(names(&entries).contains(&"Odd".to_string()));
+        assert!(names(&entries).contains(&"Box.3mf".to_string()));
+    }
+
+    #[test]
+    fn a_glb_claim_falls_back_rather_than_guessing() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(world_with_listed_format(
+            "bafyBoxGlb",
+            "Crate",
+            "bafySrcOdd",
+            "glb",
+        ));
+        let entries = listed(&http, cache.path());
+        assert!(names(&entries).contains(&"Crate".to_string()));
+        assert!(!names(&entries).contains(&"Crate.gltf".to_string()));
+    }
+
+    #[test]
+    fn a_mixed_scene_and_a_link_keep_their_extension() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let rooms = list(
+            &http,
+            &site(),
+            &rooms(),
+            cache.path(),
+            &Thumbnails::default(),
+        )
+        .unwrap();
+        assert!(names(&rooms).contains(&"Table.gltf".to_string()));
+        assert!(
+            list(
+                &http,
+                &site(),
+                &shapes(),
+                cache.path(),
+                &Thumbnails::default()
+            )
+            .unwrap()
+            .iter()
+            .any(|entry| entry.name == "Linked.gltf")
+        );
+    }
+
+    #[test]
+    fn a_computed_format_is_a_fallback() {
+        assert_eq!(
+            listed_format(&json!({
+                "metadata": { "computed": { "format": "3mf" } }
+            })),
+            Some(Format::ThreeMf)
+        );
+        // A source node's own claim wins over computed metadata.
+        assert_eq!(
+            listed_format(&json!({
+                "scene": { "nodes": [{ "source": { "format": "gltf" } }] },
+                "metadata": { "computed": { "format": "3mf" } }
+            })),
+            Some(Format::Gltf)
+        );
+    }
+
+    #[test]
+    fn the_listed_extension_is_the_one_export_builds() {
+        let world = world();
+        let gltf = listed_format(&json!({
+            "scene": { "nodes": [{ "source": { "format": "gltf" } }] }
+        }))
+        .unwrap();
+        let three_mf = listed_format(&json!({
+            "scene": { "nodes": [{ "source": { "format": "3MF" } }] }
+        }))
+        .unwrap();
+        let gltf_source: Value = serde_json::from_slice(&world.files["bafySrcGltf"]).unwrap();
+        let three_mf_source: Value = serde_json::from_slice(&world.files["bafySrc3mf"]).unwrap();
+        assert_eq!(gltf.ext(), format_of(&gltf_source).unwrap().ext());
+        assert_eq!(
+            three_mf.ext(),
+            format_of(&three_mf_source).unwrap().ext()
+        );
     }
 
     fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
@@ -879,6 +1152,50 @@ mod tests {
         assert_eq!(gltf.modified, STAMP_MS / 1000);
         let paths: HashSet<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
         assert_eq!(paths.len(), entries.len());
+    }
+
+    #[test]
+    fn a_listing_uses_the_cached_config() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        list(
+            &http,
+            &site(),
+            &shapes(),
+            cache.path(),
+            &Thumbnails::default(),
+        )
+        .unwrap();
+        list(
+            &http,
+            &site(),
+            &shapes(),
+            cache.path(),
+            &Thumbnails::default(),
+        )
+        .unwrap();
+        let configs = http
+            .requests()
+            .into_iter()
+            .filter(|request| request.url.ends_with("/api/v1/config"))
+            .count();
+        assert_eq!(configs, 1);
+    }
+
+    #[test]
+    fn a_write_reader_reads_the_config_again() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        drop(Reader::open(&http, &site(), cache.path()).unwrap());
+        drop(Reader::open(&http, &site(), cache.path()).unwrap());
+        // The write paths open fresh: a redeploy is noticed at once.
+        drop(Reader::open_fresh(&http, &site(), cache.path()).unwrap());
+        let configs = http
+            .requests()
+            .into_iter()
+            .filter(|request| request.url.ends_with("/api/v1/config"))
+            .count();
+        assert_eq!(configs, 2);
     }
 
     #[test]
@@ -1627,6 +1944,119 @@ mod tests {
                 cache.path(),
                 &thumbs,
                 &|| false
+            )
+            .is_none()
+        );
+        assert!(asked_since(&http, before).is_empty());
+    }
+
+    #[test]
+    fn a_thumbnail_is_read_from_disk_the_second_time() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let thumbs = Thumbnails::new(cache.path().to_path_buf());
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        let first = thumbnail(
+            &http,
+            &site(),
+            &box_gltf(),
+            128,
+            cache.path(),
+            &thumbs,
+            &|| false,
+        )
+        .expect("Box.gltf was saved with a thumbnail");
+        let cached = cache.path().join("arbesk-thumbnails").join("bafyThumb-128.png");
+        assert!(cached.is_file(), "{cached:?}");
+        // A fresh in-memory map, as after a restart: the disk entry is the
+        // only reason no picture is fetched.
+        let fresh = Thumbnails::new(cache.path().to_path_buf());
+        let before = http.requests().len();
+        let second = thumbnail(
+            &http,
+            &site(),
+            &box_gltf(),
+            128,
+            cache.path(),
+            &fresh,
+            &|| false,
+        )
+        .expect("from disk");
+        assert_eq!(second, first);
+        assert!(
+            !asked_since(&http, before)
+                .iter()
+                .any(|url| url.ends_with("bafyThumb"))
+        );
+    }
+
+    #[test]
+    fn a_damaged_thumbnail_cache_entry_falls_back_to_the_gateway() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let thumbs = Thumbnails::new(cache.path().to_path_buf());
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        let real = thumbnail(
+            &http,
+            &site(),
+            &box_gltf(),
+            128,
+            cache.path(),
+            &thumbs,
+            &|| false,
+        )
+        .unwrap();
+        let cached = cache.path().join("arbesk-thumbnails").join("bafyThumb-128.png");
+        std::fs::write(&cached, b"not a png").unwrap();
+        let before = http.requests().len();
+        let repaired = thumbnail(
+            &http,
+            &site(),
+            &box_gltf(),
+            128,
+            cache.path(),
+            &thumbs,
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(repaired, real);
+        assert_eq!(
+            asked_since(&http, before),
+            ["https://gw.test/ipfs/bafyThumb"]
+        );
+        assert_eq!(std::fs::read(&cached).unwrap(), real);
+    }
+
+    #[test]
+    fn a_cancelled_thumbnail_with_a_warm_cache_returns_none() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let thumbs = Thumbnails::new(cache.path().to_path_buf());
+        list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
+        assert!(
+            thumbnail(
+                &http,
+                &site(),
+                &box_gltf(),
+                128,
+                cache.path(),
+                &thumbs,
+                &|| false,
+            )
+            .is_some()
+        );
+        let before = http.requests().len();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let stop = || calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 1;
+        assert!(
+            thumbnail(
+                &http,
+                &site(),
+                &box_gltf(),
+                128,
+                cache.path(),
+                &thumbs,
+                &stop,
             )
             .is_none()
         );

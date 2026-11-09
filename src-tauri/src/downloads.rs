@@ -223,6 +223,14 @@ mod tests {
         assert!(DIRS.contains(&"arbesk"));
     }
 
+    /// The Arbesk manifest and thumbnail caches are regenerable and are never
+    /// sent to the Trash, so they stay out of the downloaded-files folders.
+    #[test]
+    fn arbesk_caches_are_not_downloads() {
+        assert!(!DIRS.contains(&"arbesk-manifests"));
+        assert!(!DIRS.contains(&"arbesk-thumbnails"));
+    }
+
     #[test]
     fn a_missing_base_is_ignored() {
         let base = tempdir().unwrap();

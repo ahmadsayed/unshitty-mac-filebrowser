@@ -107,12 +107,17 @@ size column is empty, as a remote folder's item count already is
 (`locations.ts` gains `knowsSizes(kind)`, false for `"arbesk"`; the status
 bar then says "“name” selected" without a size). The date column shows the
 manifest's `timestamp` (milliseconds) when it has one. An asset's extension
-comes from its stored source's format, not from the manifest that wraps it;
-a live link (`child_ref`) lists as `.gltf` and an unknown format without an
-extension (both open with D9's message). Manifests are
+comes from the format its manifest records for its first source
+(`scene.nodes[].source.format`, then `metadata.computed.format`), falling
+back to reading the source's format when it records none; a live link
+(`child_ref`) lists as `.gltf` and an unknown format without an extension
+(both open with D9's message). A manifest that records a format is listed
+even when its source is missing or unreachable; opening it reports the
+storage's error. Manifests are
 content-addressed, so they are cached on disk by CID without expiry (capped
-by bytes, oldest dropped first); `tokenURI` and the indexer are asked again
-on every listing and on Reload. Requests run at most 8 at a time.
+by bytes, oldest dropped first); the deployment config is kept for five
+minutes per app cache folder, while `tokenURI` and the indexer are asked
+again on every listing and on Reload. Requests run at most 8 at a time.
 
 **D7. Preview builds a file; Open goes to the Studio.** For the preview, a
 glTF asset is built as one binary `.glb` (`compose_preview`: every buffer

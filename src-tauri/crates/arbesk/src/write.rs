@@ -419,7 +419,7 @@ pub fn add(
 ) -> Result<String, String> {
     let name = asset_name(&target.name);
     let split = decompose(file, &name)?;
-    let reader = Reader::open(http, site, cache_dir)?;
+    let reader = Reader::open_fresh(http, site, cache_dir)?;
     let (_, collection) = an_object(reader.collection_manifest_with_cid(&target.token_id)?)?;
     claim(&reader, &collection, target, overwrite)?;
     let editor_proof = editor_proof(&reader, target)?;
@@ -1114,6 +1114,47 @@ mod tests {
         drop(w);
         let saves = service::versions(&http, &site(), &path, cache.path()).unwrap();
         assert_eq!(saves.len(), 2);
+    }
+
+    #[test]
+    fn a_listed_claim_is_the_name_replace_matches() {
+        let (state, http, cache) = signed_in();
+        {
+            let mut world = state.lock().unwrap();
+            // The manifest names its format, but its source is missing: the
+            // listing and the Replace decision must agree on `Crate.3mf`.
+            world.put_asset_with_format("bafyClaim", Some("Crate"), "bafyMissingSource", "3mf");
+            world.add_asset("1", "z1", "bafyClaim");
+        }
+        let taken = add_to(
+            &http,
+            cache.path(),
+            &into("1", "Crate.3mf"),
+            &three_mf(),
+            false,
+            &Progress::default(),
+        );
+        assert_eq!(taken.unwrap_err(), "Target already exists: Crate.3mf");
+
+        let path = add_to(
+            &http,
+            cache.path(),
+            &into("1", "Crate.3mf"),
+            &three_mf(),
+            true,
+            &Progress::default(),
+        )
+        .unwrap();
+        assert_eq!(path, asset_path(&shapes(), "z1", "Crate", "3mf"));
+        let world = state.lock().unwrap();
+        let collection: Value = serde_json::from_slice(&world.files[&world.tokens["1"]]).unwrap();
+        assert_eq!(collection["assets"].as_object().unwrap().len(), 6);
+        let asset: Value =
+            serde_json::from_slice(&world.files[collection["assets"]["z1"].as_str().unwrap()])
+                .unwrap();
+        assert_eq!(asset["asset_id"], "z1");
+        assert_eq!(asset["version"], 2);
+        assert_eq!(asset["prev_asset_manifest_cid"], "bafyClaim");
     }
 
     #[test]

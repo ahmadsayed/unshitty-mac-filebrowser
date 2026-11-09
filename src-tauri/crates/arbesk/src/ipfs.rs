@@ -4,10 +4,12 @@
 //! either. Manifests are content-addressed and never change, so their JSON
 //! is kept on disk by CID ([`ManifestCache`]).
 
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::path::PathBuf;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -63,55 +65,246 @@ fn checked_cid(cid: &str) -> Result<&str, String> {
     }
 }
 
-/// Manifests by CID in the app cache, at most `cap` bytes; the oldest go
-/// first. A write that a crash cut short fails to parse and is fetched again.
-pub struct ManifestCache {
+/// How long a `.part` file may sit in a cache before a trim removes it: one
+/// another writer is still making is younger than this.
+const PART_AGE: Duration = Duration::from_secs(600);
+
+/// The next `.part` name. A clock tick can repeat, a counter cannot.
+static NEXT_PART: AtomicU64 = AtomicU64::new(0);
+
+/// Every cache directory's size, so several instances on one folder share one
+/// count instead of each growing it to `cap`. Each directory has its own lock,
+/// so a trim of one never blocks another.
+type Totals = Mutex<HashMap<PathBuf, Arc<Mutex<Option<u64>>>>>;
+
+fn totals() -> &'static Totals {
+    static TOTALS: OnceLock<Totals> = OnceLock::new();
+    TOTALS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn total_for(dir: &Path) -> Arc<Mutex<Option<u64>>> {
+    totals()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .entry(dir.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(None)))
+        .clone()
+}
+
+fn forget_total(dir: &Path) {
+    totals()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(dir);
+}
+
+/// A cache of whole files by key, at most `cap` bytes. Writes are staged under
+/// a `.part` name and renamed in, so a reader never sees half a file. The
+/// cache is only a shortcut: a missing or damaged entry is fetched again.
+pub struct FileCache {
     dir: PathBuf,
     cap: u64,
 }
 
-impl ManifestCache {
+impl FileCache {
     pub fn new(dir: PathBuf, cap: u64) -> Self {
         Self { dir, cap }
     }
 
+    /// A key safe as one file name in the cache.
+    fn valid_key(key: &str) -> bool {
+        !key.is_empty()
+            && key != "."
+            && key != ".."
+            && key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    }
+
+    pub fn get(&self, key: &str) -> Option<Vec<u8>> {
+        if !Self::valid_key(key) {
+            return None;
+        }
+        let path = self.dir.join(key);
+        let metadata = std::fs::metadata(&path).ok()?;
+        // A corrupt entry can claim any size; don't read it into memory.
+        if !metadata.is_file() {
+            forget_total(&self.dir);
+            return None;
+        }
+        if metadata.len() > self.cap {
+            let _ = std::fs::remove_file(&path);
+            forget_total(&self.dir);
+            return None;
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(_) => {
+                // A damaged entry is removed so the next fetch can replace it.
+                let _ = std::fs::remove_file(&path);
+                forget_total(&self.dir);
+                None
+            }
+        }
+    }
+
+    /// Keep `bytes` for `key`, best effort. An entry already there wins; the
+    /// caller removes a damaged one before asking for it again.
+    pub fn put(&self, key: &str, bytes: &[u8]) {
+        if !Self::valid_key(key) || bytes.len() as u64 > self.cap {
+            return;
+        }
+        if std::fs::create_dir_all(&self.dir).is_err() {
+            return;
+        }
+        self.sweep_parts_once();
+        let part = self.dir.join(format!(
+            ".{key}.{}.{}.part",
+            std::process::id(),
+            NEXT_PART.fetch_add(1, Ordering::Relaxed)
+        ));
+        if std::fs::write(&part, bytes).is_err() {
+            let _ = std::fs::remove_file(&part);
+            return;
+        }
+        if crate::cache::rename_new(&part, &self.dir.join(key)).is_err() {
+            // Someone stored the same (content-addressed) entry first.
+            let _ = std::fs::remove_file(&part);
+            return;
+        }
+        self.charge(key, bytes.len() as u64);
+    }
+
+    pub fn remove(&self, key: &str) {
+        if !Self::valid_key(key) {
+            return;
+        }
+        let _ = std::fs::remove_file(self.dir.join(key));
+        // The next write scans the folder once and starts from the truth.
+        forget_total(&self.dir);
+    }
+
+    /// Remove a crashed writer's `.part` once per directory per process.
+    fn sweep_parts_once(&self) {
+        static SWEPT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+        let first = {
+            let mut swept = SWEPT
+                .get_or_init(|| Mutex::new(HashSet::new()))
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            swept.insert(self.dir.clone())
+        };
+        if first {
+            let _ = trim(&self.dir, u64::MAX, "");
+        }
+    }
+
+    /// Add `bytes` to the folder's count, trimming when it no longer fits.
+    fn charge(&self, kept: &str, bytes: u64) {
+        let slot = total_for(&self.dir);
+        let mut total = slot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // A first scan already counts the file just renamed in.
+        let current = match *total {
+            Some(total) => total.saturating_add(bytes),
+            None => dir_total(&self.dir),
+        };
+        *total = Some(if current > self.cap {
+            trim(&self.dir, self.cap, kept)
+        } else {
+            current
+        });
+    }
+}
+
+/// The bytes of every file in `dir`, ignoring folders and unfinished parts.
+fn dir_total(dir: &Path) -> u64 {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    read.flatten()
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            (metadata.is_file() && !entry.file_name().to_string_lossy().ends_with(".part"))
+                .then_some(metadata.len())
+        })
+        .sum()
+}
+
+/// Remove the oldest files in `dir`, never `kept`, until the rest fit `cap`;
+/// the total left. `.part` files older than [`PART_AGE`] are dropped too.
+fn trim(dir: &Path, cap: u64, kept: &str) -> u64 {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut entries: Vec<(std::time::SystemTime, u64, PathBuf, String)> = Vec::new();
+    for entry in read.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".part") {
+            if metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age >= PART_AGE)
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+            continue;
+        }
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        entries.push((modified, metadata.len(), entry.path(), name));
+    }
+    entries.sort();
+    let mut total: u64 = entries.iter().map(|(_, len, _, _)| len).sum();
+    for (_, len, path, name) in entries {
+        if total <= cap {
+            break;
+        }
+        if name != kept && std::fs::remove_file(&path).is_ok() {
+            total -= len;
+        }
+    }
+    total
+}
+
+/// Manifests by CID in the app cache, at most `cap` bytes; the oldest go
+/// first. A file damaged outside the app fails to parse, is removed, and is
+/// fetched again.
+pub struct ManifestCache {
+    files: FileCache,
+}
+
+impl ManifestCache {
+    pub fn new(dir: PathBuf, cap: u64) -> Self {
+        Self {
+            files: FileCache::new(dir, cap),
+        }
+    }
+
     pub fn get(&self, cid: &str) -> Option<Vec<u8>> {
-        std::fs::read(self.dir.join(checked_cid(cid).ok()?)).ok()
+        self.files.get(checked_cid(cid).ok()?)
     }
 
     /// Keep `bytes` for `cid`, best effort: the cache is only a shortcut.
     pub fn put(&self, cid: &str, bytes: &[u8]) {
-        let Ok(cid) = checked_cid(cid) else { return };
-        if std::fs::create_dir_all(&self.dir).is_ok()
-            && std::fs::write(self.dir.join(cid), bytes).is_ok()
-        {
-            self.trim(cid);
+        if let Ok(cid) = checked_cid(cid) {
+            self.files.put(cid, bytes);
         }
     }
 
-    /// Remove the oldest entries, never `kept`, until the rest fit the cap.
-    fn trim(&self, kept: &str) {
-        let Ok(read) = std::fs::read_dir(&self.dir) else {
-            return;
-        };
-        let mut entries: Vec<(std::time::SystemTime, u64, PathBuf)> = read
-            .flatten()
-            .filter_map(|entry| {
-                let meta = entry.metadata().ok().filter(|meta| meta.is_file())?;
-                Some((meta.modified().ok()?, meta.len(), entry.path()))
-            })
-            .collect();
-        let mut total: u64 = entries.iter().map(|(_, len, _)| len).sum();
-        entries.sort();
-        for (_, len, path) in entries {
-            if total <= self.cap {
-                break;
-            }
-            if path.file_name().is_some_and(|name| name != kept)
-                && std::fs::remove_file(&path).is_ok()
-            {
-                total -= len;
-            }
+    /// Forget a damaged entry so the next fetch replaces it.
+    pub fn remove(&self, cid: &str) {
+        if let Ok(cid) = checked_cid(cid) {
+            self.files.remove(cid);
         }
     }
 }
@@ -169,16 +362,21 @@ impl<'a> Gateway<'a> {
     /// The JSON document at `cid`, from the cache when it is there.
     pub fn json(&self, cid: &str) -> Result<Value, String> {
         checked_cid(cid)?;
-        if let Some(value) = self
-            .cache
-            .get(cid)
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        {
-            return Ok(value);
+        if let Some(bytes) = self.cache.get(cid) {
+            match serde_json::from_slice(&bytes) {
+                Ok(value) => return Ok(value),
+                // A damaged entry is replaced by this fetch, not fetched
+                // forever.
+                Err(_) => self.cache.remove(cid),
+            }
         }
         let bytes = self.fetch(cid, self.json_cap)?;
-        let value = serde_json::from_slice(&bytes)
-            .map_err(|_| "Arbesk sent a manifest File Browser can't read.".to_string())?;
+        let value = match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                return Err("Arbesk sent a manifest File Browser can't read.".to_string());
+            }
+        };
         self.cache.put(cid, &bytes);
         Ok(value)
     }
@@ -305,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn a_damaged_cache_entry_is_fetched_again() {
+    fn a_damaged_cache_entry_is_fetched_again_and_repaired() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("bafyM"), b"{ half").unwrap();
         let http = FakeHttp::new(|_| Ok(b"{\"name\":\"Box\"}".to_vec()));
@@ -314,6 +512,10 @@ mod tests {
             "Box"
         );
         assert_eq!(http.requests().len(), 1);
+        // The damaged entry was replaced, not fetched on every visit.
+        let repaired: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("bafyM")).unwrap()).unwrap();
+        assert_eq!(repaired["name"], "Box");
     }
 
     #[test]
@@ -337,13 +539,110 @@ mod tests {
     }
 
     #[test]
+    fn a_file_cache_keeps_a_file_and_refuses_a_bad_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FileCache::new(dir.path().to_path_buf(), 1 << 20);
+        cache.put("bafyBox-128.png", b"whole");
+        assert_eq!(cache.get("bafyBox-128.png"), Some(b"whole".to_vec()));
+        for key in ["", ".", "..", "../x", "a/b", "a b", "bafy?x"] {
+            cache.put(key, b"nope");
+            assert_eq!(cache.get(key), None, "{key}");
+            assert!(!dir.path().join(key).is_file(), "{key}");
+        }
+    }
+
+    #[test]
+    fn an_oversized_cache_entry_is_removed_before_reading_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FileCache::new(dir.path().to_path_buf(), 4);
+        let path = dir.path().join("huge");
+        std::fs::write(&path, b"too many bytes").unwrap();
+        assert_eq!(cache.get("huge"), None);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn two_caches_on_one_directory_keep_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = FileCache::new(dir.path().to_path_buf(), 25);
+        let two = FileCache::new(dir.path().to_path_buf(), 25);
+        for i in 0..5 {
+            one.put(&format!("one{i}"), &[b'a'; 10]);
+            two.put(&format!("two{i}"), &[b'b'; 10]);
+            let total: u64 = std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .filter_map(|entry| {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.ends_with(".part") {
+                        return None;
+                    }
+                    entry.metadata().ok().map(|metadata| metadata.len())
+                })
+                .sum();
+            assert!(total <= 25, "{total} bytes after put {i}");
+        }
+    }
+
+    #[test]
+    fn a_cached_file_is_never_half_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = FileCache::new(dir.path().to_path_buf(), 1 << 20);
+        let reader = FileCache::new(dir.path().to_path_buf(), 1 << 20);
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = done.clone();
+        let read = std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                if let Some(bytes) = reader.get("whole") {
+                    assert_eq!(bytes.len(), 64 * 1024);
+                    assert!(bytes.iter().all(|byte| *byte == bytes[0]));
+                }
+                std::thread::yield_now();
+            }
+        });
+        for i in 0..40u8 {
+            writer.put("whole", &vec![i; 64 * 1024]);
+        }
+        done.store(true, Ordering::SeqCst);
+        read.join().unwrap();
+    }
+
+    #[test]
+    fn a_stale_part_file_is_removed_but_a_live_one_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir.path().join(".old.1.1.part");
+        let live = dir.path().join(".new.1.2.part");
+        std::fs::write(&stale, b"old").unwrap();
+        std::fs::write(&live, b"live").unwrap();
+        let old = std::time::SystemTime::now() - PART_AGE - Duration::from_secs(1);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        trim(dir.path(), 1 << 20, "kept");
+        assert!(!stale.exists());
+        assert!(live.exists());
+    }
+
+    #[test]
     fn the_cache_drops_its_oldest_entries_past_its_cap() {
         let dir = tempfile::tempdir().unwrap();
         let cache = ManifestCache::new(dir.path().to_path_buf(), 25);
-        for (cid, byte) in [("a1", b'a'), ("b2", b'b'), ("c3", b'c')] {
+        let now = std::time::SystemTime::now();
+        for (n, (cid, byte)) in [("a1", b'a'), ("b2", b'b'), ("c3", b'c')]
+            .into_iter()
+            .enumerate()
+        {
             cache.put(cid, &[byte; 10]);
-            // mtimes must differ for "oldest" to mean something.
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            let file = std::fs::File::options()
+                .write(true)
+                .open(dir.path().join(cid))
+                .unwrap();
+            // Distinct times, without a sleep: a1 oldest, c3 newest.
+            file.set_modified(now + std::time::Duration::from_secs(n as u64))
+                .unwrap();
         }
         assert_eq!(cache.get("a1"), None);
         assert_eq!(cache.get("b2"), Some(vec![b'b'; 10]));

@@ -84,7 +84,7 @@ pub fn add(
     // One editor-list change at a time per collection from this app, so two
     // shares don't both build on the version before the other lands.
     let _held = locks.take(caller, token_id);
-    let reader = Reader::open(http, site, cache_dir)?;
+    let reader = Reader::open_fresh(http, site, cache_dir)?;
     let (version, _, value) = reader.editor_list(token_id)?;
     let mut list: Vec<Editor> =
         serde_json::from_value(value).map_err(|_| UNREADABLE.to_string())?;

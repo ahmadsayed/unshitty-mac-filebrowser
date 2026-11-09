@@ -98,6 +98,10 @@ can't be typed here, only emails.
 - An asset saved with a thumbnail in Arbesk shows it in the grid and list
   views (with **Show Thumbnails** on); one saved without keeps the model's
   icon.
+- An asset whose manifest records its format is listed even if its source is
+  temporarily unreachable; opening it says Arbesk's storage couldn't be
+  reached. An older manifest that records no format is read from its source,
+  as before.
 - Opening an asset (double-click, **Open** in its menu or in the preview)
   opens it in Arbesk's Studio, in your browser, on the deployment you signed
   in to (`/studio?asset=<collection>&assetId=<asset>`, the link `besk show`
@@ -146,6 +150,21 @@ they are, as the Studio does.
 A model stored in a way File Browser doesn't know yet says *This asset uses
 an Arbesk format File Browser can't read yet.* rather than showing a wrong
 file.
+
+## Speed
+
+Arbesk keeps a folder's assets as one small manifest each on IPFS, not as one
+Drive-style index. The first visit fetches what it doesn't have yet; File
+Browser keeps manifests and thumbnails in the app cache (64 MB each), reuses
+an asset's built preview file, and downloads a model's parts a few at a time.
+The deployment's settings are kept for five minutes; a collection's current
+manifest is always read live, so Reload sees the latest. Revisits, thumbnails
+after a restart and later previews are therefore much faster than the first
+visit.
+
+Copying a file in still uploads every part and waits for Arbesk's relay to
+confirm the change on chain, so it can take longer than a Google Drive upload.
+That wait is part of Arbesk's protocol; it is not compression.
 
 ## Copying into Arbesk
 
