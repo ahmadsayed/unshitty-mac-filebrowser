@@ -55,7 +55,7 @@ test("list_dir lists, hides dotfiles, and reports errors like the backend", asyn
 test("item_counts summarises folders: count, versioned, null when unreadable", async () => {
   expect(
     await invoke("item_counts", { paths: [`${HOME}/Desktop`, `${HOME}/Documents/Versioned`, "/nope"], showHidden: false }),
-  ).toEqual([{ count: 1, versioned: false }, { count: 3, versioned: true }, null]);
+  ).toEqual([{ count: 1, versioned: false }, { count: 4, versioned: true }, null]);
 });
 
 test("item_counts logs what it was asked, answers null for remote folders, and can be held", async () => {
@@ -400,7 +400,7 @@ test("the Keep Versions commands", async () => {
   expect(await invoke("versioned_root", { path: `${HOME}/Documents/VersionedNot` })).toBeNull();
   expect(await namesIn(V, true)).not.toContain(".versions");
   const props = await invoke<{ item_count: number }>("file_properties", { path: V });
-  expect(props.item_count).toBe(3);
+  expect(props.item_count).toBe(4);
   expect(await invoke<unknown[]>("list_versions", { path: `${V}/notes.txt` })).toHaveLength(4);
   expect(await invoke("version_count", { path: `${V}/image.png` })).toBe(1);
   expect(await invoke("version_count", { path: `${V}/large.txt` })).toBe(2);
@@ -414,6 +414,9 @@ test("the Keep Versions commands", async () => {
   expect(await invoke("restore_version_copy", { path: `${V}/notes.txt`, version: 1, name: "n1.txt" })).toBe(`${V}/n1.txt`);
   await expect(invoke("restore_version_copy", { path: `${V}/notes.txt`, version: 1, name: "n1.txt" })).rejects.toMatch(/already exists/);
   expect(await invoke("open_version", { path: `${V}/notes.txt`, version: 1, name: "n1.txt" })).toBe(`${HOME}/.cache/opened-versions/n1.txt`);
+  // The copy is a file the preview can read.
+  const copy = await invoke<{ text: string }>("preview_text", { path: `${HOME}/.cache/opened-versions/n1.txt`, limit: 200 });
+  expect(copy.text.startsWith(`Preview of ${HOME}/.cache/opened-versions/`)).toBe(true);
   await expect(invoke("restore_version_copy", { path: "/nope/x", version: 1, name: "y" })).rejects.toMatch(/missing folder/);
   await invoke("replace_with_version", { path: `${V}/notes.txt`, version: 1 });
   await expect(invoke("replace_with_version", { path: `${V}/gone.txt`, version: 1 })).rejects.toMatch(/not in the folder/);
@@ -1419,6 +1422,16 @@ test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend'
   const part = new Uint8Array(await invoke<ArrayBuffer>("arbesk_part", { path: tablePath, key: "box-src", limit: 1 << 20 }));
   expect(new TextDecoder().decode(part.slice(0, 4))).toBe("glTF");
   await expect(invoke("arbesk_part", { path: tablePath, key: "nope", limit: 1 << 20 })).rejects.toBe("This part is not in the asset.");
+  // Versions: Cube was saved three times, each save one more copy; a scene and
+  // its parts come from the save asked for; other assets have one save.
+  const cubePath = `${root}/2~Untitled%20Collection/asset_1~Cube.gltf`;
+  const saves = await invoke<Array<{ id: string; timestamp: number | null }>>("arbesk_versions", { path: cubePath });
+  expect(saves.map((v) => v.id)).toEqual(["cube-v1", "cube-v2", "cube-v3"]);
+  expect((await invoke<MockScene>("arbesk_scene", { path: cubePath, version: "cube-v2" })).parts[0].placements).toHaveLength(2);
+  expect((await invoke<MockScene>("arbesk_scene", { path: cubePath, version: null })).parts[0].placements).toHaveLength(3);
+  await expect(invoke("arbesk_scene", { path: cubePath, version: "box-g-v1" })).rejects.toBe("This version is not in the asset.");
+  await expect(invoke("arbesk_part", { path: cubePath, version: "cube-v1", key: "box-3mf", limit: 1 << 20 })).rejects.toBe("This part is not in the asset.");
+  expect(await invoke("arbesk_versions", { path: tablePath })).toEqual([{ id: "table-v1", timestamp: expect.any(Number) }]);
   const single = await invoke<MockScene>("arbesk_scene", { path: gltf });
   expect(single.parts).toEqual([{ key: "box-g-src", format: "glb", placements: [{ matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], color: null, mesh_colors: {}, scale: [1, 1, 1] }] }]);
 

@@ -61,6 +61,7 @@ const tree: Record<string, Node> = {
           "notes.txt": f(2_100, 2 * 3600),
           "image.png": f(120_000, day),
           "large.txt": f(2_000_000, day),
+          "archive.zip": f(5_000_000, day),
           ".versions": d({ "index.sqlite": f(12_000, 3600) }),
         }),
       }, 1 * day),
@@ -1475,6 +1476,7 @@ function mockVersions(path: string) {
   }
   if (path.endsWith("/image.png")) return [v(1, 120_000, day, true)];
   if (path.endsWith("/large.txt")) return [v(2, 2_000_000, 60, true), v(1, 1_900_000, 120)];
+  if (path.endsWith("/archive.zip")) return [v(2, 5_000_000, day, true), v(1, 4_000_000, 2 * day)];
   return [];
 }
 
@@ -1545,6 +1547,8 @@ const VERSION_COMMANDS: Record<string, (args: Args) => unknown> = {
     placeRestored(at(a), str(a, "name"), 1_700, `An item named “${str(a, "name")}” already exists`),
   open_version: (a) => {
     at(a);
+    // A read-only copy the preview can read, as the backend makes it.
+    ensureDir(OPENED).children[str(a, "name")] = f(1_700, 0);
     return `${OPENED}/${str(a, "name")}`;
   },
   replace_with_version: (a) => replaceWithVersion(at(a)),
@@ -1637,6 +1641,8 @@ type MockAsset = {
   ext: "gltf" | "3mf";
   huge?: boolean;
   thumbnail?: boolean;
+  /** How many times it was saved (one when not given): save N of a model is N copies, 50 apart. */
+  saves?: { prefix: string; count: number };
   /** A scene's parts, each at the x offsets of its copies (tinted when a colour is given). */
   scene?: Array<{ key: string; format: "glb" | "3mf"; copies: Array<{ x: number; color?: string }> }>;
 };
@@ -1656,7 +1662,7 @@ const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset
     token: "2",
     name: "Untitled Collection",
     assets: [
-      { id: "asset_1", name: "Cube", ext: "gltf", thumbnail: true },
+      { id: "asset_1", name: "Cube", ext: "gltf", thumbnail: true, saves: { prefix: "cube", count: 3 } },
       // A scene: two copies of one model, the second 50 to the right (the model is 40 wide) and red, and a 3MF part.
       {
         id: "table",
@@ -1753,10 +1759,22 @@ async function arbeskThumbnail(path: string, size: number): Promise<ArrayBuffer>
   return (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer();
 }
 
-/** An asset's scene as the backend answers it: a single model is one part at its place. */
-function arbeskScene(path: string) {
+/** An asset's saves, oldest first, as `arbesk_versions` answers: a day apart, the last one now. */
+function arbeskVersions(path: string): Array<{ id: string; timestamp: number }> {
   const asset = arbeskAsset(path);
-  const parts = asset.scene ?? [{ key: `${asset.id}-src`, format: asset.ext === "3mf" ? "3mf" : "glb", copies: [{ x: 0 }] }];
+  const { prefix, count } = asset.saves ?? { prefix: asset.id, count: 1 };
+  return Array.from({ length: count }, (_, i) => ({ id: `${prefix}-v${i + 1}`, timestamp: (now - (count - 1 - i) * day) * 1000 }));
+}
+
+/** An asset's scene as the backend answers it, for one save (the newest
+ *  when `version` is null): a single model is one part, one copy per save. */
+function arbeskScene(path: string, version: string | null = null) {
+  const asset = arbeskAsset(path);
+  const saves = arbeskVersions(path).map((v) => v.id);
+  const save = version === null ? saves.length : saves.indexOf(version) + 1;
+  if (save === 0) throw "This version is not in the asset.";
+  const copies = Array.from({ length: save }, (_, i) => ({ x: i * 50 }));
+  const parts = asset.scene ?? [{ key: `${asset.id}-src`, format: asset.ext === "3mf" ? "3mf" : "glb", copies }];
   return {
     parts: parts.map((part) => ({
       key: part.key,
@@ -1772,8 +1790,8 @@ function arbeskScene(path: string) {
 }
 
 /** One part's bytes, as the preview loads them: a GLB or a 3MF. */
-function arbeskPart(path: string, key: string, limit: number): ArrayBuffer {
-  const part = arbeskScene(path).parts.find((p) => p.key === key);
+function arbeskPart(path: string, version: string | null, key: string, limit: number): ArrayBuffer {
+  const part = arbeskScene(path, version).parts.find((p) => p.key === key);
   if (!part) throw "This part is not in the asset.";
   if (arbeskAsset(path).huge) throw "This file is too large to preview.";
   const bytes = part.format === "3mf" ? sample3mf() : sampleGlb();
@@ -1782,8 +1800,9 @@ function arbeskPart(path: string, key: string, limit: number): ArrayBuffer {
 }
 
 const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
-  arbesk_scene: (a) => arbeskScene(str(a, "path")),
-  arbesk_part: (a) => arbeskPart(str(a, "path"), str(a, "key"), Number(a.limit)),
+  arbesk_versions: (a) => arbeskVersions(str(a, "path")),
+  arbesk_scene: (a) => arbeskScene(str(a, "path"), (a.version as string | null | undefined) ?? null),
+  arbesk_part: (a) => arbeskPart(str(a, "path"), (a.version as string | null | undefined) ?? null, str(a, "key"), Number(a.limit)),
   arbesk_accounts: () => arbeskAccountList.map((account) => ({ ...account })),
   arbesk_connect_start: (a) => {
     const email = str(a, "email").trim().toLowerCase();

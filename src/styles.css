@@ -892,6 +892,42 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   font-weight: 600;
 }
 
+/* The preview's versions: ‹ "Version 3 of 12" over its date › */
+.preview-versions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.preview-versions[hidden] {
+  display: none;
+}
+
+.preview-version-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.2;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+/* The list of versions can be long (50 Arbesk saves, 1,000 local versions): it scrolls. */
+.menu.preview-version-menu {
+  max-height: min(60vh, 480px);
+  overflow-y: auto;
+}
+
+.preview-version-title {
+  font-weight: 600;
+}
+
+.preview-version-date {
+  font-size: 0.85em;
+  opacity: var(--dim);
+}
+
 .preview-body {
   flex: 1;
   min-height: 0;

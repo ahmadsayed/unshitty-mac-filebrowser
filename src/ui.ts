@@ -167,9 +167,9 @@ export type MenuItem =
       accel?: string;
     };
 
-export function openMenu(anchor: Anchor, items: MenuItem[]): PopoverHandle {
+export function openMenu(anchor: Anchor, items: MenuItem[], opts: { className?: string } = {}): PopoverHandle {
   const menu = document.createElement("div");
-  menu.className = "menu";
+  menu.className = opts.className ? `menu ${opts.className}` : "menu";
   menu.setAttribute("role", "menu");
 
   const hasIndicators = items.some((i) => "label" in i && (i.check !== undefined || i.radio !== undefined));

@@ -50,6 +50,11 @@ pub struct ArbeskState {
     thumbnails: service::Thumbnails,
 }
 
+/// The key a scene is kept under: its asset and version.
+fn kept(path: &str, version: Option<&str>) -> String {
+    format!("{path}\n{}", version.unwrap_or(""))
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -150,19 +155,36 @@ impl ArbeskState {
         )
     }
 
-    /// `service::scene` for the account `path` belongs to, kept for `part`.
-    pub fn scene(&self, path: &str) -> Result<scene::Scene, String> {
+    /// `service::versions` for the account `path` belongs to.
+    pub fn versions(&self, path: &str) -> Result<Vec<service::Version>, String> {
         let (http, site) = self.reach(path)?;
-        let resolved = service::scene(http, &site, path, &self.cache_dir)?;
-        Ok(self.scenes.keep(path, resolved).as_ref().clone())
+        service::versions(http, &site, path, &self.cache_dir)
     }
 
-    /// `service::part` for the account `path` belongs to.
-    pub fn part(&self, path: &str, key: &str, progress: &Progress) -> Result<PathBuf, String> {
+    /// `service::scene` for the account `path` belongs to, kept for `part`.
+    pub fn scene(&self, path: &str, version: Option<&str>) -> Result<scene::Scene, String> {
         let (http, site) = self.reach(path)?;
-        let scene = self
+        let resolved = service::scene(http, &site, path, version, &self.cache_dir)?;
+        Ok(self
             .scenes
-            .get_or_keep(path, || service::scene(http, &site, path, &self.cache_dir))?;
+            .keep(&kept(path, version), resolved)
+            .as_ref()
+            .clone())
+    }
+
+    /// `service::part` for the account `path` belongs to, from the scene of
+    /// `version` (the asset's newest without one).
+    pub fn part(
+        &self,
+        path: &str,
+        version: Option<&str>,
+        key: &str,
+        progress: &Progress,
+    ) -> Result<PathBuf, String> {
+        let (http, site) = self.reach(path)?;
+        let scene = self.scenes.get_or_keep(&kept(path, version), || {
+            service::scene(http, &site, path, version, &self.cache_dir)
+        })?;
         service::part(
             http,
             &site,

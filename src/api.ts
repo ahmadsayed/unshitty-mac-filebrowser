@@ -684,13 +684,25 @@ export interface ArbeskScene {
   parts: { key: string; format: "glb" | "3mf"; placements: ArbeskPlacement[] }[];
 }
 
-export async function arbeskScene(path: string): Promise<ArbeskScene> {
-  return invoke<ArbeskScene>("arbesk_scene", { path });
+/** The scene of an Arbesk asset, as saved in `version` (its newest when null). */
+export async function arbeskScene(path: string, version: string | null = null): Promise<ArbeskScene> {
+  return invoke<ArbeskScene>("arbesk_scene", { path, version });
 }
 
 /** One part of an Arbesk scene, as the preview loads it, at most `limit` bytes. */
-export async function arbeskPart(path: string, key: string, limit: number): Promise<ArrayBuffer> {
-  return invoke<ArrayBuffer>("arbesk_part", { path, key, limit });
+export async function arbeskPart(path: string, key: string, limit: number, version: string | null = null): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("arbesk_part", { path, version, key, limit });
+}
+
+/** One save of an Arbesk asset: its manifest's CID, and when (ms), if known. */
+export interface ArbeskVersion {
+  id: string;
+  timestamp: number | null;
+}
+
+/** An Arbesk asset's saves, oldest first; the last is the asset now. */
+export async function arbeskVersions(path: string): Promise<ArbeskVersion[]> {
+  return invoke<ArbeskVersion[]>("arbesk_versions", { path });
 }
 
 export async function previewBytes(path: string, limit: number): Promise<ArrayBuffer> {

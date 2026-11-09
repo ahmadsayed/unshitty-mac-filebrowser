@@ -76,6 +76,12 @@ any model that can't be built; the rest of the scene still shows. A scene
 stops at 2,000 copies. Each model is shown the right way round; the Studio
 currently shows them mirrored (ahmadsayed/arbesk#138).
 
+An asset saved more than once in the Studio has versions: each save points
+at the one before it. Space shows the newest, and ‹ and › in the preview's
+header step back through the saves (the newest 50, as the Studio reads
+them), each shown as its own scene. A model that didn't change between
+saves is downloaded once.
+
 A model stored in a way File Browser doesn't know yet says *This asset uses
 an Arbesk format File Browser can't read yet.* rather than showing a wrong
 file.

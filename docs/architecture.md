@@ -23,7 +23,8 @@ It owns no rules: it asks small modules that have no DOM.
   a folder) and says what that kind of place allows. `item-actions.ts` holds
   one rule per action that several surfaces reach (menus, keys, the preview,
   the row star), asked inside the action itself. `preview-actions.ts` builds
-  the Space preview's buttons from those rules. `models.ts` says which files
+  the Space preview's buttons from those rules, and `preview-versions.ts`
+  its version control for a Keep Versions file or an Arbesk asset. `models.ts` says which files
   the preview shows as 3D models; `model-viewer.ts` (three.js, loaded only
   then) reads and draws them.
 - **View state and stored paths.** `selection.ts` (selection, cursor,
