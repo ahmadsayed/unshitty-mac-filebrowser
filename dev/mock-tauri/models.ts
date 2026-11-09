@@ -51,11 +51,12 @@ export function sampleStlBinary(): Uint8Array {
   return new Uint8Array(out.buffer);
 }
 
-export function sample3mf(): Uint8Array {
+/** The sample cube as a 3MF, its coordinates in `unit` (3MF's default: millimetres). */
+export function sample3mf(unit = "millimeter"): Uint8Array {
   const vertices = CORNERS.map(([x, y, z]) => `<vertex x="${x}" y="${y}" z="${z}"/>`).join("");
   const triangles = TRIANGLES.map(([a, b, c]) => `<triangle v1="${a}" v2="${b}" v3="${c}"/>`).join("");
   const model =
-    `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">` +
+    `<?xml version="1.0" encoding="UTF-8"?><model unit="${unit}" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">` +
     `<resources><object id="1" type="model"><mesh><vertices>${vertices}</vertices><triangles>${triangles}</triangles></mesh></object></resources>` +
     `<build><item objectid="1"/></build></model>`;
   const rels =

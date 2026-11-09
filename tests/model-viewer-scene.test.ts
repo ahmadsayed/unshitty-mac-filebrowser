@@ -1,8 +1,9 @@
 // placeScene: an Arbesk scene's parts, each placed once per placement, as
 // copies in one group (src/model-viewer.ts).
 import { expect, test } from "vitest";
-import { BoxGeometry, Group, Mesh, MeshStandardMaterial, Vector3, type Object3D } from "three";
-import { placeScene, type ScenePlacement } from "../src/model-viewer";
+import { Box3, BoxGeometry, Group, Mesh, MeshStandardMaterial, Vector3, type Object3D } from "three";
+import { loadModel, loadScenePart, placeScene, type ScenePlacement } from "../src/model-viewer";
+import { sample3mf, sampleGlb } from "../dev/mock-tauri/models";
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 const translation = (x: number, y: number, z: number) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];
@@ -44,15 +45,47 @@ test("a mesh's own colour beats the copy's", () => {
   expect(colourOf(group.children[0], "leg")).toBe("#ff0000");
 });
 
+const bounds = (object: Object3D) => {
+  object.updateMatrixWorld(true);
+  return new Box3().setFromObject(object);
+};
+const size = (object: Object3D) => bounds(object).getSize(new Vector3());
+const centre = (object: Object3D) => bounds(object).getCenter(new Vector3());
+const near = (a: Vector3, b: Vector3) => a.distanceTo(b) < 1e-6;
+
 test("a copy's scale multiplies its matrix's", () => {
   const scaled = [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1];
   const group = placeScene([{ object: box(), placements: [place({ matrix: scaled, scale: [2, 1, 1] })] }]);
-  expect(group.children[0].scale).toEqual(new Vector3(4, 2, 2));
+  expect(near(size(group.children[0]), new Vector3(4, 2, 2))).toBe(true);
+});
+
+// As the Studio's centerImportedAsset: the middle of a model's box sits on its place.
+test("each copy's model is centred on its place", () => {
+  const model = box();
+  model.children.forEach((mesh) => mesh.position.set(5, 1, -2));
+  const group = placeScene([{ object: model, placements: [place({ matrix: translation(3, 0, 0) }), place()] }]);
+  expect(near(centre(group.children[0]), new Vector3(3, 0, 0))).toBe(true);
+  expect(near(centre(group.children[1]), new Vector3(0, 0, 0))).toBe(true);
+});
+
+const buffer = (bytes: Uint8Array) => bytes.slice().buffer;
+
+// The Studio draws a 3MF in metres, from the unit it declares; a GLB is in metres already.
+test("a 3MF scene part is in metres", async () => {
+  const raw = size(await loadModel("3mf", buffer(sample3mf())));
+  for (const [unit, metres] of [["millimeter", 0.001], ["inch", 0.0254], ["meter", 1], ["furlong", 0.001]] as const) {
+    const part = size(await loadScenePart(buffer(sample3mf(unit))));
+    expect(near(part, raw.clone().multiplyScalar(metres)), unit).toBe(true);
+  }
+  const glb = buffer(sampleGlb());
+  expect(near(size(await loadScenePart(glb)), size(await loadModel("glb", glb)))).toBe(true);
 });
 
 test("parts keep their own transforms inside each copy", () => {
   const model = box();
   model.rotation.x = -Math.PI / 2; // as a 3MF stood up from Z-up
+  model.name = "copy-of-model";
   const group = placeScene([{ object: model, placements: [place({ matrix: translation(1, 0, 0) })] }]);
-  expect(group.children[0].children[0].rotation.x).toBeCloseTo(-Math.PI / 2);
+  const copy = group.children[0].getObjectByName("copy-of-model")!;
+  expect(copy.rotation.x).toBeCloseTo(-Math.PI / 2);
 });

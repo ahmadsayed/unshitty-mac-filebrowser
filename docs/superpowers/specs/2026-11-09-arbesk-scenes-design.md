@@ -1,6 +1,6 @@
 # Arbesk scenes in the Space preview — design
 
-Date: 2026-11-09 · Status: proposed, waiting for the human's review
+Date: 2026-11-09 · Status: approved; D3 and D5 settled after the final review
 
 ## Problem
 
@@ -62,10 +62,24 @@ matrices from the asset down to the node. A model alone (identity) stays as it
 looks now; the scene's layout is mirrored the way the Studio shows it. This
 is checked by eye against the Studio on the table scene before merging.
 
+Each model is the right way round, as its glTF says. The Studio today shows
+every model with a `post_processor.scale` mirrored: its `applyScale` replaces
+that root's (1, 1, −1) instead of multiplying it (ahmadsayed/arbesk#138). The
+human chose to keep the right handedness here rather than copy the mirror;
+the two agree once the Studio is fixed.
+
+As the Studio's `centerImportedAsset` does, the middle of each model's box
+sits on its place, and the node's scale applies after that move. A 3MF part
+is drawn in metres from the unit it declares, as the Studio's 3MF reader
+does, and a manifest saved before 2026-10-17 06:19:37 UTC has its 3MF
+placements in millimetres (the Studio's `normalizeLegacy3mfPlacements`).
+
 **D4. Links.** A `child_ref { collection { chainId, contractAddress,
 tokenId }, assetID }` is followed by asking the chain for that token's
 manifest (`tokenURI` on its `contractAddress`, else the deployment's
-contract), then that asset's manifest, as the Studio does. As in the Studio,
+contract), then that asset's manifest, as the Studio does; a link to `"self"`
+is in the opened asset's own collection. Each link is asked once per scene,
+and a scene stops at 2,000 copies. As in the Studio,
 at most 5 levels deep, and a manifest already being resolved on the way down
 is not entered again. A link to another chain, one that can't be resolved,
 or one too deep is left out: the rest of the scene still shows. A scene with

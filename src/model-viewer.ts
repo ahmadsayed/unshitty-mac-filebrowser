@@ -16,7 +16,8 @@ import { DRACO_GLTF_CONFIG, DRACOLoader } from "three/addons/loaders/DRACOLoader
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import type { ModelFormat } from "./models";
+import { unzipSync } from "three/addons/libs/fflate.module.js";
+import { isGlb, type ModelFormat } from "./models";
 import { sym } from "./icons";
 import { attachGestures } from "./model-gestures";
 
@@ -45,19 +46,46 @@ export interface ScenePlacement {
 export function placeScene(parts: { object: Object3D; placements: ScenePlacement[] }[]): Group {
   const scene = new Group();
   for (const { object, placements } of parts) {
-    for (const placement of placements) scene.add(placed(object, placement));
+    const middle = middleBox(object).getCenter(new Vector3());
+    for (const placement of placements) scene.add(placed(object, middle, placement));
   }
   return scene;
 }
 
-function placed(object: Object3D, placement: ScenePlacement): Group {
+/** As the Studio places a model: the holder carries the placement; inside
+ *  it, the model moves so the middle of its box sits on the place, then
+ *  takes the copy's own scale. */
+function placed(object: Object3D, middle: Vector3, placement: ScenePlacement): Group {
   const holder = new Group();
   new Matrix4().fromArray(placement.matrix).decompose(holder.position, holder.quaternion, holder.scale);
-  holder.scale.multiply(new Vector3(...placement.scale));
+  const root = new Group();
+  root.position.copy(middle).negate();
+  root.scale.set(...placement.scale);
   const copy = object.clone(true);
   tint(copy, placement);
-  holder.add(copy);
+  root.add(copy);
+  holder.add(root);
   return holder;
+}
+
+/** A 3MF's declared units in metres (3MF Core §3.4); unknown ones are its default, millimetres. */
+const UNIT_METRES: Record<string, number> = { micron: 1e-6, millimeter: 0.001, centimeter: 0.01, inch: 0.0254, foot: 0.3048, meter: 1 };
+
+/** The metres in one unit of the 3MF `bytes`, from its model's `unit`. */
+function threeMfMetres(bytes: ArrayBuffer): number {
+  const models = unzipSync(new Uint8Array(bytes), { filter: (file) => file.name.endsWith(".model") });
+  const model = models["3D/3dmodel.model"] ?? Object.values(models)[0];
+  const unit = model && /<model\b[^>]*\bunit="([^"]*)"/.exec(new TextDecoder().decode(model))?.[1];
+  return UNIT_METRES[unit ?? ""] ?? UNIT_METRES.millimeter;
+}
+
+/** A part of an Arbesk scene: a GLB (glTF is in metres), or a 3MF scaled
+ *  to metres as the Studio draws it, so parts of either kind share one scale. */
+export async function loadScenePart(bytes: ArrayBuffer): Promise<Object3D> {
+  if (isGlb(bytes)) return loadModel("glb", bytes);
+  const object = await loadModel("3mf", bytes);
+  object.scale.multiplyScalar(threeMfMetres(bytes));
+  return object;
 }
 
 /** Each mesh in its own colour from `mesh_colors`, else the copy's colour. */
@@ -187,11 +215,16 @@ export function shownBounds(object: Object3D): Box3 {
   return box;
 }
 
+/** What the model shows (`shownBounds`), or all of it when it shows no mesh. */
+function middleBox(object: Object3D): Box3 {
+  const shown = shownBounds(object);
+  return shown.isEmpty() ? new Box3().setFromObject(object) : shown;
+}
+
 /** Centre the model at the origin, inside a pivot, and say how big it is.
  *  It turns about the middle of what it shows. */
 function centred(object: Object3D): { pivot: Group; size: number } {
-  const shown = shownBounds(object);
-  const box = shown.isEmpty() ? new Box3().setFromObject(object) : shown;
+  const box = middleBox(object);
   object.position.sub(box.getCenter(new Vector3()));
   const pivot = new Group();
   pivot.add(object);

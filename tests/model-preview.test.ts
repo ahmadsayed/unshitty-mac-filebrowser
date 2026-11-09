@@ -265,6 +265,19 @@ test("Space shows an Arbesk scene: each part loaded once, a copy per placement",
   await key("Escape");
 });
 
+test("leaving a scene before its parts load asks for no more of them", async () => {
+  await goTo(ARBESK_UNTITLED);
+  const before = calls().count("arbesk_part");
+  await click(hit("Table.gltf"));
+  // Space, then Escape before anything has loaded.
+  const press = (k: string) => $("#view").dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+  press(" ");
+  press("Escape");
+  await settle(50);
+  expect(calls().count("arbesk_part") - before).toBeLessThan(2);
+  expect(viewer.showModel).not.toHaveBeenCalled();
+});
+
 test("a scene part that fails is left out; the rest shows", async () => {
   await goTo(ARBESK_UNTITLED);
   calls().failNext("arbesk_part", "Arbesk's storage could not be reached: Bad gateway");

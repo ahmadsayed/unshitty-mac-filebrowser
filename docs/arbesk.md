@@ -72,7 +72,9 @@ it, some of them links to other assets. Space shows the whole scene: each
 model is downloaded once however many times it appears, links are followed
 (up to 5 deep, never in a loop), and a model's colour and scale from the
 Studio are applied. A link to an asset on another chain is left out, as is
-any model that can't be built; the rest of the scene still shows.
+any model that can't be built; the rest of the scene still shows. A scene
+stops at 2,000 copies. Each model is shown the right way round; the Studio
+currently shows them mirrored (ahmadsayed/arbesk#138).
 
 A model stored in a way File Browser doesn't know yet says *This asset uses
 an Arbesk format File Browser can't read yet.* rather than showing a wrong

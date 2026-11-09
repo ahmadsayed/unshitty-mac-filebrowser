@@ -4461,7 +4461,7 @@ async function previewModelEntry(entry: Entry, seq: number, named: ModelFormat):
  */
 async function previewArbeskScene(entry: Entry, seq: number): Promise<void> {
   const viewer = await import("./model-viewer");
-  const { parts, tooLarge } = await loadArbeskParts(entry.path, viewer).catch(() => ({ parts: [], tooLarge: false }));
+  const { parts, tooLarge } = await loadArbeskParts(entry.path, seq, viewer).catch(() => ({ parts: [], tooLarge: false }));
   if (previewStale(seq)) return;
   if (!parts.length) {
     previewEmpty(entry, tooLarge ? "This file is too large to preview." : "No preview available.");
@@ -4476,17 +4476,23 @@ async function previewArbeskScene(entry: Entry, seq: number): Promise<void> {
   }
 }
 
-/** Each part of the scene at `path`, loaded once, at most MODEL_PREVIEW_LIMIT bytes in all. */
-async function loadArbeskParts(path: string, viewer: typeof import("./model-viewer")) {
+/** Each part of the scene at `path`, loaded once, at most MODEL_PREVIEW_LIMIT
+ *  bytes in all; none more once the preview has moved on. */
+async function loadArbeskParts(path: string, seq: number, viewer: typeof import("./model-viewer")) {
   const scene = await arbeskScene(path);
   const parts: { object: import("three").Object3D; placements: import("./model-viewer").ScenePlacement[] }[] = [];
   let left = MODEL_PREVIEW_LIMIT;
   let tooLarge = false;
   for (const part of scene.parts) {
+    if (previewStale(seq)) break;
+    if (left <= 0) {
+      tooLarge = true;
+      break;
+    }
     try {
-      const bytes = await arbeskPart(path, part.key, Math.max(left, 1));
+      const bytes = await arbeskPart(path, part.key, left);
       left -= bytes.byteLength;
-      parts.push({ object: await viewer.loadModel(isGlb(bytes) ? "glb" : "3mf", bytes), placements: part.placements });
+      parts.push({ object: await viewer.loadScenePart(bytes), placements: part.placements });
     } catch (err) {
       tooLarge ||= /too large/i.test(String(err));
     }
