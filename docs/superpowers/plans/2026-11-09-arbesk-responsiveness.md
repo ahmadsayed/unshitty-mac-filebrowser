@@ -7,7 +7,7 @@
 **Architecture:** Five read-path changes, all in `src-tauri/crates/arbesk`:
 
 1. `ipfs::FileCache` replaces the per-write directory rescan in `ManifestCache` and becomes the disk cache for Arbesk thumbnails.
-2. A listing trusts the source format the asset manifest already records (`scene.nodes[].source.format`, then `metadata.computed.format`) instead of downloading the source manifest only to read its extension. The write path (`claim`) keeps the source-derived name.
+2. A listing trusts the source format the asset manifest already records (`scene.nodes[].source.format`, then `metadata.computed.format`) instead of downloading the source manifest only to read its extension. The write path's Replace check uses the same name rule, so listing and writing agree.
 3. `chain::config_cached` keeps the deployment config for every reader, including writes (only the config, never `tokenURI`).
 4. `compose` fetches a model's parts in small parallel batches, on demand, after the source has been validated.
 5. Arbesk thumbnails are kept on disk by content-addressed CID and size.
@@ -24,16 +24,17 @@ A read-only plan judge reviewed the first version and found these issues; the pl
 
 - **No `tokenURI` cache.** A cache keyed without the contract could return another collection's manifest for a link, and a 30 s stale value would let `path_exists` skip the Replace prompt before a fresh write. Spec D6 says `tokenURI` is asked on every listing and Reload. Only the deployment config is cached, and it is safe for reads and writes.
 - **`source.format` comes first, not `metadata.computed.format`.** `computed` is not top-level and is derived from `source.format`; it is a second candidate only.
-- **The write path is untouched.** `write::claim` keeps deriving names from the source manifest, so a lying manifest format cannot change which asset a paste replaces.
-- **FileCache totals are process-wide per directory.** A per-instance total would let several Readers each grow the same cache. A damaged entry is removed before a re-fetch, so it is repaired rather than fetched forever.
-- **Compose validates before fetching.** Unknown formats, missing 3MF fields and climbing part paths are refused with zero part requests. Parts are prefetched only a batch ahead as the assembler asks for them, so peak memory stays near today's.
-- **Tests were made deterministic:** `File::set_modified` instead of sleeps, a barrier with a timeout for parallel fetches, and a warm cache before the paste invalidation test.
+- **The listing and the Replace decision share one name rule.** `write::claim` now uses the same manifest-first name as the row, so a manifest that names its format but whose source is missing cannot make Replace create a duplicate; a regression test covers it.
+- **Writes read the deployment config fresh.** `write`, `create` and `share` use `Reader::open_fresh`, so a redeploy inside the five-minute read cache cannot base a write on the old contract.
+- **FileCache totals are process-wide per directory, with one lock per directory.** A per-instance total would let several Readers each grow the same cache, and one global lock would block unrelated caches during a trim. A damaged entry is removed before a re-fetch, so it is repaired rather than fetched forever.
+- **Compose validates before fetching, with each assembler's rules.** The preview's strict glTF URI checks are separate from the export, which still tolerates what `embed` always tolerated. Parts are prefetched only two at a time as the assembler asks for them, so peak memory is at most two parts above the output.
+- **Tests were made deterministic:** `File::set_modified` instead of sleeps, a barrier with a timeout for parallel fetches, a fresh in-memory thumbnail map to prove the disk cache after a restart, and a claimed-format Replace test.
 
 ## Global Constraints
 
 - **No change to Arbesk's data.** No new manifests, no changed compression, no changed CIDs, no changed wording.
 - **No new runtime dependency.** Use `std::sync`, `HashMap`, the existing `in_parallel` and the existing cache/rename helpers.
-- **The config cache is safe for reads and writes; `tokenURI` is never cached.** `Reader::open` uses `chain::config_cached` for every caller, including `write.rs`, `create.rs` and `share.rs`. Collection CIDs stay live on every listing and Reload (spec D6).
+- **Reads may use the config cache; writes read it fresh.** `list`, thumbnails, scenes, versions and builds use `chain::config_cached`; `write.rs`, `create.rs` and `share.rs` use `Reader::open_fresh`. `tokenURI` is never cached.
 - **Only the extension fast path may trust a manifest's own format claim:** `gltf` → `.gltf`, `3mf` → `.3mf`. Any other value (`glb`, unknown) falls back to reading the source, so source-only GLB and unknown formats keep today's result.
 - **Thumbnails are content-addressed:** cache key = thumbnail CID + pixel size; bytes never change. Keep them in `cache_dir/arbesk-thumbnails`, outside `cache_dir/arbesk`, which `downloads::prune` treats as downloaded files and would send to the Trash.
 - **Cap every cache:** 64 MB for manifests, 64 MB for Arbesk thumbnails.
@@ -44,7 +45,7 @@ A read-only plan judge reviewed the first version and found these issues; the pl
 
 1. **A manifest's format claim agrees with the source.** A listing shows `Box.3mf` from the manifest's `3mf` claim without fetching the source; an older manifest without the claim still reads its source; a `glb` claim still falls back; a mixed/link scene keeps today's extension.
 2. **The manifest cache still enforces its cap** across several `FileCache` instances and repeated puts, without a rescan per write; a damaged entry is repaired.
-3. **The config cache is only a shortcut.** Two listings share one `/api/v1/config`; a write still reads the live collection CID; the lock is never held across the HTTP call.
+3. **The config cache is only a read shortcut.** Two listings share one `/api/v1/config`; a write opens fresh; the lock is never held across the HTTP call.
 4. **A part failure or a part over the build cap is still refused with the same wording**, and unknown formats / bad 3MF paths are refused before any part is fetched. Duplicate CIDs are charged per reference.
 5. **A thumbnail survives a fake gateway that then stops answering**, a damaged cache entry falls back and is repaired, and a cancel still returns nothing even with a warm cache.
 
@@ -89,7 +90,7 @@ A read-only plan judge reviewed the first version and found these issues; the pl
 - Produces (private to `service.rs`):
   - `fn listed_format(manifest: &Value) -> Option<Format>` — first the first source node's `source.format`, then `metadata.computed.format`; only `"gltf"` → `Format::Gltf` and `"3mf"` → `Format::ThreeMf`; anything else `None`.
   - `Reader::asset_entry`/`name_of` uses `listed_format(manifest)`; only when it is `None` does it read `source_cid`'s manifest as today.
-  - `Reader::listed_name` (used by `write::claim`) is **not** changed: it keeps reading the source manifest, so a paste's Replace decision is source-derived as today.
+  - `Reader::listed_name` (used by `write::claim`) uses the same `name_of`, so a paste's Replace decision matches the row the user sees.
 - A live link (`is_child_ref`) still wins first and shows `.gltf`; a mixed scene (a source plus a link, e.g. `bafyTable`) also shows `.gltf`, unchanged.
 - Consequence to state in the PR: an asset whose manifest names its format now appears even when its source manifest is missing or temporarily unreachable (today a 404/410 source drops the row and a 502 source fails the listing). Build/export report the source error when the row is opened. This is intentional: one broken asset no longer hides the collection.
 - Test helper: add `testing::put_asset_with_format(cid, name, source, format)`; do not change the shared `world()` fixtures, so existing request-count tests stay stable.
@@ -103,14 +104,14 @@ A read-only plan judge reviewed the first version and found these issues; the pl
   - `the_listed_extension_is_the_one_export_builds` — for the glTF and 3MF fixtures, the fast-path extension equals the one `format_of` gives the source.
   - Keep the other listing tests green.
 - [ ] **Step 2: Run** `cargo test -p arbesk service::` — Expected: FAIL on the new tests.
-- [ ] **Step 3: Implement** `listed_format` and use it only in the listing name path.
+- [ ] **Step 3: Implement** `listed_format` and use it in `name_of`, which both the listing and `write::claim` use.
 - [ ] **Step 4: Run** `cargo test -p arbesk service::` — Expected: PASS.
 - [ ] **Step 5: Commit** `perf: list Arbesk assets without fetching their source manifest`.
 
-### Task 3: Keep the deployment config for reads and writes
+### Task 3: Keep the deployment config for reads
 
 **Files:**
-- Modify: `src-tauri/crates/arbesk/src/chain.rs` (the cached read), `service.rs` (`Reader::open` uses it)
+- Modify: `src-tauri/crates/arbesk/src/chain.rs` (the cached read), `service.rs` (`Reader::open` uses it, `Reader::open_fresh` for writes)
 - Test: `chain.rs`, `service.rs`.
 
 **Interfaces:**
@@ -118,17 +119,17 @@ A read-only plan judge reviewed the first version and found these issues; the pl
   - `pub fn config_cached(http: &dyn Http, site: &Site, cache_dir: &Path) -> Result<ChainConfig, String>`.
   - Config entries live 5 minutes (`Duration::from_secs(300)`), keyed by `cache_dir` plus `origin + chain_id` (so unit tests with fresh temp folders never share an entry); a miss or an expired entry calls `config`. Only `Ok` answers are kept.
   - A private `fn cached_config(http, site, cache_dir, ttl)` backs it, so a test can pass `Duration::ZERO` without sleeping.
-  - The lock is dropped before the HTTP call; duplicate concurrent misses are harmless. The map is swept of expired entries when it grows past 64.
-- `service::Reader::open` calls `chain::config_cached(http, site, cache_dir)`; every reader, including the write, create and share paths, uses the cached config. There is no `open_fresh` and no signature change.
+  - The lock is dropped before the HTTP call; duplicate concurrent misses are harmless. The map is swept of expired entries and evicts the oldest past 64.
+- `service::Reader::open` calls `chain::config_cached`; `Reader::open_fresh` calls `chain::config` and is used by `write.rs`, `create.rs` and `share.rs`, so a redeploy is noticed by the next write.
 - `tokenURI` is **not** cached. Spec D6's “asked again on every listing and Reload” stays true, and Replace's `path_exists` keeps seeing the live collection.
 
 - [ ] **Step 1: Write the failing tests:**
   - `chain.rs`: `a_deployments_config_is_read_once_per_cache_folder` (two `cached_config` calls with a 60 s TTL, one `GET /api/v1/config`; a `Duration::ZERO` call asks again); `another_cache_folder_does_not_share_the_config`.
-  - `service.rs`: `a_listing_uses_the_cached_config` — list Shapes twice with one cache folder; one `/api/v1/config` request (today: two).
+  - `service.rs`: `a_listing_uses_the_cached_config` — list Shapes twice with one cache folder; one `/api/v1/config` request (today: two); `a_write_reader_reads_the_config_again` — two `Reader::open`s share one, `Reader::open_fresh` adds another.
 - [ ] **Step 2: Run** `cargo test -p arbesk` — Expected: FAIL on the new tests.
-- [ ] **Step 3: Implement** `config_cached` and switch `Reader::open` to it.
+- [ ] **Step 3: Implement** `config_cached`, `Reader::open_fresh`, and switch the writes to it.
 - [ ] **Step 4: Run** `cargo test -p arbesk` — Expected: PASS (all crate tests).
-- [ ] **Step 5: Commit** `perf: keep the Arbesk deployment config for reads and writes`.
+- [ ] **Step 5: Commit** `perf: keep the Arbesk deployment config for reads`.
 
 ### Task 4: Fetch a model's parts a batch at a time
 
@@ -138,13 +139,13 @@ A read-only plan judge reviewed the first version and found these issues; the pl
 
 **Interfaces:**
 - Produces (private):
-  - `fn part_cids(source: &Value) -> Vec<(String, usize)>` — unique CIDs and how many times the source references each: glTF `buffers[].uri` / `images[].uri` with `ipfs://`, 3MF `parts.*.cid`. Data URIs are not included.
-  - `fn validate_source(source: &Value) -> Result<Format, String>` — `format_of` first; for glTF, every buffer/image URI must be `ipfs://` or a `data:…;base64,…` URI; for 3MF, the required `contentTypes`/`rootRels`/`model` strings and every `modelPath`/part path are checked with `part_path` before any network call. This keeps today's error order.
+  - `fn part_cids(source: &Value, format: Format) -> Vec<(String, usize)>` — unique CIDs in first-seen order and how many times the source references each: glTF `buffers[].uri` / `images[].uri` with `ipfs://`, or 3MF `parts.*.cid`. Data URIs are not included.
+  - `fn validate_source(source: &Value, preview: bool) -> Result<Format, String>` — `format_of` first; for a preview, every glTF buffer/image URI must be `ipfs://` or a `data:…;base64,…` URI; for 3MF, both paths check the required `contentTypes`/`rootRels`/`model` strings and every `modelPath`/part path with `part_path` before any network call. The export keeps `embed`'s tolerance for a buffer without a URI and a non-base64 `data:` URI.
   - `Parts` keeps `remaining: RefCell<HashMap<String, usize>>` (references left), `queue: RefCell<VecDeque<String>>` (unique CIDs in source order), `fetched: RefCell<HashMap<String, Vec<u8>>>` and `left: Cell<u64>`.
-  - `Parts::prefetch(&self, source: &Value)` fills `remaining`/`queue` after validation; it fetches nothing.
+  - `Parts::prefetch(&self, source: &Value, format: Format)` fills `remaining`/`queue` after validation; it fetches nothing.
   - `Parts::fetch(&self, cid)`:
     - returns a prefetched part, charging no budget again; it removes the bytes at the last reference and clones only while an earlier reference still needs them;
-    - when the CID is not fetched, takes it plus up to `PARALLEL_PARTS - 1` (3) next queued CIDs and fetches them with `in_parallel` (limit 4); charges `len * references` per CID; refuses with `TOO_LARGE_TO_BUILD` once the batch takes the budget below zero. This bounds over-fetch to one batch and lets the bytes be released as the assembly consumes them.
+    - when the CID is not fetched, takes it plus up to `PARALLEL_PARTS - 1` next queued CIDs and fetches them with `in_parallel` (two at a time); charges `len * references` per CID; refuses with `TOO_LARGE_TO_BUILD` once the batch takes the budget below zero. Two parts at once bound the bytes held to two parts; the cap is checked after the batch.
     - falls back to a single on-demand fetch for a CID the source did not declare, charging it once (so a caller can never silently skip a part).
 - `compose_within` and `compose_preview_within` call `validate_source` first, then `prefetch`, then the existing assemblers. The output bytes must be identical to today's.
 - `3MF` assembly keeps its existing path checks; validation moved ahead of the part loop, not removed.
@@ -153,7 +154,8 @@ A read-only plan judge reviewed the first version and found these issues; the pl
   - `parts_are_fetched_in_parallel` — a fake gateway with two parts that waits on a `Condvar` (with a 1 s timeout) for a second request while recording the peak; `compose_preview` sees peak `2` and both buffers in the GLB. A sequential implementation fails after the timeout instead of hanging.
   - `an_unknown_format_is_refused_without_fetching_parts` — `bafySrcOdd` / an unknown marker; the error is `UNKNOWN_FORMAT` and the fake logged zero part requests.
   - `a_bad_3mf_path_is_refused_without_fetching_parts` — a climbing `modelPath` or part path; `UNKNOWN_FORMAT`, zero requests.
-  - `a_part_that_cannot_be_fetched_is_still_the_same_error` — one missing part; the existing storage error and no partial GLB.
+  - `a_missing_part_is_still_the_storage_error` — one missing part; the existing storage error and no partial GLB.
+  - `an_export_leaves_what_embed_leaves` — a buffer without a URI and a non-base64 `data:` image still export, as before; a preview of the missing buffer is refused.
   - `a_build_over_its_cap_is_refused_after_one_batch` — eight parts, a cap that fits two; the error is `TOO_LARGE_TO_BUILD`, and at most `PARALLEL_PARTS` part requests were made.
   - `a_duplicate_part_is_charged_for_every_reference` — a cap that fits one copy but not two; `TOO_LARGE_TO_BUILD`.
   - The existing compose cases (`gltf_matches_arbesk`, `a_gltf_previews_as_a_glb_holding_what_arbesk_builds`, `a_3mf_previews_as_itself`, the buffer/image tests) stay equivalent.
@@ -193,7 +195,7 @@ A read-only plan judge reviewed the first version and found these issues; the pl
 - Modify: `docs/architecture.md` only if its Arbesk flow describes the reads this changes.
 - Add a short `## Performance` note to `docs/arbesk.md`? Only if it helps users understand why a first visit is slower; do not promise numbers.
 
-- [ ] **Step 1: Update the docs** with the cache lifetimes (config 5 min, manifests/thumbnails 64 MB) and the “config may be cached, `tokenURI` is never cached” rule. Say plainly that the first visit to a collection still fetches one manifest per asset and that a copy-in still waits for the relay.
+- [ ] **Step 1: Update the docs** with the cache lifetimes (config 5 min, manifests/thumbnails 64 MB) and the “reads keep the config, writes read it fresh, `tokenURI` is never cached” rule. Say plainly that the first visit to a collection still fetches one manifest per asset and that a copy-in still waits for the relay.
 - [ ] **Step 2: Run** `npx tsc --noEmit`, `npm run build`, `npm test`.
 - [ ] **Step 3: Run** `cd src-tauri && cargo test`.
 - [ ] **Step 4: Run** `npm run crap` (the pre-commit hook does the language-specific version on commit).

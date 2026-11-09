@@ -119,7 +119,19 @@ fn cached_config(
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     if cached.len() >= CACHED_CONFIGS {
-        cached.retain(|_, entry| entry.at.elapsed() < ttl);
+        // The caller's TTL is only for this lookup; expired entries use the
+        // real life, so a test's zero TTL cannot purge another cache folder.
+        cached.retain(|_, entry| entry.at.elapsed() < CONFIG_TTL);
+        while cached.len() >= CACHED_CONFIGS {
+            let Some(oldest) = cached
+                .iter()
+                .min_by_key(|(_, entry)| entry.at)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            cached.remove(&oldest);
+        }
     }
     cached.insert(
         key,

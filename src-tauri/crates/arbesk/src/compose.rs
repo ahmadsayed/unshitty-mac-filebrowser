@@ -17,8 +17,9 @@ use crate::ipfs::{Gateway, in_parallel};
 pub const UNKNOWN_FORMAT: &str = "This asset uses an Arbesk format File Browser can't read yet.";
 
 const IPFS: &str = "ipfs://";
-/// How many parts one batch fetches at once.
-const PARALLEL_PARTS: usize = 4;
+/// How many parts one batch fetches at once. Two keeps the latency win while
+/// bounding the bytes held before the budget is checked to two parts.
+const PARALLEL_PARTS: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -91,9 +92,9 @@ pub const BUILD_CAP: u64 = 512 * 1024 * 1024;
 
 /// `compose`, refusing once the parts fetched add up to more than `cap` bytes.
 pub fn compose_within(gateway: &Gateway, source: &Value, cap: u64) -> Result<Vec<u8>, String> {
-    let format = validate_source(source)?;
+    let format = validate_source(source, false)?;
     let parts = Parts::new(gateway, cap);
-    parts.prefetch(source);
+    parts.prefetch(source, format);
     match format {
         Format::Gltf => compose_gltf(&parts, source),
         Format::ThreeMf => compose_3mf(&parts, source),
@@ -113,9 +114,9 @@ pub fn compose_preview_within(
     source: &Value,
     cap: u64,
 ) -> Result<Vec<u8>, String> {
-    let format = validate_source(source)?;
+    let format = validate_source(source, true)?;
     let parts = Parts::new(gateway, cap);
-    parts.prefetch(source);
+    parts.prefetch(source, format);
     match format {
         Format::Gltf => glb::compose(&parts, source),
         Format::ThreeMf => compose_3mf(&parts, source),
@@ -124,28 +125,35 @@ pub fn compose_preview_within(
 
 /// Refuse everything that can be known before a part is fetched, in the order
 /// the assemblers used to check it: the format, then every URI/path and the
-/// 3MF fields the package needs.
-fn validate_source(source: &Value) -> Result<Format, String> {
+/// 3MF fields the package needs. `preview` also checks the glTF URIs the
+/// preview reads; the export assembler leaves a buffer without a URI and a
+/// non-base64 `data:` URI alone, as it always has.
+fn validate_source(source: &Value, preview: bool) -> Result<Format, String> {
     let format = format_of(source)?;
     match format {
-        Format::Gltf => {
-            for buffer in array(source, "buffers") {
-                let uri = buffer.get("uri").and_then(Value::as_str);
-                if !is_resource_uri(uri) {
-                    return Err(UNKNOWN_FORMAT.into());
-                }
-            }
-            for image in array(source, "images") {
-                if let Some(uri) = image.get("uri").and_then(Value::as_str)
-                    && !is_resource_uri(Some(uri))
-                {
-                    return Err(UNKNOWN_FORMAT.into());
-                }
-            }
-        }
+        Format::Gltf if preview => validate_gltf(source)?,
+        Format::Gltf => {}
         Format::ThreeMf => validate_3mf(source)?,
     }
     Ok(format)
+}
+
+/// The glTF URIs the preview's `resource_bytes`/`place_images` read.
+fn validate_gltf(source: &Value) -> Result<(), String> {
+    for buffer in array(source, "buffers") {
+        let uri = buffer.get("uri").and_then(Value::as_str);
+        if !is_resource_uri(uri) {
+            return Err(UNKNOWN_FORMAT.into());
+        }
+    }
+    for image in array(source, "images") {
+        if let Some(uri) = image.get("uri").and_then(Value::as_str)
+            && !is_resource_uri(Some(uri))
+        {
+            return Err(UNKNOWN_FORMAT.into());
+        }
+    }
+    Ok(())
 }
 
 fn array<'a>(value: &'a Value, key: &str) -> impl Iterator<Item = &'a Map<String, Value>> {
@@ -222,10 +230,10 @@ impl<'g> Parts<'g> {
     }
 
     /// Remember what the source needs; fetch nothing yet.
-    fn prefetch(&self, source: &Value) {
+    fn prefetch(&self, source: &Value, format: Format) {
         let mut remaining = HashMap::new();
         let mut queue = VecDeque::new();
-        for (cid, references) in part_cids(source) {
+        for (cid, references) in part_cids(source, format) {
             remaining.insert(cid.clone(), references);
             queue.push_back(cid);
         }
@@ -294,34 +302,49 @@ impl<'g> Parts<'g> {
     }
 }
 
-/// Every part the source references, with how many references: glTF buffers
-/// and images, 3MF package parts. Data URIs are in the source itself.
-fn part_cids(source: &Value) -> Vec<(String, usize)> {
+/// Every part the source references, in first-seen order, with how many
+/// references: glTF buffers and images, or 3MF package parts. Data URIs are in
+/// the source itself.
+fn part_cids(source: &Value, format: Format) -> Vec<(String, usize)> {
     let mut counts: HashMap<String, usize> = HashMap::new();
-    let mut add = |cid: &str| *counts.entry(cid.to_string()).or_default() += 1;
-    for key in ["buffers", "images"] {
-        for item in array(source, key) {
-            if let Some(cid) = item
-                .get("uri")
-                .and_then(Value::as_str)
-                .and_then(|uri| uri.strip_prefix(IPFS))
+    let mut order: Vec<(String, usize)> = Vec::new();
+    let mut add = |cid: &str| {
+        if let Some(index) = counts.get(cid).copied() {
+            order[index].1 += 1;
+        } else {
+            counts.insert(cid.to_string(), order.len());
+            order.push((cid.to_string(), 1));
+        }
+    };
+    match format {
+        Format::Gltf => {
+            for key in ["buffers", "images"] {
+                for item in array(source, key) {
+                    if let Some(cid) = item
+                        .get("uri")
+                        .and_then(Value::as_str)
+                        .and_then(|uri| uri.strip_prefix(IPFS))
+                    {
+                        add(cid);
+                    }
+                }
+            }
+        }
+        Format::ThreeMf => {
+            for part in source
+                .get("parts")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .map(|(_, part)| part)
             {
-                add(cid);
+                if let Some(cid) = part.get("cid").and_then(Value::as_str) {
+                    add(cid);
+                }
             }
         }
     }
-    for part in source
-        .get("parts")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-        .map(|(_, part)| part)
-    {
-        if let Some(cid) = part.get("cid").and_then(Value::as_str) {
-            add(cid);
-        }
-    }
-    counts.into_iter().collect()
+    order
 }
 
 
@@ -1024,6 +1047,33 @@ mod tests {
         );
         assert!(bin.is_empty());
         assert_eq!(json, json!({ "asset": { "version": "2.0" } }));
+    }
+
+    #[test]
+    fn an_export_leaves_what_embed_leaves() {
+        let http = FakeHttp::new(|_| panic!("nothing is fetched"));
+        let source = json!({
+            "buffers": [{ "byteLength": 4 }],
+            "images": [{ "uri": "data:image/png,plain" }]
+        });
+        let cache = tempfile::tempdir().unwrap();
+        let gateway = Gateway::new(
+            &http,
+            "https://gw.test/ipfs",
+            ManifestCache::new(cache.path().into(), 1 << 20),
+        );
+        let out: Value = serde_json::from_slice(&compose(&gateway, &source).unwrap()).unwrap();
+        assert!(out["buffers"][0].get("uri").is_none());
+        assert_eq!(out["images"][0]["uri"], "data:image/png,plain");
+        assert!(http.requests().is_empty());
+    }
+
+    #[test]
+    fn a_preview_refuses_the_same_missing_uri() {
+        let http = FakeHttp::new(|_| panic!("nothing is fetched before validation"));
+        let source = json!({ "buffers": [{ "byteLength": 4 }] });
+        assert_eq!(preview_of(&http, source).unwrap_err(), UNKNOWN_FORMAT);
+        assert!(http.requests().is_empty());
     }
 
     #[test]

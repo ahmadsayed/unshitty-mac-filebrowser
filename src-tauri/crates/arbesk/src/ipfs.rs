@@ -4,11 +4,11 @@
 //! either. Manifests are content-addressed and never change, so their JSON
 //! is kept on disk by CID ([`ManifestCache`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -73,14 +73,29 @@ const PART_AGE: Duration = Duration::from_secs(600);
 static NEXT_PART: AtomicU64 = AtomicU64::new(0);
 
 /// Every cache directory's size, so several instances on one folder share one
-/// count instead of each growing it to `cap`.
-fn totals() -> &'static Mutex<HashMap<PathBuf, u64>> {
-    static TOTALS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
+/// count instead of each growing it to `cap`. Each directory has its own lock,
+/// so a trim of one never blocks another.
+type Totals = Mutex<HashMap<PathBuf, Arc<Mutex<Option<u64>>>>>;
+
+fn totals() -> &'static Totals {
+    static TOTALS: OnceLock<Totals> = OnceLock::new();
     TOTALS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn lock_totals() -> std::sync::MutexGuard<'static, HashMap<PathBuf, u64>> {
-    totals().lock().unwrap_or_else(|error| error.into_inner())
+fn total_for(dir: &Path) -> Arc<Mutex<Option<u64>>> {
+    totals()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .entry(dir.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(None)))
+        .clone()
+}
+
+fn forget_total(dir: &Path) {
+    totals()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(dir);
 }
 
 /// A cache of whole files by key, at most `cap` bytes. Writes are staged under
@@ -114,14 +129,23 @@ impl FileCache {
         let metadata = std::fs::metadata(&path).ok()?;
         // A corrupt entry can claim any size; don't read it into memory.
         if !metadata.is_file() {
+            forget_total(&self.dir);
             return None;
         }
         if metadata.len() > self.cap {
             let _ = std::fs::remove_file(&path);
-            lock_totals().remove(&self.dir);
+            forget_total(&self.dir);
             return None;
         }
-        std::fs::read(path).ok()
+        match std::fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(_) => {
+                // A damaged entry is removed so the next fetch can replace it.
+                let _ = std::fs::remove_file(&path);
+                forget_total(&self.dir);
+                None
+            }
+        }
     }
 
     /// Keep `bytes` for `key`, best effort. An entry already there wins; the
@@ -133,6 +157,7 @@ impl FileCache {
         if std::fs::create_dir_all(&self.dir).is_err() {
             return;
         }
+        self.sweep_parts_once();
         let part = self.dir.join(format!(
             ".{key}.{}.{}.part",
             std::process::id(),
@@ -156,19 +181,40 @@ impl FileCache {
         }
         let _ = std::fs::remove_file(self.dir.join(key));
         // The next write scans the folder once and starts from the truth.
-        lock_totals().remove(&self.dir);
+        forget_total(&self.dir);
+    }
+
+    /// Remove a crashed writer's `.part` once per directory per process.
+    fn sweep_parts_once(&self) {
+        static SWEPT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+        let first = {
+            let mut swept = SWEPT
+                .get_or_init(|| Mutex::new(HashSet::new()))
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            swept.insert(self.dir.clone())
+        };
+        if first {
+            let _ = trim(&self.dir, u64::MAX, "");
+        }
     }
 
     /// Add `bytes` to the folder's count, trimming when it no longer fits.
     fn charge(&self, kept: &str, bytes: u64) {
-        let mut totals = lock_totals();
-        let total = totals
-            .entry(self.dir.clone())
-            .or_insert_with(|| dir_total(&self.dir));
-        *total = total.saturating_add(bytes);
-        if *total > self.cap {
-            *total = trim(&self.dir, self.cap, kept);
-        }
+        let slot = total_for(&self.dir);
+        let mut total = slot
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // A first scan already counts the file just renamed in.
+        let current = match *total {
+            Some(total) => total.saturating_add(bytes),
+            None => dir_total(&self.dir),
+        };
+        *total = Some(if current > self.cap {
+            trim(&self.dir, self.cap, kept)
+        } else {
+            current
+        });
     }
 }
 
@@ -503,6 +549,16 @@ mod tests {
             assert_eq!(cache.get(key), None, "{key}");
             assert!(!dir.path().join(key).is_file(), "{key}");
         }
+    }
+
+    #[test]
+    fn an_oversized_cache_entry_is_removed_before_reading_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FileCache::new(dir.path().to_path_buf(), 4);
+        let path = dir.path().join("huge");
+        std::fs::write(&path, b"too many bytes").unwrap();
+        assert_eq!(cache.get("huge"), None);
+        assert!(!path.exists());
     }
 
     #[test]

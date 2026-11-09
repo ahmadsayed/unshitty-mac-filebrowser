@@ -92,10 +92,11 @@ tinted copy gets its own materials, so the other copies of a part keep
 theirs.
 
 **D6. Listing.** An asset whose manifest has more than one node, or a link,
-is listed with the extension of its first source's format (`.gltf` / `.3mf`)
-or `.gltf` when it has only links, so Space opens the model preview. Today
-such assets list as `.gltf` (a link) or without an extension. The asset's
-thumbnail is unchanged.
+is listed with the extension of its first source's recorded format
+(`.gltf` / `.3mf`) or `.gltf` when it has only links, so Space opens the
+model preview. A manifest that records none is read from its source, as
+before. Today such assets list as `.gltf` (a link) or without an extension.
+The asset's thumbnail is unchanged.
 
 **D7. The preview.** For an Arbesk asset, `previewModelEntry` asks
 `arbesk_scene`, then each part's bytes (`arbesk_part`), loads each part once

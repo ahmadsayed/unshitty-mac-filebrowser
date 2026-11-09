@@ -112,11 +112,28 @@ pub fn thumbnail(
 }
 
 /// Whether `bytes` is a PNG thumbnail no larger than `size` pixels: enough to
-/// trust a cached file, and cheap for a picture this size.
+/// trust a cached file. The header is read before any decode, so a corrupt
+/// entry cannot make the app allocate a huge image.
 fn valid_png(bytes: &[u8], size: u32) -> bool {
-    image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
-        .map(|image| image.width() <= size && image.height() <= size)
-        .unwrap_or(false)
+    use image::ImageDecoder;
+    let Ok(reader) = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()
+    else {
+        return false;
+    };
+    if reader.format() != Some(image::ImageFormat::Png) {
+        return false;
+    }
+    let Ok(decoder) = reader.into_decoder() else {
+        return false;
+    };
+    let (width, height) = decoder.dimensions();
+    if width > size
+        || height > size
+        || u64::from(width) * u64::from(height) > crate::image::MAX_PIXELS
+    {
+        return false;
+    }
+    image::load_from_memory_with_format(bytes, image::ImageFormat::Png).is_ok()
 }
 
 /// The thumbnail of an asset no listing has shown, found through its collection.
@@ -569,14 +586,34 @@ impl<'a> Reader<'a> {
         cache_dir: &Path,
     ) -> Result<Self, String> {
         let chain = chain::config_cached(http, site, cache_dir)?;
+        Ok(Self::with_chain(http, site, chain, cache_dir))
+    }
+
+    /// A reader whose chain settings are read again: writes, creates and
+    /// shares must not build on a contract a redeploy has replaced.
+    pub(crate) fn open_fresh(
+        http: &'a dyn Http,
+        site: &'a Site,
+        cache_dir: &Path,
+    ) -> Result<Self, String> {
+        let chain = chain::config(http, site)?;
+        Ok(Self::with_chain(http, site, chain, cache_dir))
+    }
+
+    fn with_chain(
+        http: &'a dyn Http,
+        site: &'a Site,
+        chain: ChainConfig,
+        cache_dir: &Path,
+    ) -> Self {
         let gateway = Gateway::new(http, &chain.gateway, manifest_cache(cache_dir));
-        Ok(Self {
+        Self {
             http,
             site,
             chain,
             gateway,
             own_token: None,
-        })
+        }
     }
 
     fn collection_manifest(&self, token_id: &str) -> Result<Value, String> {
@@ -636,28 +673,10 @@ impl<'a> Reader<'a> {
         self.gateway.json(cid)
     }
 
-    /// An asset's listed name from its source manifest, as writes have always
-    /// resolved it. Used for the Replace decision in `write::claim`, never for
-    /// a listing row.
+    /// An asset's listed name, the one a paste compares against.
     fn listed_name(&self, asset_id: &str, cid: &str) -> Result<String, String> {
         let manifest = self.gateway.json(cid)?;
-        self.source_name_of(&manifest, asset_id, cid)
-    }
-
-    fn source_name_of(
-        &self,
-        manifest: &Value,
-        asset_id: &str,
-        cid: &str,
-    ) -> Result<String, String> {
-        let ext = if is_child_ref(manifest) {
-            Some("gltf")
-        } else {
-            format_of(&self.gateway.json(&source_cid(manifest, cid))?)
-                .ok()
-                .map(|format| format.ext())
-        };
-        Ok(name_with(manifest, asset_id, ext))
+        self.name_of(&manifest, asset_id, cid)
     }
 
     fn name_of(&self, manifest: &Value, asset_id: &str, cid: &str) -> Result<String, String> {
@@ -725,8 +744,7 @@ impl<'a> Reader<'a> {
         }))
     }
 
-    /// An asset's row, under its listed name ([`Reader::listed_name`]);
-    /// with it, where its thumbnail is.
+    /// An asset's row, under its listed name; with it, where its thumbnail is.
     fn asset_entry(
         &self,
         collection: &str,
@@ -881,7 +899,7 @@ mod tests {
     use super::*;
     use crate::chain::CHAIN_UNREACHABLE;
     use crate::compose::UNKNOWN_FORMAT;
-    use crate::http::fake::{FakeHttp, not_found};
+    use crate::http::fake::FakeHttp;
     use crate::ipfs::STORAGE_UNREACHABLE;
     use crate::location::{asset_path, collection_path};
     use crate::testing::{
@@ -1036,6 +1054,24 @@ mod tests {
     }
 
     #[test]
+    fn a_computed_format_is_a_fallback() {
+        assert_eq!(
+            listed_format(&json!({
+                "metadata": { "computed": { "format": "3mf" } }
+            })),
+            Some(Format::ThreeMf)
+        );
+        // A source node's own claim wins over computed metadata.
+        assert_eq!(
+            listed_format(&json!({
+                "scene": { "nodes": [{ "source": { "format": "gltf" } }] },
+                "metadata": { "computed": { "format": "3mf" } }
+            })),
+            Some(Format::Gltf)
+        );
+    }
+
+    #[test]
     fn the_listed_extension_is_the_one_export_builds() {
         let world = world();
         let gltf = listed_format(&json!({
@@ -1144,6 +1180,22 @@ mod tests {
             .filter(|request| request.url.ends_with("/api/v1/config"))
             .count();
         assert_eq!(configs, 1);
+    }
+
+    #[test]
+    fn a_write_reader_reads_the_config_again() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        drop(Reader::open(&http, &site(), cache.path()).unwrap());
+        drop(Reader::open(&http, &site(), cache.path()).unwrap());
+        // The write paths open fresh: a redeploy is noticed at once.
+        drop(Reader::open_fresh(&http, &site(), cache.path()).unwrap());
+        let configs = http
+            .requests()
+            .into_iter()
+            .filter(|request| request.url.ends_with("/api/v1/config"))
+            .count();
+        assert_eq!(configs, 2);
     }
 
     #[test]
@@ -1916,19 +1968,26 @@ mod tests {
         .expect("Box.gltf was saved with a thumbnail");
         let cached = cache.path().join("arbesk-thumbnails").join("bafyThumb-128.png");
         assert!(cached.is_file(), "{cached:?}");
-        let gone = FakeHttp::new(|_| Err(not_found()));
+        // A fresh in-memory map, as after a restart: the disk entry is the
+        // only reason no picture is fetched.
+        let fresh = Thumbnails::new(cache.path().to_path_buf());
+        let before = http.requests().len();
         let second = thumbnail(
-            &gone,
+            &http,
             &site(),
             &box_gltf(),
             128,
             cache.path(),
-            &thumbs,
+            &fresh,
             &|| false,
         )
         .expect("from disk");
         assert_eq!(second, first);
-        assert!(gone.requests().is_empty());
+        assert!(
+            !asked_since(&http, before)
+                .iter()
+                .any(|url| url.ends_with("bafyThumb"))
+        );
     }
 
     #[test]
@@ -1987,6 +2046,8 @@ mod tests {
             .is_some()
         );
         let before = http.requests().len();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let stop = || calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 1;
         assert!(
             thumbnail(
                 &http,
@@ -1995,7 +2056,7 @@ mod tests {
                 128,
                 cache.path(),
                 &thumbs,
-                &|| true,
+                &stop,
             )
             .is_none()
         );

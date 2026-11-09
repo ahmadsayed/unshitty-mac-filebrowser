@@ -15,7 +15,7 @@ static DECODE_LOCK: Mutex<()> = Mutex::new(());
 static DECODES_WAITING: AtomicUsize = AtomicUsize::new(0);
 
 /// The most pixels worth decoding for one thumbnail.
-const MAX_PIXELS: u64 = 80_000_000;
+pub(crate) const MAX_PIXELS: u64 = 80_000_000;
 
 fn one_decode_at_a_time<T>(decode: impl FnOnce() -> T) -> T {
     DECODES_WAITING.fetch_add(1, Ordering::SeqCst);
