@@ -2154,13 +2154,6 @@ fn restart_app(app: tauri::AppHandle, registry: tauri::State<progress::Registry>
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let own_env = platform::webview_env_to_set(|k| std::env::var_os(k).is_some());
-    for (key, value) in &own_env {
-        // SAFETY: still single-threaded; Tauri and the webview start below.
-        unsafe { std::env::set_var(key, value) };
-    }
-    // Ours, for our webview only: programs we start don't inherit them.
-    platform::note_own_env(own_env.iter().map(|(key, _)| *key).collect());
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_drag::init())

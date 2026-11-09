@@ -60,25 +60,10 @@ pub fn wait_or_kill_unless(
 /// ("undefined symbol"), and would hand the same libraries to the app it
 /// opens. The original values aren't kept, so the mount's entries are taken
 /// out of each list, and variables left empty are unset.
-///
-/// `own` names the variables this app set for its own webview (see
-/// `note_own_env`); they are unset too, so they don't reach other programs.
 fn host_env_changes(
     vars: impl IntoIterator<Item = (String, String)>,
-    own: &[&str],
 ) -> Vec<(String, Option<String>)> {
     let vars: Vec<(String, String)> = vars.into_iter().collect();
-    let mut changes: Vec<(String, Option<String>)> = own
-        .iter()
-        .filter(|name| vars.iter().any(|(key, _)| key == *name))
-        .map(|name| (name.to_string(), None))
-        .collect();
-    changes.extend(appimage_env_changes(&vars));
-    changes
-}
-
-/// The AppImage half of `host_env_changes`.
-fn appimage_env_changes(vars: &[(String, String)]) -> Vec<(String, Option<String>)> {
     let appdir = vars
         .iter()
         .find(|(key, _)| key == "APPDIR")
@@ -89,7 +74,7 @@ fn appimage_env_changes(vars: &[(String, String)]) -> Vec<(String, Option<String
     };
     let inside = |entry: &str| entry == appdir || entry.starts_with(&format!("{appdir}/"));
     let mut changes = Vec::new();
-    for (key, value) in vars {
+    for (key, value) in &vars {
         if matches!(key.as_str(), "APPDIR" | "APPIMAGE" | "ARGV0") {
             changes.push((key.clone(), None));
             continue;
@@ -112,23 +97,12 @@ fn apply_env_changes(command: &mut std::process::Command, changes: Vec<(String, 
     }
 }
 
-/// The `WEBVIEW_ENV` variables this app set at startup, as opposed to ones
-/// the user exported (see `note_own_env`).
-static OWN_ENV: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-
-/// Remember which webview variables the app set for itself, so `host_env`
-/// keeps them away from the programs it starts. Called once, at startup.
-pub fn note_own_env(names: Vec<&'static str>) {
-    let _ = OWN_ENV.set(names);
-}
-
-/// Give `command` the host's environment rather than the AppImage's, and
-/// without the app's own webview settings (see `host_env_changes`).
+/// Give `command` the host's environment rather than the AppImage's (see
+/// `host_env_changes`).
 pub fn host_env(command: &mut std::process::Command) {
     let vars = std::env::vars_os()
         .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)));
-    let own = OWN_ENV.get().map(Vec::as_slice).unwrap_or(&[]);
-    apply_env_changes(command, host_env_changes(vars, own));
+    apply_env_changes(command, host_env_changes(vars));
 }
 
 /// Start an external helper (qlmanage, mdfind, gio, xdg-open) with the
@@ -1475,27 +1449,6 @@ pub fn refresh_application_cache(data: &Path) {
     }
 }
 
-/// Environment defaults for the webview, set before it starts.
-///
-/// WebKitGTK's DMA-BUF renderer makes popovers and dialogs flicker on some
-/// GPU setups (seen on Intel + NVIDIA under Wayland); its shared-memory
-/// fallback is smooth and fast enough for a file browser. Linux only.
-pub const WEBVIEW_ENV: &[(&str, &str)] = if cfg!(target_os = "linux") {
-    &[("WEBKIT_DISABLE_DMABUF_RENDERER", "1")]
-} else {
-    &[]
-};
-
-/// The `WEBVIEW_ENV` entries to set: those the user hasn't set already, so
-/// exporting `WEBKIT_DISABLE_DMABUF_RENDERER=0` turns the renderer back on.
-pub fn webview_env_to_set(is_set: impl Fn(&str) -> bool) -> Vec<(&'static str, &'static str)> {
-    WEBVIEW_ENV
-        .iter()
-        .copied()
-        .filter(|(k, _)| !is_set(k))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1759,17 +1712,6 @@ mod tests {
         fs::create_dir(internal.parent().unwrap()).unwrap();
         fs::write(&internal, b"echo hello").unwrap();
         assert!(script_terminal_command(&internal, terminal).is_err());
-    }
-
-    #[test]
-    fn webview_env_keeps_values_the_user_set() {
-        assert_eq!(webview_env_to_set(|_| false), WEBVIEW_ENV.to_vec());
-        assert!(webview_env_to_set(|_| true).is_empty());
-        if cfg!(target_os = "linux") {
-            assert_eq!(WEBVIEW_ENV, &[("WEBKIT_DISABLE_DMABUF_RENDERER", "1")]);
-        } else {
-            assert!(WEBVIEW_ENV.is_empty());
-        }
     }
 
     #[test]
@@ -2135,7 +2077,7 @@ mod tests {
             // Another folder whose name merely starts like the mount stays.
             ("MY_TOOLS", &format!("{m}-other/bin:/opt/tools")),
         ]);
-        let mut changes = host_env_changes(env, &[]);
+        let mut changes = host_env_changes(env);
         changes.sort();
         let set = |k: &str, v: &str| (k.to_string(), Some(v.to_string()));
         let unset = |k: &str| (k.to_string(), None);
@@ -2158,22 +2100,8 @@ mod tests {
     #[test]
     fn outside_an_appimage_the_environment_is_left_alone() {
         let env = vars(&[("PATH", "/usr/bin"), ("LD_LIBRARY_PATH", "/opt/lib")]);
-        assert!(host_env_changes(env, &[]).is_empty());
-        assert!(host_env_changes(vars(&[("APPDIR", ""), ("PATH", "/usr/bin")]), &[]).is_empty());
-    }
-
-    #[test]
-    fn the_apps_own_webview_settings_dont_reach_opened_programs() {
-        let env = || vars(&[("WEBKIT_DISABLE_DMABUF_RENDERER", "1"), ("PATH", "/usr/bin")]);
-        // Set by the app for its own webview: other programs don't get it.
-        assert_eq!(
-            host_env_changes(env(), &["WEBKIT_DISABLE_DMABUF_RENDERER"]),
-            [("WEBKIT_DISABLE_DMABUF_RENDERER".to_string(), None)]
-        );
-        // Exported by the user before launching: theirs, so it stays.
-        assert!(host_env_changes(env(), &[]).is_empty());
-        // Noted but not present (nothing to remove).
-        assert!(host_env_changes(vars(&[("PATH", "/usr/bin")]), &["WEBKIT_DISABLE_DMABUF_RENDERER"]).is_empty());
+        assert!(host_env_changes(env).is_empty());
+        assert!(host_env_changes(vars(&[("APPDIR", ""), ("PATH", "/usr/bin")])).is_empty());
     }
 
     #[test]
