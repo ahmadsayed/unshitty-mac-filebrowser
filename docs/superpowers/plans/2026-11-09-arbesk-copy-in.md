@@ -20,6 +20,7 @@
   - "Paste into a collection."
   - "Arbesk is read only." (Cut, forced move)
   - Dialog: heading "Copy to Arbesk?", body "Files in Arbesk are public: anyone with their address can download them, and they can't be removed from IPFS.", responses Cancel (default) / Copy.
+  - "This isn't a glTF file." (a malformed .gltf or .glb)
   - "You can't add to this collection." (403) · "Arbesk is busy. Try again in a minute." (429) · "Arbesk couldn't save the change. Sign in again to renew its permission." (relay 502) · "Sign in to Arbesk again to copy files into it." (no / expired session, 401) · "Arbesk is still saving “{name}”. It appears once the change is confirmed." (status null) · "Arbesk couldn't save “{name}”." (status false) · "This Arbesk server's storage isn't supported." (kubo-api) · "This isn't a 3MF file." · "“{uri}” is outside the model's folder." · "“{uri}” can't be found." · "This file is too large for Arbesk (100 MB at most)."
   - Status line during the relay: "Saving to Arbesk…".
 - Relay HTTP timeout 4 minutes; a Pinata credential older than 45 s is replaced before use.

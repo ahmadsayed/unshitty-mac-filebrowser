@@ -113,12 +113,16 @@ uploads. Proven against asset-core's own output (Testing).
   absolute paths and other schemes refused: "“scene.bin” is outside the
   model's folder." / "“scene.bin” can't be found.") and stored the same way.
 - **`.3mf`**: a ZIP with `[Content_Types].xml`, `_rels/.rels` and a
-  `*.model` (the root relationship's target), else "This isn't a 3MF
-  file.". The composite is asset-core's
+  first `*.model` entry, as asset-core picks it, else "This isn't a
+  3MF file.". The composite is asset-core's
   `{"arbesk_format":"composite-3mf","modelPath","contentTypes","rootRels","modelRels","model","parts":{"<path>":{"cid","_arbesk"}}}`,
   each other entry a raw part named `{base}_{file name}`.
-- **JSON documents** (composite, asset manifest, collection manifest) are
-  written brotli-framed, as asset-core's `writeJSON` does.
+- **JSON documents** are written as the Studio writes them: the glTF
+  composite brotli-framed (`{base}_composite.gltf.br`, the glTF decomposer
+  asks for compression), the 3MF composite raw
+  (`{base}_composite.3mf.json`), and the asset and collection manifests raw
+  (the Studio's `writeJSONToIPFS` compresses only when asked; `besk`
+  compresses everything, and every reader takes both).
 - `{base}` is the asset name made safe for a file name, as asset-core's
   `sanitizeFileName`. No thumbnail: the asset shows the model icon until
   saved in the Studio.
