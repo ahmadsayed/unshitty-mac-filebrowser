@@ -162,10 +162,11 @@ pub(crate) fn sanitize_file_name(name: &str) -> String {
 // ---- Placeholders ----------------------------------------------------------
 
 /// The composite with each part's CID where its placeholder was: glTF
-/// buffers' and images' `ipfs://part:{i}`, 3MF parts' `part:{i}`.
-pub fn fill(composite: &Value, cids: &[String]) -> Value {
+/// buffers' and images' `ipfs://part:{i}`, 3MF parts' `part:{i}`; which of
+/// the two is the file's `format`, never a key its own content may carry.
+pub fn fill(composite: &Value, format: Format, cids: &[String]) -> Value {
     let mut out = composite.clone();
-    if out.get("arbesk_format").is_some() {
+    if format == Format::ThreeMf {
         if let Some(parts) = out.get_mut("parts").and_then(Value::as_object_mut) {
             for part in parts.values_mut() {
                 put_cid(part, "cid", "part:", "", cids);
@@ -1296,7 +1297,7 @@ mod tests {
             for (reference, hash) in refs(&ours.composite) {
                 cids[placeholder(&reference)] = by_hash[&hash].clone();
             }
-            assert_eq!(fill(&ours.composite, &cids), source, "{case}");
+            assert_eq!(fill(&ours.composite, ours.format, &cids), source, "{case}");
             for (part, cid) in ours.parts.iter().zip(&cids) {
                 let theirs = stored_part(case, cid);
                 assert_eq!(raw(&part.stored), raw(&theirs), "{case} {cid}");
@@ -1588,6 +1589,21 @@ mod tests {
         );
     }
 
+    /// A user's glTF that happens to carry an `arbesk_format` key is still a
+    /// glTF: its buffers are filled, decided by the format and not the key.
+    #[test]
+    fn fill_goes_by_the_format_not_a_key() {
+        let cids = ["bafyA".to_string()];
+        let gltf = json!({
+            "arbesk_format": "mine",
+            "buffers": [{"uri": "ipfs://part:0"}],
+        });
+        assert_eq!(
+            fill(&gltf, Format::Gltf, &cids),
+            json!({"arbesk_format": "mine", "buffers": [{"uri": "ipfs://bafyA"}]})
+        );
+    }
+
     #[test]
     fn fill_puts_cids_in_place() {
         let cids = ["bafyA".to_string(), "bafyB".to_string()];
@@ -1597,7 +1613,7 @@ mod tests {
             "nodes": [{"name": "ipfs://part:0"}],
         });
         assert_eq!(
-            fill(&gltf, &cids),
+            fill(&gltf, Format::Gltf, &cids),
             json!({
                 "buffers": [{"uri": "ipfs://bafyB", "byteLength": 4}],
                 "images": [{"uri": "ipfs://bafyA", "name": "part:0"}],
@@ -1610,7 +1626,7 @@ mod tests {
             "parts": {"Metadata/a.png": {"cid": "part:1", "_arbesk": {}}},
         });
         assert_eq!(
-            fill(&three_mf, &cids),
+            fill(&three_mf, Format::ThreeMf, &cids),
             json!({
                 "arbesk_format": "composite-3mf",
                 "model": "part:0",

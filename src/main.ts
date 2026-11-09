@@ -58,7 +58,7 @@ import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
 import { acceptsNewItems, arbeskPasteRefusal, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, knowsSizes, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
-import { childPath, cloudAccountKey, homeFolder, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
+import { childPath, cloudAccountKey, homeFolder, isArbeskCollection, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -2707,9 +2707,23 @@ const readOnlyLocationMenu = (): MenuItem[] => [
   ...arbeskLocationMenu(),
 ];
 
+/** Paste, in a collection only: the one place Arbesk takes files. */
+const arbeskPasteItem = (): MenuItem[] =>
+  isArbeskCollection(location) ? [{ label: "Paste", disabled: !clipboard, action: () => paste(location) }] : [];
+
+/** Arbesk's background menu: read only, but a collection takes a paste. */
+const arbeskBackgroundMenu = (): MenuItem[] => [
+  { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
+  { label: "Reload", action: () => void reload() },
+  ...arbeskPasteItem(),
+  { separator: true },
+  { label: "Select All", action: selectAll },
+];
+
 /** Arbesk's location menu: its arbesk:// address means nothing outside the app. */
 const arbeskLocationMenu = (): MenuItem[] => [
   { label: "Reload", action: () => void reload() },
+  ...arbeskPasteItem(),
   { separator: true },
   { label: "Select All", disabled: !hasEntries(location), action: selectAll },
 ];
@@ -2727,7 +2741,7 @@ const BACKGROUND_MENUS: Record<LocationKind, () => MenuItem[]> = {
   "in-trash": () => [openCurrentFolderWithItem(), { separator: true }, { label: "Select All", action: selectAll }],
   share: readOnlyBackgroundMenu,
   sftp: readOnlyBackgroundMenu,
-  arbesk: readOnlyBackgroundMenu,
+  arbesk: arbeskBackgroundMenu,
   drive: () => [
     { label: "New Folder…", action: promptNewFolder },
     { separator: true },
@@ -3270,15 +3284,19 @@ function signInAgainOnce(destDir: string): (() => Promise<boolean>) | null {
 }
 
 /** One item of a batch; one that failed for want of an Arbesk session is
- *  tried once more after `signIn` succeeds. */
+ *  tried once more after `signIn` succeeds. A sign-in that is cancelled
+ *  stops the batch, so the items after it don't fail one by one. */
 async function transferSigningIn(
-  op: Operation, from: string, to: string, overwrite: boolean, moving: boolean, signIn: (() => Promise<boolean>) | null,
+  op: Operation, from: string, to: string, overwrite: boolean, moving: boolean,
+  signIn: (() => Promise<boolean>) | null, batch: { cancelled: boolean },
 ): Promise<string> {
   const before = { bytes: op.doneBytes, items: op.doneItems };
   try {
     return await transferItem(op, from, to, overwrite, moving);
   } catch (err) {
-    if (!signIn || cleanError(err) !== ARBESK_SIGN_IN || !(await signIn())) throw err;
+    if (!signIn || cleanError(err) !== ARBESK_SIGN_IN) throw err;
+    if (!(await signIn())) batch.cancelled = true;
+    if (batch.cancelled) throw err;
     // The failed attempt's progress isn't counted twice.
     op.doneBytes = before.bytes;
     op.doneItems = before.items;
@@ -3406,7 +3424,7 @@ async function transferBatch(
     }
 
     try {
-      done.push(await transferSigningIn(op, from, to, overwrite, moving, signIn));
+      done.push(await transferSigningIn(op, from, to, overwrite, moving, signIn, batch));
       showLanded(destDir);
     } catch (err) {
       // A cancel is not a failure: no toast, finished items stay.

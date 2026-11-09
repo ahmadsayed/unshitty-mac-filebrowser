@@ -505,7 +505,7 @@ impl Write<'_> {
         for part in &split.parts {
             cids.push(self.upload_counted(&part.file_name, &part.stored)?);
         }
-        let composite = stored_json(&fill(&split.composite, &cids), split.composite_compressed);
+        let composite = stored_json(&fill(&split.composite, split.format, &cids), split.composite_compressed);
         self.progress.set_total(parts + composite.len() as u64);
         self.upload_counted(&split.composite_name, &composite)
     }

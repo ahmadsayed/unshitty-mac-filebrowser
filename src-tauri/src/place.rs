@@ -130,8 +130,8 @@ pub struct CopyRoute {
 }
 
 /// [`transfer`] for a copy, which may also take an Arbesk asset out to this
-/// computer or Drive, or a local file into an Arbesk collection. A move never does: Arbesk is read only. Collections
-/// can't be copied yet.
+/// computer or Drive, or a local file into an Arbesk collection. A move never
+/// does: Arbesk is read only. Collections can't be copied yet.
 pub fn copy(from: &str, to: &str) -> Result<CopyRoute, String> {
     if kind(to) == Kind::Arbesk && kind(from) != Kind::Arbesk {
         return into_arbesk(from, to);

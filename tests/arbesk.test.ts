@@ -318,6 +318,20 @@ test("a .glb pastes as its listed .gltf name: a clash asks, Keep Both and Replac
   expect(assets.filter((a) => a.name.startsWith("Box")).map((a) => a.name)).toEqual(["Box.gltf", "Box (copy).gltf", "Box (copy 2).gltf"]);
 });
 
+test("an upper-case extension still clashes with the listed lower-case name", async () => {
+  await invoke("make_dir", { path: UP }).catch(() => {});
+  await invoke("create_file", { path: `${UP}/Box.GLTF` });
+  await copyFromUp("Box.GLTF");
+  await openCollection("Untitled Collection");
+  await pasteAndConfirm();
+  // Arbesk lists it as Box.gltf, which is taken: asked, not added as a second Box.
+  expect(dialogHeading()).toBe("Replace file “Box.gltf”?");
+  await respond("Skip");
+  await settle(20);
+  const assets = await listedIn("2~Untitled%20Collection");
+  expect(assets.filter((a) => /^box\./i.test(a.name))).toHaveLength(1);
+});
+
 test("a paste with no session signs in first, and Cancel copies nothing", async () => {
   arbeskMock().signedIn = false;
   await copyFromUp("Gear.glb");
@@ -352,6 +366,26 @@ test("an expired session signs in again once and carries on", async () => {
   expect(listed.filter((n) => n === "Bolt.3mf" || n === "Nut.gltf").sort()).toEqual(["Bolt.3mf", "Nut.gltf"]);
   expect(copyFailures()).toEqual([]);
   expect(crumbs()).toEqual(["Arbesk", "Untitled Collection"]);
+});
+
+test("cancelling the mid-batch sign-in stops the batch", async () => {
+  for (const name of ["Cap.3mf", "Lid.glb", "Rim.glb"]) await invoke("create_file", { path: `${UP}/${name}` });
+  arbeskMock().expireOnce();
+  await copyFromUp("Cap.3mf", "Lid.glb", "Rim.glb");
+  await openCollection("Untitled Collection");
+  await pasteAndConfirm();
+  await vi.waitFor(() => expect(dialogHeading()).toBe("Sign In to Arbesk"), { timeout: 2000 });
+  await respond("Cancel");
+  await settle(40);
+  // Nothing after the first item ran: no clash dialog, no further failures.
+  expect(dialogHeading()).toBeUndefined();
+  const listed = (await listedIn("2~Untitled%20Collection")).map((a) => a.name);
+  expect(listed).not.toContain("Lid.gltf");
+  expect(listed).not.toContain("Rim.gltf");
+  expect(copyFailures()).toHaveLength(1);
+  // Only the item that met the expired session is reported.
+  expect(copyFailures()[0]).toMatch(/^Could not copy “Cap\.3mf”: /);
+  arbeskMock().signedIn = true;
 });
 
 test("a text file or a folder is refused with the D1 toast, before any dialog", async () => {

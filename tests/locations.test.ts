@@ -184,6 +184,10 @@ test("a .glb is listed as a .gltf once it is in Arbesk", () => {
   expect(arbeskTargetName("a.b.glb")).toBe("a.b.gltf");
   expect(arbeskTargetName("Box.gltf")).toBe("Box.gltf");
   expect(arbeskTargetName("Box.3mf")).toBe("Box.3mf");
+  // Arbesk lists the extension in lower case; the stem keeps its case.
+  expect(arbeskTargetName("Box.GLTF")).toBe("Box.gltf");
+  expect(arbeskTargetName("Box.3MF")).toBe("Box.3mf");
+  expect(arbeskTargetName("MyBox.3Mf")).toBe("MyBox.3mf");
 });
 
 test("a local file, and a local regular file, for the menu items that run or send one", () => {

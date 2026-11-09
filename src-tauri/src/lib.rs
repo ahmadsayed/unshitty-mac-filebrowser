@@ -1748,9 +1748,10 @@ async fn arbesk_connect_finish(app: tauri::AppHandle, flow_id: String) -> Result
 
 /// Whether copying into the account `path` belongs to can start without a
 /// new sign-in.
+/// It reads the keychain, which can stop for an unlock prompt: off the main thread.
 #[tauri::command]
-fn arbesk_signed_in(state: tauri::State<arbesk::ArbeskState>, path: String) -> bool {
-    state.signed_in(&path)
+async fn arbesk_signed_in(app: tauri::AppHandle, path: String) -> Result<bool, String> {
+    blocking(move || app.state::<arbesk::ArbeskState>().signed_in(&path)).await
 }
 
 #[tauri::command]
@@ -1758,9 +1759,10 @@ fn arbesk_connect_cancel(state: tauri::State<arbesk::ArbeskState>, flow_id: Stri
     state.connect_cancel(&flow_id);
 }
 
+/// It ends the session on Arbesk's server (up to 30 s) and clears the keychain.
 #[tauri::command]
-fn arbesk_disconnect(state: tauri::State<arbesk::ArbeskState>, account: String) -> Result<(), String> {
-    state.disconnect(&account)
+async fn arbesk_disconnect(app: tauri::AppHandle, account: String) -> Result<(), String> {
+    blocking(move || app.state::<arbesk::ArbeskState>().disconnect(&account)).await?
 }
 
 #[derive(serde::Serialize)]

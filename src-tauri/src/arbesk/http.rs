@@ -145,7 +145,8 @@ impl ReqwestHttp {
         };
         let response = request
             .send()
-            .map_err(|error| HttpError::new(None, error.to_string()))?;
+            // Without the URL: an upload's is a one-use pre-signed address.
+            .map_err(|error| HttpError::new(None, error.without_url().to_string()))?;
         let status = response.status();
         let bytes = read_capped(response, self.cap)
             .map_err(|message| HttpError::new(Some(status.as_u16()), message))?;
@@ -546,5 +547,20 @@ mod tests {
             .get(&format!("http://127.0.0.1:{port}"))
             .unwrap_err();
         assert_eq!(error.status, None);
+    }
+
+    /// A transport failure's message never carries the URL: an upload's is a
+    /// one-use pre-signed address, and the message reaches a toast.
+    #[test]
+    fn a_transport_error_does_not_name_the_url() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}/secret-presigned-path?sig=abc");
+        let error = ReqwestHttp::new().unwrap().get(&url).unwrap_err();
+        assert!(!error.message.contains("secret-presigned-path"), "{}", error.message);
+        assert!(!error.message.contains("sig=abc"), "{}", error.message);
     }
 }

@@ -165,9 +165,10 @@ export function arbeskPasteRefusal(dir: string, paths: readonly string[], moving
   return null;
 }
 
-/** The name a copied file has once Arbesk lists it: a `.glb` is stored as glTF. */
+/** The name a copied file has once Arbesk lists it: a `.glb` is stored as
+ *  glTF, and the extension is listed in lower case (the stem keeps its case). */
 export function arbeskTargetName(name: string): string {
-  return name.replace(/\.glb$/i, ".gltf");
+  return name.replace(/\.glb$/i, ".gltf").replace(/\.(gltf|3mf)$/i, (ext) => ext.toLowerCase());
 }
 
 /** What the item actions below need to know about an item. */

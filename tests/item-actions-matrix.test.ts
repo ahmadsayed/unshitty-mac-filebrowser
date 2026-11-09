@@ -278,14 +278,18 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     preview: ["Open"],
     star: false,
   }],
+  // An asset copies out (its file is built first); ⌘D bookmarks the
+  // collection, as on an SSH server; nothing else writes. Paste is offered
+  // here only: its rule refuses what isn't a model file, in D1's words.
   "an Arbesk collection": [async () => { await fromNetwork("Arbesk")(); await open("Shapes"); }, "Box.gltf", {
     item: ["Open", "Copy"],
-    background: ["Show Hidden Files", "Reload", "Select All"],
-    location: ["Reload", "Select All"],
-    // An asset copies out (its file is built first); ⌘D bookmarks the
-    // collection, as on an SSH server; nothing else writes.
-    keys: { copy: "clipboard", // Only model files go in: the clipboard's .txt is refused in D1's words.
-    paste: "toast “Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.”", properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing" },
+    background: ["Show Hidden Files", "Reload", "Paste", "Select All"],
+    location: ["Reload", "Paste", "Select All"],
+    keys: {
+      copy: "clipboard",
+      paste: "toast “Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.”",
+      properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing",
+    },
     drag: "drag",
     preview: ["Open"],
     star: false,
