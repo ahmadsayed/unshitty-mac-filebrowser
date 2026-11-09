@@ -83,26 +83,45 @@ and the check that the typed email's address is the callback's stays. A
 session planted by someone else can't write into this account: the relay
 refuses a session whose address doesn't own the collection (403, D8).
 
-**D6. How each format is stored** (the shapes asset-core's readers take; our
-own `compose` reads them too):
-- **`.glb`**: its JSON chunk becomes the composite glTF; its BIN chunk is
-  uploaded as one part and `buffers[0]` gets `"uri":"ipfs://<cid>"`. Images
-  stay `bufferView`s into it (valid glTF; asset-core's composer keeps them).
-  A GLB whose JSON names other buffers or images by URI is handled as a
-  `.gltf`.
-- **`.gltf`**: every buffer and image `uri` becomes a part: a `data:` URI is
-  decoded, a relative URI is read from the same folder or below (percent
-  decoded; `..`, absolute paths and other schemes refused: "“scene.bin” is
-  outside the model's folder." / "…can't be found."). An image keeps its
-  `mimeType` (sniffed when missing).
+**D6. How each format is stored: Arbesk's decompose protocol**, as
+asset-core does it (`packages/asset-core/src/formats/gltf/glb-parser.ts`,
+`gltf/decomposer.ts`, `gltf/dedup.ts`, `3mf/decomposer.ts`), so the Studio,
+`besk` and this app read the result exactly as they read the Studio's own
+uploads. Proven against asset-core's own output (Testing).
+- **Every part** is uploaded as asset-core's `uploadWithDedup` writes it:
+  - `_arbesk` = `{hash, hashAlgo:"murmur3-128", compressed, bytes}`, the hash
+    MurmurHash3 x86 128-bit (hex, asset-core's `hashBytes`) over the raw
+    bytes and `bytes` their length;
+  - glTF buffers and images compressed: brotli behind the `ARB\x01` frame
+    (`41 52 42 01`), the file name gaining `.br`; 3MF parts stored raw
+    (`compressed:false`);
+  - identical raw bytes within one file are uploaded once and share a CID
+    (the dedup map, scoped to the file being written).
+- **`.glb`**: as `decomposeGlb`:
+  - each image (by `bufferView` or `data:` URI) becomes a part named
+    `{base}_texture_{i}.{ext}`; its entry gets `uri:"ipfs://<cid>"`, its
+    `mimeType` (sniffed when missing), `_arbesk`, and loses `bufferView`;
+  - the image bytes are cut out of the BIN buffer and every reference is
+    re-indexed as asset-core does (bufferViews' offsets, accessors and
+    their sparse parts, `KHR_draco_mesh_compression`, the removed views);
+  - each buffer becomes a part `{base}_buffer_{i}.bin` with
+    `uri:"ipfs://<cid>"`, `byteLength`, `_arbesk`;
+  - the composite JSON is written compressed as `{base}_composite.gltf`.
+- **`.gltf`**: as asset-core's glTF decomposer for `data:` URIs (same part
+  names and fields). A relative URI, which asset-core leaves pointing
+  nowhere, is read from the same folder or below (percent decoded; `..`,
+  absolute paths and other schemes refused: "“scene.bin” is outside the
+  model's folder." / "“scene.bin” can't be found.") and stored the same way.
 - **`.3mf`**: a ZIP with `[Content_Types].xml`, `_rels/.rels` and a
-  `*.model` (the root relationship's target), else "This isn't a 3MF file.".
-  The composite is asset-core's
-  `{"arbesk_format":"composite-3mf","modelPath","contentTypes","rootRels","modelRels","model","parts":{"<path>":{"cid"}}}`:
-  the XML entries as text, every other entry a part.
-- No compression and no `_arbesk` metadata (readers detect both; without
-  `_arbesk` the Studio's byte cache is skipped, nothing else). No thumbnail:
-  the asset shows the model icon until saved in the Studio.
+  `*.model` (the root relationship's target), else "This isn't a 3MF
+  file.". The composite is asset-core's
+  `{"arbesk_format":"composite-3mf","modelPath","contentTypes","rootRels","modelRels","model","parts":{"<path>":{"cid","_arbesk"}}}`,
+  each other entry a raw part named `{base}_{file name}`.
+- **JSON documents** (composite, asset manifest, collection manifest) are
+  written brotli-framed, as asset-core's `writeJSON` does.
+- `{base}` is the asset name made safe for a file name, as asset-core's
+  `sanitizeFileName`. No thumbnail: the asset shows the model icon until
+  saved in the Studio.
 
 **D7. The write, per file** (new `src-tauri/src/arbesk/write.rs`, plain
 functions over the existing `Http` seam):
@@ -158,10 +177,13 @@ switch tests can set.
 
 - Rust, against `FakeHttp` serving a fake Arbesk (the world `service.rs`'s
   tests already have, plus upload, relay and config endpoints):
+  - **protocol conformance**: for each sample asset-core decomposes in
+    `scripts/make-arbesk-fixtures.ts` (glb-box, gltf-image, 3mf-box, plus a
+    new GLB with an embedded texture), the app's decompose of the same input
+    gives asset-core's composite (`source.json`) exactly, CIDs aside, with
+    the same `_arbesk` hashes and the same raw part bytes;
   - each format written, then read back with `service::export` and compared
-    with the source file (GLB: same JSON chunk and BIN bytes after
-    `compose`; glTF with a `.bin` and a texture beside it; 3MF: same
-    entries);
+    with the source file;
   - the asset manifest and collection manifest built for a new asset and
     for Replace (`version`, `prev_asset_manifest_cid`, `asset_id` kept);
   - refusals before any request (extension, size, outside or missing glTF

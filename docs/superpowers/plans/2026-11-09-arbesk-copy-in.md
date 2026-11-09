@@ -4,7 +4,7 @@
 
 **Goal:** Copy/Paste and drops put local `.gltf`, `.glb` and `.3mf` files into an Arbesk collection as assets the Studio reads.
 
-**Architecture:** The backend keeps the sign-in's Arbesk session in the keychain, splits a model file into IPFS parts (`arbesk/pack.rs`), uploads them through Pinata credentials Arbesk mints, writes the asset and collection manifests and asks Arbesk's relay to update the collection on chain (`arbesk/write.rs`). `copy_entry` routes a local source with an Arbesk target there (`place::copy`). The frontend allows the paste, confirms it, maps `.glb` to the listed `.gltf` name and signs in again when needed.
+**Architecture:** The backend keeps the sign-in's Arbesk session in the keychain, decomposes a model file into IPFS parts exactly as Arbesk's asset-core does (`arbesk/decompose.rs`), uploads them through Pinata credentials Arbesk mints, writes the asset and collection manifests and asks Arbesk's relay to update the collection on chain (`arbesk/write.rs`). `copy_entry` routes a local source with an Arbesk target there (`place::copy`). The frontend allows the paste, confirms it, maps `.glb` to the listed `.gltf` name and signs in again when needed.
 
 **Tech Stack:** Rust (Tauri 2, existing `Http` seam, `zip`, `base64`, `keyring`), TypeScript (no framework), Vitest + jsdom, the mock backend.
 
@@ -12,7 +12,8 @@
 
 ## Global Constraints
 
-- No change to Arbesk itself; no new crate (multipart is built by hand).
+- No change to Arbesk itself; no new crate (multipart is built by hand; brotli and the hash use what's in the lockfile or our own code).
+- Storage follows Arbesk's decompose protocol (spec D6), proven against asset-core's own output.
 - Accepted: local regular files, extension `.gltf` / `.glb` / `.3mf` (case-insensitive), ≤ 100 MB (`MAX_UPLOAD = 100 * 1024 * 1024`, a `.gltf` counting its parts).
 - Wording, exactly:
   - "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk."
@@ -79,31 +80,35 @@
 - [ ] **Step 4: Run** — Expected: PASS.
 - [ ] **Step 5: Commit** `feat: keep the Arbesk session in the keychain for writes`.
 
-### Task 3: Pack a model file into parts
+### Task 3: Decompose a model file as asset-core does
 
 **Files:**
-- Create: `src-tauri/src/arbesk/pack.rs`
-- Test fixtures: reuse `tests/fixtures/arbesk/glb-box` (its `expected.gltf`) and `3mf-box`; tests write a `.glb`, a split `.gltf` + `.bin` + `tex/a.png` into a tempdir.
+- Create: `src-tauri/src/arbesk/decompose.rs`
+- Modify: `scripts/make-arbesk-fixtures.ts` (also write each case's input as `input.<ext>`; add a case `glb-texture`: a GLB with one PNG image stored in a bufferView, built from `sampleGlb` plus the script's red PNG), then regenerate: `bun scripts/make-arbesk-fixtures.ts ~/Projects/arbesk src-tauri/tests/fixtures/arbesk` (existing cases' files must come out unchanged: check `git diff --stat`, only new files).
+- Reference (read, never modify): `~/Projects/arbesk/packages/asset-core/src/formats/gltf/glb-parser.ts`, `gltf/decomposer.ts`, `gltf/dedup.ts`, `gltf/gltf-core.ts`, `3mf/decomposer.ts`, `utils/hash.ts`, `utils/brotli-frame.ts`, `utils/compression.ts` (quality: 11 for JSON, 5 for binary).
 
 **Interfaces:**
 - Produces:
-  - `pub struct Packed { pub format: Format, pub composite: Value, pub parts: Vec<Vec<u8>> }` — in `composite`, part `i` is referenced as `"ipfs://part:{i}"` (glTF `uri`) or `"part:{i}"` (3MF `parts.*.cid`).
-  - `pub fn pack(file: &Path) -> Result<Packed, String>` (dispatch on extension; size check first, `MAX_UPLOAD`).
+  - `pub struct Part { pub file_name: String, pub stored: Vec<u8> /* uploaded as is */, pub raw_len: u64 }`
+  - `pub struct Decomposed { pub format: Format, pub composite: Value, pub parts: Vec<Part>, pub composite_name: String }` — in `composite`, part `i` is referenced as `"ipfs://part:{i}"` (glTF `uri`) or `"part:{i}"` (3MF `parts.*.cid`); `_arbesk` is already filled in.
+  - `pub fn decompose(file: &Path, asset_name: &str) -> Result<Decomposed, String>` (dispatch on extension; size check first).
   - `pub fn fill(composite: &Value, cids: &[String]) -> Value` (replaces both placeholder forms).
-  - `pub const MAX_UPLOAD: u64`.
-- Consumes: `compose::Format`.
+  - `pub fn stored_json(value: &Value) -> Vec<u8>` (brotli-framed JSON, as `writeJSON`).
+  - `pub fn murmur3_128_hex(bytes: &[u8]) -> String`, `pub fn brotli_framed(bytes: &[u8], quality: u32) -> Vec<u8>`.
+  - `pub const MAX_UPLOAD: u64 = 100 * 1024 * 1024`.
+- Consumes: `compose::Format`; `ipfs::unpack` (to read framed parts back in tests).
 
 - [ ] **Step 1: Write the failing tests:**
-  - `a_glb_becomes_its_json_and_one_buffer_part` (1 part = the BIN chunk; `buffers[0].uri == "ipfs://part:0"`; images keep `bufferView`).
-  - `a_gltf_uploads_data_uris_and_files_beside_it` (data-URI buffer, `scene.bin`, `tex/a%20b.png` → 3 parts, `mimeType` kept or sniffed `image/png`).
-  - `gltf_parts_stay_in_its_folder` (`../x.bin`, `/etc/x`, `http://…` → "“…” is outside the model's folder."; a missing `scene.bin` → "“scene.bin” can't be found.").
-  - `a_3mf_becomes_arbesks_composite` (keys `arbesk_format:"composite-3mf"`, `modelPath`, `contentTypes`, `rootRels`, `modelRels`, `model` text; other entries as parts); `a_zip_without_a_model_is_not_a_3mf`.
-  - `other_extensions_and_large_files_are_refused` (exact wordings).
+  - `hashes_match_asset_core` — `murmur3_128_hex` of each fixture part's raw bytes equals the `_arbesk.hash` asset-core wrote (`glb-box`: `5c237da9173219dc09253c3ae6c65ecc` for the 168-byte buffer; `gltf-image`: `be047e57fb51936fab370a6fab2e1c8e` for the 70-byte PNG), plus empty input and lengths 1–17 against values asset-core prints (generate them once with Bun from `utils/hash.ts`, paste as constants with a comment saying so).
+  - `decompose_matches_asset_core` — for `glb-box`, `gltf-image`, `glb-texture`, `3mf-box`: `decompose(input.<ext>)`; map each placeholder to the fixture CID whose `_arbesk.hash` matches; the result equals `source.json` exactly; each part's raw bytes (`ipfs::unpack` of `stored`) equal the fixture part's unpacked bytes; `compressed` flags and file names as asset-core's.
+  - `a_gltf_uploads_files_beside_it` (`scene.bin`, `tex/a%20b.png` → parts with asset-core's names and fields) and `gltf_parts_stay_in_its_folder` (`../x.bin`, `/etc/x`, `http://…` → "“…” is outside the model's folder."; missing → "“scene.bin” can't be found.").
+  - `identical_bytes_are_one_part` (two images with the same bytes → one part, both entries the same placeholder).
+  - `a_zip_without_a_model_is_not_a_3mf`; `other_extensions_and_large_files_are_refused` (exact wordings).
   - `fill_puts_cids_in_place`.
-- [ ] **Step 2: Run** `cargo test --lib arbesk::pack` — Expected: FAIL.
-- [ ] **Step 3: Implement `pack`, `fill`.** GLB: header magic `glTF`, chunk `JSON` then optional `BIN\0`. 3MF: the root `.rels` `Target` names the model; missing → "This isn't a 3MF file.".
+- [ ] **Step 2: Run** `cd src-tauri && cargo test --lib arbesk::decompose` — Expected: FAIL.
+- [ ] **Step 3: Implement**, porting asset-core's logic function by function (cite the TS function each Rust one mirrors in its doc comment). Brotli via the existing `brotli` crate.
 - [ ] **Step 4: Run** — Expected: PASS.
-- [ ] **Step 5: Commit** `feat: pack glTF, GLB and 3MF files into Arbesk's parts`.
+- [ ] **Step 5: Commit** `feat: decompose glTF, GLB and 3MF files as Arbesk does`.
 
 ### Task 4: Write an asset into a collection
 
@@ -112,7 +117,7 @@
 - Modify: `src-tauri/src/arbesk/service.rs` (make `Reader` usable from `write.rs`: `pub(crate)` `open`, `collection_manifest_with_cid(token) -> (String, Value)`), `src-tauri/src/progress.rs` (`Phase::Saving`, serialized `"saving"`).
 
 **Interfaces:**
-- Consumes: Task 1 `Http::post_multipart`, `post_json_slow`; Task 3 `pack`, `fill`, `Packed`.
+- Consumes: Task 1 `Http::post_multipart`, `post_json_slow`; Task 3 `decompose`, `fill`, `stored_json`, `Decomposed`.
 - Produces:
   - `pub struct Target { pub address: String, pub token_id: String, pub name: String /* listed, e.g. "Box.gltf" */ }`
   - `pub fn asset_manifest(name: &str, asset_id: &str, version: u64, prev: Option<&str>, timestamp_ms: i64, source_cid: &str, format: Format) -> Value`
@@ -194,7 +199,7 @@
 ### Task 8: Docs and verification list
 
 **Files:**
-- Modify: `README.md` (feature line; "Not supported yet": Arbesk read only → what still is), `docs/arbesk.md` (a "Copying into Arbesk" section: what, public data, Replace = version, session, errors), `AGENTS.md` (layout rows for `arbesk/` modules `session.rs`, `pack.rs`, `write.rs`, `testing.rs`; `place.rs` row), `docs/architecture.md` (Arbesk no longer read only)
+- Modify: `README.md` (feature line; "Not supported yet": Arbesk read only → what still is), `docs/arbesk.md` (a "Copying into Arbesk" section: what, public data, Replace = version, session, errors), `AGENTS.md` (layout rows for `arbesk/` modules `session.rs`, `decompose.rs`, `write.rs`, `testing.rs`; `place.rs` row), `docs/architecture.md` (Arbesk no longer read only)
 - [ ] **Step 1:** Write the docs; check every wording against the Global Constraints.
 - [ ] **Step 2:** `npx tsc --noEmit && npm run build` — Expected: clean.
 - [ ] **Step 3: Commit** `docs: copying files into Arbesk`.
