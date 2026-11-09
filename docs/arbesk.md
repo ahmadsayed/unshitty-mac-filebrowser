@@ -64,6 +64,26 @@ Try again in a minute.*, *Arbesk couldn't create the collection. Sign in
 again to renew its permission.*, *Arbesk is still creating “…”. It appears
 once the change is confirmed.*, *Arbesk couldn't create “…”.*
 
+## Sharing a collection
+
+Right-click a collection in the account, or use **Share Collection…** in the
+collection's menu or the path bar's menu, and type the email the other person
+uses with Arbesk. Choose **Viewer** (they can see and download its assets) or
+**Editor** (they can also add and save). Arbesk resolves the email to that
+account's wallet and adds it to the collection's editor list; the change is
+saved on IPFS and the chain, so the Studio and `besk` see it too.
+
+The email must belong to an Arbesk account that has signed in at least once;
+otherwise the dialog says *No Arbesk account found for that email. They need
+to sign in to Arbesk at least once.* An account already in the list with the
+same role says so; sharing again with another role changes that member's
+role. Only an Editor of the collection can share it. Sharing needs the same
+session as copying, asked for first if it is gone.
+
+The app adds or changes a collaborator; it doesn't remove one or list the
+current collaborators yet (use Arbesk's Studio for that). Wallet addresses
+can't be typed here, only emails.
+
 ## Browsing
 
 - A collection without a name shows as *Untitled Collection*; an asset

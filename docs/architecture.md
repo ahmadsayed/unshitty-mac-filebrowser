@@ -62,9 +62,11 @@ the place may be written. Then:
   `crates/arbesk` workspace crate (Arbesk: its read path rebuilt from public
   sources, assets built into the app cache to open, preview and copy out,
   each asset's saved thumbnail; named collections created (a name minted
-  through the wallet relay) and local model files copied in with Arbesk's
-  own storage protocol, uploads and the collection update through Arbesk's
-  relay, under a session kept in the keychain). `lib.rs` reaches it only
+  through the wallet relay), shared by email by adding a Viewer or Editor to
+  the editor Merkle tree on IPFS and the chain, and local model files copied
+  in with Arbesk's own storage protocol, uploads and the collection update
+  through Arbesk's relay, under a session kept in the keychain). `lib.rs`
+  reaches it only
   through the crate's facade (`Client`, `Account`, `Entry`, `Scene`,
   `Version`, `Location`, `Progress`); the modules behind it are private, so
   the feature can change or move without leaking into the app.
