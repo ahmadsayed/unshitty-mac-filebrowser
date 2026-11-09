@@ -1,7 +1,7 @@
 //! Arbesk (promptscad.com) collections, for the File Browser. Sign in with an
 //! email and the code Arbesk emails, browse the account's collections as
 //! folders and their assets as glTF and 3MF files, build an asset to open or
-//! preview it, and copy a local model into a collection.
+//! preview it, copy a local model into a collection, and create collections.
 //!
 //! Arbesk's read path is rebuilt from public sources (the deployment's config
 //! and token index, the chain's `tokenURI`, the IPFS gateway); the one write
@@ -15,6 +15,7 @@ mod cache;
 mod callback;
 mod chain;
 mod compose;
+mod create;
 mod decompose;
 mod http;
 mod ids;
@@ -365,6 +366,40 @@ impl Client {
         added
     }
 
+    /// Create (mint) the named collection of the account `path` belongs to,
+    /// as the Studio's New Collection and `besk create` do: the new
+    /// collection's `arbesk://` path. The same name in one account is one
+    /// collection, so an existing one is refused. Arbesk's 401 ends the session.
+    pub fn create_collection(&self, path: &str, name: &str) -> Result<String, String> {
+        let address = match parse(path)? {
+            location::ArbeskPath::Account { address } => address,
+            _ => return Err("Create collections in the account's folder.".into()),
+        };
+        let site = self.site_for(&address)?;
+        let account = location::account_path(&address);
+        let session = self.session_for(&account)?;
+        let created = create::create(
+            self.http()?,
+            &site,
+            &session,
+            &address,
+            name,
+            &self.cache_dir,
+        )
+        .map_err(|error| match error.as_str() {
+            write::SIGN_IN => create::SIGN_IN.to_string(),
+            _ => error,
+        });
+        if created
+            .as_ref()
+            .err()
+            .is_some_and(|error| error == create::SIGN_IN)
+        {
+            self.forget_session(&account);
+        }
+        created
+    }
+
     /// Whether the collection of the pending name `path` lists that name.
     pub fn exists(&self, path: &str) -> bool {
         let Ok((address, token_id, name)) = parse_target(path) else {
@@ -565,6 +600,56 @@ mod tests {
         // An account that isn't connected has no session either.
         let other = "arbesk://0x00000000000000000000000000000000000000cd";
         assert_eq!(state.session_for(other).unwrap_err(), again);
+    }
+
+    #[test]
+    fn a_collection_is_created_in_the_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut world = testing::world();
+        world.sessions.insert("t".into());
+        let http = Arc::new(testing::arbesk(Arc::new(Mutex::new(world))));
+        let (state, sessions) = state_with_sessions(http, dir.path());
+        let account = state
+            .accounts
+            .lock()
+            .unwrap()
+            .connect("me@example.com", testing::ADDRESS, &testing::site())
+            .unwrap();
+        sessions
+            .save(
+                &account.id,
+                &Session {
+                    token: "t".into(),
+                    expires_at_ms: signin::now_ms() + 3_600_000,
+                },
+            )
+            .unwrap();
+        let root = format!("arbesk://{}", testing::ADDRESS);
+        let path = state.create_collection(&root, "My Set").unwrap();
+        let token = create::named_collection_id(testing::ADDRESS, "My Set").unwrap();
+        assert_eq!(
+            path,
+            location::collection_path(testing::ADDRESS, &token, "My Set")
+        );
+        assert!(
+            state
+                .list(&root)
+                .unwrap()
+                .iter()
+                .any(|entry| entry.name == "My Set")
+        );
+        assert_eq!(
+            state.create_collection(&root, "My Set").unwrap_err(),
+            "A collection named “My Set” already exists."
+        );
+        assert_eq!(
+            state.create_collection(&path, "Another").unwrap_err(),
+            "Create collections in the account's folder."
+        );
+        assert_eq!(
+            state.create_collection(&root, "   ").unwrap_err(),
+            create::NO_NAME
+        );
     }
 
     #[test]

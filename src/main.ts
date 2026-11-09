@@ -20,7 +20,7 @@ import {
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
   previewBytes, previewText, thumbnail, arbeskScene, arbeskPart, arbeskVersions, listVersions, versionCount, openVersion,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
-  arbeskAccounts, arbeskConnectStart, arbeskConnectFinish, arbeskConnectCancel, arbeskDisconnect, arbeskSignedIn,
+  arbeskAccounts, arbeskConnectStart, arbeskConnectFinish, arbeskConnectCancel, arbeskDisconnect, arbeskSignedIn, arbeskCreateCollection,
   driveClientStatus, driveClientSet, driveClientClear,
   openExternal,
   setPermissions,
@@ -58,7 +58,7 @@ import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
 import { acceptsNewItems, arbeskPasteRefusal, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, knowsSizes, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
-import { childPath, cloudAccountKey, homeFolder, isArbeskCollection, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
+import { childPath, cloudAccountKey, homeFolder, isArbeskAccount, isArbeskCollection, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -2711,8 +2711,14 @@ const readOnlyLocationMenu = (): MenuItem[] => [
 const arbeskPasteItem = (): MenuItem[] =>
   isArbeskCollection(location) ? [{ label: "Paste", disabled: !clipboard, action: () => paste(location) }] : [];
 
-/** Arbesk's background menu: read only, but a collection takes a paste. */
+/** New Collection…, in the account only: a collection can't hold a collection. */
+const arbeskNewCollectionItem = (): MenuItem[] =>
+  isArbeskAccount(location) ? [{ label: "New Collection…", action: promptNewCollection }] : [];
+
+/** Arbesk's background menu: read only, but the account takes a new collection
+ *  and a collection takes a paste. */
 const arbeskBackgroundMenu = (): MenuItem[] => [
+  ...arbeskNewCollectionItem(),
   { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
   { label: "Reload", action: () => void reload() },
   ...arbeskPasteItem(),
@@ -2722,6 +2728,7 @@ const arbeskBackgroundMenu = (): MenuItem[] => [
 
 /** Arbesk's location menu: its arbesk:// address means nothing outside the app. */
 const arbeskLocationMenu = (): MenuItem[] => [
+  ...arbeskNewCollectionItem(),
   { label: "Reload", action: () => void reload() },
   ...arbeskPasteItem(),
   { separator: true },
@@ -4452,6 +4459,84 @@ function promptNewFolder(): void {
   });
   input.addEventListener("input", validate);
   validate();
+}
+
+// ---------------------------------------------------------------------------
+// New collection (Arbesk: a name, then a mint on Arbesk's chain)
+// ---------------------------------------------------------------------------
+
+/** The error a creation ends with when it needs a new sign-in. */
+const ARBESK_CREATE_SIGN_IN = "Sign in to Arbesk again to create a collection.";
+
+/**
+ * New Collection…: the name, then the mint. Arbesk derives the token from
+ * the account and the name, so the same name is the same collection; an
+ * existing one stays in the dialog. Creating needs the session a paste
+ * needs, asked for once if it is gone.
+ */
+function promptNewCollection(): void {
+  if (!isArbeskAccount(location) || listingError !== null) return;
+  const extra = document.createElement("div");
+  extra.innerHTML = `
+    <div class="entry-row"><label for="new-collection-name">Collection Name</label><input id="new-collection-name" type="text" spellcheck="false" /></div>
+    <div class="field-message" style="margin-top:8px"></div>`;
+  const dir = location;
+  const row = extra.querySelector<HTMLElement>(".entry-row")!;
+  const input = extra.querySelector<HTMLInputElement>("#new-collection-name")!;
+  const message = extra.querySelector<HTMLElement>(".field-message")!;
+
+  const validate = () => {
+    const valid = input.value.trim() !== "";
+    showValidation({ valid, message: "", error: false }, row, message);
+    dialog.setResponseEnabled("create", valid);
+    return valid;
+  };
+
+  const dialog = openDialog({
+    heading: "New Collection",
+    body: "Choose a name for the new collection.",
+    extra,
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "create", label: "Create", style: "suggested" },
+    ],
+    defaultResponse: "create",
+    closeResponse: "cancel",
+    busy: { liveWhileBusy: ["cancel"], status: message },
+    onResponse: async (id) => {
+      if (id !== "create" || !validate()) return;
+      const name = input.value.trim();
+      try {
+        const account = await arbeskAccountFor(dir);
+        if (!(await arbeskSignedIn(dir).catch(() => false))) {
+          if (!(await connectArbesk(account, { stay: true }))) {
+            dialog.close();
+            return;
+          }
+        }
+        dialog.setStatus("Creating collection…");
+        let created: string;
+        try {
+          created = await arbeskCreateCollection(dir, name);
+        } catch (err) {
+          if (cleanError(err) !== ARBESK_CREATE_SIGN_IN) throw err;
+          if (!(await connectArbesk(account, { stay: true }))) throw err;
+          created = await arbeskCreateCollection(dir, name);
+        }
+        dialog.close();
+        if (location === dir) await reload([created]);
+        showToast(`Created “${name}”`);
+      } catch (err) {
+        message.textContent = cleanError(err);
+        message.classList.add("error");
+        row.classList.add("error");
+        return false;
+      }
+    },
+  });
+  input.addEventListener("input", validate);
+  validate();
+  input.focus();
 }
 
 // ---------------------------------------------------------------------------

@@ -1760,6 +1760,7 @@ function arbeskCopy(a: Args): string {
 const ARBESK_ONLY_MODELS = "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.";
 const ARBESK_PASTE_INTO = "Paste into a collection.";
 const ARBESK_SIGN_IN = "Sign in to Arbesk again to copy files into it.";
+const ARBESK_CREATE_SIGN_IN = "Sign in to Arbesk again to create a collection.";
 const ARBESK_TOO_LARGE = "This file is too large for Arbesk (100 MB at most).";
 const ARBESK_MAX_UPLOAD = 100 * 1024 * 1024;
 
@@ -1778,6 +1779,7 @@ const arbeskSession = { signedIn: true, expireNext: false };
   },
 };
 let arbeskAssetSeq = 0;
+let arbeskCollectionSeq = 2;
 
 /** The collection and listed name of a copy's target, `<collection>/~<name>`
  *  (location::parse_target). */
@@ -1800,12 +1802,12 @@ function arbeskTarget(to: string): { collection: (typeof ARBESK_COLLECTIONS)[num
 
 /** The session a write needs, as Client::session_for answers; an
  *  expired one is refused once and forgotten, as a 401 does. */
-function arbeskSessionFor(): void {
+function arbeskSessionFor(needed = ARBESK_SIGN_IN): void {
   if (arbeskSession.expireNext) {
     arbeskSession.expireNext = false;
     arbeskSession.signedIn = false;
   }
-  if (!arbeskSession.signedIn) throw ARBESK_SIGN_IN;
+  if (!arbeskSession.signedIn) throw needed;
 }
 
 /** A new asset's id, as the Studio makes one: `asset_<n>`, not yet taken. */
@@ -1959,6 +1961,17 @@ const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
     // Signing in keeps a new session (D4).
     arbeskSession.signedIn = true;
     return { ...account };
+  },
+  arbesk_create_collection: (a) => {
+    const { address, token, asset } = arbeskIds(str(a, "path"));
+    if (token || asset) throw "Create collections in the account's folder.";
+    arbeskSessionFor(ARBESK_CREATE_SIGN_IN);
+    const name = str(a, "name").trim();
+    if (!name) throw "Enter a name for the collection.";
+    if (ARBESK_COLLECTIONS.some((collection) => collection.name === name)) throw `A collection named “${name}” already exists.`;
+    const created = String(++arbeskCollectionSeq);
+    ARBESK_COLLECTIONS.push({ token: created, name, assets: [] });
+    return `arbesk://${address}/${arbeskSegment(created, name)}`;
   },
   arbesk_signed_in: (a) => {
     try {
