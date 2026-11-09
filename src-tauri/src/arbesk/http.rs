@@ -30,8 +30,6 @@ pub trait Http: Send + Sync {
         body: &serde_json::Value,
         session: Option<&str>,
     ) -> Result<Vec<u8>, HttpError>;
-    // Used by the writes that follow.
-    #[allow(dead_code)]
     /// POST `body` as JSON like [`Http::post_json`], waiting up to four
     /// minutes: Arbesk's wallet relay answers when its transaction is mined.
     fn post_json_slow(
@@ -40,7 +38,6 @@ pub trait Http: Send + Sync {
         body: &serde_json::Value,
         session: Option<&str>,
     ) -> Result<Vec<u8>, HttpError>;
-    #[allow(dead_code)]
     /// POST a `multipart/form-data` body: `fields`, then `bytes` as the part
     /// `file` named `file_name`.
     fn post_multipart(
@@ -56,7 +53,6 @@ pub trait Http: Send + Sync {
 
 /// A `multipart/form-data` body, built by hand: `fields` in order, then the
 /// `file` part (`application/octet-stream`), closed with `--boundary--`.
-#[allow(dead_code)]
 pub fn multipart_body(
     boundary: &str,
     file_name: &str,
@@ -72,6 +68,7 @@ pub fn multipart_body(
             .as_bytes(),
         );
     }
+    let file_name = quoted_file_name(file_name);
     body.extend_from_slice(
         format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
@@ -86,15 +83,33 @@ pub fn multipart_body(
 /// How long the relay and uploads may take: four minutes.
 const SLOW_TIMEOUT_SECS: u64 = 240;
 
+/// The slowest upload rate an upload is given time for: 64 KiB/s.
+const UPLOAD_BYTES_PER_SEC: u64 = 64 * 1024;
+
+/// How long an upload of `len` bytes may take: four minutes, plus the time
+/// it takes at `UPLOAD_BYTES_PER_SEC` (100 MB: about half an hour). A fixed
+/// limit would fail a large part on a slow link, and no limit would wait
+/// on a stalled one for ever.
+fn upload_timeout(len: usize) -> Duration {
+    Duration::from_secs(SLOW_TIMEOUT_SECS + len as u64 / UPLOAD_BYTES_PER_SEC)
+}
+
+/// `name` safe inside `filename="…"`: `"`, CR and LF percent-encoded, as
+/// browsers send them.
+fn quoted_file_name(name: &str) -> String {
+    name.replace('"', "%22")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
+}
+
 /// The most one answer may hold: an asset's largest part, packed.
 pub const MAX_BODY: u64 = 512 * 1024 * 1024;
 
-/// The real client: 30 seconds per request (four minutes for the relay and
-/// for uploads), rustls, no cookies, and no answer read past `cap` bytes,
+/// The real client: 30 seconds per request (four minutes for the relay,
+/// longer for a large upload: `upload_timeout`), rustls, no cookies, and no answer read past `cap` bytes,
 /// whatever the server says.
 pub struct ReqwestHttp {
     client: reqwest::blocking::Client,
-    #[allow(dead_code)]
     slow: reqwest::blocking::Client,
     cap: u64,
 }
@@ -201,6 +216,7 @@ impl Http for ReqwestHttp {
         let request = self
             .slow
             .post(url)
+            .timeout(upload_timeout(bytes.len()))
             .header(
                 "Content-Type",
                 format!("multipart/form-data; boundary={boundary}"),
@@ -470,6 +486,24 @@ mod tests {
         ]
         .concat();
         assert_eq!(body, expected);
+    }
+
+    #[test]
+    fn a_file_name_cannot_break_out_of_its_quotes() {
+        let body = multipart_body("XB", "a\"b\r\nc.bin", b"x", &[]);
+        let text = String::from_utf8(body).unwrap();
+        assert!(text.contains("filename=\"a%22b%0D%0Ac.bin\"\r\n"), "{text}");
+    }
+
+    #[test]
+    fn an_upload_may_take_longer_the_larger_it_is() {
+        assert_eq!(upload_timeout(0), Duration::from_secs(240));
+        assert_eq!(upload_timeout(64 * 1024), Duration::from_secs(241));
+        // 100 MB at 64 KiB/s, on top of the four minutes.
+        assert_eq!(
+            upload_timeout(100 * 1024 * 1024),
+            Duration::from_secs(240 + 1600)
+        );
     }
 
     #[test]

@@ -2,13 +2,14 @@
 //! email and the code Arbesk emails, then browse the account's collections
 //! as folders and their assets as glTF and 3MF files. Arbesk's read path is
 //! rebuilt here from public sources (the backend's config and token index,
-//! the chain's `tokenURI`, the IPFS gateway); nothing is written to Arbesk.
+//! the chain's `tokenURI`, the IPFS gateway). The one write is a local
+//! model copied into a collection (`write`): uploaded to IPFS through
+//! Arbesk's upload URLs and saved through its wallet relay, with the
+//! session kept from sign-in.
 
 pub mod accounts;
 pub mod chain;
 pub mod compose;
-// Used by the writes that follow.
-#[allow(dead_code)]
 pub mod decompose;
 pub mod http;
 pub mod ipfs;
@@ -19,6 +20,9 @@ pub mod session;
 pub mod signin;
 #[cfg(test)]
 pub(crate) mod testing;
+// Until `ArbeskState` copies into Arbesk (the next step of this work).
+#[allow(dead_code)]
+pub mod write;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

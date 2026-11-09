@@ -25,6 +25,18 @@ const NO_TOTAL: u64 = u64::MAX;
 pub enum Phase {
     Preparing,
     Working,
+    /// The work is done and a server is saving it (Arbesk's relay).
+    Saving,
+}
+
+impl Phase {
+    /// The phase stored as `phase as u8`.
+    fn from_u8(stored: u8) -> Self {
+        [Phase::Preparing, Phase::Working, Phase::Saving]
+            .into_iter()
+            .find(|phase| *phase as u8 == stored)
+            .unwrap_or(Phase::Preparing)
+    }
 }
 
 /// What the frontend receives, at most every 100 ms and once at the end.
@@ -42,7 +54,7 @@ struct Counters {
     bytes: AtomicU64,
     items: AtomicU64,
     total: AtomicU64,
-    working: AtomicU8,
+    phase: AtomicU8,
     cancelled: AtomicBool,
 }
 
@@ -52,7 +64,7 @@ impl Default for Counters {
             bytes: AtomicU64::new(0),
             items: AtomicU64::new(0),
             total: AtomicU64::new(NO_TOTAL),
-            working: AtomicU8::new(0),
+            phase: AtomicU8::new(Phase::Preparing as u8),
             cancelled: AtomicBool::new(false),
         }
     }
@@ -80,9 +92,7 @@ impl Progress {
     }
 
     pub fn set_phase(&self, phase: Phase) {
-        self.0
-            .working
-            .store(u8::from(phase == Phase::Working), Ordering::Relaxed);
+        self.0.phase.store(phase as u8, Ordering::Relaxed);
     }
 
     pub fn cancel(&self) {
@@ -108,11 +118,7 @@ impl Progress {
             bytes: self.0.bytes.load(Ordering::Relaxed),
             items: self.0.items.load(Ordering::Relaxed),
             total: (total != NO_TOTAL).then_some(total),
-            phase: if self.0.working.load(Ordering::Relaxed) == 1 {
-                Phase::Working
-            } else {
-                Phase::Preparing
-            },
+            phase: Phase::from_u8(self.0.phase.load(Ordering::Relaxed)),
             done: false,
         }
     }
@@ -228,6 +234,20 @@ mod tests {
                 done: false,
             }
         );
+    }
+
+    #[test]
+    fn each_phase_is_reported_by_its_name() {
+        let progress = Progress::default();
+        for (phase, name) in [
+            (Phase::Working, "\"working\""),
+            (Phase::Saving, "\"saving\""),
+            (Phase::Preparing, "\"preparing\""),
+        ] {
+            progress.set_phase(phase);
+            assert_eq!(progress.snapshot().phase, phase);
+            assert_eq!(serde_json::to_string(&phase).unwrap(), name);
+        }
     }
 
     #[test]

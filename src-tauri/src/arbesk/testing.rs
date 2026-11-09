@@ -40,6 +40,8 @@ pub(crate) struct World {
     pub(crate) relay: Relay,
     /// Upload URLs are Kubo's API instead of pre-signed PUTs.
     pub(crate) kubo: bool,
+    /// Arbesk's rate limit is reached: upload URLs answer 429.
+    pub(crate) busy: bool,
     /// Upload URLs handed out so far; the next is `https://up.test/<minted>`.
     pub(crate) minted: usize,
     /// Upload URLs already used (a second use is refused, as Pinata does).
@@ -258,6 +260,12 @@ fn signed_in(w: &World, request: &Request) -> Result<(), HttpError> {
 /// `{count}` upload credentials: pre-signed PUT URLs, or one reusable Kubo API.
 fn upload_urls(w: &mut World, request: &Request) -> Result<Vec<u8>, HttpError> {
     signed_in(w, request)?;
+    if w.busy {
+        return Err(HttpError::new(
+            Some(429),
+            "The server answered 429 Too Many Requests.",
+        ));
+    }
     let count = request
         .body
         .as_ref()

@@ -145,7 +145,7 @@ fn or<'a>(name: &'a str, fallback: &'a str) -> &'a str {
 /// asset-core's `sanitizeFileName` (`utils/uri.ts`): lower case, every run
 /// of other characters than `a-z0-9_-` one `_`, at most 40 characters,
 /// `asset` when that leaves nothing.
-fn sanitize_file_name(name: &str) -> String {
+pub(crate) fn sanitize_file_name(name: &str) -> String {
     let mut out = String::new();
     let mut in_run = false;
     for c in or(name, "asset").to_lowercase().chars() {

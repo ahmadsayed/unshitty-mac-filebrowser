@@ -504,7 +504,7 @@ impl Drop for Held<'_> {
 }
 
 /// What an account's chain and gateway say, read through one manifest cache.
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     http: &'a dyn Http,
     site: &'a Site,
     chain: ChainConfig,
@@ -514,7 +514,11 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    fn open(http: &'a dyn Http, site: &'a Site, cache_dir: &Path) -> Result<Self, String> {
+    pub(crate) fn open(
+        http: &'a dyn Http,
+        site: &'a Site,
+        cache_dir: &Path,
+    ) -> Result<Self, String> {
         let chain = chain::config(http, site)?;
         let gateway = Gateway::new(http, &chain.gateway, manifest_cache(cache_dir));
         Ok(Self {
@@ -527,8 +531,64 @@ impl<'a> Reader<'a> {
     }
 
     fn collection_manifest(&self, token_id: &str) -> Result<Value, String> {
-        self.gateway
-            .json(&chain::token_uri(self.http, &self.chain, token_id)?)
+        Ok(self.collection_manifest_with_cid(token_id)?.1)
+    }
+
+    /// The CID collection `token_id` points at now (its `tokenURI`, read
+    /// afresh) and the manifest there.
+    pub(crate) fn collection_manifest_with_cid(
+        &self,
+        token_id: &str,
+    ) -> Result<(String, Value), String> {
+        let cid = chain::token_uri(self.http, &self.chain, token_id)?;
+        let manifest = self.gateway.json(&cid)?;
+        Ok((cid, manifest))
+    }
+
+    /// The asset ids, manifest CIDs and listed names (as [`list`] shows
+    /// them) of `collection`'s assets that can be read, in id order.
+    pub(crate) fn listed_names(
+        &self,
+        collection: &Value,
+    ) -> Result<Vec<(String, String, String)>, String> {
+        let assets = asset_cids(collection);
+        let rows = in_parallel(&assets, PARALLEL, |(id, cid)| {
+            self.listed_name(id, cid)
+                .map(|name| (id.clone(), cid.clone(), name))
+        });
+        let mut named = Vec::new();
+        for row in rows {
+            match row {
+                Ok(row) => named.push(row),
+                Err(error) if unreachable(&error) => return Err(error),
+                Err(_) => {}
+            }
+        }
+        Ok(named)
+    }
+
+    /// The asset manifest at `cid`.
+    pub(crate) fn manifest_at(&self, cid: &str) -> Result<Value, String> {
+        self.gateway.json(cid)
+    }
+
+    /// An asset's listed name: its name with its format's extension; a live
+    /// link shows as glTF, an unknown format without an extension.
+    fn listed_name(&self, asset_id: &str, cid: &str) -> Result<String, String> {
+        let manifest = self.gateway.json(cid)?;
+        self.name_of(&manifest, asset_id, cid)
+    }
+
+    fn name_of(&self, manifest: &Value, asset_id: &str, cid: &str) -> Result<String, String> {
+        let ext = if is_child_ref(manifest) {
+            Some("gltf")
+        } else {
+            format_of(&self.gateway.json(&source_cid(manifest, cid))?)
+                .ok()
+                .map(|format| format.ext())
+        };
+        let base = display_name(manifest, asset_id);
+        Ok(ext.map_or_else(|| base.clone(), |ext| format!("{base}.{ext}")))
     }
 
     /// The CID and manifest of asset `asset_id` in collection `token_id`.
@@ -559,9 +619,7 @@ impl<'a> Reader<'a> {
 
     fn collection_entry(&self, address: &str, token_id: &str) -> Result<Entry, String> {
         let manifest = self.collection_manifest(token_id)?;
-        let name = text(&manifest["name"])
-            .unwrap_or(UNTITLED_COLLECTION)
-            .to_string();
+        let name = collection_name(&manifest);
         let path = collection_path(address, token_id, &name);
         Ok(entry(name, path, true, &manifest))
     }
@@ -574,12 +632,7 @@ impl<'a> Reader<'a> {
         thumbs: &Thumbnails,
     ) -> Result<Vec<Entry>, String> {
         let manifest = self.collection_manifest(token_id)?;
-        let assets: Vec<(String, String)> = manifest["assets"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .filter_map(|(id, cid)| Some((id.clone(), cid.as_str()?.to_string())))
-            .collect();
+        let assets = asset_cids(&manifest);
         readable(in_parallel(&assets, PARALLEL, |(id, cid)| {
             let entry = self.asset_entry(path, id, cid)?;
             thumbs.remember(asset_key(address, token_id, id), entry.1);
@@ -587,9 +640,8 @@ impl<'a> Reader<'a> {
         }))
     }
 
-    /// An asset's row: its name with its format's extension; a live link
-    /// shows as glTF, an unknown format without an extension. With it,
-    /// where its thumbnail is.
+    /// An asset's row, under its listed name ([`Reader::listed_name`]);
+    /// with it, where its thumbnail is.
     fn asset_entry(
         &self,
         collection: &str,
@@ -597,15 +649,7 @@ impl<'a> Reader<'a> {
         cid: &str,
     ) -> Result<(Entry, Option<Stored>), String> {
         let manifest = self.gateway.json(cid)?;
-        let ext = if is_child_ref(&manifest) {
-            Some("gltf")
-        } else {
-            format_of(&self.gateway.json(&source_cid(&manifest, cid))?)
-                .ok()
-                .map(|format| format.ext())
-        };
-        let base = display_name(&manifest, asset_id);
-        let name = ext.map_or_else(|| base.clone(), |ext| format!("{base}.{ext}"));
+        let name = self.name_of(&manifest, asset_id, cid)?;
         let path = asset_path_named(collection, asset_id, &name);
         let thumbnail = self.stored_thumbnail(&manifest);
         Ok((entry(name, path, false, &manifest), thumbnail))
@@ -620,16 +664,33 @@ fn readable(rows: Vec<Result<Entry, String>>) -> Result<Vec<Entry>, String> {
     for row in rows {
         match row {
             Ok(entry) => entries.push(entry),
-            Err(error)
-                if error.starts_with(CHAIN_UNREACHABLE)
-                    || error.starts_with(STORAGE_UNREACHABLE) =>
-            {
-                return Err(error);
-            }
+            Err(error) if unreachable(&error) => return Err(error),
             Err(_) => {}
         }
     }
     Ok(entries)
+}
+
+/// The chain or the storage didn't answer: not a row's own failure.
+fn unreachable(error: &str) -> bool {
+    error.starts_with(CHAIN_UNREACHABLE) || error.starts_with(STORAGE_UNREACHABLE)
+}
+
+/// A collection manifest's assets: each id and its manifest's CID.
+fn asset_cids(collection: &Value) -> Vec<(String, String)> {
+    collection["assets"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(id, cid)| Some((id.clone(), cid.as_str()?.to_string())))
+        .collect()
+}
+
+/// A collection's name as its folder shows it.
+pub(crate) fn collection_name(manifest: &Value) -> String {
+    text(&manifest["name"])
+        .unwrap_or(UNTITLED_COLLECTION)
+        .to_string()
 }
 
 fn text(value: &Value) -> Option<&str> {
