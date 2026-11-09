@@ -3,19 +3,52 @@
 //! than allowed to balloon the browser's memory.
 
 use std::io::{BufRead, Cursor, Seek};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-/// Decodes run one at a time: a folder of pictures must not decode in
-/// parallel and hold several full-size images at once.
+/// Decodes run one at a time: a listing's thumbnails must not decode in
+/// parallel and hold several full-size images at once. (The app serializes
+/// its own local thumbnails with a separate lock in `thumbnails.rs`.)
 static DECODE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Decodes running or waiting for `DECODE_LOCK`.
+static DECODES_WAITING: AtomicUsize = AtomicUsize::new(0);
 
 /// The most pixels worth decoding for one thumbnail.
 const MAX_PIXELS: u64 = 80_000_000;
 
 fn one_decode_at_a_time<T>(decode: impl FnOnce() -> T) -> T {
-    let _guard: MutexGuard<'_, ()> = DECODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    decode()
+    DECODES_WAITING.fetch_add(1, Ordering::SeqCst);
+    let decoded = {
+        let _guard: MutexGuard<'_, ()> = DECODE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        decode()
+    };
+    // Trim once the queue has drained, not after every decode, as the app's
+    // own thumbnail decoder does.
+    if DECODES_WAITING.fetch_sub(1, Ordering::SeqCst) == 1 {
+        release_free_memory();
+    }
+    decoded
 }
+
+/// Give freed heap back to the OS after a decode.
+///
+/// glibc keeps released heap in per-arena pools instead of returning it.
+/// `malloc_trim` hands those pages back; only glibc has it.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn release_free_memory() {
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> i32;
+    }
+    // SAFETY: malloc_trim only releases memory the allocator already considers
+    // free; it cannot affect live allocations.
+    unsafe {
+        malloc_trim(0);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn release_free_memory() {}
 
 /// A thumbnail of the image in `bytes` as PNG, at most `size` pixels square
 /// (a smaller image keeps its size); `None` when the bytes aren't an image

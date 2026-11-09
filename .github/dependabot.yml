@@ -1,4 +1,5 @@
-# Dependabot: weekly update PRs for npm, both Cargo projects and the
+# Dependabot: weekly update PRs for npm, the src-tauri Cargo workspace
+# (crates/arbesk included) and the phone page's Cargo project, plus the
 # workflows' actions (kept pinned to commit SHAs). Nothing merges by itself:
 # each PR waits for the human, like any other (HUMANS.md).
 #

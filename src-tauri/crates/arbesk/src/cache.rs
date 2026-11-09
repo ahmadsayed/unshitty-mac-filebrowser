@@ -9,6 +9,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+// The app's `downloads.rs` prunes the cache by these marks, so the suffix and
+// the fingerprint must stay identical there.
 const MARK_SUFFIX: &str = ".downloaded";
 
 /// The hidden file beside `copy` that remembers it as downloaded.

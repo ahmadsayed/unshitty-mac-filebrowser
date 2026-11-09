@@ -74,8 +74,8 @@ fn sign_in_site() -> Site {
     }
 }
 
-/// What the app keeps for Arbesk: one HTTP client, the cache folder, the
-/// connected accounts and the sign-ins waiting for the browser.
+/// What a [`Client`] keeps: one HTTP client, the cache folder, the connected
+/// accounts and the sign-ins waiting for the browser.
 pub struct Client {
     http: Result<Arc<dyn Http>, String>,
     cache_dir: PathBuf,

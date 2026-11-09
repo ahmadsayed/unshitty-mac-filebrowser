@@ -13,6 +13,8 @@ pub const DIRS: [&str; 4] = ["sftp/sftp-open", "drive", "share-open", "arbesk"];
 /// How long a download may go untouched before it is pruned.
 pub const MAX_AGE: Duration = Duration::from_secs(7 * 86_400);
 
+// The Arbesk crate's `cache.rs` writes these marks too (asset builds), so the
+// suffix and the fingerprint must stay identical here.
 const MARK_SUFFIX: &str = ".downloaded";
 
 /// The hidden file beside `copy` that remembers it as downloaded.
