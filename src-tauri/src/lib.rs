@@ -872,27 +872,71 @@ async fn copy_entry(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
-    let route = place::transfer(&from, &to)?;
+    let plan = place::copy(&from, &to)?;
     let tracking = Tracking::start(&app, &op, on_progress);
     let progress = tracking.progress.clone();
-    let result = if route == Route::Drive {
-        drive_transfer(app.clone(), from, to, overwrite, false, progress).await
-    } else {
-        let app = app.clone();
-        blocking(move || {
-            let state = app.state::<VersionsState>();
-            let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
-            state.transfer(&from_path, &to_path, Transfer::Copy, || {
-                let trash = AppTrash { app: &app };
-                fs_ops::copy_entry_with(from, to.clone(), overwrite, &progress, &trash)
-            })?;
-            Ok(to_path.to_string_lossy().to_string())
-        })
-        .await
-        .and_then(|result| result)
+    let result = match copied_file(&app, from, plan.from_arbesk, &progress).await {
+        Ok(from) => copy_routed(app.clone(), from, to, overwrite, plan.route, progress).await,
+        Err(error) => Err(error),
     };
     tracking.finish(&app);
     result
+}
+
+/// `copy_source` with the app's Arbesk exports, built on a blocking thread.
+async fn copied_file(
+    app: &tauri::AppHandle,
+    from: String,
+    from_arbesk: bool,
+    progress: &progress::Progress,
+) -> Result<String, String> {
+    if !from_arbesk {
+        return Ok(from);
+    }
+    let (app, progress) = (app.clone(), progress.clone());
+    blocking(move || {
+        copy_source(from, true, |path| app.state::<arbesk::ArbeskState>().export(path, &progress))
+    })
+    .await?
+}
+
+/// The file a copy reads: `from` itself, or the file `export` builds for
+/// an Arbesk asset (`place::CopyRoute::from_arbesk`).
+fn copy_source(
+    from: String,
+    from_arbesk: bool,
+    export: impl FnOnce(&str) -> Result<PathBuf, String>,
+) -> Result<String, String> {
+    if !from_arbesk {
+        return Ok(from);
+    }
+    export(&from).map(|file| file.to_string_lossy().into_owned())
+}
+
+/// A copy from `from` (a file on this computer or in Drive) to `to`, the
+/// way `route` says.
+async fn copy_routed(
+    app: tauri::AppHandle,
+    from: String,
+    to: String,
+    overwrite: bool,
+    route: Route,
+    progress: progress::Progress,
+) -> Result<String, String> {
+    if route == Route::Drive {
+        return drive_transfer(app, from, to, overwrite, false, progress).await;
+    }
+    blocking(move || {
+        let state = app.state::<VersionsState>();
+        let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
+        state.transfer(&from_path, &to_path, Transfer::Copy, || {
+            let trash = AppTrash { app: &app };
+            fs_ops::copy_entry_with(from, to.clone(), overwrite, &progress, &trash)
+        })?;
+        Ok(to_path.to_string_lossy().to_string())
+    })
+    .await
+    .and_then(|result| result)
 }
 
 #[tauri::command]
@@ -2821,6 +2865,15 @@ mod read_gate_tests {
             Ok(PathBuf::from("/cache/arbesk/bafyA/Box.gltf"))
         });
         assert_eq!(built.unwrap(), "/cache/arbesk/bafyA/Box.gltf");
+        // A copy reads its own source, or the file built for an Arbesk asset.
+        assert_eq!(copy_source("/a/b.txt".into(), false, |_| panic!("not Arbesk")).unwrap(), "/a/b.txt");
+        let exported = copy_source(asset.into(), true, |path| {
+            assert_eq!(path, asset);
+            Ok(PathBuf::from("/cache/arbesk/bafyA/Box.gltf"))
+        });
+        assert_eq!(exported.unwrap(), "/cache/arbesk/bafyA/Box.gltf");
+        let failed = copy_source(asset.into(), true, |_| Err("This asset is too large to open.".into()));
+        assert_eq!(failed.unwrap_err(), "This asset is too large to open.");
         for (path, refusal) in refused("src") {
             let found = search_local(path, "lib", false, 10, &mut |_| panic!("searched {path}"), &|| false);
             assert_eq!(found.unwrap_err(), refusal, "{path}");

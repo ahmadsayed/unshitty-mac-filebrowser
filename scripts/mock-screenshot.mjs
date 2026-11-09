@@ -11,7 +11,7 @@
 // --size <width>x<height> (default 1100x720), --theme gnome|macos (default
 // macos; the theme follows the platform, so gnome loads the page with a
 // Linux user agent and the app takes its Linux code paths), --scene
-// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-grid|network-arbesk|arbesk-preview (default grid: the folder as it
+// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-item-menu|arbesk-grid|network-arbesk|arbesk-preview (default grid: the folder as it
 // opens; list: list view with the second item selected; menu: the main menu
 // open; item-menu: the right-click menu of --item; background-menu: the
 // right-click menu of the empty area; dialog: the Keyboard Shortcuts dialog; search, search-list: a search
@@ -24,7 +24,8 @@
 // network-address-help: Network's server address popover open;
 // preview-loading: Space on --item while the mock holds its bytes;
 // arbesk-connect: Connect to Arbesk with an email typed; arbesk-collection:
-// the mock's Arbesk collection as a list; arbesk-grid: the same collection
+// the mock's Arbesk collection as a list; arbesk-item-menu: an asset's menu
+// there (--item, default Box.gltf); arbesk-grid: the same collection
 // in the grid view, with the thumbnails its assets were saved with;
 // network-arbesk: Network with the
 // Arbesk account; arbesk-preview: Space on --item there, default Box.3mf). Uses ?demo (no
@@ -41,7 +42,7 @@ const option = (name, fallback) => {
 const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene", "--query", "--item"];
 const [path, out] = args.filter((a, i) => !a.startsWith("--") && !VALUE_OPTIONS.includes(args[i - 1]));
 if (!path || !out) {
-  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-grid|network-arbesk|arbesk-preview] [--query <text>] [--item <name>]");
+  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-item-menu|arbesk-grid|network-arbesk|arbesk-preview] [--query <text>] [--item <name>]");
   process.exit(2);
 }
 
@@ -182,6 +183,12 @@ const SCENES = {
   "arbesk-collection": async (page) => {
     await openMockArbeskCollection(page);
     await page.locator("#view .item", { hasText: "Box.gltf" }).click();
+  },
+  // An asset's menu in that collection (--item, default Box.gltf).
+  "arbesk-item-menu": async (page) => {
+    await openMockArbeskCollection(page);
+    await page.locator("#view .item").filter({ hasText: option("--item", "Box.gltf") }).click({ button: "right" });
+    await page.waitForSelector(".popover .menu-item");
   },
   // The same collection in the grid view, once its assets' thumbnails are in.
   "arbesk-grid": async (page) => {

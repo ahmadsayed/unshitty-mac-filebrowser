@@ -617,6 +617,13 @@ function driveUpload(from: string, to: string, overwrite: boolean, move: boolean
   const [fromParent, fromName] = parentAndName(from);
   const node = fromParent?.dir ? fromParent.children[fromName] : undefined;
   if (!node || !fromParent?.dir) throw `“${from}” no longer exists`;
+  const uploaded = uploadNode(node, to, overwrite);
+  if (move) trash(fromParent, fromName, from);
+  return uploaded;
+}
+
+/** `node` uploaded to the new name `to` in Drive; its Drive path. */
+function uploadNode(node: Node, to: string, overwrite: boolean): string {
   const { parent, name } = driveTarget(to);
   const old = driveClash(parent.id, name, overwrite);
   if (old) old.trashed = true;
@@ -627,7 +634,6 @@ function driveUpload(from: string, to: string, overwrite: boolean, move: boolean
   };
   const uploaded = add(node, parent.id, name);
   driveLog.push(`upload ${name}`);
-  if (move) trash(fromParent, fromName, from);
   return drivePath(uploaded.id);
 }
 
@@ -1727,6 +1733,30 @@ function arbeskBytes(path: string, limit: number): Uint8Array {
   return bytes;
 }
 
+/**
+ * copy_entry from Arbesk (place::copy): only an asset, only to a folder on
+ * this computer or in Drive. Its file is built (ArbeskState::export), then placed
+ * as any copy is: a name taken asks first, and Replace trashes the old item.
+ */
+function arbeskCopy(a: Args): string {
+  const from = str(a, "from"), to = str(a, "to");
+  const overwrite = Boolean(a.overwrite);
+  writable(to);
+  if (!arbeskIds(from).asset) throw "Copying Arbesk collections comes next.";
+  const asset = arbeskAsset(from);
+  if (asset.huge) throw "This asset is too large to open.";
+  const node = f(asset.ext === "3mf" ? sample3mf().length : sampleGlb().length, 0);
+  if (placeOf(to) === "drive") return uploadNode(node, to, overwrite);
+  const [toParent, toName] = parentAndName(localPath(to));
+  if (!toParent?.dir) throw "The destination folder no longer exists.";
+  if (toParent.children[toName]) {
+    if (!overwrite) throw `Target already exists: ${to}`;
+    trash(toParent, toName, to);
+  }
+  toParent.children[toName] = node;
+  return to;
+}
+
 /** The thumbnail an asset was saved with, as PNG: a shaded cube on the
  *  Studio's backdrop, 16:9 and at most 512 x 288 like the Studio's (the
  *  backend never enlarges one). Empty when it has none or can't be read,
@@ -2388,7 +2418,10 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     if (placeOf(path) === "drive") return drivePathExists(path);
     return isLocal(path) && lookup(path) !== undefined;
   },
-  copy_entry: (a) => (transferRoute(a) === "drive" ? driveTransfer(a, false) : (transfer(a, false), str(a, "to"))),
+  copy_entry: (a) => {
+    if (placeOf(str(a, "from")) === "arbesk") return arbeskCopy(a);
+    return transferRoute(a) === "drive" ? driveTransfer(a, false) : (transfer(a, false), str(a, "to"));
+  },
   move_entry: (a) => (transferRoute(a) === "drive" ? driveTransfer(a, true) : (transfer(a, true), str(a, "to"))),
   trash_entries: trashEntries,
   trash_info: (a) => (a.paths as string[]).map((path) => (isLocal(path) ? trashInfo(path) : null)),

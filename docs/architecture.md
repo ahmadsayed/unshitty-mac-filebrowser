@@ -60,8 +60,8 @@ the place may be written. Then:
 - listing, counts, opening and reading go to `fs_ops.rs`, `cloud/` (Google
   Drive), `share/` (iroh shares), `sftp.rs` (SSH, read only) and `arbesk/`
   (Arbesk, read only: its read path rebuilt from public sources, assets
-  built into the app cache to open and preview, each asset's saved
-  thumbnail).
+  built into the app cache to open, preview and copy out, each asset's
+  saved thumbnail).
 
 Replace sends the old item to the Trash through `trash_ops::Trash` and, if
 the last rename fails, takes it back out and forgets its log entry. Every

@@ -132,7 +132,13 @@ test("only Arbesk hands over its own thumbnails, whatever kind of file an item i
 });
 
 test("the copy-out refusal, in the first item's words", () => {
-  expect(copyOutRefusal(["arbesk://0x00000000000000000000000000000000000000ab/1~S/a~B.gltf", "sftp://me@host/b"])).toBe("Copying from Arbesk comes next.");
+  const account = "arbesk://0x00000000000000000000000000000000000000ab";
+  // An Arbesk asset can be copied out; an account or a collection can't yet.
+  expect(copyOutRefusal([`${account}/1~S/a~B.gltf`, `${account}/1~S/b~C.3mf`, "/Users/me/a.txt"])).toBeNull();
+  expect(copyOutRefusal([`${account}/1~S`, `${account}/1~S/a~B.gltf`])).toBe("Copying Arbesk collections comes next.");
+  expect(copyOutRefusal([account])).toBe("Copying Arbesk collections comes next.");
+  // An asset that can go doesn't pick the words; as for a local item, the share's stand.
+  expect(copyOutRefusal([`${account}/1~S/a~B.gltf`, "sftp://me@host/b"])).toBe("Copying out of a shared folder comes next.");
   expect(copyOutRefusal(["/Users/me/a.txt", "gdrive://acct/x~a"])).toBeNull();
   expect(copyOutRefusal(["share://r1/a.txt"])).toBe("Copying out of a shared folder comes next.");
   expect(copyOutRefusal(["sftp://me@host/a.txt", "share://r1/b"])).toBe("Copying from SSH servers comes next.");

@@ -1371,6 +1371,37 @@ test("folder_size walks local folders only", async () => {
   await expect(invoke("folder_size", { path: "Users/me", walk: 1 })).rejects.toBe("“Users/me” is not a local file.");
 });
 
+test("copy_entry takes an Arbesk asset out to a folder or Drive, as place::copy allows", async () => {
+  const { ARBESK_MOCK_ADDRESS: address } = await import("../dev/mock-tauri/core");
+  const start = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  const account = await invoke<{ id: string }>("arbesk_connect_finish", { flowId: start.flow_id });
+  if ((await invoke<unknown[]>("drive_accounts")).length === 0) {
+    await invoke("drive_client_set", { json: DESKTOP_CLIENT });
+    const drive = await invoke<{ flow_id: string }>("drive_connect_start");
+    await invoke("drive_connect_finish", { flowId: drive.flow_id });
+  }
+  const shapes = `arbesk://${address}/1~Shapes`;
+  const [gltf, , big] = (await invoke<Array<{ path: string }>>("list_dir", { path: shapes, showHidden: false })).map((r) => r.path);
+  await invoke("make_dir", { path: `${HOME}/Models` });
+  const to = `${HOME}/Models/Box.gltf`;
+
+  expect(await invoke("copy_entry", { from: gltf, to, overwrite: false })).toBe(to);
+  expect(await invoke("path_exists", { path: to })).toBe(true);
+  await expect(invoke("copy_entry", { from: gltf, to, overwrite: false })).rejects.toMatch(/already exists/);
+  expect(await invoke("copy_entry", { from: gltf, to, overwrite: true })).toBe(to);
+  const inDrive = await invoke<string>("copy_entry", { from: gltf, to: "gdrive://mock/mock-root~My%20Drive/~Box.gltf", overwrite: false });
+  expect(await invoke("path_exists", { path: inDrive })).toBe(true);
+
+  // Only a copy, only of an asset, never into a read-only place.
+  await expect(invoke("move_entry", { from: gltf, to: `${HOME}/Models/Moved.gltf`, overwrite: false })).rejects.toBe("Arbesk is read only.");
+  await expect(invoke("copy_entry", { from: shapes, to: `${HOME}/Models/Shapes`, overwrite: false })).rejects.toBe("Copying Arbesk collections comes next.");
+  await expect(invoke("copy_entry", { from: gltf, to: `${shapes}/~Box.gltf`, overwrite: false })).rejects.toBe("Arbesk is read only.");
+  await expect(invoke("copy_entry", { from: gltf, to: "Models/Box.gltf", overwrite: false })).rejects.toBe("“Models/Box.gltf” is not a local file.");
+  await expect(invoke("copy_entry", { from: big, to: `${HOME}/Models/Big.gltf`, overwrite: false })).rejects.toBe("This asset is too large to open.");
+  expect(await invoke("path_exists", { path: `${HOME}/Models/Big.gltf` })).toBe(false);
+  await invoke("arbesk_disconnect", { account: account.id });
+});
+
 test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend's refusals", async () => {
   const { ARBESK_MOCK_ADDRESS: address } = await import("../dev/mock-tauri/core");
   const root = `arbesk://${address}`;

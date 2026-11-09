@@ -4,7 +4,7 @@
 // Kept free of DOM and app state so every branch can be tested directly
 // (tests/locations.test.ts).
 
-import { isWithin, placeOf, PSEUDO_PREFIX, type Place, type Pseudo } from "./paths";
+import { isArbeskAsset, isWithin, placeOf, PSEUDO_PREFIX, type Place, type Pseudo } from "./paths";
 
 /** Every pseudo location starts with this, and Recent, Starred and Network
  *  (the places that aren't folders) are its names: spelled in paths.ts,
@@ -118,22 +118,33 @@ export function acceptsNewItems(path: string, trashPath: string): boolean {
 /** The copy-out refusal's words, by the first item's kind; a share's otherwise. */
 const COPY_OUT_WORDS: Partial<Record<LocationKind, string>> = {
   sftp: "Copying from SSH servers comes next.",
-  arbesk: "Copying from Arbesk comes next.",
+  arbesk: "Copying Arbesk collections comes next.",
 };
 
+/** Whether the item at `path`, of `kind`, can't be copied out of where it is:
+ *  anything in a share or on an SSH server, and an Arbesk account or
+ *  collection. An Arbesk asset can be (its file is built first); one whose
+ *  path isn't known counts as a collection. */
+function staysPut(kind: LocationKind, path: string | undefined): boolean {
+  if (kind === "arbesk") return path === undefined || !isArbeskAsset(path);
+  return isReadOnlyKind(kind);
+}
+
 /**
- * Why items of these kinds can't be copied, cut or dragged out of where they
- * are: shared folders, SSH servers and Arbesk can't be copied from yet. Null
- * when none of them is on one; the first item's kind picks the wording.
+ * Why items of these kinds, at these paths (in the same order), can't be
+ * copied or dragged out of where they are: shared folders, SSH servers and
+ * Arbesk collections can't be copied from yet. Null when none of them is
+ * one; the first item's kind picks the wording.
  */
-export function copyOutRefusalOf(kinds: readonly LocationKind[]): string | null {
-  if (!kinds.some(isReadOnlyKind)) return null;
-  return COPY_OUT_WORDS[kinds[0]] ?? "Copying out of a shared folder comes next.";
+export function copyOutRefusalOf(kinds: readonly LocationKind[], paths: readonly string[] = []): string | null {
+  if (!kinds.some((kind, i) => staysPut(kind, paths[i]))) return null;
+  const first = staysPut(kinds[0], paths[0]) ? COPY_OUT_WORDS[kinds[0]] : undefined;
+  return first ?? "Copying out of a shared folder comes next.";
 }
 
 /** `copyOutRefusalOf` for paths. */
 export function copyOutRefusal(paths: readonly string[]): string | null {
-  return copyOutRefusalOf(paths.map((path) => locationKind(path, "")));
+  return copyOutRefusalOf(paths.map((path) => locationKind(path, "")), paths);
 }
 
 /** What the item actions below need to know about an item. */

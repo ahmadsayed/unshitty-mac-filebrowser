@@ -65,7 +65,23 @@ test("cut, copy and a drag: not out of a share or an SSH server yet, said in the
     expect(refusal(action, at(["sftp", "share"]))).toBe("Copying from SSH servers comes next.");
     // Mixed with a local item the share wording stands, as before.
     expect(refusal(action, at(["folder", "sftp"]))).toBe("Copying out of a shared folder comes next.");
-    expect(refusal(action, at(["arbesk", "share"]))).toBe("Copying from Arbesk comes next.");
+    // An Arbesk item whose path isn't known counts as a collection.
+    expect(refusal(action, at(["arbesk", "share"]))).toBe("Copying Arbesk collections comes next.");
+  }
+});
+
+test("copy takes an Arbesk asset out; cut never does, and a collection stays", () => {
+  const account = "arbesk://0x00000000000000000000000000000000000000ab";
+  const assets: Here = { kind: "arbesk", items: ["arbesk", "arbesk"], paths: [`${account}/1~S/a~B.gltf`, `${account}/1~S/b~C.3mf`] };
+  expect(refusal("copy", assets)).toBeNull();
+  expect(refusal("cut", assets)).toBe("Arbesk is read only.");
+  // Search results and Starred can mix them with local files.
+  const mixed: Here = { kind: "starred", items: ["folder", "arbesk"], paths: ["/Users/me/a.txt", `${account}/1~S/a~B.gltf`] };
+  expect(refusal("copy", mixed)).toBeNull();
+  expect(refusal("cut", mixed)).toBe("Arbesk is read only.");
+  const collection: Here = { kind: "arbesk", items: ["arbesk"], paths: [`${account}/1~S`] };
+  for (const action of ["cut", "copy"] as const) {
+    expect(refusal(action, collection)).toBe("Copying Arbesk collections comes next.");
   }
 });
 

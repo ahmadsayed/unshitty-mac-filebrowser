@@ -29,6 +29,8 @@ export interface Here {
   kind: LocationKind;
   /** The kinds of the items it acts on, in selection order; none for paste and bookmark. */
   items: readonly LocationKind[];
+  /** The items' paths, as `items`; cut and copy tell an Arbesk asset from a collection by them. */
+  paths?: readonly string[];
   /** The items aren't in the folder on screen: search results, Recent, Starred. */
   elsewhere?: boolean;
 }
@@ -105,10 +107,14 @@ function firstItemVerdict(grid: Record<LocationKind, Verdict>, here: Here): Verd
   return OK;
 }
 
-const copyOut = (here: Here): Verdict => copyOutRefusalOf(here.items);
+const copyOut = (here: Here): Verdict => copyOutRefusalOf(here.items, here.paths);
+
+/** Cut: as copy, and never out of Arbesk, whose assets can only be copied. */
+const cut = (here: Here): Verdict =>
+  copyOut(here) ?? (here.items.includes("arbesk") ? ARBESK_READ_ONLY : OK);
 
 const RULES: Record<SharedAction, (here: Here) => Verdict> = {
-  cut: copyOut,
+  cut,
   copy: copyOut,
   paste,
   // Recent and Starred mix folders, so the name-clash check wouldn't work there.
