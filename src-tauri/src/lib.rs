@@ -615,6 +615,25 @@ async fn preview_bytes(app: tauri::AppHandle, path: String, limit: u64) -> Resul
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+/// An Arbesk asset's scene for the Space preview: its parts and where each goes.
+#[tauri::command]
+async fn arbesk_scene(app: tauri::AppHandle, path: String) -> Result<arbesk::scene::Scene, String> {
+    blocking(move || app.state::<arbesk::ArbeskState>().scene(&path)).await?
+}
+
+/// One part of an Arbesk asset's scene, as the preview loads it (a GLB or a
+/// 3MF), at most `limit` bytes.
+#[tauri::command]
+async fn arbesk_part(app: tauri::AppHandle, path: String, key: String, limit: u64) -> Result<tauri::ipc::Response, String> {
+    let limit = limit.clamp(1, 512 * 1024 * 1024);
+    let bytes = blocking(move || {
+        let file = app.state::<arbesk::ArbeskState>().part(&path, &key, &progress::Progress::default())?;
+        fs_ops::preview_bytes(file.to_string_lossy().into_owned(), limit)
+    })
+    .await??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 /// `preview_file_with` the app's Arbesk builds.
 fn preview_file(app: &tauri::AppHandle, path: &str) -> Result<String, String> {
     preview_file_with(path, |path| app.state::<arbesk::ArbeskState>().build(path, &progress::Progress::default()))
@@ -2239,6 +2258,8 @@ pub fn run() {
             open_with,
             preview_text,
             preview_bytes,
+            arbesk_scene,
+            arbesk_part,
             rename_many,
             set_permissions,
             create_symlink,

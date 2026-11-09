@@ -155,8 +155,8 @@ a larger asset shows "This file is too large to preview."
 `arbesk_format` is neither absent (glTF) nor `composite-3mf`, or a glTF
 buffer/image URI that is neither `ipfs://` nor `data:`, fails with
 "This asset uses an Arbesk format File Browser can't read yet." An asset
-that is a link to another token (`child_ref`) is listed but opens with the
-same message.
+that is a scene of several models or links (`child_ref`) previews whole
+since 2026-11-09 (`2026-11-09-arbesk-scenes-design.md`).
 
 **D10. An asset shows the thumbnail it was saved with.** The Studio saves
 a WebP picture with each version it can render: `manifest.thumbnail`, an
