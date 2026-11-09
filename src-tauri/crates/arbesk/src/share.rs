@@ -26,6 +26,7 @@ pub const NO_ACCOUNT: &str =
     "No Arbesk account found for that email. They need to sign in to Arbesk at least once.";
 pub const NO_WALLET: &str = "That Arbesk account has no wallet yet.";
 pub const UNREADABLE: &str = "The collection's editor list can't be read.";
+const UNREADABLE_ANSWER: &str = "Arbesk sent an answer File Browser can't read.";
 pub const NO_LIST: &str = "This collection has no editor list.";
 pub const BAD_ROLE: &str = "Choose Viewer or Editor.";
 /// The relay's 502: most often an expired CDP delegation.
@@ -173,7 +174,7 @@ pub fn resolve_email(
             Some(503) => LOOKUP_UNAVAILABLE.to_string(),
             _ => format!("Couldn't look up that email: {}", error.message),
         })?;
-    let body: Value = serde_json::from_slice(&answer).map_err(|_| UNREADABLE.to_string())?;
+    let body: Value = serde_json::from_slice(&answer).map_err(|_| UNREADABLE_ANSWER.to_string())?;
     if body["exists"] != true {
         return Err(NO_ACCOUNT.into());
     }
