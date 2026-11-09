@@ -87,9 +87,10 @@ one out on its own platform.
   folders, each asset with the thumbnail it was saved with; press Space on
   a `.gltf` or `.3mf` asset to see the model, open it to edit it in
   Arbesk's Studio in your browser, or copy it to a folder or Google Drive.
-  Copy a `.gltf`, `.glb` or `.3mf` file from this computer and paste it
-  into a collection to add it to Arbesk, after a confirmation, since files
-  in Arbesk are public ([details](docs/arbesk.md)).
+  Create a collection with **New Collection…** in the account's menu, and
+  copy a `.gltf`, `.glb` or `.3mf` file from this computer into one to add
+  it to Arbesk, after a confirmation, since files in Arbesk are public
+  ([details](docs/arbesk.md)).
 - **Trash done right:** Undo (⌘Z), Restore (also for items trashed in Finder),
   and nothing is ever deleted without asking.
 - **Check for Updates** (main menu): the AppImage and the Mac app download,
@@ -180,11 +181,12 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
 - Arbesk: only `.gltf`, `.glb` and `.3mf` files from this computer can be
   copied in (up to 100 MB, no folders, no Cut or drag that moves, no rename
   or delete), and only to Arbesk's own storage, not a local Arbesk's; a
-  copy gets no thumbnail until it is saved in the Studio; assets open in
-  the Studio, not as files, and only their newest version can be copied out;
-  collections, and scenes that link to other assets, can't be copied yet,
-  nor dragged to other apps; no sizes in listings; a scene's links to
-  assets on another chain are left out of its preview.
+  copy gets no thumbnail until it is saved in the Studio; collections can
+  be created, but not renamed or deleted; assets open in the Studio, not as
+  files, and only their newest version can be copied out; collections, and
+  scenes that link to other assets, can't be copied yet, nor dragged to
+  other apps; no sizes in listings; a scene's links to assets on another
+  chain are left out of its preview.
 - Keep Versions may miss changes made while the app is closed.
 - Linux: the app makes image thumbnails only (no Quick Look); videos, PDFs
   and documents show a thumbnail when GNOME Files or another app has already
