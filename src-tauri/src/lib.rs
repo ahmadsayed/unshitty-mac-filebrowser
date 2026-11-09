@@ -2247,7 +2247,11 @@ pub fn run() {
                 std::env::var("FILEBROWSER_RELAY").ok(),
             ));
             app.manage(CloudState::new(&config_dir));
-            app.manage(arbesk::ArbeskState::new(cache_dir.clone(), config_dir.join("arbesk_accounts.json")));
+            app.manage(arbesk::ArbeskState::new(
+                cache_dir.clone(),
+                config_dir.join("arbesk_accounts.json"),
+                config_dir.join("tokens"),
+            ));
             app.manage(sftp::SftpState::new(
                 config_dir.join("sftp_known_hosts"),
                 home,
