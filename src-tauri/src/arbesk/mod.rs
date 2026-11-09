@@ -7,6 +7,9 @@
 pub mod accounts;
 pub mod chain;
 pub mod compose;
+// Used by the writes that follow.
+#[allow(dead_code)]
+pub mod decompose;
 pub mod http;
 pub mod ipfs;
 pub mod location;
