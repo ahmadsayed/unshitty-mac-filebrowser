@@ -7,7 +7,7 @@
 // gives the GPU memory back when the preview closes.
 
 import {
-  Box3, DirectionalLight, Group, HemisphereLight, Loader, LoadingManager, Mesh, MeshStandardMaterial, NeutralToneMapping,
+  Box3, DirectionalLight, Group, HemisphereLight, Loader, LoadingManager, Matrix4, Mesh, MeshStandardMaterial, NeutralToneMapping,
   PerspectiveCamera, PMREMGenerator, Quaternion, Raycaster, Scene, Texture, Vector2, Vector3, WebGLRenderer, type BufferGeometry,
   type Material, type Object3D,
 } from "three";
@@ -27,6 +27,53 @@ export interface ModelView {
 
 /** Companion files a .gltf names, by the URI it names them with. */
 export type Companions = Map<string, ArrayBuffer>;
+
+/** Where a copy of a scene part goes (an Arbesk scene, as the backend resolves it). */
+export interface ScenePlacement {
+  /** Column-major, right-handed. */
+  matrix: number[];
+  color: string | null;
+  mesh_colors: Record<string, string>;
+  scale: [number, number, number];
+}
+
+/**
+ * One group holding a copy of each part per placement: the copy sits in a
+ * holder carrying the placement (so the part keeps its own transforms, such
+ * as a 3MF stood up from Z-up), tinted on its own materials when asked.
+ */
+export function placeScene(parts: { object: Object3D; placements: ScenePlacement[] }[]): Group {
+  const scene = new Group();
+  for (const { object, placements } of parts) {
+    for (const placement of placements) scene.add(placed(object, placement));
+  }
+  return scene;
+}
+
+function placed(object: Object3D, placement: ScenePlacement): Group {
+  const holder = new Group();
+  new Matrix4().fromArray(placement.matrix).decompose(holder.position, holder.quaternion, holder.scale);
+  holder.scale.multiply(new Vector3(...placement.scale));
+  const copy = object.clone(true);
+  tint(copy, placement);
+  holder.add(copy);
+  return holder;
+}
+
+/** Each mesh in its own colour from `mesh_colors`, else the copy's colour. */
+function tint(copy: Object3D, placement: ScenePlacement): void {
+  copy.traverse((node) => {
+    const mesh = node as Mesh;
+    const color = mesh.isMesh ? (placement.mesh_colors[mesh.name] ?? placement.color) : null;
+    if (!color) return;
+    const recolor = (material: Material) => {
+      const own = material.clone() as MeshStandardMaterial;
+      own.color?.set(color);
+      return own;
+    };
+    mesh.material = Array.isArray(mesh.material) ? mesh.material.map(recolor) : recolor(mesh.material);
+  });
+}
 
 /** STL and 3MF are Z-up (3D printing); three.js is Y-up. */
 function standUp(object: Object3D): Object3D {

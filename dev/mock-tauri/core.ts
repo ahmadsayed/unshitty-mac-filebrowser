@@ -1631,7 +1631,15 @@ const ARBESK_ORIGIN = "https://promptscad.com";
 
 type MockArbeskAccount = { id: string; email: string; address: string; origin: string; chain_id: number; root_path: string };
 /** `thumbnail`: saved with one, as the Studio does when it can render the model. */
-type MockAsset = { id: string; name: string; ext: "gltf" | "3mf"; huge?: boolean; thumbnail?: boolean };
+type MockAsset = {
+  id: string;
+  name: string;
+  ext: "gltf" | "3mf";
+  huge?: boolean;
+  thumbnail?: boolean;
+  /** A scene's parts, each at the x offsets of its copies (tinted when a colour is given). */
+  scene?: Array<{ key: string; format: "glb" | "3mf"; copies: Array<{ x: number; color?: string }> }>;
+};
 
 /** The account's collections, as the backend lists them: Shapes, and one without a name. */
 const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset[] }> = [
@@ -1644,7 +1652,23 @@ const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset
       { id: "big", name: "Big", ext: "gltf", huge: true },
     ],
   },
-  { token: "2", name: "Untitled Collection", assets: [{ id: "asset_1", name: "Cube", ext: "gltf", thumbnail: true }] },
+  {
+    token: "2",
+    name: "Untitled Collection",
+    assets: [
+      { id: "asset_1", name: "Cube", ext: "gltf", thumbnail: true },
+      // A scene: two copies of one model, the second 3 to the right and red, and a 3MF part.
+      {
+        id: "table",
+        name: "Table",
+        ext: "gltf",
+        scene: [
+          { key: "box-src", format: "glb", copies: [{ x: 0 }, { x: 3, color: "#ff0000" }] },
+          { key: "box-3mf", format: "3mf", copies: [{ x: 0 }] },
+        ],
+      },
+    ],
+  },
 ];
 
 let arbeskAccountList: MockArbeskAccount[] = [];
@@ -1729,7 +1753,37 @@ async function arbeskThumbnail(path: string, size: number): Promise<ArrayBuffer>
   return (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer();
 }
 
+/** An asset's scene as the backend answers it: a single model is one part at its place. */
+function arbeskScene(path: string) {
+  const asset = arbeskAsset(path);
+  const parts = asset.scene ?? [{ key: `${asset.id}-src`, format: asset.ext === "3mf" ? "3mf" : "glb", copies: [{ x: 0 }] }];
+  return {
+    parts: parts.map((part) => ({
+      key: part.key,
+      format: part.format,
+      placements: part.copies.map((copy) => ({
+        matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, copy.x, 0, 0, 1],
+        color: copy.color ?? null,
+        mesh_colors: {},
+        scale: [1, 1, 1],
+      })),
+    })),
+  };
+}
+
+/** One part's bytes, as the preview loads them: a GLB or a 3MF. */
+function arbeskPart(path: string, key: string, limit: number): ArrayBuffer {
+  const part = arbeskScene(path).parts.find((p) => p.key === key);
+  if (!part) throw "This part is not in the asset.";
+  if (arbeskAsset(path).huge) throw "This file is too large to preview.";
+  const bytes = part.format === "3mf" ? sample3mf() : sampleGlb();
+  if (bytes.length > limit) throw "This file is too large to preview.";
+  return bytes.slice().buffer;
+}
+
 const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
+  arbesk_scene: (a) => arbeskScene(str(a, "path")),
+  arbesk_part: (a) => arbeskPart(str(a, "path"), str(a, "key"), Number(a.limit)),
   arbesk_accounts: () => arbeskAccountList.map((account) => ({ ...account })),
   arbesk_connect_start: (a) => {
     const email = str(a, "email").trim().toLowerCase();

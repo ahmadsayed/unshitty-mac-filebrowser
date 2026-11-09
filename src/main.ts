@@ -18,7 +18,7 @@ import {
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
   trashInfo, restoreEntry, deletePermanently, emptyTrash, cancelOperation, measure, listVolumes, trashDir, fileProperties, folderSize,
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
-  previewBytes, previewText, thumbnail,
+  previewBytes, previewText, thumbnail, arbeskScene, arbeskPart,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
   arbeskAccounts, arbeskConnectStart, arbeskConnectFinish, arbeskConnectCancel, arbeskDisconnect,
   driveClientStatus, driveClientSet, driveClientClear,
@@ -4437,6 +4437,7 @@ async function previewTextEntry(entry: Entry, seq: number): Promise<void> {
  * preview says there is none.
  */
 async function previewModelEntry(entry: Entry, seq: number, named: ModelFormat): Promise<void> {
+  if (locationKind(entry.path, trashPath) === "arbesk") return previewArbeskScene(entry, seq);
   try {
     const bytes = await previewBytes(entry.path, MODEL_PREVIEW_LIMIT);
     // The bytes decide over the name: an Arbesk .gltf previews as a GLB.
@@ -4451,6 +4452,46 @@ async function previewModelEntry(entry: Entry, seq: number, named: ModelFormat):
     if (previewStale(seq)) return;
     previewEmpty(entry, /too large/i.test(String(err)) ? "This file is too large to preview." : "No preview available.");
   }
+}
+
+/**
+ * An Arbesk asset is a scene: the backend resolves its parts and where each
+ * goes; each part is loaded once and copied to every place. A part that
+ * fails is left out; with none, the preview says why.
+ */
+async function previewArbeskScene(entry: Entry, seq: number): Promise<void> {
+  const viewer = await import("./model-viewer");
+  const { parts, tooLarge } = await loadArbeskParts(entry.path, viewer).catch(() => ({ parts: [], tooLarge: false }));
+  if (previewStale(seq)) return;
+  if (!parts.length) {
+    previewEmpty(entry, tooLarge ? "This file is too large to preview." : "No preview available.");
+    return;
+  }
+  try {
+    previewLoaded();
+    modelView = viewer.showModel(previewBody, viewer.placeScene(parts));
+  } catch {
+    // No WebGL: as for any model.
+    previewEmpty(entry, "No preview available.");
+  }
+}
+
+/** Each part of the scene at `path`, loaded once, at most MODEL_PREVIEW_LIMIT bytes in all. */
+async function loadArbeskParts(path: string, viewer: typeof import("./model-viewer")) {
+  const scene = await arbeskScene(path);
+  const parts: { object: import("three").Object3D; placements: import("./model-viewer").ScenePlacement[] }[] = [];
+  let left = MODEL_PREVIEW_LIMIT;
+  let tooLarge = false;
+  for (const part of scene.parts) {
+    try {
+      const bytes = await arbeskPart(path, part.key, Math.max(left, 1));
+      left -= bytes.byteLength;
+      parts.push({ object: await viewer.loadModel(isGlb(bytes) ? "glb" : "3mf", bytes), placements: part.placements });
+    } catch (err) {
+      tooLarge ||= /too large/i.test(String(err));
+    }
+  }
+  return { parts, tooLarge };
 }
 
 /** The files a .gltf names in its own folder or below, by the URI it names

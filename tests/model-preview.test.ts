@@ -249,6 +249,49 @@ test("an Arbesk asset too large to preview says so", async () => {
   await key("Escape");
 });
 
+// An Arbesk scene: the mock's "Table" holds two copies of one model (the
+// second tinted red, 3 to the right) and a 3MF part.
+const ARBESK_UNTITLED = `arbesk://${ARBESK_MOCK_ADDRESS}/2~Untitled%20Collection`;
+
+test("Space shows an Arbesk scene: each part loaded once, a copy per placement", async () => {
+  await goTo(ARBESK_UNTITLED);
+  const before = calls().count("arbesk_part");
+  await preview("Table.gltf");
+  expect(calls().count("arbesk_part") - before).toBe(2);
+  expect(viewer.showModel).toHaveBeenCalledTimes(1);
+  const [, scene] = viewer.showModel.mock.calls[0] as [HTMLElement, Group];
+  expect(scene.children.map((copy) => copy.position.x)).toEqual([0, 3, 0]);
+  expect(triangles(scene)).toBe(3 * SAMPLE_TRIANGLES);
+  await key("Escape");
+});
+
+test("a scene part that fails is left out; the rest shows", async () => {
+  await goTo(ARBESK_UNTITLED);
+  calls().failNext("arbesk_part", "Arbesk's storage could not be reached: Bad gateway");
+  await preview("Table.gltf");
+  const [, scene] = viewer.showModel.mock.calls[0] as [HTMLElement, Group];
+  expect(scene.children).toHaveLength(1);
+  await key("Escape");
+});
+
+test("without WebGL an Arbesk scene says there is none", async () => {
+  viewer.showModel.mockImplementation((host: HTMLElement, object: unknown) => viewer.real.showModel(host, object));
+  await goTo(ARBESK_UNTITLED);
+  await preview("Table.gltf");
+  expect($("#preview-body .preview-empty").textContent).toBe("No preview available.");
+  expect($("#preview-body canvas")).toBeNull();
+  await key("Escape");
+});
+
+test("an Arbesk asset whose only part fails has no preview", async () => {
+  await goTo(ARBESK_UNTITLED);
+  calls().failNext("arbesk_part", "Arbesk's storage could not be reached: Bad gateway");
+  await preview("Cube.gltf");
+  expect($("#preview-body .preview-empty").textContent).toBe("No preview available.");
+  expect(viewer.showModel).not.toHaveBeenCalled();
+  await key("Escape");
+});
+
 test("Drive and SSH files still have no preview", async () => {
   await invoke("drive_client_set", { json: JSON.stringify({ installed: { client_id: "1-a.apps.googleusercontent.com", client_secret: "s" } }) });
   const flow = await invoke<{ flow_id: string }>("drive_connect_start", {});

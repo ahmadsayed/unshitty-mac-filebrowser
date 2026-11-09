@@ -670,6 +670,29 @@ export async function previewText(path: string, limit: number): Promise<TextPrev
 }
 
 /** A local file's bytes for the 3D preview; refused over `limit` bytes. */
+/** One place an Arbesk scene part goes: a column-major, right-handed matrix,
+ *  a tint for every mesh (or per mesh name), and an extra scale. */
+export interface ArbeskPlacement {
+  matrix: number[];
+  color: string | null;
+  mesh_colors: Record<string, string>;
+  scale: [number, number, number];
+}
+
+/** An Arbesk asset's scene: each stored model once, with every place it goes. */
+export interface ArbeskScene {
+  parts: { key: string; format: "glb" | "3mf"; placements: ArbeskPlacement[] }[];
+}
+
+export async function arbeskScene(path: string): Promise<ArbeskScene> {
+  return invoke<ArbeskScene>("arbesk_scene", { path });
+}
+
+/** One part of an Arbesk scene, as the preview loads it, at most `limit` bytes. */
+export async function arbeskPart(path: string, key: string, limit: number): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("arbesk_part", { path, key, limit });
+}
+
 export async function previewBytes(path: string, limit: number): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("preview_bytes", { path, limit });
 }
