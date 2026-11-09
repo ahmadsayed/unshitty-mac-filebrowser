@@ -147,6 +147,19 @@ A model stored in a way File Browser doesn't know yet says *This asset uses
 an Arbesk format File Browser can't read yet.* rather than showing a wrong
 file.
 
+## Speed
+
+Arbesk keeps a folder's assets as one small manifest each on IPFS, not as one
+Drive-style index. The first visit fetches what it doesn't have yet; File
+Browser keeps manifests and thumbnails in the app cache (64 MB each), reuses
+an asset's built preview file, and downloads a model's parts a few at a time.
+Revisits, thumbnails after a restart and later previews are therefore much
+faster than the first visit.
+
+Copying a file in still uploads every part and waits for Arbesk's relay to
+confirm the change on chain, so it can take longer than a Google Drive upload.
+That wait is part of Arbesk's protocol; it is not compression.
+
 ## Copying into Arbesk
 
 Copy `.gltf`, `.glb` or `.3mf` files in File Browser (or drag them from

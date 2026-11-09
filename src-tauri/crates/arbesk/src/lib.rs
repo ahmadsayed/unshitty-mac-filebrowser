@@ -134,6 +134,7 @@ impl Client {
         sessions: Box<dyn SessionStore>,
     ) -> Self {
         let accounts = Mutex::new(Accounts::load(accounts_file));
+        let thumbnails = service::Thumbnails::new(cache_dir.clone());
         Self {
             http,
             cache_dir,
@@ -142,7 +143,7 @@ impl Client {
             flows: Mutex::new(HashMap::new()),
             builds: service::Builds::default(),
             scenes: scene::Scenes::default(),
-            thumbnails: service::Thumbnails::default(),
+            thumbnails,
             locks: write::CollectionLocks::default(),
         }
     }

@@ -120,6 +120,30 @@ impl World {
         }
         self.put(cid, manifest);
     }
+
+    /// An asset manifest whose first source node names its `format`, as the
+    /// Studio and this app's copy-in write it.
+    pub(crate) fn put_asset_with_format(
+        &mut self,
+        cid: &str,
+        name: Option<&str>,
+        source: &str,
+        format: &str,
+    ) {
+        let mut manifest = json!({ "type": "asset", "timestamp": STAMP_MS, "scene": { "nodes": [{ "source": { "cid": source, "format": format } }] } });
+        if let Some(name) = name {
+            manifest["name"] = json!(name);
+        }
+        self.put(cid, manifest);
+    }
+
+    /// Add an asset to a collection the world already has, under `asset_id`.
+    pub(crate) fn add_asset(&mut self, token: &str, asset_id: &str, asset_cid: &str) {
+        let collection_cid = self.tokens[token].clone();
+        let mut collection: Value = serde_json::from_slice(&self.files[&collection_cid]).unwrap();
+        collection["assets"][asset_id] = json!(asset_cid);
+        self.put(&collection_cid, collection);
+    }
 }
 
 /// Shapes (token 1): Box as glTF and as 3MF, a live link, an asset of an

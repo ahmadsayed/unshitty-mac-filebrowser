@@ -8,7 +8,7 @@
 
 1. `ipfs::FileCache` replaces the per-write directory rescan in `ManifestCache` and becomes the disk cache for Arbesk thumbnails.
 2. A listing trusts the source format the asset manifest already records (`scene.nodes[].source.format`, then `metadata.computed.format`) instead of downloading the source manifest only to read its extension. The write path (`claim`) keeps the source-derived name.
-3. `chain::ChainCache` keeps the deployment config for read paths. It does **not** cache `tokenURI`; the network design's D6 still holds, and a cached CID would be a correctness risk for Replace and Reload.
+3. `chain::config_cached` keeps the deployment config for every reader, including writes (only the config, never `tokenURI`).
 4. `compose` fetches a model's parts in small parallel batches, on demand, after the source has been validated.
 5. Arbesk thumbnails are kept on disk by content-addressed CID and size.
 
@@ -22,7 +22,7 @@ The frontend, the mock, the Tauri command list and the UI do not change. Files, 
 
 A read-only plan judge reviewed the first version and found these issues; the plan below incorporates every fix:
 
-- **No `tokenURI` cache.** A cache keyed without the contract could return another collection's manifest for a link, and a 30 s stale value would let `path_exists` skip the Replace prompt before a fresh write. Spec D6 says `tokenURI` is asked on every listing and Reload. Only the deployment config is cached.
+- **No `tokenURI` cache.** A cache keyed without the contract could return another collection's manifest for a link, and a 30 s stale value would let `path_exists` skip the Replace prompt before a fresh write. Spec D6 says `tokenURI` is asked on every listing and Reload. Only the deployment config is cached, and it is safe for reads and writes.
 - **`source.format` comes first, not `metadata.computed.format`.** `computed` is not top-level and is derived from `source.format`; it is a second candidate only.
 - **The write path is untouched.** `write::claim` keeps deriving names from the source manifest, so a lying manifest format cannot change which asset a paste replaces.
 - **FileCache totals are process-wide per directory.** A per-instance total would let several Readers each grow the same cache. A damaged entry is removed before a re-fetch, so it is repaired rather than fetched forever.
@@ -33,7 +33,7 @@ A read-only plan judge reviewed the first version and found these issues; the pl
 
 - **No change to Arbesk's data.** No new manifests, no changed compression, no changed CIDs, no changed wording.
 - **No new runtime dependency.** Use `std::sync`, `HashMap`, the existing `in_parallel` and the existing cache/rename helpers.
-- **Reads may use the config cache; writes may not.** `write.rs`, `create.rs` and `share.rs` use `Reader::open_fresh`; reads may use `ChainCache`.
+- **The config cache is safe for reads and writes; `tokenURI` is never cached.** `Reader::open` uses `chain::config_cached` for every caller, including `write.rs`, `create.rs` and `share.rs`. Collection CIDs stay live on every listing and Reload (spec D6).
 - **Only the extension fast path may trust a manifest's own format claim:** `gltf` → `.gltf`, `3mf` → `.3mf`. Any other value (`glb`, unknown) falls back to reading the source, so source-only GLB and unknown formats keep today's result.
 - **Thumbnails are content-addressed:** cache key = thumbnail CID + pixel size; bytes never change. Keep them in `cache_dir/arbesk-thumbnails`, outside `cache_dir/arbesk`, which `downloads::prune` treats as downloaded files and would send to the Trash.
 - **Cap every cache:** 64 MB for manifests, 64 MB for Arbesk thumbnails.
@@ -44,7 +44,7 @@ A read-only plan judge reviewed the first version and found these issues; the pl
 
 1. **A manifest's format claim agrees with the source.** A listing shows `Box.3mf` from the manifest's `3mf` claim without fetching the source; an older manifest without the claim still reads its source; a `glb` claim still falls back; a mixed/link scene keeps today's extension.
 2. **The manifest cache still enforces its cap** across several `FileCache` instances and repeated puts, without a rescan per write; a damaged entry is repaired.
-3. **The config cache is only a read shortcut.** Two listings share one `/api/v1/config`; a write is fresh; the lock is never held across the HTTP call.
+3. **The config cache is only a shortcut.** Two listings share one `/api/v1/config`; a write still reads the live collection CID; the lock is never held across the HTTP call.
 4. **A part failure or a part over the build cap is still refused with the same wording**, and unknown formats / bad 3MF paths are refused before any part is fetched. Duplicate CIDs are charged per reference.
 5. **A thumbnail survives a fake gateway that then stops answering**, a damaged cache entry falls back and is repaired, and a cancel still returns nothing even with a warm cache.
 
@@ -107,32 +107,28 @@ A read-only plan judge reviewed the first version and found these issues; the pl
 - [ ] **Step 4: Run** `cargo test -p arbesk service::` — Expected: PASS.
 - [ ] **Step 5: Commit** `perf: list Arbesk assets without fetching their source manifest`.
 
-### Task 3: Keep the deployment config for reads
+### Task 3: Keep the deployment config for reads and writes
 
 **Files:**
-- Modify: `src-tauri/crates/arbesk/src/chain.rs` (cache type), `service.rs` (`Reader` and read functions), `lib.rs` (`Client` holds it), `write.rs`, `create.rs`, `share.rs` (open fresh).
+- Modify: `src-tauri/crates/arbesk/src/chain.rs` (the cached read), `service.rs` (`Reader::open` uses it)
 - Test: `chain.rs`, `service.rs`.
 
 **Interfaces:**
 - Produces in `chain.rs`:
-  - `pub struct ChainCache` (`Default`) with `pub fn config(&self, http: &dyn Http, site: &Site) -> Result<ChainConfig, String>`.
-  - Config entries live 5 minutes (`Duration::from_secs(300)`), keyed by `origin + chain_id`; a miss or an expired entry calls `config`. Only `Ok` answers are kept. The lock is dropped before the HTTP call; duplicate concurrent misses are harmless.
-  - `#[cfg(test)] fn with_ttl(ttl: Duration) -> Self` so a TTL test can use `Duration::ZERO` without sleeping.
-  - The map is swept of expired entries when it grows past 64.
-- Produces in `service.rs`:
-  - `Reader::open(http, site, cache_dir, cache: Option<&ChainCache>) -> Result<Self, String>` and `Reader::open_fresh(http, site, cache_dir)` (no config cache, same manifest disk cache).
-  - `list`, `thumbnail`, `build`, `export`, `scene`, `versions` and `part` take `chains: &ChainCache` as their last argument before the `stop` closure for `thumbnail`: `(http, site, path, size, cache_dir, thumbs, chains, stop)`.
-- Produces in `lib.rs`: `Client` gains `chains: chain::ChainCache`; every read passes `&self.chains`.
-- `write.rs`, `create.rs` and `share.rs` call `Reader::open_fresh`; their behaviour is unchanged.
+  - `pub fn config_cached(http: &dyn Http, site: &Site, cache_dir: &Path) -> Result<ChainConfig, String>`.
+  - Config entries live 5 minutes (`Duration::from_secs(300)`), keyed by `cache_dir` plus `origin + chain_id` (so unit tests with fresh temp folders never share an entry); a miss or an expired entry calls `config`. Only `Ok` answers are kept.
+  - A private `fn cached_config(http, site, cache_dir, ttl)` backs it, so a test can pass `Duration::ZERO` without sleeping.
+  - The lock is dropped before the HTTP call; duplicate concurrent misses are harmless. The map is swept of expired entries when it grows past 64.
+- `service::Reader::open` calls `chain::config_cached(http, site, cache_dir)`; every reader, including the write, create and share paths, uses the cached config. There is no `open_fresh` and no signature change.
 - `tokenURI` is **not** cached. Spec D6's “asked again on every listing and Reload” stays true, and Replace's `path_exists` keeps seeing the live collection.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `chain.rs`: `the_config_is_read_once` (two `cache.config` calls, one `GET /api/v1/config`); `an_expired_config_is_read_again` with `with_ttl(Duration::ZERO)`.
-  - `service.rs`: `a_listing_uses_the_cached_config` — list Shapes twice with one `ChainCache`; one `/api/v1/config` request (today: two).
-- [ ] **Step 2: Run** `cargo test -p arbesk` — Expected: FAIL/compile errors from the new arguments.
-- [ ] **Step 3: Implement**, then update every test call site to pass `&ChainCache::default()`; use `Reader::open_fresh` in write/create/share.
+  - `chain.rs`: `a_deployments_config_is_read_once_per_cache_folder` (two `cached_config` calls with a 60 s TTL, one `GET /api/v1/config`; a `Duration::ZERO` call asks again); `another_cache_folder_does_not_share_the_config`.
+  - `service.rs`: `a_listing_uses_the_cached_config` — list Shapes twice with one cache folder; one `/api/v1/config` request (today: two).
+- [ ] **Step 2: Run** `cargo test -p arbesk` — Expected: FAIL on the new tests.
+- [ ] **Step 3: Implement** `config_cached` and switch `Reader::open` to it.
 - [ ] **Step 4: Run** `cargo test -p arbesk` — Expected: PASS (all crate tests).
-- [ ] **Step 5: Commit** `perf: keep the Arbesk deployment config for reads`.
+- [ ] **Step 5: Commit** `perf: keep the Arbesk deployment config for reads and writes`.
 
 ### Task 4: Fetch a model's parts a batch at a time
 
@@ -197,7 +193,7 @@ A read-only plan judge reviewed the first version and found these issues; the pl
 - Modify: `docs/architecture.md` only if its Arbesk flow describes the reads this changes.
 - Add a short `## Performance` note to `docs/arbesk.md`? Only if it helps users understand why a first visit is slower; do not promise numbers.
 
-- [ ] **Step 1: Update the docs** with the cache lifetimes (config 5 min, manifests/thumbnails 64 MB) and the “reads may cache the config, writes are fresh; `tokenURI` is never cached” rule. Say plainly that the first visit to a collection still fetches one manifest per asset and that a copy-in still waits for the relay.
+- [ ] **Step 1: Update the docs** with the cache lifetimes (config 5 min, manifests/thumbnails 64 MB) and the “config may be cached, `tokenURI` is never cached” rule. Say plainly that the first visit to a collection still fetches one manifest per asset and that a copy-in still waits for the relay.
 - [ ] **Step 2: Run** `npx tsc --noEmit`, `npm run build`, `npm test`.
 - [ ] **Step 3: Run** `cd src-tauri && cargo test`.
 - [ ] **Step 4: Run** `npm run crap` (the pre-commit hook does the language-specific version on commit).

@@ -4,6 +4,11 @@
 //! (`tokenURI` over JSON-RPC `eth_call`, encoded by hand: one call, no
 //! Ethereum crate).
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use serde_json::{Value, json};
 
 use crate::http::Http;
@@ -59,6 +64,71 @@ pub fn config(http: &dyn Http, site: &Site) -> Result<ChainConfig, String> {
             .trim_end_matches('/')
             .to_string(),
     })
+}
+
+/// How long a deployment's settings are kept: long enough to cover a
+/// collection's listing and its thumbnails and preview parts; short enough
+/// that a redeployment is noticed.
+const CONFIG_TTL: Duration = Duration::from_secs(300);
+/// The most deployments kept at once; an app has a handful.
+const CACHED_CONFIGS: usize = 64;
+
+struct CachedConfig {
+    at: Instant,
+    config: ChainConfig,
+}
+
+fn config_cache() -> &'static Mutex<HashMap<(PathBuf, String), CachedConfig>> {
+    static CONFIGS: std::sync::OnceLock<Mutex<HashMap<(PathBuf, String), CachedConfig>>> =
+        std::sync::OnceLock::new();
+    CONFIGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// [`config`], kept for [`CONFIG_TTL`] per app cache folder and deployment.
+/// The lock is never held over the request, so eight listing threads do not
+/// take turns asking the backend.
+pub fn config_cached(
+    http: &dyn Http,
+    site: &Site,
+    cache_dir: &std::path::Path,
+) -> Result<ChainConfig, String> {
+    cached_config(http, site, cache_dir, CONFIG_TTL)
+}
+
+fn cached_config(
+    http: &dyn Http,
+    site: &Site,
+    cache_dir: &std::path::Path,
+    ttl: Duration,
+) -> Result<ChainConfig, String> {
+    let key = (
+        cache_dir.to_path_buf(),
+        format!("{}|{}", site.origin, site.chain_id),
+    );
+    if let Some(config) = config_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&key)
+        .filter(|cached| cached.at.elapsed() < ttl)
+        .map(|cached| cached.config.clone())
+    {
+        return Ok(config);
+    }
+    let config = config(http, site)?;
+    let mut cached = config_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if cached.len() >= CACHED_CONFIGS {
+        cached.retain(|_, entry| entry.at.elapsed() < ttl);
+    }
+    cached.insert(
+        key,
+        CachedConfig {
+            at: Instant::now(),
+            config: config.clone(),
+        },
+    );
+    Ok(config)
 }
 
 /// The collection tokens `address` owns, then those it may edit, each once.
@@ -300,6 +370,52 @@ mod tests {
             .into_bytes())
         });
         assert_eq!(config(&http, &site()).unwrap(), chain());
+    }
+
+    #[test]
+    fn a_deployments_config_is_read_once_per_cache_folder() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = calls.clone();
+        let http = FakeHttp::new(move |request| {
+            assert_eq!(request.url, format!("{ORIGIN}/api/v1/config"));
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(json!({
+                "contractAddress": "0xDEFAULT",
+                "ipfsGatewayUrl": "https://gw.test/ipfs/",
+                "networkConfigs": { "84532": { "contractAddress": "0xC0", "rpcUrl": "https://rpc.test" } }
+            })
+            .to_string()
+            .into_bytes())
+        });
+        let cache = tempfile::tempdir().unwrap();
+        let one = cached_config(&http, &site(), cache.path(), Duration::from_secs(60)).unwrap();
+        let two = cached_config(&http, &site(), cache.path(), Duration::from_secs(60)).unwrap();
+        assert_eq!(one, chain());
+        assert_eq!(two, chain());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // An expired entry asks again.
+        cached_config(&http, &site(), cache.path(), Duration::ZERO).unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn another_cache_folder_does_not_share_the_config() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = calls.clone();
+        let http = FakeHttp::new(move |_| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(json!({
+                "ipfsGatewayUrl": "https://gw.test/ipfs/",
+                "networkConfigs": { "84532": { "contractAddress": "0xC0", "rpcUrl": "https://rpc.test" } }
+            })
+            .to_string()
+            .into_bytes())
+        });
+        let one = tempfile::tempdir().unwrap();
+        let two = tempfile::tempdir().unwrap();
+        cached_config(&http, &site(), one.path(), Duration::from_secs(60)).unwrap();
+        cached_config(&http, &site(), two.path(), Duration::from_secs(60)).unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[test]

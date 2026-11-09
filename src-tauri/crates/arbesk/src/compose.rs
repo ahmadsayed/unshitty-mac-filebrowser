@@ -3,6 +3,8 @@
 //! `ipfs://` buffer and image as a `data:` URI), a composite 3MF becomes a
 //! `.3mf` zip again. Anything else is refused rather than guessed at.
 
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, VecDeque};
 use std::io::{Cursor, Write};
 
 use data_encoding::BASE64;
@@ -10,11 +12,13 @@ use serde_json::{Map, Value};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
-use crate::ipfs::Gateway;
+use crate::ipfs::{Gateway, in_parallel};
 
 pub const UNKNOWN_FORMAT: &str = "This asset uses an Arbesk format File Browser can't read yet.";
 
 const IPFS: &str = "ipfs://";
+/// How many parts one batch fetches at once.
+const PARALLEL_PARTS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -87,11 +91,10 @@ pub const BUILD_CAP: u64 = 512 * 1024 * 1024;
 
 /// `compose`, refusing once the parts fetched add up to more than `cap` bytes.
 pub fn compose_within(gateway: &Gateway, source: &Value, cap: u64) -> Result<Vec<u8>, String> {
-    let parts = Parts {
-        gateway,
-        left: std::cell::Cell::new(cap),
-    };
-    match format_of(source)? {
+    let format = validate_source(source)?;
+    let parts = Parts::new(gateway, cap);
+    parts.prefetch(source);
+    match format {
         Format::Gltf => compose_gltf(&parts, source),
         Format::ThreeMf => compose_3mf(&parts, source),
     }
@@ -110,34 +113,217 @@ pub fn compose_preview_within(
     source: &Value,
     cap: u64,
 ) -> Result<Vec<u8>, String> {
-    let parts = Parts {
-        gateway,
-        left: std::cell::Cell::new(cap),
-    };
-    match format_of(source)? {
+    let format = validate_source(source)?;
+    let parts = Parts::new(gateway, cap);
+    parts.prefetch(source);
+    match format {
         Format::Gltf => glb::compose(&parts, source),
         Format::ThreeMf => compose_3mf(&parts, source),
     }
 }
 
+/// Refuse everything that can be known before a part is fetched, in the order
+/// the assemblers used to check it: the format, then every URI/path and the
+/// 3MF fields the package needs.
+fn validate_source(source: &Value) -> Result<Format, String> {
+    let format = format_of(source)?;
+    match format {
+        Format::Gltf => {
+            for buffer in array(source, "buffers") {
+                let uri = buffer.get("uri").and_then(Value::as_str);
+                if !is_resource_uri(uri) {
+                    return Err(UNKNOWN_FORMAT.into());
+                }
+            }
+            for image in array(source, "images") {
+                if let Some(uri) = image.get("uri").and_then(Value::as_str)
+                    && !is_resource_uri(Some(uri))
+                {
+                    return Err(UNKNOWN_FORMAT.into());
+                }
+            }
+        }
+        Format::ThreeMf => validate_3mf(source)?,
+    }
+    Ok(format)
+}
+
+fn array<'a>(value: &'a Value, key: &str) -> impl Iterator<Item = &'a Map<String, Value>> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+}
+
+/// Whether a URI is one [`resource_bytes`] can fetch or decode.
+fn is_resource_uri(uri: Option<&str>) -> bool {
+    let Some(uri) = uri else {
+        return false;
+    };
+    if uri.starts_with(IPFS) {
+        return true;
+    }
+    uri.strip_prefix("data:")
+        .and_then(|data| data.split_once(','))
+        .is_some_and(|(header, _)| header.ends_with(";base64"))
+}
+
+/// The 3MF package fields and paths `compose_3mf` needs, checked before the
+/// parts are fetched.
+fn validate_3mf(source: &Value) -> Result<(), String> {
+    for key in ["contentTypes", "rootRels", "model"] {
+        source
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("The stored 3MF has no {key}."))?;
+    }
+    let model_path = source
+        .get("modelPath")
+        .and_then(Value::as_str)
+        .unwrap_or("3D/3dmodel.model");
+    part_path(model_path)?;
+    for (path, part) in source
+        .get("parts")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        part_path(path)?;
+        part.get("cid")
+            .and_then(Value::as_str)
+            .ok_or(UNKNOWN_FORMAT)?;
+    }
+    Ok(())
+}
+
 /// The parts of one build, fetched within its budget.
 struct Parts<'g> {
     gateway: &'g Gateway<'g>,
-    left: std::cell::Cell<u64>,
+    left: Cell<u64>,
+    /// How many times the source still references each part.
+    remaining: RefCell<HashMap<String, usize>>,
+    /// Unique part CIDs not fetched yet, in source order.
+    queue: RefCell<VecDeque<String>>,
+    /// Bytes fetched and not yet consumed by the assembler.
+    fetched: RefCell<HashMap<String, Vec<u8>>>,
 }
 
-impl Parts<'_> {
+impl<'g> Parts<'g> {
+    fn new(gateway: &'g Gateway<'g>, cap: u64) -> Self {
+        Self {
+            gateway,
+            left: Cell::new(cap),
+            remaining: RefCell::new(HashMap::new()),
+            queue: RefCell::new(VecDeque::new()),
+            fetched: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Remember what the source needs; fetch nothing yet.
+    fn prefetch(&self, source: &Value) {
+        let mut remaining = HashMap::new();
+        let mut queue = VecDeque::new();
+        for (cid, references) in part_cids(source) {
+            remaining.insert(cid.clone(), references);
+            queue.push_back(cid);
+        }
+        *self.remaining.borrow_mut() = remaining;
+        *self.queue.borrow_mut() = queue;
+    }
+
+    /// The bytes of `cid`: the prefetched copy when there is one, else this
+    /// batch fetches it with the next few queued parts. A part is charged for
+    /// every reference, and its bytes are released after the last one.
     fn fetch(&self, cid: &str) -> Result<Vec<u8>, String> {
-        let bytes = self.gateway.bytes(cid)?;
-        let left = self
-            .left
-            .get()
-            .checked_sub(bytes.len() as u64)
-            .ok_or(TOO_LARGE_TO_BUILD)?;
+        if self.fetched.borrow().contains_key(cid) {
+            return self.take(cid);
+        }
+        // A part the source did not declare still gets one reference, so a
+        // caller can never skip it silently.
+        if !self.remaining.borrow().contains_key(cid) {
+            self.remaining.borrow_mut().insert(cid.to_string(), 1);
+        }
+        let mut batch = vec![cid.to_string()];
+        {
+            let mut queue = self.queue.borrow_mut();
+            queue.retain(|queued| queued != cid);
+            while batch.len() < PARALLEL_PARTS {
+                let Some(next) = queue.pop_front() else {
+                    break;
+                };
+                if !self.fetched.borrow().contains_key(&next) {
+                    batch.push(next);
+                }
+            }
+        }
+        let answers = in_parallel(&batch, PARALLEL_PARTS, |cid| self.gateway.bytes(cid));
+        let mut left = self.left.get();
+        let mut fetched = self.fetched.borrow_mut();
+        for (cid, answer) in batch.iter().zip(answers) {
+            let bytes = answer?;
+            let references = self.remaining.borrow().get(cid).copied().unwrap_or(1);
+            let charged = (bytes.len() as u64).saturating_mul(references as u64);
+            left = left.checked_sub(charged).ok_or(TOO_LARGE_TO_BUILD)?;
+            fetched.insert(cid.clone(), bytes);
+        }
         self.left.set(left);
-        Ok(bytes)
+        drop(fetched);
+        self.take(cid)
+    }
+
+    /// One reference's bytes, released at the last one.
+    fn take(&self, cid: &str) -> Result<Vec<u8>, String> {
+        let mut remaining = self.remaining.borrow_mut();
+        let refs = remaining.get_mut(cid).ok_or(UNKNOWN_FORMAT)?;
+        *refs -= 1;
+        let last = *refs == 0;
+        if last {
+            remaining.remove(cid);
+        }
+        let mut fetched = self.fetched.borrow_mut();
+        if last {
+            fetched.remove(cid).ok_or_else(|| UNKNOWN_FORMAT.to_string())
+        } else {
+            fetched
+                .get(cid)
+                .cloned()
+                .ok_or_else(|| UNKNOWN_FORMAT.to_string())
+        }
     }
 }
+
+/// Every part the source references, with how many references: glTF buffers
+/// and images, 3MF package parts. Data URIs are in the source itself.
+fn part_cids(source: &Value) -> Vec<(String, usize)> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut add = |cid: &str| *counts.entry(cid.to_string()).or_default() += 1;
+    for key in ["buffers", "images"] {
+        for item in array(source, key) {
+            if let Some(cid) = item
+                .get("uri")
+                .and_then(Value::as_str)
+                .and_then(|uri| uri.strip_prefix(IPFS))
+            {
+                add(cid);
+            }
+        }
+    }
+    for part in source
+        .get("parts")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .map(|(_, part)| part)
+    {
+        if let Some(cid) = part.get("cid").and_then(Value::as_str) {
+            add(cid);
+        }
+    }
+    counts.into_iter().collect()
+}
+
 
 // ---- glTF --------------------------------------------------------------------
 
@@ -496,6 +682,9 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::Read;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::{Duration, Instant};
 
     fn fixture(case: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -598,6 +787,17 @@ mod tests {
         })
     }
 
+    /// A gateway that answers every CID with `bytes` and counts the requests.
+    fn counting_gateway(bytes: &'static [u8]) -> (FakeHttp, Arc<AtomicUsize>) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let counted = count.clone();
+        let http = FakeHttp::new(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(bytes.to_vec())
+        });
+        (http, count)
+    }
+
     fn preview_of(http: &FakeHttp, source: Value) -> Result<Vec<u8>, String> {
         let cache = tempfile::tempdir().unwrap();
         let gateway = Gateway::new(
@@ -606,6 +806,133 @@ mod tests {
             ManifestCache::new(cache.path().into(), 1 << 20),
         );
         compose_preview(&gateway, &source)
+    }
+
+    /// A gateway serving `parts` that waits up to a second for a second
+    /// request and records the most requests in flight at once.
+    fn parallel_parts_gateway(
+        parts: &'static [(&'static str, &'static [u8])],
+    ) -> (FakeHttp, Arc<AtomicUsize>) {
+        let running = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let waiting = Arc::new((Mutex::new(0usize), Condvar::new()));
+        let (r, p, w) = (running.clone(), peak.clone(), waiting.clone());
+        let http = FakeHttp::new(move |request| {
+            let now = r.fetch_add(1, Ordering::SeqCst) + 1;
+            p.fetch_max(now, Ordering::SeqCst);
+            let (lock, ready) = &*w;
+            let mut started = lock.lock().unwrap();
+            *started += 1;
+            ready.notify_all();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while *started < 2 {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                started = ready.wait_timeout(started, left).unwrap().0;
+            }
+            drop(started);
+            let cid = request.url.rsplit('/').next().unwrap();
+            let answer = parts
+                .iter()
+                .find(|(c, _)| *c == cid)
+                .map(|(_, b)| b.to_vec())
+                .ok_or_else(not_found);
+            r.fetch_sub(1, Ordering::SeqCst);
+            answer
+        });
+        (http, peak)
+    }
+
+    #[test]
+    fn parts_are_fetched_in_parallel() {
+        let (http, peak) =
+            parallel_parts_gateway(&[("bafyA", b"AAAAA"), ("bafyB", b"BBBBBBB")]);
+        let source = json!({
+            "buffers": [
+                { "uri": "ipfs://bafyA", "byteLength": 5 },
+                { "uri": "ipfs://bafyB", "byteLength": 7 }
+            ]
+        });
+        let (json, bin) = testing::read_glb(&preview_of(&http, source).unwrap());
+        assert_eq!(json["buffers"].as_array().unwrap().len(), 1);
+        assert!(bin.windows(5).any(|bytes| bytes == b"AAAAA"));
+        assert!(bin.windows(7).any(|bytes| bytes == b"BBBBBBB"));
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn an_unknown_format_is_refused_without_fetching_parts() {
+        let http = FakeHttp::new(|_| panic!("no part should be fetched"));
+        let source = json!({ "arbesk_format": "composite-example", "parts": { "a": { "cid": "bafyP" } } });
+        assert_eq!(preview_of(&http, source).unwrap_err(), UNKNOWN_FORMAT);
+        assert!(http.requests().is_empty());
+    }
+
+    #[test]
+    fn a_bad_3mf_path_is_refused_without_fetching_parts() {
+        let http = FakeHttp::new(|_| panic!("no part should be fetched"));
+        let source = json!({
+            "arbesk_format": "composite-3mf",
+            "contentTypes": "x",
+            "rootRels": "x",
+            "model": "x",
+            "modelPath": "../model",
+            "parts": { "a": { "cid": "bafyP" } }
+        });
+        assert_eq!(preview_of(&http, source).unwrap_err(), UNKNOWN_FORMAT);
+        assert!(http.requests().is_empty());
+    }
+
+    #[test]
+    fn a_missing_part_is_still_the_storage_error() {
+        let http = parts_gateway(&[]);
+        let source = json!({ "buffers": [{ "uri": "ipfs://bafyGone" }] });
+        let error = preview_of(&http, source).unwrap_err();
+        assert!(error.starts_with("Arbesk's storage has nothing at bafyGone."), "{error}");
+    }
+
+    #[test]
+    fn a_build_over_its_cap_is_refused_after_one_batch() {
+        let (http, requests) = counting_gateway(b"0123456789");
+        let buffers: Vec<Value> = (0..8)
+            .map(|i| json!({ "uri": format!("ipfs://bafyP{i}") }))
+            .collect();
+        let source = json!({ "buffers": buffers });
+        let cache = tempfile::tempdir().unwrap();
+        let gateway = Gateway::new(
+            &http,
+            "https://gw.test/ipfs",
+            ManifestCache::new(cache.path().into(), 1 << 20),
+        );
+        assert_eq!(
+            compose_preview_within(&gateway, &source, 15).unwrap_err(),
+            TOO_LARGE_TO_BUILD
+        );
+        assert!(requests.load(Ordering::SeqCst) <= PARALLEL_PARTS);
+    }
+
+    #[test]
+    fn a_duplicate_part_is_charged_for_every_reference() {
+        let http = parts_gateway(&[("bafySame", b"0123456789")]);
+        let source = json!({
+            "buffers": [
+                { "uri": "ipfs://bafySame" },
+                { "uri": "ipfs://bafySame" }
+            ]
+        });
+        let cache = tempfile::tempdir().unwrap();
+        let gateway = Gateway::new(
+            &http,
+            "https://gw.test/ipfs",
+            ManifestCache::new(cache.path().into(), 1 << 20),
+        );
+        assert_eq!(
+            compose_preview_within(&gateway, &source, 15).unwrap_err(),
+            TOO_LARGE_TO_BUILD
+        );
+        assert_eq!(http.requests().len(), 1);
     }
 
     #[test]
