@@ -206,7 +206,7 @@ pub(crate) fn decimal(bytes: &[u8]) -> String {
 fn decode_abi_uint(hex: &str) -> Result<u64, String> {
     let refused = || "The chain's answer is not an editor-set version.".to_string();
     let digits = hex.strip_prefix("0x").unwrap_or(hex);
-    if digits.len() != 64 {
+    if digits.len() != 64 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(refused());
     }
     if digits[..48].bytes().any(|byte| byte != b'0') {
@@ -219,7 +219,7 @@ fn decode_abi_uint(hex: &str) -> Result<u64, String> {
 fn decode_abi_string(hex: &str) -> Result<String, String> {
     let refused = || "The chain's answer is not a manifest address.".to_string();
     let digits = hex.strip_prefix("0x").unwrap_or(hex);
-    if digits.len() % 2 != 0 {
+    if digits.len() % 2 != 0 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(refused());
     }
     let bytes: Vec<u8> = (0..digits.len())

@@ -21,6 +21,7 @@ import {
   previewBytes, previewText, thumbnail, arbeskScene, arbeskPart, arbeskVersions, listVersions, versionCount, openVersion,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
   arbeskAccounts, arbeskConnectStart, arbeskConnectFinish, arbeskConnectCancel, arbeskDisconnect, arbeskSignedIn, arbeskCreateCollection, arbeskShareCollection,
+  type ArbeskShared, type ArbeskRole,
   driveClientStatus, driveClientSet, driveClientClear,
   openExternal,
   setPermissions,
@@ -4556,12 +4557,17 @@ function promptNewCollection(): void {
 // Share a collection (Arbesk: add a collaborator by email)
 // ---------------------------------------------------------------------------
 
-/** The error sharing ends with when it needs a new sign-in. */
+/** The errors sharing ends with when it needs a new sign-in (or a new
+ *  delegation, which Arbesk renews on the next sign-in). */
 const ARBESK_SHARE_SIGN_IN = "Sign in to Arbesk again to share a collection.";
+const ARBESK_SHARE_RELAY_FAILED =
+  "Arbesk couldn't save the collaborator. Sign in again to renew its permission.";
 
 /** Roles as Arbesk's editor list numbers them. */
-const ARBESK_VIEWER = 1;
-const ARBESK_EDITOR = 2;
+const ARBESK_VIEWER: ArbeskRole = 1;
+const ARBESK_EDITOR: ArbeskRole = 2;
+/** The email shape Arbesk's own sign-in and invite fields accept. */
+const ARBESK_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * Share Collection…: add the Arbesk account behind an email as a viewer or an
@@ -4574,21 +4580,23 @@ function promptShareCollection(path: string): void {
   const extra = document.createElement("div");
   extra.className = "compress-fields";
   extra.innerHTML = `
-    <label>Email<input id="share-collection-email" type="email" spellcheck="false" autocomplete="email" placeholder="you@example.com" /></label>
+    <label>Email<input id="share-collection-email" type="email" spellcheck="false" autocomplete="off" placeholder="name@example.com" /></label>
     <label>Role<select id="share-collection-role">
       <option value="${ARBESK_VIEWER}" selected>Viewer</option>
       <option value="${ARBESK_EDITOR}">Editor</option>
     </select></label>
-    <div class="check-hint">Viewers can see and download the collection's assets; Editors can also add and save them.</div>
+    <div class="check-hint">Viewers can download the collection's assets, but Arbesk lists only Editors in Network for now; Editors can also add and save.</div>
     <div class="field-message"></div>`;
   const email = extra.querySelector<HTMLInputElement>("#share-collection-email")!;
   const role = extra.querySelector<HTMLSelectElement>("#share-collection-role")!;
   const message = extra.querySelector<HTMLElement>(".field-message")!;
   const row = email.closest("label")!;
+  /** Cancel while the session check or sign-in is pending: start nothing. */
+  let cancelled = false;
 
   const validate = () => {
     const value = email.value.trim();
-    const valid = value.includes("@");
+    const valid = ARBESK_EMAIL.test(value);
     showValidation(
       { valid, message: valid || !value ? "" : "Enter an email address.", error: !valid && !!value },
       row,
@@ -4600,7 +4608,7 @@ function promptShareCollection(path: string): void {
 
   const dialog = openDialog({
     heading: "Share Collection",
-    body: "Add a collaborator by the email they use with Arbesk.",
+    body: `Add a collaborator to “${pathName(path)}” by the email they use with Arbesk.`,
     extra,
     responses: [
       { id: "cancel", label: "Cancel" },
@@ -4610,23 +4618,38 @@ function promptShareCollection(path: string): void {
     closeResponse: "cancel",
     busy: { liveWhileBusy: ["cancel"], status: message },
     onResponse: async (id) => {
+      if (id === "cancel") {
+        cancelled = true;
+        return;
+      }
       if (id !== "share" || !validate()) return;
       const value = email.value.trim();
-      const chosen = Number(role.value);
+      const chosen = Number(role.value) as ArbeskRole;
       try {
         const account = await arbeskAccountFor(path);
+        if (cancelled) return;
         if (!(await arbeskSignedIn(path).catch(() => false))) {
+          if (cancelled) return;
           if (!(await connectArbesk(account, { stay: true }))) {
             dialog.close();
             return;
           }
         }
+        if (cancelled) return;
         dialog.setStatus("Sharing collection…");
-        let shared;
+        let shared: ArbeskShared;
         try {
           shared = await arbeskShareCollection(path, value, chosen);
         } catch (err) {
-          if (cleanError(err) !== ARBESK_SHARE_SIGN_IN) throw err;
+          const message = cleanError(err);
+          if (
+            message !== ARBESK_SHARE_SIGN_IN &&
+            message !== ARBESK_SIGN_IN &&
+            message !== ARBESK_SHARE_RELAY_FAILED
+          ) {
+            throw err;
+          }
+          if (cancelled) return;
           if (!(await connectArbesk(account, { stay: true }))) throw err;
           shared = await arbeskShareCollection(path, value, chosen);
         }

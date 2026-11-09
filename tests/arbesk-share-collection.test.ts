@@ -6,7 +6,8 @@ import {
   $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, installFakeCanvas, key, menuLabels, open, respond, rightClick, settle, toasts, type,
 } from "./app";
 
-const arbeskMock = () => (globalThis as unknown as { __mockArbesk: { signedIn: boolean } }).__mockArbesk;
+const arbeskMock = () =>
+  (globalThis as unknown as { __mockArbesk: { signedIn: boolean; expireOnce(): void } }).__mockArbesk;
 const row = (name: string) => $$("#view .item").find((el) => el.querySelector(".name")?.textContent === name)!;
 
 beforeAll(async () => {
@@ -69,7 +70,7 @@ test("sharing adds a viewer, then changes the same account to editor", async () 
   await settle(20);
   await openShareDialog();
   expect(dialogHeading()).toBe("Share Collection");
-  expect($(".dialog-layer .dialog-text").textContent).toBe("Add a collaborator by the email they use with Arbesk.");
+  expect($(".dialog-layer .dialog-text").textContent).toBe("Add a collaborator to “Shapes” by the email they use with Arbesk.");
   const share = $$(".dialog-layer .dialog-responses button").find((button) => button.textContent === "Share")!;
   expect(share.hasAttribute("disabled")).toBe(true);
 
@@ -109,6 +110,19 @@ test("an unknown email stays in the dialog with the reason", async () => {
     "No Arbesk account found for that email. They need to sign in to Arbesk at least once.",
   );
   await closeOverlays();
+});
+
+test("a session that expires during the share signs in and carries on", async () => {
+  await openArbesk();
+  await open("Shapes");
+  await settle(20);
+  arbeskMock().expireOnce();
+  await openShareDialog();
+  await type($<HTMLInputElement>("#share-collection-email"), "carol@example.com");
+  await respond("Share");
+  expect(dialogHeading()).toBe("Sign In to Arbesk");
+  await respond("Open Browser");
+  await vi.waitFor(() => expect(toasts()).toContain("Shared with carol@example.com as Viewer"), { timeout: 2000 });
 });
 
 test("sharing with no session signs in first; Cancel shares nothing", async () => {

@@ -14,7 +14,7 @@ use crate::decompose::stored_json;
 use crate::http::{Http, HttpError};
 use crate::merkle;
 use crate::service::Reader;
-use crate::write::{BUSY, Outcome, Uploader};
+use crate::write::{BUSY, CollectionLocks, Outcome, Uploader};
 
 /// No session, an expired one, or Arbesk's 401.
 pub const SIGN_IN: &str = "Sign in to Arbesk again to share a collection.";
@@ -24,6 +24,7 @@ pub const FORBIDDEN: &str = "Only an editor can share this collection.";
 pub const LOOKUP_UNAVAILABLE: &str = "Email lookup is not available on this Arbesk server.";
 pub const NO_ACCOUNT: &str =
     "No Arbesk account found for that email. They need to sign in to Arbesk at least once.";
+pub const LOOKUP_FORBIDDEN: &str = "Arbesk refused to look up that email.";
 pub const NO_WALLET: &str = "That Arbesk account has no wallet yet.";
 pub const UNREADABLE: &str = "The collection's editor list can't be read.";
 const UNREADABLE_ANSWER: &str = "Arbesk sent an answer File Browser can't read.";
@@ -58,7 +59,7 @@ fn already(role: u8) -> String {
 }
 
 fn still_saving() -> String {
-    "Arbesk is still saving the collaborator. It appears once the change is confirmed.".into()
+    "Arbesk is still saving the collaborator. Try again in a minute.".into()
 }
 
 /// Add the account behind `email` to `token_id`'s editor list as `role`
@@ -74,17 +75,24 @@ pub fn add(
     email: &str,
     role: u8,
     cache_dir: &Path,
+    locks: &CollectionLocks,
 ) -> Result<Shared, String> {
     if role != merkle::VIEWER && role != merkle::EDITOR {
         return Err(BAD_ROLE.into());
     }
     let address = resolve_email(http, site, session, email)?;
+    // One editor-list change at a time per collection from this app, so two
+    // shares don't both build on the version before the other lands.
+    let _held = locks.take(caller, token_id);
     let reader = Reader::open(http, site, cache_dir)?;
     let (version, _, value) = reader.editor_list(token_id)?;
     let mut list: Vec<Editor> =
         serde_json::from_value(value).map_err(|_| UNREADABLE.to_string())?;
     if list.is_empty() {
         return Err(NO_LIST.into());
+    }
+    if list.len() > merkle::MAX_EDITORS {
+        return Err("This collection has reached its editor limit.".into());
     }
     let caller_index = list
         .iter()
@@ -170,15 +178,19 @@ pub fn resolve_email(
     email: &str,
 ) -> Result<String, String> {
     let email = email.trim().to_ascii_lowercase();
-    if email.is_empty() || !email.contains('@') || email.chars().any(char::is_whitespace) {
+    let valid = !email.is_empty()
+        && email.len() <= 254
+        && !email.chars().any(char::is_whitespace)
+        && matches!(email.split_once('@'), Some((local, domain)) if !local.is_empty() && domain.contains('.'));
+    if !valid {
         return Err("Enter an email address.".into());
     }
     let url = format!("{}/api/v1/users/resolve-email", site.origin);
     let answer = http
-        .post_json(&url, &json!({ "email": email }), Some(session))
+        .post_json_slow(&url, &json!({ "email": email }), Some(session))
         .map_err(|error| match error.status {
             Some(401) => SIGN_IN.to_string(),
-            Some(403) => FORBIDDEN.to_string(),
+            Some(403) => LOOKUP_FORBIDDEN.to_string(),
             Some(429) => BUSY.to_string(),
             Some(503) => LOOKUP_UNAVAILABLE.to_string(),
             _ => format!("Couldn't look up that email: {}", error.message),
@@ -280,6 +292,7 @@ mod tests {
         email: &str,
         role: u8,
     ) -> Result<Shared, String> {
+        let locks = crate::write::CollectionLocks::default();
         add(
             http,
             &site(),
@@ -289,6 +302,7 @@ mod tests {
             email,
             role,
             dir,
+            &locks,
         )
     }
 
@@ -366,6 +380,46 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_editor_sends_a_proof_for_a_second_editor() {
+        let (state, http, dir) = signed_in();
+        {
+            let mut world = state.lock().unwrap();
+            world.put(
+                "bafyEditorsShared",
+                json!([
+                    { "address": crate::testing::ALICE, "role": merkle::EDITOR },
+                    { "address": ADDRESS, "role": merkle::EDITOR }
+                ]),
+            );
+            world
+                .editor_lists
+                .insert(TOKEN.into(), ("bafyEditorsShared".into(), 1));
+        }
+        let shared = add(
+            &http,
+            &site(),
+            SESSION,
+            crate::testing::ALICE,
+            TOKEN,
+            "bob@example.com",
+            merkle::VIEWER,
+            dir.path(),
+            &crate::write::CollectionLocks::default(),
+        )
+        .unwrap();
+        assert_eq!(shared.address, crate::testing::BOB);
+        let relay = http
+            .requests()
+            .into_iter()
+            .find(|request| request.url.ends_with("/api/v1/wallet/relay"))
+            .unwrap();
+        let body = relay.body.unwrap();
+        assert_eq!(body["requiredRole"], merkle::EDITOR);
+        assert_eq!(body["proof"].as_array().unwrap().len(), 1);
+        assert_eq!(body["params"]["callerProof"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn the_caller_cannot_change_their_own_role() {
         let (_state, http, dir) = signed_in();
         assert_eq!(
@@ -389,10 +443,12 @@ mod tests {
             .requests()
             .iter()
             .all(|request| !request.url.contains("/upload-urls")));
-        assert_eq!(
-            share(&http, dir.path(), "not-an-email", merkle::VIEWER).unwrap_err(),
-            "Enter an email address."
-        );
+        for bad in ["not-an-email", "a@b", "a @b.com"] {
+            assert_eq!(
+                share(&http, dir.path(), bad, merkle::VIEWER).unwrap_err(),
+                "Enter an email address."
+            );
+        }
         assert_eq!(
             share(&http, dir.path(), "alice@example.com", 0).unwrap_err(),
             BAD_ROLE
@@ -426,7 +482,10 @@ mod tests {
     fn a_collection_without_an_editor_list_is_refused() {
         let (state, http, dir) = signed_in();
         state.lock().unwrap().editor_lists.remove(TOKEN);
-        assert!(share(&http, dir.path(), "alice@example.com", merkle::VIEWER).is_err());
+        assert_eq!(
+            share(&http, dir.path(), "alice@example.com", merkle::VIEWER).unwrap_err(),
+            NO_LIST
+        );
     }
 
     #[test]

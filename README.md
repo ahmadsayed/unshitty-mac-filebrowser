@@ -186,8 +186,10 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
   be created and shared by email, but not renamed or deleted; a collaborator
   can be added or have its role changed, not removed, and only an email
   attached to an Arbesk account that has signed in once can be shared with;
-  assets open in the Studio, not as files, and only their newest version can
-  be copied out; collections, and scenes that link to other assets, can't be
+  Arbesk lists only Editors in Network for now, so a Viewer needs the
+  collection's path to open it; assets open in the Studio, not as files, and
+  only their newest version can be copied out; collections, and scenes that
+  link to other assets, can't be
   copied yet, nor dragged to other apps; no sizes in listings; a scene's
   links to assets on another chain are left out of its preview.
 - Keep Versions may miss changes made while the app is closed.

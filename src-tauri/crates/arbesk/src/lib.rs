@@ -380,7 +380,9 @@ impl Client {
         };
         let site = self.site_for(&address)?;
         let account = location::account_path(&address);
-        let session = self.session_for(&account)?;
+        let session = self
+            .session_for(&account)
+            .map_err(|_| create::SIGN_IN.to_string())?;
         let created = create::create(
             self.http()?,
             &site,
@@ -413,7 +415,9 @@ impl Client {
         };
         let site = self.site_for(&address)?;
         let account = location::account_path(&address);
-        let session = self.session_for(&account)?;
+        let session = self
+            .session_for(&account)
+            .map_err(|_| share::SIGN_IN.to_string())?;
         let shared = share::add(
             self.http()?,
             &site,
@@ -423,6 +427,7 @@ impl Client {
             email,
             role,
             &self.cache_dir,
+            &self.locks,
         )
         .map_err(|error| match error.as_str() {
             write::SIGN_IN => share::SIGN_IN.to_string(),

@@ -7,8 +7,8 @@ copy `.gltf`, `.glb` and `.3mf` files from this computer into a collection
 (see [Copying into Arbesk](#copying-into-arbesk)).
 
 This is experimental. Nothing in Arbesk is renamed or deleted from File
-Browser, and nothing is added except a new collection or the files you copy
-into one.
+Browser, and nothing is added except a new collection, a collaborator, or
+the files you copy into one.
 
 ## Connecting
 
@@ -31,10 +31,10 @@ nothing more: collections and assets are read from Arbesk's public sources
 (its token index, the chain and its IPFS gateway). The account file holds no
 credential. The session from the sign-in is kept apart, in the system
 keychain (a file only you can read in the app's settings folder when there
-is no keychain), for 24 hours, and used only to create collections and copy
-files in. **Disconnect…** ends that session and forgets the account; your
-collections on Arbesk don't change. Accounts connected before copying existed
-sign in once more when they first create or copy.
+is no keychain), for 24 hours, and used only to create and share collections
+and copy files in. **Disconnect…** ends that session and forgets the account;
+your collections on Arbesk don't change. Accounts connected before copying
+existed sign in once more when they first create, share or copy.
 
 Before File Browser keeps an account, Arbesk must confirm it: with the
 session the browser hands back, File Browser asks Arbesk which wallet
@@ -68,10 +68,15 @@ once the change is confirmed.*, *Arbesk couldn't create “…”.*
 
 Right-click a collection in the account, or use **Share Collection…** in the
 collection's menu or the path bar's menu, and type the email the other person
-uses with Arbesk. Choose **Viewer** (they can see and download its assets) or
+uses with Arbesk. Choose **Viewer** (they can download its assets) or
 **Editor** (they can also add and save). Arbesk resolves the email to that
 account's wallet and adds it to the collection's editor list; the change is
 saved on IPFS and the chain, so the Studio and `besk` see it too.
+
+Arbesk's indexer currently lists only **Editors** in a member's Network and
+Studio libraries, not Viewers. A Viewer is recognized on chain and can open
+the collection if given its `arbesk://` path, but it won't appear in their
+list yet. Editors appear as a shared collection and can copy files in.
 
 The email must belong to an Arbesk account that has signed in at least once;
 otherwise the dialog says *No Arbesk account found for that email. They need

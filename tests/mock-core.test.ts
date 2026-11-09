@@ -1518,6 +1518,8 @@ test("arbesk_share_collection adds a collaborator by email and changes its role"
   );
   await expect(invoke("arbesk_share_collection", { path: shapes, email: "not-an-email", role: 1 })).rejects.toBe("Enter an email address.");
   await expect(invoke("arbesk_share_collection", { path: root, email: "alice@example.com", role: 1 })).rejects.toBe("Share a collection.");
+  await expect(invoke("arbesk_share_collection", { path: `${shapes}/a1~Box.gltf`, email: "alice@example.com", role: 1 })).rejects.toBe("Share a collection.");
+  await expect(invoke("arbesk_share_collection", { path: `${root}/99~Missing`, email: "alice@example.com", role: 1 })).rejects.toBe("The chain refused this collection.");
   await expect(invoke("arbesk_share_collection", { path: shapes, email: "alice@example.com", role: 0 })).rejects.toBe("Choose Viewer or Editor.");
   mock.signedIn = false;
   await expect(invoke("arbesk_share_collection", { path: shapes, email: "bob@example.com", role: 1 })).rejects.toBe(

@@ -281,15 +281,18 @@ export async function arbeskCreateCollection(path: string, name: string): Promis
   return invoke<string>("arbesk_create_collection", { path, name });
 }
 
-/** Sharing a collection: the member's wallet address, role (1 Viewer, 2 Editor) and whether it was added. */
+/** A collection collaborator's role: 1 Viewer, 2 Editor. */
+export type ArbeskRole = 1 | 2;
+
+/** Sharing a collection: the member's wallet address, role and whether it was added. */
 export interface ArbeskShared {
   address: string;
-  role: number;
+  role: ArbeskRole;
   added: boolean;
 }
 
 /** Add an Arbesk account to a collection by its email, as a viewer or an editor. */
-export async function arbeskShareCollection(path: string, email: string, role: number): Promise<ArbeskShared> {
+export async function arbeskShareCollection(path: string, email: string, role: ArbeskRole): Promise<ArbeskShared> {
   return invoke<ArbeskShared>("arbesk_share_collection", { path, email, role });
 }
 

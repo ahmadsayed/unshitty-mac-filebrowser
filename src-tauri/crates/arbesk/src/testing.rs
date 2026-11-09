@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) const ORIGIN: &str = "https://arbesk.test";
 pub(crate) const ADDRESS: &str = "0x00000000000000000000000000000000000000ab";
 pub(crate) const ALICE: &str = "0x1111111111111111111111111111111111111111";
+pub(crate) const BOB: &str = "0x2222222222222222222222222222222222222222";
 pub(crate) const STAMP_MS: i64 = 1_762_000_000_000;
 
 pub(crate) fn site() -> Site {
@@ -161,6 +162,7 @@ pub(crate) fn world() -> World {
     );
     w.editor_lists.insert("1".into(), ("bafyEditors1".into(), 1));
     w.users.insert("alice@example.com".into(), ALICE.into());
+    w.users.insert("bob@example.com".into(), BOB.into());
     w.users.insert("me@example.com".into(), ADDRESS.into());
     // Rooms (token 4, not the account's own): a table scene, its own
     // model raised and scaled, and two links to Shapes' Box.
@@ -179,6 +181,12 @@ pub(crate) fn world() -> World {
         json!({ "type": "collection", "name": "Rooms", "assets": { "t1": "bafyTable" } }),
     );
     w.tokens.insert("4".into(), "bafyC4".into());
+    // A collection someone else owns, where the account is not an editor.
+    w.put(
+        "bafyEditors4",
+        json!([{ "address": ALICE, "role": 2 }]),
+    );
+    w.editor_lists.insert("4".into(), ("bafyEditors4".into(), 1));
     // History (token 5): asset h1 saved three times, the first save a 3MF.
     let save = |source: &str, timestamp: i64, prev: Option<&str>| {
         let mut manifest = json!({ "name": "Chair", "timestamp": timestamp, "scene": { "nodes": [{ "source": { "cid": source } }] } });
@@ -247,6 +255,10 @@ pub(crate) fn arbesk(world: Arc<Mutex<World>>) -> FakeHttp {
                 let answer = match w.editor_lists.get(&token).filter(|_| through) {
                     Some((cid, _)) => {
                         json!({ "result": abi_string(&format!("ipfs://{cid}")) })
+                    }
+                    // A real token whose list was never set returns "".
+                    None if w.tokens.contains_key(&token) => {
+                        json!({ "result": abi_string("") })
                     }
                     None => json!({ "error": { "message": "execution reverted" } }),
                 };

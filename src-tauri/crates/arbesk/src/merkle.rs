@@ -112,7 +112,7 @@ fn pair(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
 pub(crate) fn address_bytes(address: &str) -> Result<[u8; 20], String> {
     let digits = address
         .strip_prefix("0x")
-        .filter(|digits| digits.len() == 40)
+        .filter(|digits| digits.len() == 40 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .ok_or_else(|| format!("“{address}” is not a wallet address."))?;
     let mut bytes = [0u8; 20];
     for (i, byte) in bytes.iter_mut().enumerate() {
@@ -232,6 +232,13 @@ mod tests {
                 "0xcca5aadb76d70d76b84e97dcfbb6147ff42a7c72e0c333d5366d9b5a94fdad70"
             ]
         );
+    }
+
+    #[test]
+    fn a_non_ascii_address_is_refused_without_panicking() {
+        let bad = format!("0x{}", "é".repeat(20));
+        assert_eq!(bad.len(), 42);
+        assert!(address_bytes(&bad).is_err());
     }
 
     #[test]

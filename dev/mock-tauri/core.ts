@@ -1977,8 +1977,9 @@ const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
     return `arbesk://${address}/${arbeskSegment(created, name)}`;
   },
   arbesk_share_collection: (a) => {
-    const { token } = arbeskIds(str(a, "path"));
-    if (!token) throw "Share a collection.";
+    const { token, asset } = arbeskIds(str(a, "path"));
+    if (!token || asset) throw "Share a collection.";
+    if (!ARBESK_COLLECTIONS.some((collection) => collection.token === token)) throw "The chain refused this collection.";
     arbeskSessionFor(ARBESK_SHARE_SIGN_IN);
     const email = str(a, "email").trim().toLowerCase();
     if (!email.includes("@")) throw "Enter an email address.";
