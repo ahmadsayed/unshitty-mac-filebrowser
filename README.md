@@ -108,7 +108,10 @@ one out on its own platform.
   double-click, and zoom with the wheel, a pinch or + and -;
   with Open, Rename…, Move to
   Trash and, for search results and Recent or Starred items, Open Item
-  Location, without closing the preview first.
+  Location, without closing the preview first. For a file in a Keep Versions
+  folder or an Arbesk asset with more than one version, ‹ and › in the
+  preview's header step through its versions (the title lists them all),
+  each shown as it was; Open still opens the current one.
 - **macOS DMG installation:** right-click a disk image to choose an application
   and install it for yourself or all users. Existing apps ask Replace / Skip /
   Keep Both; quarantine is preserved ([guide](docs/mac-dmg-install.md)).
