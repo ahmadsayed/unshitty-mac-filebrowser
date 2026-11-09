@@ -23,6 +23,13 @@ const queue: string[] = [];
 const running = new Map<string, number>();
 let nextTicket = 1;
 
+/** The type of a thumbnail's bytes: JPEG for the photos the backend decodes,
+ *  PNG for the rest (transparent pictures, Quick Look's, the desktop's own). */
+export function thumbType(buf: ArrayBuffer): string {
+  const head = new Uint8Array(buf, 0, Math.min(3, buf.byteLength));
+  return head.length === 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff ? "image/jpeg" : "image/png";
+}
+
 export function thumbKey(path: string, modified: number, bytes: number, size: number): string {
   return `${path}\n${modified}\n${bytes}\n${size}`;
 }
@@ -88,7 +95,7 @@ function pump(): void {
     const ticket = nextTicket++;
     running.set(key, ticket);
     thumbnail(job.path, job.size, ticket)
-      .then((buf) => (buf.byteLength ? { url: URL.createObjectURL(new Blob([buf], { type: "image/png" })), bytes: buf.byteLength } : null))
+      .then((buf) => (buf.byteLength ? { url: URL.createObjectURL(new Blob([buf], { type: thumbType(buf) })), bytes: buf.byteLength } : null))
       .catch(() => null)
       .then((thumb) => {
         // Cancelled: its slot is already free, and an empty answer would
