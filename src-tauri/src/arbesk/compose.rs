@@ -29,6 +29,14 @@ impl Format {
             Format::ThreeMf => "3mf",
         }
     }
+
+    /// The extension of the file the preview loads (`compose_preview`).
+    pub fn preview_ext(self) -> &'static str {
+        match self {
+            Format::Gltf => "glb",
+            Format::ThreeMf => "3mf",
+        }
+    }
 }
 
 /// The file a stored source becomes: glTF without a marker, 3MF for
@@ -66,7 +74,10 @@ pub fn is_child_ref(manifest: &Value) -> bool {
         .any(|node| node.get("child_ref").is_some())
 }
 
-/// The file `source` stands for, its parts fetched through `gateway`.
+/// The file `source` stands for, its parts fetched through `gateway`: the
+/// `.gltf` (or `.3mf`) an asset is, as Arbesk builds it. Kept for copying
+/// assets out, which isn't offered yet; the preview uses `compose_preview`.
+#[allow(dead_code)]
 pub fn compose(gateway: &Gateway, source: &Value) -> Result<Vec<u8>, String> {
     compose_within(gateway, source, BUILD_CAP)
 }
@@ -76,6 +87,7 @@ pub const TOO_LARGE_TO_BUILD: &str = "This asset is too large to open.";
 pub const BUILD_CAP: u64 = 512 * 1024 * 1024;
 
 /// `compose`, refusing once the parts fetched add up to more than `cap` bytes.
+#[allow(dead_code)]
 pub fn compose_within(gateway: &Gateway, source: &Value, cap: u64) -> Result<Vec<u8>, String> {
     let parts = Parts {
         gateway,
@@ -83,6 +95,29 @@ pub fn compose_within(gateway: &Gateway, source: &Value, cap: u64) -> Result<Vec
     };
     match format_of(source)? {
         Format::Gltf => compose_gltf(&parts, source),
+        Format::ThreeMf => compose_3mf(&parts, source),
+    }
+}
+
+/// What the Space preview loads: a glTF as one binary `.glb` (no base64
+/// for the webview to decode, a small JSON to parse), a 3MF as itself. The
+/// `.gltf` that `compose` builds stays the asset's file.
+pub fn compose_preview(gateway: &Gateway, source: &Value) -> Result<Vec<u8>, String> {
+    compose_preview_within(gateway, source, BUILD_CAP)
+}
+
+/// `compose_preview`, refusing once the parts fetched add up to more than `cap` bytes.
+pub fn compose_preview_within(
+    gateway: &Gateway,
+    source: &Value,
+    cap: u64,
+) -> Result<Vec<u8>, String> {
+    let parts = Parts {
+        gateway,
+        left: std::cell::Cell::new(cap),
+    };
+    match format_of(source)? {
+        Format::Gltf => glb::compose(&parts, source),
         Format::ThreeMf => compose_3mf(&parts, source),
     }
 }
@@ -107,6 +142,161 @@ impl Parts<'_> {
 }
 
 // ---- glTF --------------------------------------------------------------------
+
+/// A buffer's or image's bytes: an `ipfs://` part, or a base64 `data:` URI.
+fn resource_bytes(parts: &Parts, uri: Option<&str>) -> Result<Vec<u8>, String> {
+    let uri = uri.ok_or(UNKNOWN_FORMAT)?;
+    if let Some(cid) = uri.strip_prefix(IPFS) {
+        return parts.fetch(cid);
+    }
+    let data = uri.strip_prefix("data:").ok_or(UNKNOWN_FORMAT)?;
+    let (header, payload) = data.split_once(',').ok_or(UNKNOWN_FORMAT)?;
+    if !header.ends_with(";base64") {
+        return Err(UNKNOWN_FORMAT.into());
+    }
+    BASE64
+        .decode(payload.as_bytes())
+        .map_err(|_| UNKNOWN_FORMAT.into())
+}
+
+/// The glTF as a GLB: every buffer and image placed in one BIN chunk.
+mod glb {
+    use super::{Parts, UNKNOWN_FORMAT, resource_bytes};
+    use serde_json::{Map, Value, json};
+
+    const MAGIC: &[u8; 4] = b"glTF";
+    const JSON_CHUNK: &[u8; 4] = b"JSON";
+    const BIN_CHUNK: &[u8; 4] = b"BIN\0";
+
+    pub(super) fn compose(parts: &Parts, source: &Value) -> Result<Vec<u8>, String> {
+        let mut gltf = source.clone();
+        let mut bin = Vec::new();
+        let starts = place_buffers(parts, &mut gltf, &mut bin)?;
+        point_views(&mut gltf, &starts)?;
+        place_images(parts, &mut gltf, &mut bin)?;
+        let root = gltf.as_object_mut().ok_or(UNKNOWN_FORMAT)?;
+        if bin.is_empty() {
+            root.remove("buffers");
+        } else {
+            root.insert("buffers".into(), json!([{ "byteLength": bin.len() }]));
+        }
+        Ok(container(&gltf, &bin))
+    }
+
+    fn array<'a>(gltf: &'a mut Value, key: &str) -> Vec<&'a mut Map<String, Value>> {
+        gltf.get_mut(key)
+            .and_then(Value::as_array_mut)
+            .map(|items| items.iter_mut().filter_map(Value::as_object_mut).collect())
+            .unwrap_or_default()
+    }
+
+    /// Append `bytes` on a 4-byte boundary; where they start.
+    fn append(bin: &mut Vec<u8>, bytes: &[u8]) -> usize {
+        bin.resize(bin.len().next_multiple_of(4), 0);
+        let start = bin.len();
+        bin.extend_from_slice(bytes);
+        start
+    }
+
+    /// Every buffer's bytes into `bin`; where each starts.
+    fn place_buffers(
+        parts: &Parts,
+        gltf: &mut Value,
+        bin: &mut Vec<u8>,
+    ) -> Result<Vec<usize>, String> {
+        array(gltf, "buffers")
+            .into_iter()
+            .map(|buffer| {
+                Ok(append(
+                    bin,
+                    &resource_bytes(parts, buffer.get("uri").and_then(Value::as_str))?,
+                ))
+            })
+            .collect()
+    }
+
+    /// Each buffer view, now into the one buffer at its old buffer's start.
+    fn point_views(gltf: &mut Value, starts: &[usize]) -> Result<(), String> {
+        for view in array(gltf, "bufferViews") {
+            let buffer = view
+                .get("buffer")
+                .and_then(Value::as_u64)
+                .ok_or(UNKNOWN_FORMAT)?;
+            let start = *starts.get(buffer as usize).ok_or(UNKNOWN_FORMAT)?;
+            let offset = view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) as usize;
+            view.insert("buffer".into(), json!(0));
+            view.insert("byteOffset".into(), json!(start + offset));
+        }
+        Ok(())
+    }
+
+    /// Each image with a URI into `bin`, as a buffer view of its own.
+    fn place_images(parts: &Parts, gltf: &mut Value, bin: &mut Vec<u8>) -> Result<(), String> {
+        let mut views = Vec::new();
+        let first_view = gltf
+            .get("bufferViews")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        for image in array(gltf, "images") {
+            image.remove("_arbesk");
+            let Some(uri) = image.remove("uri") else {
+                continue;
+            };
+            let bytes = resource_bytes(parts, uri.as_str())?;
+            let mime = image
+                .get("mimeType")
+                .and_then(Value::as_str)
+                .map(String::from);
+            let mime =
+                mime.unwrap_or_else(|| image_mime(uri.as_str().unwrap_or_default(), &bytes).into());
+            image.insert("mimeType".into(), json!(mime));
+            image.insert("bufferView".into(), json!(first_view + views.len()));
+            views.push(json!({ "buffer": 0, "byteOffset": append(bin, &bytes), "byteLength": bytes.len() }));
+        }
+        if !views.is_empty() {
+            let root = gltf.as_object_mut().ok_or(UNKNOWN_FORMAT)?;
+            let all = root.entry("bufferViews").or_insert_with(|| json!([]));
+            all.as_array_mut().ok_or(UNKNOWN_FORMAT)?.extend(views);
+        }
+        Ok(())
+    }
+
+    /// An image's type: its data: URI's, else what its first bytes say.
+    fn image_mime(uri: &str, bytes: &[u8]) -> &'static str {
+        if uri.starts_with("data:image/jpeg") || bytes.starts_with(&[0xff, 0xd8]) {
+            "image/jpeg"
+        } else if uri.starts_with("data:image/webp")
+            || (bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"))
+        {
+            "image/webp"
+        } else {
+            "image/png"
+        }
+    }
+
+    /// The GLB container: header, JSON chunk (padded with spaces), BIN chunk.
+    fn container(gltf: &Value, bin: &[u8]) -> Vec<u8> {
+        let mut json = serde_json::to_vec(gltf).unwrap_or_default();
+        json.resize(json.len().next_multiple_of(4), b' ');
+        let bin_len = bin.len().next_multiple_of(4);
+        let bin_chunk = if bin.is_empty() { 0 } else { 8 + bin_len };
+        let total = 12 + 8 + json.len() + bin_chunk;
+        let mut out = Vec::with_capacity(total);
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&(total as u32).to_le_bytes());
+        out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        out.extend_from_slice(JSON_CHUNK);
+        out.extend_from_slice(&json);
+        if !bin.is_empty() {
+            out.extend_from_slice(&(bin_len as u32).to_le_bytes());
+            out.extend_from_slice(BIN_CHUNK);
+            out.extend_from_slice(bin);
+            out.resize(total, 0);
+        }
+        out
+    }
+}
 
 fn compose_gltf(parts: &Parts, source: &Value) -> Result<Vec<u8>, String> {
     let mut gltf = source.clone();
@@ -218,6 +408,87 @@ fn zip_files(files: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
     Ok(writer.finish().map_err(failed)?.into_inner())
 }
 
+/// Reading a GLB back, for tests here and in `service.rs`.
+#[cfg(test)]
+pub(crate) mod testing {
+    use data_encoding::BASE64;
+    use serde_json::Value;
+
+    /// A GLB's JSON and BIN chunks, after checking its header and chunks.
+    pub fn read_glb(bytes: &[u8]) -> (Value, Vec<u8>) {
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        assert_eq!(&bytes[0..4], b"glTF");
+        assert_eq!(word(4), 2, "version");
+        assert_eq!(word(8), bytes.len(), "total length");
+        let json_len = word(12);
+        assert_eq!(&bytes[16..20], b"JSON");
+        assert_eq!(json_len % 4, 0);
+        let json: Value = serde_json::from_slice(&bytes[20..20 + json_len]).unwrap();
+        let mut bin = Vec::new();
+        let at = 20 + json_len;
+        if at < bytes.len() {
+            let bin_len = word(at);
+            assert_eq!(&bytes[at + 4..at + 8], b"BIN\0");
+            assert_eq!(bin_len % 4, 0);
+            bin = bytes[at + 8..at + 8 + bin_len].to_vec();
+            assert_eq!(at + 8 + bin_len, bytes.len());
+        }
+        (json, bin)
+    }
+
+    fn data_uri(uri: &str) -> Vec<u8> {
+        BASE64
+            .decode(uri.split_once(",").unwrap().1.as_bytes())
+            .unwrap()
+    }
+
+    /// `glb` holds exactly the model `gltf` (a .gltf with data: URIs) holds:
+    /// every buffer view's and image's bytes, and the same JSON otherwise.
+    pub fn assert_same_model(glb: &[u8], gltf: &Value) {
+        let (ours, bin) = read_glb(glb);
+        let buffers: Vec<Vec<u8>> = gltf["buffers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| data_uri(b["uri"].as_str().unwrap()))
+            .collect();
+        let num = |v: &Value, key: &str| v[key].as_u64().unwrap_or(0) as usize;
+        for (i, view) in gltf["bufferViews"].as_array().unwrap().iter().enumerate() {
+            let theirs =
+                &buffers[num(view, "buffer")][num(view, "byteOffset")..][..num(view, "byteLength")];
+            let mine = &ours["bufferViews"][i];
+            assert_eq!(num(mine, "buffer"), 0);
+            assert_eq!(
+                &bin[num(mine, "byteOffset")..][..num(mine, "byteLength")],
+                theirs,
+                "view {i}"
+            );
+            for key in ["byteStride", "target"] {
+                assert_eq!(mine.get(key), view.get(key), "view {i} {key}");
+            }
+        }
+        for (i, image) in gltf["images"].as_array().into_iter().flatten().enumerate() {
+            let mine = &ours["images"][i];
+            let view = &ours["bufferViews"][num(mine, "bufferView")];
+            assert_eq!(
+                &bin[num(view, "byteOffset")..][..num(view, "byteLength")],
+                data_uri(image["uri"].as_str().unwrap()),
+                "image {i}"
+            );
+            assert!(mine.get("uri").is_none());
+            assert_eq!(mine["mimeType"], image["mimeType"], "image {i}");
+        }
+        let rest = |v: &Value| {
+            let mut v = v.clone();
+            for key in ["buffers", "bufferViews", "images"] {
+                v.as_object_mut().unwrap().remove(key);
+            }
+            v
+        };
+        assert_eq!(rest(&ours), rest(gltf));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +550,172 @@ mod tests {
             .unwrap();
             assert_eq!(ours, theirs, "{case}");
         }
+    }
+
+    fn preview_case(case: &str) -> Vec<u8> {
+        let http = serving(case);
+        let cache = tempfile::tempdir().unwrap();
+        let gateway = Gateway::new(
+            &http,
+            "https://gw.test/ipfs/",
+            ManifestCache::new(cache.path().into(), 1 << 20),
+        );
+        let source: Value =
+            serde_json::from_slice(&std::fs::read(fixture(case).join("source.json")).unwrap())
+                .unwrap();
+        compose_preview(&gateway, &source).unwrap()
+    }
+
+    #[test]
+    fn a_gltf_previews_as_a_glb_holding_what_arbesk_builds() {
+        for case in ["glb-box", "gltf-image"] {
+            let theirs: Value = serde_json::from_slice(
+                &std::fs::read(fixture(case).join("expected.gltf")).unwrap(),
+            )
+            .unwrap();
+            testing::assert_same_model(&preview_case(case), &theirs);
+        }
+    }
+
+    #[test]
+    fn a_3mf_previews_as_itself() {
+        for case in ["3mf-box", "3mf-thumbnail"] {
+            assert_eq!(
+                entries(&preview_case(case)),
+                entries(&compose_case(case)),
+                "{case}"
+            );
+        }
+    }
+
+    /// A gateway answering each CID with its bytes from `parts`.
+    fn parts_gateway(parts: &'static [(&'static str, &'static [u8])]) -> FakeHttp {
+        FakeHttp::new(move |request| {
+            let cid = request.url.rsplit('/').next().unwrap();
+            parts
+                .iter()
+                .find(|(c, _)| *c == cid)
+                .map(|(_, b)| b.to_vec())
+                .ok_or_else(not_found)
+        })
+    }
+
+    fn preview_of(http: &FakeHttp, source: Value) -> Result<Vec<u8>, String> {
+        let cache = tempfile::tempdir().unwrap();
+        let gateway = Gateway::new(
+            http,
+            "https://gw.test/ipfs",
+            ManifestCache::new(cache.path().into(), 1 << 20),
+        );
+        compose_preview(&gateway, &source)
+    }
+
+    #[test]
+    fn several_buffers_and_a_data_buffer_each_start_aligned() {
+        let http = parts_gateway(&[("bafyA", b"AAAAA"), ("bafyB", b"BBBBBBB")]);
+        let source = json!({
+            "buffers": [
+                { "uri": "ipfs://bafyA", "byteLength": 5, "_arbesk": { "hash": "x" } },
+                { "uri": "data:application/octet-stream;base64,Q0ND", "byteLength": 3 },
+                { "uri": "ipfs://bafyB", "byteLength": 7 }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 1, "byteLength": 3 },
+                { "buffer": 1, "byteLength": 3, "target": 34962 },
+                { "buffer": 2, "byteOffset": 2, "byteLength": 4, "byteStride": 4 }
+            ]
+        });
+        let (json, bin) = testing::read_glb(&preview_of(&http, source).unwrap());
+        let view = |i: usize| {
+            let v = &json["bufferViews"][i];
+            let at = v["byteOffset"].as_u64().unwrap() as usize;
+            (
+                at,
+                &bin[at..at + v["byteLength"].as_u64().unwrap() as usize],
+            )
+        };
+        assert_eq!(view(0).1, b"AAA");
+        assert_eq!(view(1).1, b"CCC");
+        assert_eq!(view(2).1, b"BBBB");
+        // Each buffer starts on a 4-byte boundary: views 1 and 2 are at their buffer's start + their offset.
+        assert_eq!(view(1).0 % 4, 0);
+        assert_eq!((view(2).0 - 2) % 4, 0);
+        // The BIN chunk is padded to 4: up to 3 bytes longer than its buffer, as glTF allows.
+        let declared = json["buffers"][0]["byteLength"].as_u64().unwrap() as usize;
+        assert!(
+            declared <= bin.len() && bin.len() - declared < 4,
+            "{declared} vs {}",
+            bin.len()
+        );
+        assert_eq!(json["buffers"].as_array().unwrap().len(), 1);
+        assert_eq!(json["bufferViews"][1]["target"], 34962);
+        assert_eq!(json["bufferViews"][2]["byteStride"], 4);
+    }
+
+    #[test]
+    fn an_image_without_a_mime_type_gets_the_one_its_bytes_say() {
+        let http = parts_gateway(&[
+            ("bafyJ", &[0xff, 0xd8, 0xff, 0xe0, 1, 2]),
+            ("bafyW", b"RIFF\x04\0\0\0WEBPxxxx"),
+        ]);
+        let source = json!({ "images": [{ "uri": "ipfs://bafyJ" }, { "uri": "ipfs://bafyW" }, { "uri": "data:image/png;base64,iVBORw0KGgo=" }] });
+        let (json, _) = testing::read_glb(&preview_of(&http, source).unwrap());
+        let mimes: Vec<&str> = json["images"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["mimeType"].as_str().unwrap())
+            .collect();
+        assert_eq!(mimes, ["image/jpeg", "image/webp", "image/png"]);
+    }
+
+    #[test]
+    fn a_preview_refuses_what_it_can_not_place() {
+        let http = parts_gateway(&[]);
+        for source in [
+            json!({ "buffers": [{ "uri": "https://elsewhere/x.bin" }] }),
+            json!({ "buffers": [{ "byteLength": 4 }] }),
+            json!({ "images": [{ "uri": "x.png" }] }),
+            json!({ "buffers": [], "bufferViews": [{ "buffer": 3, "byteLength": 1 }] }),
+            json!({ "buffers": [{ "uri": "data:application/octet-stream,plain" }] }),
+            json!({ "arbesk_format": "composite-example" }),
+        ] {
+            assert_eq!(
+                preview_of(&http, source.clone()).unwrap_err(),
+                UNKNOWN_FORMAT,
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_preview_with_nothing_to_place_is_a_glb_without_a_bin_chunk() {
+        let (json, bin) = testing::read_glb(
+            &preview_of(
+                &parts_gateway(&[]),
+                json!({ "asset": { "version": "2.0" } }),
+            )
+            .unwrap(),
+        );
+        assert!(bin.is_empty());
+        assert_eq!(json, json!({ "asset": { "version": "2.0" } }));
+    }
+
+    #[test]
+    fn a_preview_stops_once_its_parts_pass_the_cap() {
+        let http = parts_gateway(&[("bafyA", &[7u8; 600]), ("bafyB", &[7u8; 600])]);
+        let cache = tempfile::tempdir().unwrap();
+        let gateway = Gateway::new(
+            &http,
+            "https://gw.test/ipfs",
+            ManifestCache::new(cache.path().into(), 1 << 20),
+        );
+        let source = json!({ "buffers": [{ "uri": "ipfs://bafyA" }, { "uri": "ipfs://bafyB" }] });
+        assert!(compose_preview_within(&gateway, &source, 1200).is_ok());
+        assert_eq!(
+            compose_preview_within(&gateway, &source, 1199).unwrap_err(),
+            TOO_LARGE_TO_BUILD
+        );
     }
 
     #[test]

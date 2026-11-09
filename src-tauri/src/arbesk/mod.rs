@@ -111,8 +111,16 @@ impl ArbeskState {
         let (Ok(site), Ok(http)) = (site, self.http()) else {
             return Vec::new();
         };
-        service::thumbnail(http, &site, path, size, &self.cache_dir, &self.thumbnails, stop)
-            .unwrap_or_default()
+        service::thumbnail(
+            http,
+            &site,
+            path,
+            size,
+            &self.cache_dir,
+            &self.thumbnails,
+            stop,
+        )
+        .unwrap_or_default()
     }
 
     /// The Studio link of the asset at `path`, on its account's deployment.
@@ -239,7 +247,10 @@ mod tests {
         assert_eq!(state.accounts(), [account.clone()]);
         assert_eq!(state.site_for(ADDRESS).unwrap(), account.site());
         let asset = format!("arbesk://{ADDRESS}/1~Set/a1~Box.gltf");
-        assert_eq!(state.studio_url(&asset).unwrap(), format!("{ORIGIN}/studio?asset=1&assetId=a1"));
+        assert_eq!(
+            state.studio_url(&asset).unwrap(),
+            format!("{ORIGIN}/studio?asset=1&assetId=a1")
+        );
         assert_eq!(
             state.connect_finish(&flow_id).unwrap_err(),
             "This sign-in attempt is no longer active."
@@ -322,7 +333,11 @@ mod tests {
         );
         assert!(state.list("arbesk://bad").is_err());
         // Its thumbnails are empty, as for any file without one.
-        assert!(state.thumbnail(&format!("{path}/1~S/a~B.gltf"), 256, &|| false).is_empty());
+        assert!(
+            state
+                .thumbnail(&format!("{path}/1~S/a~B.gltf"), 256, &|| false)
+                .is_empty()
+        );
         assert!(state.thumbnail("arbesk://bad", 256, &|| false).is_empty());
     }
 }

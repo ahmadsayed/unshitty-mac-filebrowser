@@ -50,7 +50,7 @@ import { FolderSummaries } from "./folder-summaries";
 import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
 import type { DriveAuthNeed } from "./drive-auth";
 import { PathRefs, type Clip } from "./path-refs";
-import { companionPath, gltfCompanions, modelFormat, type ModelFormat } from "./models";
+import { companionPath, gltfCompanions, isGlb, modelFormat, type ModelFormat } from "./models";
 import { accountOf, fromArbesk, fromDrive, PROVIDERS, providerOf, withAccount, withoutAccount, type Account, type ProviderActions, type ProviderId } from "./providers";
 import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
@@ -4436,9 +4436,11 @@ async function previewTextEntry(entry: Entry, seq: number): Promise<void> {
  * now, in its own chunk. Without WebGL, or for a file it can't read, the
  * preview says there is none.
  */
-async function previewModelEntry(entry: Entry, seq: number, format: ModelFormat): Promise<void> {
+async function previewModelEntry(entry: Entry, seq: number, named: ModelFormat): Promise<void> {
   try {
     const bytes = await previewBytes(entry.path, MODEL_PREVIEW_LIMIT);
+    // The bytes decide over the name: an Arbesk .gltf previews as a GLB.
+    const format: ModelFormat = named === "gltf" && isGlb(bytes) ? "glb" : named;
     const companions = format === "gltf" ? await readGltfCompanions(entry.path, bytes) : new Map<string, ArrayBuffer>();
     const viewer = await import("./model-viewer");
     const model = await viewer.loadModel(format, bytes, companions);

@@ -54,9 +54,10 @@ you later. File Browser itself never asks Arbesk to change anything.
 - Opening an asset (double-click, **Open** in its menu or in the preview)
   opens it in Arbesk's Studio, in your browser, on the deployment you signed
   in to (`/studio?asset=<collection>&assetId=<asset>`, the link `besk show`
-  opens). Space builds the asset's file into the app cache for the 3D
-  preview; a built file is reused while nobody has changed it, and files
-  left untouched for a week are pruned.
+  opens). Space builds the asset into the app cache for the 3D preview: a
+  glTF asset as one binary `.glb`, so the preview has no base64 to decode
+  (the asset itself stays a `.gltf`); a built file is reused while nobody has
+  changed it, and files left untouched for a week are pruned.
 - There is no Copy Location: an `arbesk://` address means nothing outside
   File Browser.
 - Copy, Cut and dragging out say *Copying from Arbesk comes next.*; Paste

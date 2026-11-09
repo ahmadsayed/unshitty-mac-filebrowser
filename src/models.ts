@@ -12,6 +12,13 @@ export function modelFormat(name: string): ModelFormat | null {
   return dot > 0 ? (FORMATS[name.slice(dot + 1).toLowerCase()] ?? null) : null;
 }
 
+/** Whether `bytes` are a binary glTF (GLB): its header starts with "glTF".
+ *  An Arbesk asset named .gltf previews as one. */
+export function isGlb(bytes: ArrayBuffer): boolean {
+  const head = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength));
+  return head.length === 4 && head[0] === 0x67 && head[1] === 0x6c && head[2] === 0x54 && head[3] === 0x46;
+}
+
 /**
  * A glTF `uri` as a path below the model's folder, or null when it is not
  * one: an embedded data URI, another scheme, an absolute path, a backslash or
