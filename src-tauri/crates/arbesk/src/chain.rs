@@ -29,6 +29,8 @@ pub struct ChainConfig {
 /// How an error starts when the chain didn't answer: a listing fails with it
 /// rather than leaving the collection out.
 pub const CHAIN_UNREACHABLE: &str = "The chain could not be reached";
+/// How an error starts when `tokenURI` reverted: the token doesn't exist.
+pub const TOKEN_REFUSED: &str = "The chain refused collection";
 
 /// `tokenURI(uint256)`'s selector.
 const TOKEN_URI: &str = "0xc87b56dd";
@@ -91,9 +93,7 @@ pub fn token_uri(http: &dyn Http, chain: &ChainConfig, token_id: &str) -> Result
     let body: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "The chain sent an answer File Browser can't read.".to_string())?;
     if let Some(message) = body["error"]["message"].as_str() {
-        return Err(format!(
-            "The chain refused collection {token_id}: {message}"
-        ));
+        return Err(format!("{TOKEN_REFUSED} {token_id}: {message}"));
     }
     let uri = decode_abi_string(body["result"].as_str().unwrap_or_default())?;
     Ok(uri.strip_prefix("ipfs://").unwrap_or(&uri).to_string())
@@ -101,6 +101,15 @@ pub fn token_uri(http: &dyn Http, chain: &ChainConfig, token_id: &str) -> Result
 
 /// `tokenURI(token_id)` as call data: the selector and the id as a uint256.
 fn encode_token_uri_call(token_id: &str) -> Result<String, String> {
+    Ok(uint256_word(token_id)?
+        .iter()
+        .fold(TOKEN_URI.to_string(), |hex, byte| {
+            hex + &format!("{byte:02x}")
+        }))
+}
+
+/// A decimal token id as a 32-byte big-endian uint256 word.
+pub(crate) fn uint256_word(token_id: &str) -> Result<[u8; 32], String> {
     let refused = || format!("“{token_id}” is not a collection token.");
     if token_id.is_empty() || !token_id.bytes().all(|b| b.is_ascii_digit()) {
         return Err(refused());
@@ -117,9 +126,35 @@ fn encode_token_uri_call(token_id: &str) -> Result<String, String> {
             return Err(refused());
         }
     }
-    Ok(word.iter().fold(TOKEN_URI.to_string(), |hex, byte| {
-        hex + &format!("{byte:02x}")
-    }))
+    Ok(word)
+}
+
+/// Big-endian bytes as a decimal number: the token id a hash names.
+pub(crate) fn decimal(bytes: &[u8]) -> String {
+    let mut digits = vec![0u8];
+    for &byte in bytes {
+        let mut carry = u32::from(byte);
+        for digit in digits.iter_mut() {
+            let value = u32::from(*digit) * 256 + carry;
+            *digit = (value % 10) as u8;
+            carry = value / 10;
+        }
+        while carry > 0 {
+            digits.push((carry % 10) as u8);
+            carry /= 10;
+        }
+    }
+    let decimal: String = digits
+        .iter()
+        .rev()
+        .skip_while(|digit| **digit == 0)
+        .map(|digit| char::from(b'0' + digit))
+        .collect();
+    if decimal.is_empty() {
+        "0".into()
+    } else {
+        decimal
+    }
 }
 
 /// One ABI-encoded `string` return value: offset 32, length, bytes.

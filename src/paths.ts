@@ -45,6 +45,12 @@ export function isArbeskPath(path: string): boolean {
   return path.startsWith(ARBESK_PREFIX);
 }
 
+/** Whether `path` is an Arbesk account, the place collections are created:
+ *  `arbesk://<address>`. */
+export function isArbeskAccount(path: string): boolean {
+  return isArbeskPath(path) && path.slice(ARBESK_PREFIX.length).split("/").filter(Boolean).length === 1;
+}
+
 /** Whether `path` is an Arbesk asset (a file), not an account or a collection:
  *  `arbesk://<address>/<token>~<name>/<asset>~<name>`. */
 export function isArbeskAsset(path: string): boolean {

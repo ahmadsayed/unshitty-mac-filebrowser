@@ -267,8 +267,8 @@ const ROWS: Record<string, MatrixCase> = {
   }],
   "a collection in an Arbesk account": [fromNetwork("Arbesk"), "Shapes", {
     item: ["Open", "Copy (off)"],
-    background: ["Show Hidden Files", "Reload", "Select All"],
-    location: ["Reload", "Select All"],
+    background: ["New Collection…", "Show Hidden Files", "Reload", "Select All"],
+    location: ["New Collection…", "Reload", "Select All"],
     // Collections can't be copied out yet; only their assets.
     keys: { copy: ARBESK_COPY, paste: "toast “Paste into a collection.”", properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing" },
     drag: ARBESK_COPY,

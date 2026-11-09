@@ -975,7 +975,7 @@ mod tests {
     fn a_link_resolves_through_its_own_contract() {
         let cache = tempfile::tempdir().unwrap();
         let mut w = world();
-        w.only_via.insert(1, "0xLINK".into());
+        w.only_via.insert("1".into(), "0xLINK".into());
         let http = arbesk(Arc::new(Mutex::new(w)));
         let resolved = scene(&http, &site(), &table(), None, cache.path()).unwrap();
         assert_eq!(resolved.parts.len(), 2);
@@ -1679,7 +1679,7 @@ mod tests {
             let mut collection: Value = serde_json::from_slice(&w.files["bafyC1"]).unwrap();
             collection["assets"]["a1"] = json!("bafyA1v2");
             w.put("bafyC1v2", collection);
-            w.tokens.insert(1, "bafyC1v2".into());
+            w.tokens.insert("1".into(), "bafyC1v2".into());
         }
         list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
         assert!(
@@ -1811,7 +1811,7 @@ mod tests {
             let mut collection: Value = serde_json::from_slice(&w.files["bafyC1"]).unwrap();
             collection["assets"].as_object_mut().unwrap().remove("a1");
             w.put("bafyC1v3", collection);
-            w.tokens.insert(1, "bafyC1v3".into());
+            w.tokens.insert("1".into(), "bafyC1v3".into());
         }
         list(&http, &site(), &shapes(), cache.path(), &thumbs).unwrap();
         // Not the remembered picture: Box.gltf left the collection.

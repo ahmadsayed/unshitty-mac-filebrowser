@@ -276,6 +276,11 @@ export async function arbeskDisconnect(account: string): Promise<void> {
   return invoke<void>("arbesk_disconnect", { account });
 }
 
+/** Create the collection `name` in the Arbesk account `path` belongs to; its new path. */
+export async function arbeskCreateCollection(path: string, name: string): Promise<string> {
+  return invoke<string>("arbesk_create_collection", { path, name });
+}
+
 export async function driveAccounts(): Promise<DriveAccount[]> {
   return invoke<DriveAccount[]>("drive_accounts");
 }

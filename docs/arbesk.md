@@ -7,7 +7,8 @@ copy `.gltf`, `.glb` and `.3mf` files from this computer into a collection
 (see [Copying into Arbesk](#copying-into-arbesk)).
 
 This is experimental. Nothing in Arbesk is renamed or deleted from File
-Browser, and nothing is added except by that copy.
+Browser, and nothing is added except a new collection or the files you copy
+into one.
 
 ## Connecting
 
@@ -30,10 +31,10 @@ nothing more: collections and assets are read from Arbesk's public sources
 (its token index, the chain and its IPFS gateway). The account file holds no
 credential. The session from the sign-in is kept apart, in the system
 keychain (a file only you can read in the app's settings folder when there
-is no keychain), for 24 hours, and used only to copy files in. **Disconnect…**
-ends that session and forgets the account; your collections on Arbesk don't
-change. Accounts connected before copying existed sign in once more when you
-first copy.
+is no keychain), for 24 hours, and used only to create collections and copy
+files in. **Disconnect…** ends that session and forgets the account; your
+collections on Arbesk don't change. Accounts connected before copying existed
+sign in once more when they first create or copy.
 
 Before File Browser keeps an account, Arbesk must confirm it: with the
 session the browser hands back, File Browser asks Arbesk which wallet
@@ -45,6 +46,23 @@ browsing reads only public data and needs no session.
 
 Arbesk's sign-in page is Arbesk's own, the one `besk login` opens; besides
 signing you in it sets up what Arbesk needs to make changes for you.
+
+## Creating a collection
+
+At the account (not inside a collection), **New Collection…** in the empty
+space's menu or the path bar's menu asks for a name, then mints the
+collection on Arbesk's chain. Arbesk derives the collection's token from your
+account and the name, so the same name in one account is the same
+collection; asking again says *A collection named “…” already exists.* and
+leaves the dialog open. The new collection appears in the list and is
+selected.
+
+Creating needs the same session as copying, asked for if it is gone. If you
+cancel that sign-in, no collection is created. Arbesk's own answers are
+passed on: *You can't create collections in this account.*, *Arbesk is busy.
+Try again in a minute.*, *Arbesk couldn't create the collection. Sign in
+again to renew its permission.*, *Arbesk is still creating “…”. It appears
+once the change is confirmed.*, *Arbesk couldn't create “…”.*
 
 ## Browsing
 

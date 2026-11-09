@@ -61,7 +61,8 @@ the place may be written. Then:
   Drive), `share/` (iroh shares), `sftp.rs` (SSH, read only) and the
   `crates/arbesk` workspace crate (Arbesk: its read path rebuilt from public
   sources, assets built into the app cache to open, preview and copy out,
-  each asset's saved thumbnail; local model files copied in with Arbesk's
+  each asset's saved thumbnail; named collections created (a name minted
+  through the wallet relay) and local model files copied in with Arbesk's
   own storage protocol, uploads and the collection update through Arbesk's
   relay, under a session kept in the keychain). `lib.rs` reaches it only
   through the crate's facade (`Client`, `Account`, `Entry`, `Scene`,

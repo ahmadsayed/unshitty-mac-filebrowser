@@ -28,12 +28,12 @@ pub(crate) fn site() -> Site {
 #[derive(Default)]
 pub(crate) struct World {
     pub(crate) files: HashMap<String, Vec<u8>>,
-    pub(crate) tokens: HashMap<u64, String>,
+    pub(crate) tokens: HashMap<String, String>,
     pub(crate) owned: Vec<String>,
     pub(crate) failing: HashSet<String>,
     pub(crate) rpc_down: bool,
     /// Tokens the chain answers only through this contract.
-    pub(crate) only_via: HashMap<u64, String>,
+    pub(crate) only_via: HashMap<String, String>,
     /// Session tokens Arbesk accepts on its write endpoints.
     pub(crate) sessions: HashSet<String>,
     /// What the wallet relay does with a write.
@@ -46,7 +46,7 @@ pub(crate) struct World {
     /// token's CID from before it, as a node a block behind does.
     pub(crate) lag: usize,
     /// Tokens whose reads still lag: the CID before, and how many reads.
-    pub(crate) lagging: HashMap<u64, (String, usize)>,
+    pub(crate) lagging: HashMap<String, (String, usize)>,
     /// Upload URLs handed out so far; the next is `https://up.test/<minted>`.
     pub(crate) minted: usize,
     /// Upload URLs already used (a second use is refused, as Pinata does).
@@ -145,9 +145,9 @@ pub(crate) fn world() -> World {
         "bafyC2",
         json!({ "type": "collection", "assets": { "u1": "bafyA1" } }),
     );
-    w.tokens.insert(1, "bafyC1".into());
-    w.tokens.insert(2, "bafyC2".into());
-    w.tokens.insert(3, "bafyGone".into());
+    w.tokens.insert("1".into(), "bafyC1".into());
+    w.tokens.insert("2".into(), "bafyC2".into());
+    w.tokens.insert("3".into(), "bafyGone".into());
     w.owned = vec!["1".into(), "2".into(), "3".into()];
     // Rooms (token 4, not the account's own): a table scene, its own
     // model raised and scaled, and two links to Shapes' Box.
@@ -165,7 +165,7 @@ pub(crate) fn world() -> World {
         "bafyC4",
         json!({ "type": "collection", "name": "Rooms", "assets": { "t1": "bafyTable" } }),
     );
-    w.tokens.insert(4, "bafyC4".into());
+    w.tokens.insert("4".into(), "bafyC4".into());
     // History (token 5): asset h1 saved three times, the first save a 3MF.
     let save = |source: &str, timestamp: i64, prev: Option<&str>| {
         let mut manifest = json!({ "name": "Chair", "timestamp": timestamp, "scene": { "nodes": [{ "source": { "cid": source } }] } });
@@ -181,7 +181,7 @@ pub(crate) fn world() -> World {
         "bafyC5",
         json!({ "type": "collection", "name": "History", "assets": { "h1": "bafyH3" } }),
     );
-    w.tokens.insert(5, "bafyC5".into());
+    w.tokens.insert("5".into(), "bafyC5".into());
     w
 }
 
@@ -211,7 +211,7 @@ pub(crate) fn arbesk(world: Arc<Mutex<World>>) -> FakeHttp {
         if url == "https://rpc.test" {
             let call = &request.body.as_ref().unwrap()["params"][0];
             let data = call["data"].as_str().unwrap().to_string();
-            let token = u64::from_str_radix(&data[data.len() - 16..], 16).unwrap();
+            let token = word_decimal(&data[data.len() - 64..]);
             let through = w
                 .only_via
                 .get(&token)
@@ -315,17 +315,27 @@ fn upload(w: &mut World, n: usize, request: &Request) -> Result<Vec<u8>, HttpErr
     json_answer(json!({ "data": { "cid": cid } }))
 }
 
-/// The wallet relay: the session must be Arbesk's and the token the
-/// account's own; what happens next is `w.relay`.
+/// The wallet relay: the session must be Arbesk's; an `updateUri` must name
+/// the account's own token, a `publish` a token that doesn't exist yet.
+/// What happens next is `w.relay`.
 fn wallet_relay(w: &mut World, request: &Request) -> Result<Vec<u8>, HttpError> {
     signed_in(w, request)?;
     let body = request.body.as_ref().cloned().unwrap_or_default();
     let token = body["tokenId"]
         .as_str()
         .map(String::from)
-        .or_else(|| body["tokenId"].as_u64().map(|n| n.to_string()));
-    let token = token.unwrap_or_default();
-    if !w.owned.contains(&token) {
+        .or_else(|| body["tokenId"].as_u64().map(|n| n.to_string()))
+        .unwrap_or_default();
+    let publish = body["op"] == "publish";
+    if publish {
+        // Minting: the token must not exist yet.
+        if w.tokens.contains_key(&token) {
+            return Err(HttpError::new(
+                Some(409),
+                "The server answered 409 Conflict.",
+            ));
+        }
+    } else if !w.owned.contains(&token) {
         return Err(HttpError::new(
             Some(403),
             "The server answered 403 Forbidden.",
@@ -345,11 +355,19 @@ fn wallet_relay(w: &mut World, request: &Request) -> Result<Vec<u8>, HttpError> 
         )),
         Relay::Pending => receipt(None),
         Relay::Failed => receipt(Some(false)),
+        Relay::Ok if publish => {
+            let uri = body["params"]["uri"].as_str().unwrap_or_default();
+            let cid = uri.strip_prefix("ipfs://").unwrap_or(uri);
+            w.tokens.insert(token.clone(), cid.to_string());
+            if !w.owned.contains(&token) {
+                w.owned.push(token);
+            }
+            receipt(Some(true))
+        }
         Relay::Ok => {
             let uri = body["params"]["newUri"].as_str().unwrap_or_default();
             let cid = uri.strip_prefix("ipfs://").unwrap_or(uri);
-            let token = token.parse().unwrap_or_default();
-            if let Some(before) = w.tokens.insert(token, cid.to_string())
+            if let Some(before) = w.tokens.insert(token.clone(), cid.to_string())
                 && w.lag > 0
             {
                 let lag = w.lag;
@@ -358,6 +376,14 @@ fn wallet_relay(w: &mut World, request: &Request) -> Result<Vec<u8>, HttpError> 
             receipt(Some(true))
         }
     }
+}
+
+/// A 32-byte word of hex as a decimal number, as `tokenURI` gets it.
+fn word_decimal(hex: &str) -> String {
+    let bytes = data_encoding::HEXLOWER_PERMISSIVE
+        .decode(hex.as_bytes())
+        .unwrap_or_default();
+    crate::chain::decimal(&bytes)
 }
 
 /// A WebP picture, the format the Studio stores thumbnails in.
@@ -454,7 +480,7 @@ mod tests {
             let receipt = relay(&http, Some("tok"), 1).unwrap();
             assert_eq!(receipt["receipt"]["status"].as_bool(), status);
         }
-        assert_eq!(state.lock().unwrap().tokens[&1], "bafyC1");
+        assert_eq!(state.lock().unwrap().tokens["1"], "bafyC1");
         state.lock().unwrap().relay = Relay::Status(502);
         assert_eq!(relay(&http, Some("tok"), 1).unwrap_err().status, Some(502));
     }

@@ -26,9 +26,9 @@ use crate::progress::{Phase, Progress};
 // ---- Wording ----------------------------------------------------------------
 
 /// No session, an expired one, or Arbesk's 401.
-pub const SIGN_IN: &str = "Sign in to Arbesk again to copy files into it.";
-pub const FORBIDDEN: &str = "You can't add to this collection.";
-pub const BUSY: &str = "Arbesk is busy. Try again in a minute.";
+pub(crate) const SIGN_IN: &str = "Sign in to Arbesk again to copy files into it.";
+pub(crate) const FORBIDDEN: &str = "You can't add to this collection.";
+pub(crate) const BUSY: &str = "Arbesk is busy. Try again in a minute.";
 /// The relay's 502: most often an expired CDP delegation.
 pub const RELAY_FAILED: &str =
     "Arbesk couldn't save the change. Sign in again to renew its permission.";
@@ -290,7 +290,7 @@ const PRESIGNED: &str = "presigned-put";
 
 /// Uploads to IPFS through Arbesk's one-use credentials, minted together
 /// and replaced when stale.
-struct Uploader<'a> {
+pub(crate) struct Uploader<'a> {
     http: &'a dyn Http,
     mint_url: String,
     session: &'a str,
@@ -305,7 +305,7 @@ struct Uploader<'a> {
 
 impl<'a> Uploader<'a> {
     /// Credentials for `count` uploads, minted in one call.
-    fn new(
+    pub(crate) fn new(
         http: &'a dyn Http,
         site: &Site,
         session: &'a str,
@@ -355,7 +355,7 @@ impl<'a> Uploader<'a> {
     }
 
     /// Upload `bytes` as `file_name`; the CID IPFS gave it.
-    fn upload(&mut self, file_name: &str, bytes: &[u8]) -> Result<String, String> {
+    pub(crate) fn upload(&mut self, file_name: &str, bytes: &[u8]) -> Result<String, String> {
         let url = self.next_url()?;
         let fields = [("network", "public")];
         let failed = |why: &str| format!("Couldn't upload “{}” to IPFS: {why}", self.name);
@@ -446,7 +446,7 @@ fn an_object(read: (String, Value)) -> Result<(String, Value), String> {
 }
 
 /// What the relay's answer says of a change.
-enum Outcome {
+pub(crate) enum Outcome {
     /// Mined.
     Landed,
     /// May still land: no receipt status yet, no answer, or the relay
@@ -1013,7 +1013,7 @@ mod tests {
         assert_eq!(path, asset_path(&shapes(), "a1", "Box", "gltf"));
         let w = world.lock().unwrap();
         let read = |cid: &str| -> Value { serde_json::from_slice(&w.files[cid]).unwrap() };
-        let collection = read(&w.tokens[&1]);
+        let collection = read(&w.tokens["1"]);
         assert_eq!(collection["type"], "collection");
         assert_eq!(collection["name"], "Shapes");
         assert_eq!(collection["version"], 1);
@@ -1060,7 +1060,7 @@ mod tests {
         assert!(sent(&http, UPLOAD_URLS).is_empty());
         assert!(sent(&http, UPLOADS).is_empty());
         assert!(sent(&http, RELAY).is_empty());
-        assert_eq!(world.lock().unwrap().tokens[&1], "bafyC1");
+        assert_eq!(world.lock().unwrap().tokens["1"], "bafyC1");
     }
 
     #[test]
@@ -1076,7 +1076,7 @@ mod tests {
                 "bafyC1b",
                 json!({ "type": "collection", "name": "Shapes", "assets": { "a9": "bafyA9" } }),
             );
-            w.tokens.insert(1, "bafyC1b".into());
+            w.tokens.insert("1".into(), "bafyC1b".into());
         }));
         let error = add_to(
             &watched,
@@ -1089,7 +1089,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, "Target already exists: Crate.gltf");
         assert!(sent(&http, RELAY).is_empty());
-        assert_eq!(world.lock().unwrap().tokens[&1], "bafyC1b");
+        assert_eq!(world.lock().unwrap().tokens["1"], "bafyC1b");
     }
 
     #[test]
@@ -1113,7 +1113,7 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(error, wording);
-            assert_eq!(world.lock().unwrap().tokens[&1], "bafyC1");
+            assert_eq!(world.lock().unwrap().tokens["1"], "bafyC1");
         }
     }
 
@@ -1318,7 +1318,7 @@ mod tests {
             assert_eq!(sent(&http, RELAY).len(), 1);
             // The first write lands after all; the next one builds on it.
             let landed = relayed_uri(&http, 0);
-            world.lock().unwrap().tokens.insert(1, landed);
+            world.lock().unwrap().tokens.insert("1".into(), landed);
             add_with(&http, cache.path(), &locks, "Two.3mf", three_mf()).unwrap();
             let names = listed(&http, cache.path());
             assert!(names.contains(&"One.gltf".to_string()), "{names:?}");
@@ -1372,7 +1372,7 @@ mod tests {
         {
             let mut w = world.lock().unwrap();
             w.put("bafyList", json!(["bafyA1"]));
-            w.tokens.insert(6, "bafyList".into());
+            w.tokens.insert("6".into(), "bafyList".into());
             w.owned.push("6".into());
         }
         let error = add_to(
@@ -1386,7 +1386,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, "Arbesk's answer can't be read.");
         assert!(sent(&http, UPLOADS).is_empty());
-        assert_eq!(world.lock().unwrap().tokens[&6], "bafyList");
+        assert_eq!(world.lock().unwrap().tokens["6"], "bafyList");
     }
 
     #[test]
@@ -1443,7 +1443,7 @@ mod tests {
         assert_eq!(error, "Cancelled.");
         assert_eq!(sent(&http, UPLOADS).len(), parts + 2);
         assert!(sent(&http, RELAY).is_empty());
-        assert_eq!(world.lock().unwrap().tokens[&1], "bafyC1");
+        assert_eq!(world.lock().unwrap().tokens["1"], "bafyC1");
     }
 
     #[test]

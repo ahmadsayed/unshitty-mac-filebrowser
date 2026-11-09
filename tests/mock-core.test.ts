@@ -1473,6 +1473,27 @@ test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend'
   delete (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
 });
 
+test("arbesk_create_collection mints a named collection in the account only", async () => {
+  const { ARBESK_MOCK_ADDRESS: address } = await import("../dev/mock-tauri/core");
+  const mock = (globalThis as unknown as { __mockArbesk: { signedIn: boolean } }).__mockArbesk;
+  const start = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  const account = await invoke<{ id: string }>("arbesk_connect_finish", { flowId: start.flow_id });
+  const root = `arbesk://${address}`;
+  const path = await invoke<string>("arbesk_create_collection", { path: root, name: "  My Set  " });
+  expect(path).toMatch(new RegExp(`^${root}/\\d+~My%20Set$`));
+  const listed = await invoke<Array<{ name: string; path: string }>>("list_dir", { path: root, showHidden: false });
+  expect(listed.map((row) => row.name)).toContain("My Set");
+  expect((await invoke<Array<{ name: string; path: string }>>("list_dir", { path, showHidden: false }))).toEqual([]);
+
+  await expect(invoke("arbesk_create_collection", { path: root, name: "My Set" })).rejects.toBe("A collection named “My Set” already exists.");
+  await expect(invoke("arbesk_create_collection", { path, name: "Another" })).rejects.toBe("Create collections in the account's folder.");
+  await expect(invoke("arbesk_create_collection", { path: root, name: "   " })).rejects.toBe("Enter a name for the collection.");
+  mock.signedIn = false;
+  await expect(invoke("arbesk_create_collection", { path: root, name: "Gone" })).rejects.toBe("Sign in to Arbesk again to create a collection.");
+  mock.signedIn = true;
+  await invoke("arbesk_disconnect", { account: account.id });
+});
+
 test("copy_entry puts a local model into an Arbesk collection, with the backend's refusals", async () => {
   const { ARBESK_MOCK_ADDRESS: address } = await import("../dev/mock-tauri/core");
   const mock = (globalThis as unknown as { __mockArbesk: { signedIn: boolean; expireOnce(): void } }).__mockArbesk;

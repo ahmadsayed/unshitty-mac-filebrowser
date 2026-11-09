@@ -1775,6 +1775,17 @@ fn arbesk_connect_cancel(state: tauri::State<arbesk::Client>, flow_id: String) {
     state.connect_cancel(&flow_id);
 }
 
+/// Create a collection in an Arbesk account: its `arbesk://` path.
+/// It uploads to IPFS and waits on the chain: off the main thread.
+#[tauri::command]
+async fn arbesk_create_collection(
+    app: tauri::AppHandle,
+    path: String,
+    name: String,
+) -> Result<String, String> {
+    blocking(move || app.state::<arbesk::Client>().create_collection(&path, &name)).await?
+}
+
 /// It ends the session on Arbesk's server (up to 30 s) and clears the keychain.
 #[tauri::command]
 async fn arbesk_disconnect(app: tauri::AppHandle, account: String) -> Result<(), String> {
@@ -2424,6 +2435,7 @@ pub fn run() {
             arbesk_connect_cancel,
             arbesk_signed_in,
             arbesk_disconnect,
+            arbesk_create_collection,
             share_identity,
             set_share_name,
             share_folder,
