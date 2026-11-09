@@ -85,6 +85,20 @@ with:
 
 and use that command in the desktop entry’s `Exec=` line.
 
+## Flickering menus or dialogs
+
+The window is drawn with WebKitGTK’s GPU (DMA-BUF) renderer, which keeps
+scrolling through thumbnails smooth. If menus, popovers or dialogs flicker on
+your graphics setup, turn it off with:
+
+```sh
+WEBKIT_DISABLE_DMABUF_RENDERER=1 ~/.local/bin/file-browser.AppImage
+```
+
+and use that command in the desktop entry’s `Exec=` line (as
+`env WEBKIT_DISABLE_DMABUF_RENDERER=1 /home/<you>/.local/bin/file-browser.AppImage`).
+Scrolling a folder of large thumbnails is slower without it.
+
 ## Moving or removing it
 
 The desktop entry points at `~/.local/bin/file-browser.AppImage`. If you move
