@@ -20,18 +20,16 @@ pub mod session;
 pub mod signin;
 #[cfg(test)]
 pub(crate) mod testing;
-// Until `ArbeskState` copies into Arbesk (the next step of this work).
-#[allow(dead_code)]
 pub mod write;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::arbesk::accounts::{Accounts, ArbeskAccount};
 use crate::arbesk::chain::Site;
 use crate::arbesk::http::{Http, ReqwestHttp};
-use crate::arbesk::location::parse;
+use crate::arbesk::location::{parse, parse_target};
 use crate::arbesk::session::{Session, SessionStore};
 use crate::arbesk::signin::{CALLBACK_TIMEOUT, Flow, now_ms};
 use crate::fs_ops::Entry;
@@ -60,6 +58,8 @@ pub struct ArbeskState {
     builds: service::Builds,
     scenes: scene::Scenes,
     thumbnails: service::Thumbnails,
+    /// One for the app's whole run: it remembers writes that may still land.
+    locks: write::CollectionLocks,
 }
 
 /// The key a scene is kept under: its asset and version.
@@ -112,6 +112,7 @@ impl ArbeskState {
             builds: service::Builds::default(),
             scenes: scene::Scenes::default(),
             thumbnails: service::Thumbnails::default(),
+            locks: write::CollectionLocks::default(),
         }
     }
 
@@ -306,6 +307,47 @@ impl ArbeskState {
         self.session_for(path).is_ok()
     }
 
+    /// Copy the local model `file` to the pending name `to` in a collection
+    /// (`write::add`): the new asset's path. Arbesk's 401 ends the session.
+    pub fn add(
+        &self,
+        to: &str,
+        file: &Path,
+        overwrite: bool,
+        progress: &Progress,
+    ) -> Result<String, String> {
+        let (address, token_id, name) = parse_target(to)?;
+        let site = self.site_for(&address)?;
+        let account = location::account_path(&address);
+        let session = self.session_for(&account)?;
+        let target = write::Target { address, token_id, name };
+        let added = write::add(
+            self.http()?,
+            &site,
+            &session,
+            &target,
+            file,
+            overwrite,
+            progress,
+            &self.cache_dir,
+            &self.locks,
+        );
+        if added.as_ref().err().is_some_and(|error| error == write::SIGN_IN) {
+            self.forget_session(&account);
+        }
+        added
+    }
+
+    /// Whether the collection of the pending name `path` lists that name.
+    pub fn exists(&self, path: &str) -> bool {
+        let Ok((address, token_id, name)) = parse_target(path) else {
+            return false;
+        };
+        let collection = location::collection_path(&address, &token_id, "");
+        self.list(&collection)
+            .is_ok_and(|entries| entries.iter().any(|entry| entry.name == name))
+    }
+
     /// Drop the session of `path`'s account, after Arbesk refused it.
     pub fn forget_session(&self, path: &str) {
         if let Some(id) = self.account_id(path) {
@@ -496,6 +538,42 @@ mod tests {
         // An account that isn't connected has no session either.
         let other = "arbesk://0x00000000000000000000000000000000000000cd";
         assert_eq!(state.session_for(other).unwrap_err(), again);
+    }
+
+    #[test]
+    fn exists_knows_a_listed_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = ArbeskState::with_http(
+            Arc::new(testing::arbesk(Arc::new(Mutex::new(testing::world())))),
+            dir.path().join("cache"),
+            dir.path().join("a.json"),
+        );
+        state.accounts.lock().unwrap().connect("me@example.com", testing::ADDRESS, &testing::site()).unwrap();
+        let shapes = testing::shapes();
+        assert!(state.exists(&format!("{shapes}/~Box.gltf")));
+        assert!(!state.exists(&format!("{shapes}/~New.gltf")));
+        assert!(!state.exists(&shapes));
+        assert!(!state.exists("arbesk://bad/~x"));
+    }
+
+    #[test]
+    fn a_401_forgets_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut world = testing::world();
+        world.relay = testing::Relay::Status(401);
+        world.sessions.insert("t".into());
+        let http = Arc::new(testing::arbesk(Arc::new(Mutex::new(world))));
+        let (state, sessions) = state_with_sessions(http, dir.path());
+        let account = state.accounts.lock().unwrap().connect("me@example.com", testing::ADDRESS, &testing::site()).unwrap();
+        let kept = Session { token: "t".into(), expires_at_ms: signin::now_ms() + 3_600_000 };
+        sessions.save(&account.id, &kept).unwrap();
+        let file = testing::fixture("glb-box").join("input.glb");
+        let to = format!("{}/~Fresh.glb", testing::shapes());
+        let error = state.add(&to, &file, false, &Progress::default()).unwrap_err();
+        assert_eq!(error, write::SIGN_IN);
+        assert_eq!(sessions.load(&account.id), None);
+        // Without a session nothing is asked.
+        assert_eq!(state.add(&to, &file, false, &Progress::default()).unwrap_err(), write::SIGN_IN);
     }
 
     #[test]

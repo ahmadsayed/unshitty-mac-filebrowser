@@ -218,6 +218,7 @@ struct Hold<'a> {
 
 impl CollectionLocks {
     /// Wait for collection `token_id` of `address`, then hold it.
+    #[cfg(test)]
     pub fn hold(&self, address: &str, token_id: &str) -> impl Drop + '_ {
         self.take(address, token_id)
     }
