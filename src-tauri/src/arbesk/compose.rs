@@ -75,9 +75,8 @@ pub fn is_child_ref(manifest: &Value) -> bool {
 }
 
 /// The file `source` stands for, its parts fetched through `gateway`: the
-/// `.gltf` (or `.3mf`) an asset is, as Arbesk builds it. Kept for copying
-/// assets out, which isn't offered yet; the preview uses `compose_preview`.
-#[allow(dead_code)]
+/// `.gltf` (or `.3mf`) an asset is, as Arbesk builds it: what a copy out of
+/// Arbesk writes (`service::export`). The preview uses `compose_preview`.
 pub fn compose(gateway: &Gateway, source: &Value) -> Result<Vec<u8>, String> {
     compose_within(gateway, source, BUILD_CAP)
 }
@@ -87,7 +86,6 @@ pub const TOO_LARGE_TO_BUILD: &str = "This asset is too large to open.";
 pub const BUILD_CAP: u64 = 512 * 1024 * 1024;
 
 /// `compose`, refusing once the parts fetched add up to more than `cap` bytes.
-#[allow(dead_code)]
 pub fn compose_within(gateway: &Gateway, source: &Value, cap: u64) -> Result<Vec<u8>, String> {
     let parts = Parts {
         gateway,

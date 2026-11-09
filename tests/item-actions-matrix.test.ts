@@ -183,7 +183,7 @@ const PSEUDO_LOCATION = ["New Folder… (off)", "Copy Location (off)", "Paste (o
 const PSEUDO_KEYS = { copy: "clipboard", paste: "nothing", properties: "file_properties", bookmark: "nothing", trash: "trash_entries", rename: "nothing" };
 const SHARE_COPY = "toast “Copying out of a shared folder comes next.”";
 const SSH_COPY = "toast “Copying from SSH servers comes next.”";
-const ARBESK_COPY = "toast “Copying from Arbesk comes next.”";
+const ARBESK_COPY = "toast “Copying Arbesk collections comes next.”";
 const READ_ONLY_PASTE = "toast “Shared folders are read only.”";
 
 // prettier-ignore
@@ -261,19 +261,31 @@ const ROWS: Record<string, [go: () => Promise<void>, item: string | undefined, e
     item: ["Open", "Disconnect…"],
     background: ["Connect to Server…", "Online Accounts…", "Select All"],
     location: ["Connect to Server…", "Online Accounts…", "Reload"],
-    // The account's entry is read only like an SSH server's: no copy, no properties.
+    // The account's entry is read only like an SSH server's: no copy (it holds
+    // collections), no properties.
     keys: { copy: ARBESK_COPY, paste: "nothing", properties: "nothing", bookmark: "nothing", trash: "trash_entries", rename: "nothing" },
     drag: ARBESK_COPY,
     preview: ["Open"],
     star: false,
   }],
-  "an Arbesk collection": [async () => { await fromNetwork("Arbesk")(); await open("Shapes"); }, "Box.gltf", {
+  "a collection in an Arbesk account": [fromNetwork("Arbesk"), "Shapes", {
     item: ["Open", "Copy (off)"],
     background: ["Show Hidden Files", "Reload", "Select All"],
     location: ["Reload", "Select All"],
-    // ⌘D bookmarks the collection, as on an SSH server; nothing else writes.
+    // Collections can't be copied out yet; only their assets.
     keys: { copy: ARBESK_COPY, paste: "toast “Arbesk is read only.”", properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing" },
     drag: ARBESK_COPY,
+    preview: ["Open"],
+    star: false,
+  }],
+  "an Arbesk collection": [async () => { await fromNetwork("Arbesk")(); await open("Shapes"); }, "Box.gltf", {
+    item: ["Open", "Copy"],
+    background: ["Show Hidden Files", "Reload", "Select All"],
+    location: ["Reload", "Select All"],
+    // An asset copies out (its file is built first); ⌘D bookmarks the
+    // collection, as on an SSH server; nothing else writes.
+    keys: { copy: "clipboard", paste: "toast “Arbesk is read only.”", properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing" },
+    drag: "drag",
     preview: ["Open"],
     star: false,
   }],

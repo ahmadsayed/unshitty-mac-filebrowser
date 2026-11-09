@@ -79,17 +79,16 @@ test("an asset shows the thumbnail it was saved with, and one saved without keep
   expect(row("Big.gltf").querySelector(".icon img")).toBeNull();
 });
 
-test("nothing in Arbesk can be written, renamed or copied out", async () => {
+test("nothing in Arbesk can be written, renamed or cut", async () => {
   await click(row("Box.gltf"));
   await rightClick(row("Box.gltf"));
   expect(menuLabels()).toEqual(["Open", "Copy"]);
-  expect($$(".popover .menu-item").find((el) => el.textContent?.trim() === "Copy")?.hasAttribute("disabled")).toBe(true);
   await closeOverlays();
 
   await click(row("Box.gltf"));
-  await key("c", { mod: true });
+  await key("x", { mod: true });
   await settle();
-  expect(toasts()).toContain("Copying from Arbesk comes next.");
+  expect(toasts()).toContain("Arbesk is read only.");
 
   // A local file on the clipboard can't be pasted into a collection.
   await goTo("/Users/me/Desktop");
@@ -104,6 +103,110 @@ test("nothing in Arbesk can be written, renamed or copied out", async () => {
   await settle();
   expect(toasts()).toContain("Arbesk is read only.");
   expect(names().sort()).toEqual(["Big.gltf", "Box.3mf", "Box.gltf"]);
+});
+
+test("a collection can't be copied out yet", async () => {
+  await openNetwork();
+  await open("Arbesk");
+  await settle(20);
+  await click(row("Shapes"));
+  await rightClick(row("Shapes"));
+  expect($$(".popover .menu-item").find((el) => el.textContent?.trim() === "Copy")?.hasAttribute("disabled")).toBe(true);
+  await closeOverlays();
+  await key("c", { mod: true });
+  await settle();
+  expect(toasts()).toContain("Copying Arbesk collections comes next.");
+});
+
+test("Copy and Paste take assets out to a folder, asking when a name is taken", async () => {
+  await invoke("make_dir", { path: "/Users/me/Models" });
+  await openNetwork();
+  await open("Arbesk");
+  await settle(20);
+  await open("Shapes");
+  await settle(20);
+  await click(row("Box.gltf"));
+  await click(row("Box.3mf"), { shiftKey: true });
+  await key("c", { mod: true });
+  await goTo("/Users/me/Models");
+  await key("v", { mod: true });
+  await settle(30);
+  expect(names().sort()).toEqual(["Box.3mf", "Box.gltf"]);
+
+  // Again: the names are taken, so it asks; Enter keeps both.
+  await key("v", { mod: true });
+  await settle(30);
+  expect(dialogHeading()).toMatch(/Replace/);
+  await key("Enter");
+  await settle(30);
+  expect(dialogHeading()).toMatch(/Replace/);
+  await key("Enter");
+  await settle(30);
+  expect(names().sort()).toEqual(["Box (copy).3mf", "Box (copy).gltf", "Box.3mf", "Box.gltf"]);
+});
+
+test("a drag from Arbesk copies, and a forced move does nothing", async () => {
+  const pointAt = document.elementFromPoint;
+  let target: Element | null = null;
+  document.elementFromPoint = () => target;
+  const desktop = $$(".sidebar-row").find((r) => r.dataset.location === "/Users/me/Desktop")!;
+  const lit: boolean[] = [];
+  const dragTo = async (name: string, mods: MouseEventInit = {}) => {
+    await mouse(row(name), "mousedown", { clientX: 50, clientY: 60 });
+    target = desktop;
+    for (const at of [300, 301]) {
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: at, clientY: at, ...mods }));
+      await settle(10);
+    }
+    lit.push(desktop.classList.contains("drop-target"));
+    window.dispatchEvent(new MouseEvent("mouseup", { clientX: 301, clientY: 301, ...mods }));
+    await settle(30);
+  };
+  try {
+    await openNetwork();
+    await open("Arbesk");
+    await settle(20);
+    await open("Shapes");
+    await settle(20);
+    await click(row("Box.3mf"));
+    await dragTo("Box.3mf", { metaKey: true });
+    expect(await invoke("path_exists", { path: "/Users/me/Desktop/Box.3mf" })).toBe(false);
+    await click(row("Box.3mf"));
+    await dragTo("Box.3mf");
+    expect(await invoke("path_exists", { path: "/Users/me/Desktop/Box.3mf" })).toBe(true);
+    // The forced move never offered the Desktop as a target; the copy did.
+    expect(lit).toEqual([false, true]);
+    // The asset is still in its collection.
+    expect(names()).toContain("Box.3mf");
+  } finally {
+    document.elementFromPoint = pointAt;
+  }
+});
+
+test("past the window's edge an asset stays in File Browser, as a Drive item does", async () => {
+  const startDrag = vi.fn(async () => {});
+  const tauri = window as unknown as { __TAURI__?: { drag?: { startDrag: typeof startDrag } } };
+  tauri.__TAURI__ = { drag: { startDrag } };
+  try {
+    await openNetwork();
+    await open("Arbesk");
+    await settle(20);
+    await open("Shapes");
+    await settle(20);
+    await click(row("Box.gltf"));
+    await mouse(row("Box.gltf"), "mousedown", { clientX: 50, clientY: 60 });
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 300, buttons: 1 }));
+    await settle(10);
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: -5, clientY: 300, buttons: 1 }));
+    await settle(20);
+    expect(startDrag).not.toHaveBeenCalled();
+    expect($(".drag-ghost")).not.toBeNull();
+    window.dispatchEvent(new MouseEvent("mouseup", { clientX: -5, clientY: 300 }));
+    await settle(20);
+    expect(toasts().some((t) => t.startsWith("Could not drag out"))).toBe(false);
+  } finally {
+    delete tauri.__TAURI__;
+  }
 });
 
 test("Open on an asset opens it in Arbesk's Studio, in the browser", async () => {

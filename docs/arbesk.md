@@ -60,8 +60,19 @@ you later. File Browser itself never asks Arbesk to change anything.
   changed it, and files left untouched for a week are pruned.
 - There is no Copy Location: an `arbesk://` address means nothing outside
   File Browser.
-- Copy, Cut and dragging out say *Copying from Arbesk comes next.*; Paste
-  into a collection says *Arbesk is read only.*
+- **Copy** an asset, then **Paste** it into a folder or Google Drive (or
+  drag it there): File Browser builds the asset's file as Arbesk does (a
+  `.gltf` with every part inside it, or the `.3mf`) and copies it under its
+  listed name. It's the newest version, the one the listing shows. A name
+  already taken asks *Replace*, *Skip* or *Keep Both*, as for any copy. The
+  built file waits in the app cache beside the preview's and is pruned the
+  same way; the copy you pasted is yours and is never pruned.
+- Only a copy: Cut, and a drag that forces a move, say *Arbesk is read
+  only.* or do nothing. Paste into a collection says *Arbesk is read only.*
+- A collection can't be copied yet (*Copying Arbesk collections comes
+  next.*), nor can a scene that links to other assets (*This asset uses an
+  Arbesk format File Browser can't read yet.*). Assets can't be dragged to
+  other apps: they stay in File Browser, as Google Drive items do.
 
 An asset whose parts add up to more than 512 MB says *This asset is too
 large to open.*, and a collection that can't be reached (Arbesk, its chain

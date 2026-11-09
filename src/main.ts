@@ -2230,7 +2230,7 @@ const ITEM_MENUS: Record<LocationKind, (sel: Entry[], single: Entry | null) => M
   "in-trash": trashItemMenu,
   share: (_sel, single) => shareItemMenu(single),
   sftp: (_sel, single) => shareItemMenu(single),
-  arbesk: () => arbeskItemMenu(),
+  arbesk: (sel) => arbeskItemMenu(sel),
   drive: driveOrFolderItemMenu,
   folder: driveOrFolderItemMenu,
 };
@@ -2242,12 +2242,14 @@ function openItemMenu(at: Anchor): void {
   openMenu(at, ITEM_MENUS[hereKind()](sel, single));
 }
 
-/** An Arbesk asset: Open goes to Arbesk's Studio; no copying out, and no
- *  Copy Location (an arbesk:// address means nothing outside the app). */
-function arbeskItemMenu(): MenuItem[] {
+/** An Arbesk asset: Open goes to Arbesk's Studio, Copy takes its file out
+ *  (built first); no Copy Location (an arbesk:// address means nothing
+ *  outside the app). */
+function arbeskItemMenu(sel: Entry[]): MenuItem[] {
   return [
     { label: "Open", action: activateSelection },
-    { label: "Copy", disabled: true },
+    // Collections can't be copied yet.
+    { label: "Copy", disabled: sel.some((entry) => entry.is_dir), action: () => setClipboard("copy") },
   ];
 }
 
@@ -3356,7 +3358,7 @@ function hereKind(): LocationKind {
 
 /** An action on `paths` from the location on screen, for src/item-actions.ts. */
 function hereFor(paths: readonly string[], elsewhere = false): Here {
-  return { kind: hereKind(), items: paths.map((path) => locationKind(path, trashPath)), elsewhere };
+  return { kind: hereKind(), items: paths.map((path) => locationKind(path, trashPath)), paths, elsewhere };
 }
 
 /** Whether `action` is refused `here`; says why in a toast when the rule has words for it. */
@@ -3593,13 +3595,16 @@ function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; 
   if (isInTrash(dir, trashPath)) return null;
   const forceCopy = isMac ? mods.altKey : mods.ctrlKey;
   const forceMove = isMac ? mods.metaKey : mods.shiftKey;
+  // Arbesk's assets can only be copied out: a forced move does nothing.
+  const fromArbesk = sources.some((src) => placeOf(src) === "arbesk");
+  if (forceMove && fromArbesk && !forceCopy) return null;
   // Moving items to the folder they are already in does nothing.
   const allHere = sources.every((src) => parentOf(src) === dir);
   if (forceCopy) return "copy";
   if (allHere) return null;
   if (forceMove) return "move";
-  // Local ↔ Drive is another storage: copy, before any device guess.
-  const storage = (path: string) => (isCloud(path) ? cloudAccountKey(path) : "");
+  // Local ↔ Drive is another storage, and so is Arbesk: copy, before any device guess.
+  const storage = (path: string) => (isCloud(path) ? cloudAccountKey(path) : placeOf(path) === "arbesk" ? "arbesk" : "");
   if (sources.some((src) => storage(src) !== storage(dir))) return "copy";
   // Same filesystem moves, another one copies (GNOME and Finder agree here).
   const same = (src: string) => {
@@ -3717,18 +3722,28 @@ function beginDrag(e: MouseEvent): void {
 
 /** Past the window's edge the system drag takes the local items to another
  * app (src/drag-out.ts) and the window's own drag ends. Returns whether it
- * did: Google Drive items can't leave, so a drag of only those stays. */
+ * did: Google Drive and Arbesk items can't leave, so a drag of only those stays. */
 function dragOutOfWindow(): boolean {
   const all = drag!.paths;
-  const paths = all.filter((path) => !isCloud(path));
+  const stay = all.filter((path) => placeOf(path) === "drive" || placeOf(path) === "arbesk");
+  const paths = all.filter((path) => !stay.includes(path));
   if (paths.length === 0) return false;
   endDrag(false);
-  const left = all.length - paths.length;
   startSystemDrag(paths).then(
-    () => left && showToast(left === 1 ? "A Google Drive item stays in File Browser" : `${left} Google Drive items stay in File Browser`),
+    () => stay.length && showToast(stayWords(stay)),
     (err) => showToast(`Could not drag out: ${cleanError(err)}`),
   );
   return true;
+}
+
+/** The toast for items a drag out of the window leaves behind. */
+function stayWords(stay: readonly string[]): string {
+  const [one, many] = stay.every(isCloud)
+    ? ["A Google Drive item", "Google Drive items"]
+    : stay.every((path) => placeOf(path) === "arbesk")
+      ? ["An Arbesk item", "Arbesk items"]
+      : ["An item", "items"];
+  return stay.length === 1 ? `${one} stays in File Browser` : `${stay.length} ${many} stay in File Browser`;
 }
 
 function onDragMove(e: MouseEvent): void {

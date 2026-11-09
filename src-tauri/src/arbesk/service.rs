@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::arbesk::chain::{self, CHAIN_UNREACHABLE, ChainConfig, Site};
 use crate::arbesk::compose::{
-    Format, UNKNOWN_FORMAT, compose_preview, format_of, is_child_ref, source_cid,
+    Format, UNKNOWN_FORMAT, compose, compose_preview, format_of, is_child_ref, source_cid,
 };
 use crate::arbesk::http::Http;
 use crate::arbesk::ipfs::{Gateway, ManifestCache, STORAGE_UNREACHABLE, in_parallel};
@@ -192,6 +192,42 @@ pub fn build(
     progress: &Progress,
     builds: &Builds,
 ) -> Result<PathBuf, String> {
+    build_as(http, site, path, cache_dir, progress, builds, Output::Preview)
+}
+
+/// The asset at `path` as Arbesk builds it (a `.gltf` with every part
+/// inside, or the `.3mf`), under its listed name, to copy out: in
+/// `cache_dir/arbesk` beside the preview's file, built once per version
+/// and reused while nobody has changed it.
+pub fn export(
+    http: &dyn Http,
+    site: &Site,
+    path: &str,
+    cache_dir: &Path,
+    progress: &Progress,
+    builds: &Builds,
+) -> Result<PathBuf, String> {
+    build_as(http, site, path, cache_dir, progress, builds, Output::Export)
+}
+
+/// Which file of an asset [`build_as`] makes.
+#[derive(Clone, Copy)]
+enum Output {
+    /// What the Space preview loads (`compose_preview`).
+    Preview,
+    /// The asset's own file (`compose`).
+    Export,
+}
+
+fn build_as(
+    http: &dyn Http,
+    site: &Site,
+    path: &str,
+    cache_dir: &Path,
+    progress: &Progress,
+    builds: &Builds,
+    output: Output,
+) -> Result<PathBuf, String> {
     progress.check()?;
     let ArbeskPath::Asset {
         token_id, asset_id, ..
@@ -206,13 +242,16 @@ pub fn build(
         return Err(UNKNOWN_FORMAT.into());
     }
     let source = reader.gateway.json(&source_cid(&manifest, cid))?;
-    let name = file_name(
-        &display_name(&manifest, &asset_id),
-        format_of(&source)?.preview_ext(),
-    );
+    let format = format_of(&source)?;
+    let ext = match output {
+        Output::Preview => format.preview_ext(),
+        Output::Export => format.ext(),
+    };
+    let name = file_name(&display_name(&manifest, &asset_id), ext);
     let dir = cache_dir.join("arbesk").join(cid);
-    build_file(&dir, &name, progress, builds, || {
-        compose_preview(&reader.gateway, &source)
+    build_file(&dir, &name, progress, builds, || match output {
+        Output::Preview => compose_preview(&reader.gateway, &source),
+        Output::Export => compose(&reader.gateway, &source),
     })
 }
 
@@ -1476,6 +1515,57 @@ mod tests {
         .unwrap();
         assert_eq!(built.file_name().unwrap(), "Box.3mf");
         assert!(std::fs::read(&built).unwrap().starts_with(b"PK"));
+    }
+
+    #[test]
+    fn an_exported_asset_is_the_file_arbesk_builds_and_is_reused() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let export_of = |asset: &str| {
+            export(&http, &site(), asset, cache.path(), &Progress::default(), &Builds::default())
+        };
+        let gltf = asset_path(&shapes(), "a1", "Box", "gltf");
+        let exported = export_of(&gltf).unwrap();
+        assert!(exported.starts_with(cache.path().join("arbesk")));
+        // The listed name, holding Arbesk's own .gltf with every part inside.
+        assert_eq!(exported.file_name().unwrap(), "Box.gltf");
+        let ours: Value = serde_json::from_slice(&std::fs::read(&exported).unwrap()).unwrap();
+        let theirs: Value = serde_json::from_slice(
+            &std::fs::read(fixture("glb-box").join("expected.gltf")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ours, theirs);
+        assert!(crate::downloads::is_unchanged(&exported));
+        assert_eq!(export_of(&gltf).unwrap(), exported);
+        // The preview's GLB is another file beside it.
+        let preview = build(&http, &site(), &gltf, cache.path(), &Progress::default(), &Builds::default()).unwrap();
+        assert_eq!(preview.parent(), exported.parent());
+        assert_ne!(preview, exported);
+
+        let three_mf = export_of(&asset_path(&shapes(), "a2", "Box", "3mf")).unwrap();
+        assert_eq!(three_mf.file_name().unwrap(), "Box.3mf");
+        assert!(std::fs::read(&three_mf).unwrap().starts_with(b"PK"));
+    }
+
+    #[test]
+    fn a_collection_linked_or_unknown_asset_is_not_exported() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let export_of = |asset: &str| {
+            export(&http, &site(), asset, cache.path(), &Progress::default(), &Builds::default())
+        };
+        for (id, name) in [("a3", "Linked.gltf"), ("a4", "Odd")] {
+            assert_eq!(export_of(&format!("{}/{id}~{name}", shapes())).unwrap_err(), UNKNOWN_FORMAT);
+        }
+        assert_eq!(
+            export_of(&shapes()).unwrap_err(),
+            format!("“{}” is a folder, not a file.", shapes())
+        );
+        let progress = Progress::default();
+        progress.cancel();
+        let gltf = asset_path(&shapes(), "a1", "Box", "gltf");
+        assert!(export(&http, &site(), &gltf, cache.path(), &progress, &Builds::default()).is_err());
+        assert_eq!(files_under(&cache.path().join("arbesk")), Vec::<std::path::PathBuf>::new());
     }
 
     #[test]

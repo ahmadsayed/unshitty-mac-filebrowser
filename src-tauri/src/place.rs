@@ -117,6 +117,35 @@ pub fn transfer(from: &str, to: &str) -> Result<Route, String> {
     Ok(if in_drive(from) || in_drive(to) { Route::Drive } else { Route::Local })
 }
 
+/// Where a copy runs, and whether its source is an Arbesk asset to build first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopyRoute {
+    pub route: Route,
+    /// The source is an Arbesk asset: its file is built in the app cache and
+    /// copied from there (`ArbeskState::export`).
+    pub from_arbesk: bool,
+}
+
+/// [`transfer`] for a copy, which may also take an Arbesk asset out to this
+/// computer or Drive. A move never does: Arbesk is read only. Collections
+/// can't be copied yet.
+pub fn copy(from: &str, to: &str) -> Result<CopyRoute, String> {
+    if kind(from) != Kind::Arbesk {
+        return transfer(from, to).map(|route| CopyRoute { route, from_arbesk: false });
+    }
+    writable(to)?;
+    if !matches!(arbesk::location::parse(from)?, arbesk::location::ArbeskPath::Asset { .. }) {
+        return Err("Copying Arbesk collections comes next.".into());
+    }
+    let route = if kind(to) == Kind::Drive {
+        Route::Drive
+    } else {
+        local(to)?;
+        Route::Local
+    };
+    Ok(CopyRoute { route, from_arbesk: true })
+}
+
 /// Every path as a file on this computer, or the first refusal.
 pub fn all_local(paths: &[String]) -> Result<Vec<PathBuf>, String> {
     paths
@@ -158,6 +187,7 @@ mod tests {
     const SFTP_READ_ONLY: &str = "SSH servers are read only for now.";
     const ARBESK_LOCAL: &str = "This action is not available for Arbesk.";
     const ARBESK_READ_ONLY: &str = "Arbesk is read only.";
+    const ARBESK_COLLECTION: &str = "Copying Arbesk collections comes next.";
     const ARBESK: &str = "arbesk://0x00000000000000000000000000000000000000ab/12~Set";
 
     /// Each path: its kind, `local`'s answer (None: the path itself),
@@ -262,6 +292,35 @@ mod tests {
         ] {
             assert_eq!(transfer(from, to).unwrap_err(), format!("“{bad}” is not a local file."), "{from} -> {to}");
         }
+    }
+
+    #[test]
+    fn a_copy_may_take_an_arbesk_asset_out_to_this_computer_or_drive() {
+        let (a, b) = ("/Users/me/a.txt", "/Users/me/b.txt");
+        let drive = "gdrive://acct/root~x/~Box.gltf";
+        let asset = "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf";
+        let plain = |route| Ok(CopyRoute { route, from_arbesk: false });
+        let built = |route| Ok(CopyRoute { route, from_arbesk: true });
+        assert_eq!(copy(a, b), plain(Route::Local));
+        assert_eq!(copy(a, drive), plain(Route::Drive));
+        assert_eq!(copy(drive, a), plain(Route::Drive));
+        assert_eq!(copy(asset, "/Users/me/Box.gltf"), built(Route::Local));
+        assert_eq!(copy(asset, drive), built(Route::Drive));
+        // Anything else stays as `transfer` answers, and only a copy takes an asset out.
+        for (from, to, refusal) in [
+            (asset, asset, ARBESK_READ_ONLY.to_string()),
+            (a, ARBESK, ARBESK_READ_ONLY.into()),
+            (asset, "share://r1/b", SHARE_READ_ONLY.into()),
+            (asset, "sftp://me@host/b", SFTP_READ_ONLY.into()),
+            (asset, "rel/Box.gltf", "“rel/Box.gltf” is not a local file.".into()),
+            (ARBESK, b, ARBESK_COLLECTION.into()),
+            ("arbesk://0x00000000000000000000000000000000000000ab", b, ARBESK_COLLECTION.into()),
+            ("share://r1/a", b, SHARE_READ_ONLY.into()),
+        ] {
+            assert_eq!(copy(from, to).unwrap_err(), refusal, "{from} -> {to}");
+        }
+        assert!(copy("arbesk://0xab", b).is_err());
+        assert_eq!(transfer(asset, b).unwrap_err(), ARBESK_READ_ONLY);
     }
 
     #[test]

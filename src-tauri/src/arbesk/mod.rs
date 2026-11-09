@@ -155,6 +155,19 @@ impl ArbeskState {
         )
     }
 
+    /// `service::export` for the account `path` belongs to.
+    pub fn export(&self, path: &str, progress: &Progress) -> Result<PathBuf, String> {
+        let site = self.site_for(parse(path)?.address())?;
+        service::export(
+            self.http()?,
+            &site,
+            path,
+            &self.cache_dir,
+            progress,
+            &self.builds,
+        )
+    }
+
     /// `service::versions` for the account `path` belongs to.
     pub fn versions(&self, path: &str) -> Result<Vec<service::Version>, String> {
         let (http, site) = self.reach(path)?;
