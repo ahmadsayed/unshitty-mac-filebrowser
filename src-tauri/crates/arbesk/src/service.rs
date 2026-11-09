@@ -545,6 +545,21 @@ impl<'a> Reader<'a> {
         Ok((cid, manifest))
     }
 
+    /// A collection's editor set as the chain and its list say it: the
+    /// current version, the list's CID and the list itself.
+    pub(crate) fn editor_list(
+        &self,
+        token_id: &str,
+    ) -> Result<(u64, String, Value), String> {
+        let version = chain::editor_set_version(self.http, &self.chain, token_id)?;
+        let uri = chain::editor_list_uri(self.http, &self.chain, token_id)?;
+        if uri.is_empty() {
+            return Err("This collection has no editor list.".into());
+        }
+        let list = self.gateway.json(&uri)?;
+        Ok((version, uri, list))
+    }
+
     /// The asset ids, manifest CIDs and listed names (as [`list`] shows
     /// them) of `collection`'s assets that can be read, in id order.
     pub(crate) fn listed_names(

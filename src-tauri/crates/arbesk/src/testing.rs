@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 pub(crate) const ORIGIN: &str = "https://arbesk.test";
 pub(crate) const ADDRESS: &str = "0x00000000000000000000000000000000000000ab";
+pub(crate) const ALICE: &str = "0x1111111111111111111111111111111111111111";
 pub(crate) const STAMP_MS: i64 = 1_762_000_000_000;
 
 pub(crate) fn site() -> Site {
@@ -51,6 +52,10 @@ pub(crate) struct World {
     pub(crate) minted: usize,
     /// Upload URLs already used (a second use is refused, as Pinata does).
     pub(crate) spent: HashSet<usize>,
+    /// Each token's editor list: its CID and current set version.
+    pub(crate) editor_lists: HashMap<String, (String, u64)>,
+    /// Emails Arbesk's `resolve-email` knows, and their wallet addresses.
+    pub(crate) users: HashMap<String, String>,
 }
 
 /// How the fake wallet relay answers an accepted write.
@@ -149,6 +154,13 @@ pub(crate) fn world() -> World {
     w.tokens.insert("2".into(), "bafyC2".into());
     w.tokens.insert("3".into(), "bafyGone".into());
     w.owned = vec!["1".into(), "2".into(), "3".into()];
+    // Shapes' editor list: the account alone, as the Studio starts one.
+    w.put(
+        "bafyEditors1",
+        json!([{ "address": ADDRESS, "role": 2 }]),
+    );
+    w.editor_lists.insert("1".into(), ("bafyEditors1".into(), 1));
+    w.users.insert("alice@example.com".into(), ALICE.into());
     // Rooms (token 4, not the account's own): a table scene, its own
     // model raised and scaled, and two links to Shapes' Box.
     w.put_fixture("gltf-image", "bafySrcTable");
@@ -205,6 +217,19 @@ pub(crate) fn arbesk(world: Arc<Mutex<World>>) -> FakeHttp {
         if url.starts_with(&format!("{ORIGIN}/api/v1/indexer/shared")) {
             return Ok(json!({ "shared": [] }).to_string().into_bytes());
         }
+        if url == format!("{ORIGIN}/api/v1/users/resolve-email") {
+            signed_in(&w, request)?;
+            let email = request
+                .body
+                .as_ref()
+                .and_then(|body| body["email"].as_str())
+                .unwrap_or_default();
+            let answer = match w.users.get(email) {
+                Some(address) => json!({ "exists": true, "address": address }),
+                None => json!({ "exists": false }),
+            };
+            return Ok(answer.to_string().into_bytes());
+        }
         if url == "https://rpc.test" && w.rpc_down {
             return Err(HttpError::new(None, "connection refused"));
         }
@@ -216,6 +241,25 @@ pub(crate) fn arbesk(world: Arc<Mutex<World>>) -> FakeHttp {
                 .only_via
                 .get(&token)
                 .is_none_or(|contract| call["to"] == contract.as_str());
+            let selector = &data[..10];
+            if selector == "0x51d7d6e1" {
+                let answer = match w.editor_lists.get(&token).filter(|_| through) {
+                    Some((cid, _)) => {
+                        json!({ "result": abi_string(&format!("ipfs://{cid}")) })
+                    }
+                    None => json!({ "error": { "message": "execution reverted" } }),
+                };
+                return Ok(answer.to_string().into_bytes());
+            }
+            if selector == "0xb0f762fa" {
+                let version = w
+                    .editor_lists
+                    .get(&token)
+                    .filter(|_| through)
+                    .map_or(0, |(_, version)| *version);
+                let answer = json!({ "result": format!("0x{version:064x}") });
+                return Ok(answer.to_string().into_bytes());
+            }
             let stale = w.lagging.get_mut(&token).filter(|(_, reads)| *reads > 0);
             let stale = stale.map(|(cid, reads)| {
                 *reads -= 1;
@@ -326,7 +370,8 @@ fn wallet_relay(w: &mut World, request: &Request) -> Result<Vec<u8>, HttpError> 
         .map(String::from)
         .or_else(|| body["tokenId"].as_u64().map(|n| n.to_string()))
         .unwrap_or_default();
-    let publish = body["op"] == "publish";
+    let op = body["op"].as_str().unwrap_or("updateUri");
+    let publish = op == "publish";
     if publish {
         // Minting: the token must not exist yet.
         if w.tokens.contains_key(&token) {
@@ -362,6 +407,17 @@ fn wallet_relay(w: &mut World, request: &Request) -> Result<Vec<u8>, HttpError> 
             if !w.owned.contains(&token) {
                 w.owned.push(token);
             }
+            receipt(Some(true))
+        }
+        Relay::Ok if op == "updateEditors" => {
+            let uri = body["params"]["newListUri"].as_str().unwrap_or_default();
+            let cid = uri.strip_prefix("ipfs://").unwrap_or(uri);
+            let entry = w
+                .editor_lists
+                .entry(token.clone())
+                .or_insert_with(|| (String::new(), 1));
+            entry.0 = cid.to_string();
+            entry.1 += 1;
             receipt(Some(true))
         }
         Relay::Ok => {

@@ -20,7 +20,7 @@ import {
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
   previewBytes, previewText, thumbnail, arbeskScene, arbeskPart, arbeskVersions, listVersions, versionCount, openVersion,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
-  arbeskAccounts, arbeskConnectStart, arbeskConnectFinish, arbeskConnectCancel, arbeskDisconnect, arbeskSignedIn, arbeskCreateCollection,
+  arbeskAccounts, arbeskConnectStart, arbeskConnectFinish, arbeskConnectCancel, arbeskDisconnect, arbeskSignedIn, arbeskCreateCollection, arbeskShareCollection,
   driveClientStatus, driveClientSet, driveClientClear,
   openExternal,
   setPermissions,
@@ -2244,12 +2244,19 @@ function openItemMenu(at: Anchor): void {
 
 /** An Arbesk asset: Open goes to Arbesk's Studio, Copy takes its file out
  *  (built first); no Copy Location (an arbesk:// address means nothing
- *  outside the app). */
+ *  outside the app). A collection can be shared by email. */
 function arbeskItemMenu(sel: Entry[]): MenuItem[] {
+  const single = sel.length === 1 ? sel[0] : null;
   return [
     { label: "Open", action: activateSelection },
     // Collections can't be copied yet.
     { label: "Copy", disabled: sel.some((entry) => entry.is_dir), action: () => setClipboard("copy") },
+    ...(single && isArbeskCollection(single.path)
+      ? [
+          { separator: true } as const,
+          { label: "Share Collection…", action: () => promptShareCollection(single.path) },
+        ]
+      : []),
   ];
 }
 
@@ -2715,6 +2722,10 @@ const arbeskPasteItem = (): MenuItem[] =>
 const arbeskNewCollectionItem = (): MenuItem[] =>
   isArbeskAccount(location) ? [{ label: "New Collection…", action: promptNewCollection }] : [];
 
+/** Share Collection…, inside a collection: add a collaborator by email. */
+const arbeskShareItem = (): MenuItem[] =>
+  isArbeskCollection(location) ? [{ label: "Share Collection…", action: () => promptShareCollection(location) }] : [];
+
 /** Arbesk's background menu: read only, but the account takes a new collection
  *  and a collection takes a paste. */
 const arbeskBackgroundMenu = (): MenuItem[] => [
@@ -2722,6 +2733,7 @@ const arbeskBackgroundMenu = (): MenuItem[] => [
   { label: "Show Hidden Files", check: prefs.showHidden, action: toggleHidden },
   { label: "Reload", action: () => void reload() },
   ...arbeskPasteItem(),
+  ...arbeskShareItem(),
   { separator: true },
   { label: "Select All", action: selectAll },
 ];
@@ -2731,6 +2743,7 @@ const arbeskLocationMenu = (): MenuItem[] => [
   ...arbeskNewCollectionItem(),
   { label: "Reload", action: () => void reload() },
   ...arbeskPasteItem(),
+  ...arbeskShareItem(),
   { separator: true },
   { label: "Select All", disabled: !hasEntries(location), action: selectAll },
 ];
@@ -4537,6 +4550,100 @@ function promptNewCollection(): void {
   input.addEventListener("input", validate);
   validate();
   input.focus();
+}
+
+// ---------------------------------------------------------------------------
+// Share a collection (Arbesk: add a collaborator by email)
+// ---------------------------------------------------------------------------
+
+/** The error sharing ends with when it needs a new sign-in. */
+const ARBESK_SHARE_SIGN_IN = "Sign in to Arbesk again to share a collection.";
+
+/** Roles as Arbesk's editor list numbers them. */
+const ARBESK_VIEWER = 1;
+const ARBESK_EDITOR = 2;
+
+/**
+ * Share Collection…: add the Arbesk account behind an email as a viewer or an
+ * editor. Arbesk resolves the email to a wallet address; the list and its
+ * Merkle root are updated on IPFS and the chain. Sharing needs the session a
+ * paste does, asked for once if it is gone.
+ */
+function promptShareCollection(path: string): void {
+  if (!isArbeskCollection(path)) return;
+  const extra = document.createElement("div");
+  extra.className = "compress-fields";
+  extra.innerHTML = `
+    <label>Email<input id="share-collection-email" type="email" spellcheck="false" autocomplete="email" placeholder="you@example.com" /></label>
+    <label>Role<select id="share-collection-role">
+      <option value="${ARBESK_VIEWER}" selected>Viewer</option>
+      <option value="${ARBESK_EDITOR}">Editor</option>
+    </select></label>
+    <div class="check-hint">Viewers can see and download the collection's assets; Editors can also add and save them.</div>
+    <div class="field-message"></div>`;
+  const email = extra.querySelector<HTMLInputElement>("#share-collection-email")!;
+  const role = extra.querySelector<HTMLSelectElement>("#share-collection-role")!;
+  const message = extra.querySelector<HTMLElement>(".field-message")!;
+  const row = email.closest("label")!;
+
+  const validate = () => {
+    const value = email.value.trim();
+    const valid = value.includes("@");
+    showValidation(
+      { valid, message: valid || !value ? "" : "Enter an email address.", error: !valid && !!value },
+      row,
+      message,
+    );
+    dialog.setResponseEnabled("share", valid);
+    return valid;
+  };
+
+  const dialog = openDialog({
+    heading: "Share Collection",
+    body: "Add a collaborator by the email they use with Arbesk.",
+    extra,
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "share", label: "Share", style: "suggested" },
+    ],
+    defaultResponse: "share",
+    closeResponse: "cancel",
+    busy: { liveWhileBusy: ["cancel"], status: message },
+    onResponse: async (id) => {
+      if (id !== "share" || !validate()) return;
+      const value = email.value.trim();
+      const chosen = Number(role.value);
+      try {
+        const account = await arbeskAccountFor(path);
+        if (!(await arbeskSignedIn(path).catch(() => false))) {
+          if (!(await connectArbesk(account, { stay: true }))) {
+            dialog.close();
+            return;
+          }
+        }
+        dialog.setStatus("Sharing collection…");
+        let shared;
+        try {
+          shared = await arbeskShareCollection(path, value, chosen);
+        } catch (err) {
+          if (cleanError(err) !== ARBESK_SHARE_SIGN_IN) throw err;
+          if (!(await connectArbesk(account, { stay: true }))) throw err;
+          shared = await arbeskShareCollection(path, value, chosen);
+        }
+        dialog.close();
+        const label = shared.role === ARBESK_EDITOR ? "Editor" : "Viewer";
+        showToast(shared.added ? `Shared with ${value} as ${label}` : `${value} is now ${label}`);
+      } catch (err) {
+        message.textContent = cleanError(err);
+        message.classList.add("error");
+        row.classList.add("error");
+        return false;
+      }
+    },
+  });
+  email.addEventListener("input", validate);
+  validate();
+  email.focus();
 }
 
 // ---------------------------------------------------------------------------

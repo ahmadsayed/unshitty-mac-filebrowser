@@ -1786,6 +1786,23 @@ async fn arbesk_create_collection(
     blocking(move || app.state::<arbesk::Client>().create_collection(&path, &name)).await?
 }
 
+/// Add an Arbesk account to a collection's editor list by its email, as a
+/// viewer (`1`) or an editor (`2`). It uploads to IPFS and waits on the
+/// chain: off the main thread.
+#[tauri::command]
+async fn arbesk_share_collection(
+    app: tauri::AppHandle,
+    path: String,
+    email: String,
+    role: u8,
+) -> Result<arbesk::Shared, String> {
+    blocking(move || {
+        app.state::<arbesk::Client>()
+            .share_collection(&path, &email, role)
+    })
+    .await?
+}
+
 /// It ends the session on Arbesk's server (up to 30 s) and clears the keychain.
 #[tauri::command]
 async fn arbesk_disconnect(app: tauri::AppHandle, account: String) -> Result<(), String> {
@@ -2436,6 +2453,7 @@ pub fn run() {
             arbesk_signed_in,
             arbesk_disconnect,
             arbesk_create_collection,
+            arbesk_share_collection,
             share_identity,
             set_share_name,
             share_folder,

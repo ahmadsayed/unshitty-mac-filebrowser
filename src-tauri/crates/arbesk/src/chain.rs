@@ -32,8 +32,11 @@ pub const CHAIN_UNREACHABLE: &str = "The chain could not be reached";
 /// How an error starts when `tokenURI` reverted: the token doesn't exist.
 pub const TOKEN_REFUSED: &str = "The chain refused collection";
 
-/// `tokenURI(uint256)`'s selector.
+/// `tokenURI(uint256)`, `editorListURI(uint256)` and
+/// `editorSetVersion(uint256)` selectors.
 const TOKEN_URI: &str = "0xc87b56dd";
+const EDITOR_LIST_URI: &str = "0x51d7d6e1";
+const EDITOR_SET_VERSION: &str = "0xb0f762fa";
 
 fn get_json(http: &dyn Http, url: &str) -> Result<Value, String> {
     let bytes = http
@@ -83,9 +86,46 @@ pub fn collection_ids(http: &dyn Http, site: &Site, address: &str) -> Result<Vec
 
 /// The manifest CID a collection token points at (`ipfs://` removed).
 pub fn token_uri(http: &dyn Http, chain: &ChainConfig, token_id: &str) -> Result<String, String> {
+    let result = eth_call(http, chain, TOKEN_URI, token_id, token_id)?;
+    let uri = decode_abi_string(&result)?;
+    Ok(uri.strip_prefix("ipfs://").unwrap_or(&uri).to_string())
+}
+
+/// The editor list CID a collection token points at (`ipfs://` removed).
+pub fn editor_list_uri(
+    http: &dyn Http,
+    chain: &ChainConfig,
+    token_id: &str,
+) -> Result<String, String> {
+    let result = eth_call(http, chain, EDITOR_LIST_URI, token_id, token_id)?;
+    let uri = decode_abi_string(&result)?;
+    Ok(uri.strip_prefix("ipfs://").unwrap_or(&uri).to_string())
+}
+
+/// The current editor-set version of a collection token (1 for an untouched
+/// new collection).
+pub fn editor_set_version(
+    http: &dyn Http,
+    chain: &ChainConfig,
+    token_id: &str,
+) -> Result<u64, String> {
+    let result = eth_call(http, chain, EDITOR_SET_VERSION, token_id, token_id)?;
+    decode_abi_uint(&result)
+}
+
+/// One `eth_call` of `selector(token_id)`; `what` names the token in a
+/// refusal.
+fn eth_call(
+    http: &dyn Http,
+    chain: &ChainConfig,
+    selector: &str,
+    token_id: &str,
+    what: &str,
+) -> Result<String, String> {
+    let data = call_data(selector, token_id)?;
     let call = json!({
         "jsonrpc": "2.0", "id": 1, "method": "eth_call",
-        "params": [{ "to": chain.contract, "data": encode_token_uri_call(token_id)? }, "latest"]
+        "params": [{ "to": chain.contract, "data": data }, "latest"]
     });
     let bytes = http
         .post_json(&chain.rpc_url, &call, None)
@@ -93,19 +133,24 @@ pub fn token_uri(http: &dyn Http, chain: &ChainConfig, token_id: &str) -> Result
     let body: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "The chain sent an answer File Browser can't read.".to_string())?;
     if let Some(message) = body["error"]["message"].as_str() {
-        return Err(format!("{TOKEN_REFUSED} {token_id}: {message}"));
+        return Err(format!("{TOKEN_REFUSED} {what}: {message}"));
     }
-    let uri = decode_abi_string(body["result"].as_str().unwrap_or_default())?;
-    Ok(uri.strip_prefix("ipfs://").unwrap_or(&uri).to_string())
+    Ok(body["result"].as_str().unwrap_or_default().to_string())
 }
 
-/// `tokenURI(token_id)` as call data: the selector and the id as a uint256.
-fn encode_token_uri_call(token_id: &str) -> Result<String, String> {
+/// A call's data: `selector` and the token id as a uint256.
+fn call_data(selector: &str, token_id: &str) -> Result<String, String> {
     Ok(uint256_word(token_id)?
         .iter()
-        .fold(TOKEN_URI.to_string(), |hex, byte| {
+        .fold(selector.to_string(), |hex, byte| {
             hex + &format!("{byte:02x}")
         }))
+}
+
+/// `tokenURI(token_id)` as call data.
+#[cfg(test)]
+fn encode_token_uri_call(token_id: &str) -> Result<String, String> {
+    call_data(TOKEN_URI, token_id)
 }
 
 /// A decimal token id as a 32-byte big-endian uint256 word.
@@ -155,6 +200,19 @@ pub(crate) fn decimal(bytes: &[u8]) -> String {
     } else {
         decimal
     }
+}
+
+/// One ABI-encoded `uint256` return value, for the values that fit a u64.
+fn decode_abi_uint(hex: &str) -> Result<u64, String> {
+    let refused = || "The chain's answer is not an editor-set version.".to_string();
+    let digits = hex.strip_prefix("0x").unwrap_or(hex);
+    if digits.len() != 64 {
+        return Err(refused());
+    }
+    if digits[..48].bytes().any(|byte| byte != b'0') {
+        return Err(refused());
+    }
+    u64::from_str_radix(&digits[48..], 16).map_err(|_| refused())
 }
 
 /// One ABI-encoded `string` return value: offset 32, length, bytes.
@@ -364,6 +422,52 @@ mod tests {
                 data: None,
                 fields: Vec::new(),
             }]
+        );
+    }
+
+    #[test]
+    fn the_editor_list_and_version_reads_use_their_selectors() {
+        let http = FakeHttp::new(|request| {
+            let data = request.body.as_ref().unwrap()["params"][0]["data"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let answer = if data.starts_with("0x51d7d6e1") {
+                json!({ "result": abi_string("ipfs://bafyEditors") })
+            } else {
+                assert!(data.starts_with("0xb0f762fa"), "{data}");
+                json!({ "result": format!("0x{:064x}", 7) })
+            };
+            Ok(answer.to_string().into_bytes())
+        });
+        assert_eq!(
+            editor_list_uri(&http, &chain(), "256").unwrap(),
+            "bafyEditors"
+        );
+        assert_eq!(editor_set_version(&http, &chain(), "256").unwrap(), 7);
+        let requests = http.requests();
+        assert_eq!(
+            requests[0].body.as_ref().unwrap()["params"][0]["data"],
+            format!("0x51d7d6e1{}100", "0".repeat(61))
+        );
+        assert_eq!(
+            requests[1].body.as_ref().unwrap()["params"][0]["data"],
+            format!("0xb0f762fa{}100", "0".repeat(61))
+        );
+    }
+
+    #[test]
+    fn a_version_that_is_not_a_uint256_is_refused() {
+        for bad in [
+            "0x",
+            "0x01",
+            "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        ] {
+            assert!(decode_abi_uint(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            decode_abi_uint(&format!("0x{:064x}", 1)).unwrap(),
+            1
         );
     }
 

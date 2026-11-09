@@ -22,10 +22,12 @@ mod ids;
 mod image;
 mod ipfs;
 mod location;
+mod merkle;
 mod progress;
 mod scene;
 mod service;
 mod session;
+mod share;
 mod signin;
 mod store;
 #[cfg(test)]
@@ -49,6 +51,7 @@ pub use location::{ArbeskPath as Location, is_arbesk, is_folder, parse, parse_ta
 pub use progress::{CANCELLED, Phase, Progress, Snapshot};
 pub use scene::Scene;
 pub use service::Version;
+pub use share::Shared;
 
 /// A row in an account's or a collection's listing, with the same fields the
 /// app's own entries have, so it can be handed to the view unchanged.
@@ -400,6 +403,37 @@ impl Client {
         created
     }
 
+    /// Add the account behind `email` to the collection `path` names as a
+    /// viewer (`1`) or an editor (`2`), or change its role. The session's
+    /// account must be an editor. Arbesk's 401 ends the session.
+    pub fn share_collection(&self, path: &str, email: &str, role: u8) -> Result<Shared, String> {
+        let (address, token_id) = match parse(path)? {
+            location::ArbeskPath::Collection { address, token_id } => (address, token_id),
+            _ => return Err("Share a collection.".into()),
+        };
+        let site = self.site_for(&address)?;
+        let account = location::account_path(&address);
+        let session = self.session_for(&account)?;
+        let shared = share::add(
+            self.http()?,
+            &site,
+            &session,
+            &address,
+            &token_id,
+            email,
+            role,
+            &self.cache_dir,
+        )
+        .map_err(|error| match error.as_str() {
+            write::SIGN_IN => share::SIGN_IN.to_string(),
+            _ => error,
+        });
+        if shared.as_ref().err().is_some_and(|error| error == share::SIGN_IN) {
+            self.forget_session(&account);
+        }
+        shared
+    }
+
     /// Whether the collection of the pending name `path` lists that name.
     pub fn exists(&self, path: &str) -> bool {
         let Ok((address, token_id, name)) = parse_target(path) else {
@@ -649,6 +683,60 @@ mod tests {
         assert_eq!(
             state.create_collection(&root, "   ").unwrap_err(),
             create::NO_NAME
+        );
+    }
+
+    #[test]
+    fn a_collection_is_shared_with_an_editor_or_viewer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut world = testing::world();
+        world.sessions.insert("t".into());
+        let http = Arc::new(testing::arbesk(Arc::new(Mutex::new(world))));
+        let (state, sessions) = state_with_sessions(http, dir.path());
+        let account = state
+            .accounts
+            .lock()
+            .unwrap()
+            .connect("me@example.com", testing::ADDRESS, &testing::site())
+            .unwrap();
+        sessions
+            .save(
+                &account.id,
+                &Session {
+                    token: "t".into(),
+                    expires_at_ms: signin::now_ms() + 3_600_000,
+                },
+            )
+            .unwrap();
+        let shapes = format!("arbesk://{}/1~Shapes", testing::ADDRESS);
+        let shared = state
+            .share_collection(&shapes, "alice@example.com", 1)
+            .unwrap();
+        assert_eq!(
+            (shared.address.as_str(), shared.role, shared.added),
+            (testing::ALICE, 1, true)
+        );
+        assert_eq!(
+            state.share_collection(&shapes, "alice@example.com", 1).unwrap_err(),
+            "That account is already a viewer."
+        );
+        assert_eq!(
+            state
+                .share_collection(&shapes, "alice@example.com", 2)
+                .unwrap()
+                .role,
+            2
+        );
+        let root = format!("arbesk://{}", testing::ADDRESS);
+        assert_eq!(
+            state.share_collection(&root, "alice@example.com", 1).unwrap_err(),
+            "Share a collection."
+        );
+        assert_eq!(
+            state
+                .share_collection(&format!("{shapes}/a1~Box.gltf"), "alice@example.com", 1)
+                .unwrap_err(),
+            "Share a collection."
         );
     }
 
