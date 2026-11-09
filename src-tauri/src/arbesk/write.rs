@@ -633,15 +633,20 @@ fn receipt_outcome(answer: &[u8], name: &str) -> Outcome {
     }
 }
 
-/// What a failed relay request means. Arbesk refuses before sending
-/// (401, 403, 429 and its other checks); its 502 and a lost answer may
-/// come after the transaction was sent.
+/// What a failed relay request means. Only a 4xx is a refusal before
+/// anything was sent (Arbesk's 400, 401, 403, 429 and its other checks).
+/// Anything else may come after the transaction was sent, so it may still
+/// land: no answer at all, the relay's own 502, another 5xx (Cloudflare,
+/// in front of Arbesk, answers 524 after 100 s while the relay may wait
+/// three minutes, and 520 when the origin drops the answer), and a 2xx
+/// whose body couldn't be read.
 fn relay_failure(error: HttpError, name: &str) -> Outcome {
     let step = |why: &str| format!("Couldn't save “{name}” in the collection: {why}");
     match error.status {
+        Some(400..=499) => Outcome::Refused(refused(error, step)),
         Some(502) => Outcome::Unsettled(RELAY_FAILED.into()),
+        Some(_) => Outcome::Unsettled(still_saving(name)),
         None => Outcome::Unsettled(step(&error.message)),
-        Some(_) => Outcome::Refused(refused(error, step)),
     }
 }
 
@@ -796,8 +801,9 @@ mod tests {
         inner: &'a FakeHttp,
         relay_delay: Duration,
         failing_uploads: bool,
-        /// The relay gets the request, but its answer is lost.
-        lost_relay_answer: bool,
+        /// The relay gets the request, but its answer is lost: this
+        /// error comes back instead.
+        lost_relay_answer: Option<HttpError>,
         cancel_after: Option<(usize, Progress)>,
         /// Runs once, before the first upload.
         before_uploads: Mutex<Option<Box<dyn FnOnce() + Send + 'a>>>,
@@ -810,7 +816,7 @@ mod tests {
                 inner,
                 relay_delay: Duration::ZERO,
                 failing_uploads: false,
-                lost_relay_answer: false,
+                lost_relay_answer: None,
                 cancel_after: None,
                 before_uploads: Mutex::new(None),
                 uploads: AtomicUsize::new(0),
@@ -840,8 +846,8 @@ mod tests {
         ) -> Result<Vec<u8>, HttpError> {
             std::thread::sleep(self.relay_delay);
             let answer = self.inner.post_json_slow(url, body, session);
-            if self.lost_relay_answer {
-                return Err(HttpError::new(None, "operation timed out"));
+            if let Some(error) = &self.lost_relay_answer {
+                return Err(error.clone());
             }
             answer
         }
@@ -1271,21 +1277,40 @@ mod tests {
 
     #[test]
     fn an_unsettled_write_holds_back_the_next_until_it_lands() {
-        type Setup = fn(&mut World, &mut Watched);
-        let cases: [Setup; 3] = [
-            |w, _| w.relay = Relay::Pending,
-            |w, _| w.relay = Relay::Status(502),
-            |w, watched| {
+        type Setup = Box<dyn Fn(&mut World, &mut Watched)>;
+        let saving = "Arbesk is still saving “One.gltf”. It appears once the change is confirmed.";
+        let lost = |status: Option<u16>, why: &str| {
+            let error = HttpError::new(status, why);
+            move |w: &mut World, watched: &mut Watched| {
                 w.relay = Relay::Pending;
-                watched.lost_relay_answer = true;
-            },
+                watched.lost_relay_answer = Some(error.clone());
+            }
+        };
+        let timed_out = lost(None, "operation timed out");
+        let unreadable = lost(Some(200), "error decoding response body");
+        let cases: [(Setup, &str); 7] = [
+            (Box::new(|w, _| w.relay = Relay::Pending), saving),
+            (
+                Box::new(|w, _| w.relay = Relay::Status(502)),
+                "Arbesk couldn't save the change. Sign in again to renew its permission.",
+            ),
+            // Cloudflare in front of Arbesk: origin timeout, dropped origin.
+            (Box::new(|w, _| w.relay = Relay::Status(524)), saving),
+            (Box::new(|w, _| w.relay = Relay::Status(520)), saving),
+            (Box::new(|w, _| w.relay = Relay::Status(503)), saving),
+            (
+                Box::new(timed_out),
+                "Couldn't save “One.gltf” in the collection: operation timed out",
+            ),
+            (Box::new(unreadable), saving),
         ];
-        for setup in cases {
+        for (setup, wording) in cases {
             let (world, http, cache) = signed_in();
             let locks = quick_locks(Duration::from_secs(300));
             let mut watched = Watched::new(&http);
             setup(&mut world.lock().unwrap(), &mut watched);
-            add_with(&watched, cache.path(), &locks, "One.gltf", glb()).unwrap_err();
+            let error = add_with(&watched, cache.path(), &locks, "One.gltf", glb()).unwrap_err();
+            assert_eq!(error, wording);
             world.lock().unwrap().relay = Relay::Ok;
             let error = add_with(&http, cache.path(), &locks, "Two.3mf", three_mf()).unwrap_err();
             assert_eq!(error, EARLIER);
@@ -1301,13 +1326,29 @@ mod tests {
     }
 
     #[test]
-    fn a_reverted_write_holds_nothing_back() {
-        let (world, http, cache) = signed_in();
-        let locks = quick_locks(Duration::from_secs(300));
-        world.lock().unwrap().relay = Relay::Failed;
-        add_with(&http, cache.path(), &locks, "One.gltf", glb()).unwrap_err();
-        world.lock().unwrap().relay = Relay::Ok;
-        add_with(&http, cache.path(), &locks, "Two.3mf", three_mf()).unwrap();
+    fn a_reverted_or_refused_write_holds_nothing_back() {
+        // Reverted, or refused by Arbesk before anything was sent.
+        for (relay, wording) in [
+            (Relay::Failed, "Arbesk couldn't save “One.gltf”."),
+            (
+                Relay::Status(400),
+                "Couldn't save “One.gltf” in the collection: The server answered 400.",
+            ),
+            (
+                Relay::Status(401),
+                "Sign in to Arbesk again to copy files into it.",
+            ),
+            (Relay::Status(403), "You can't add to this collection."),
+            (Relay::Status(429), "Arbesk is busy. Try again in a minute."),
+        ] {
+            let (world, http, cache) = signed_in();
+            let locks = quick_locks(Duration::from_secs(300));
+            world.lock().unwrap().relay = relay;
+            let error = add_with(&http, cache.path(), &locks, "One.gltf", glb()).unwrap_err();
+            assert_eq!(error, wording);
+            world.lock().unwrap().relay = Relay::Ok;
+            add_with(&http, cache.path(), &locks, "Two.3mf", three_mf()).unwrap();
+        }
     }
 
     #[test]
