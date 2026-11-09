@@ -1,7 +1,10 @@
 // placeScene: an Arbesk scene's parts, each placed once per placement, as
 // copies in one group (src/model-viewer.ts).
 import { expect, test } from "vitest";
-import { Box3, BoxGeometry, Group, Mesh, MeshStandardMaterial, Vector3, type Object3D } from "three";
+import {
+  Bone, Box3, BoxGeometry, BufferAttribute, BufferGeometry, Group, Mesh, MeshStandardMaterial, SkinnedMesh, Skeleton, Vector3,
+  type Object3D,
+} from "three";
 import { loadModel, loadScenePart, placeScene, type ScenePlacement } from "../src/model-viewer";
 import { sample3mf, sampleGlb } from "../dev/mock-tauri/models";
 
@@ -79,6 +82,31 @@ test("a 3MF scene part is in metres", async () => {
   }
   const glb = buffer(sampleGlb());
   expect(near(size(await loadScenePart(glb)), size(await loadModel("glb", glb)))).toBe(true);
+});
+
+test("a skinned part's bones come with its placement", () => {
+  const bone = new Bone();
+  bone.position.set(1, 0, 0);
+  const geometry = new BufferGeometry();
+  geometry.setAttribute("position", new BufferAttribute(new Float32Array([0, 0, 0]), 3));
+  geometry.setAttribute("skinIndex", new BufferAttribute(new Uint16Array([0, 0, 0, 0]), 4));
+  geometry.setAttribute("skinWeight", new BufferAttribute(new Float32Array([1, 0, 0, 0]), 4));
+  const mesh = new SkinnedMesh(geometry, new MeshStandardMaterial());
+  mesh.name = "skinned";
+  mesh.add(bone);
+  mesh.bind(new Skeleton([bone]));
+  const copy = placeScene([{ object: new Group().add(mesh), placements: [place()] }]);
+  const skinned = copy.getObjectByName("skinned") as SkinnedMesh;
+  const clonedBone = skinned.skeleton.bones[0];
+  // A plain clone would share the original's bone, so turning the copy would
+  // leave the skinned mesh where it was.
+  expect(clonedBone).not.toBe(bone);
+  const world = () => clonedBone.getWorldPosition(new Vector3());
+  const before = world();
+  copy.children[0].rotation.y = Math.PI / 2;
+  copy.updateMatrixWorld(true);
+  expect(before.distanceTo(world())).toBeGreaterThan(0.5);
+  expect(bone.getWorldPosition(new Vector3()).distanceTo(before)).toBe(0);
 });
 
 test("parts keep their own transforms inside each copy", () => {
