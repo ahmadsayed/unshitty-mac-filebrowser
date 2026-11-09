@@ -7,7 +7,7 @@
 //! to point the token at it (spec D7). The session goes only to Arbesk's
 //! own endpoints, never to the upload URLs, and never into an error.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -36,6 +36,9 @@ pub const RELAY_FAILED: &str =
 /// machine reaches.
 pub const UNSUPPORTED_STORAGE: &str = "This Arbesk server's storage isn't supported.";
 const UNREADABLE: &str = "Arbesk's answer can't be read.";
+/// An earlier write from this app may still change the collection.
+pub const EARLIER_UNSETTLED: &str =
+    "Arbesk is still saving an earlier copy into this collection. Try again in a minute.";
 
 fn exists(name: &str) -> String {
     format!("Target already exists: {name}")
@@ -115,22 +118,24 @@ pub fn asset_manifest(
 /// The collection manifest `current` (at `current_cid`) with `asset_id` at
 /// `asset_cid`, as asset-core's `applyCollectionMutation` makes it: the
 /// rest kept, `version` + 1, `prev_asset_manifest_cid` = `current_cid`.
+/// A manifest that isn't a JSON object is refused: its name and type
+/// would be lost.
 pub fn next_collection(
     current: &Value,
     current_cid: &str,
     asset_id: &str,
     asset_cid: &str,
-) -> Value {
-    let mut next = match current {
-        Value::Object(_) => current.clone(),
-        _ => json!({}),
-    };
+) -> Result<Value, String> {
+    if !current.is_object() {
+        return Err(UNREADABLE.into());
+    }
+    let mut next = current.clone();
     let mut assets = current["assets"].as_object().cloned().unwrap_or_default();
     assets.insert(asset_id.into(), json!(asset_cid));
     next["assets"] = Value::Object(assets);
     next["version"] = json!(current["version"].as_u64().unwrap_or(0) + 1);
     next["prev_asset_manifest_cid"] = json!(current_cid);
-    next
+    Ok(next)
 }
 
 /// An asset's name from its listed name: the Studio's
@@ -165,10 +170,44 @@ fn fresh_id(collection: &Value, mut ms: i64) -> String {
 /// relay's answer, so two copies from this app never lose each other's
 /// asset. (A Studio save in the same seconds still can: Arbesk has no
 /// compare-and-swap.)
-#[derive(Default)]
+///
+/// The relay's answer isn't always the end: a change whose receipt isn't
+/// known yet (or whose answer was lost) may still land, and a confirmed
+/// one may not show yet on a node a block behind. So each collection's
+/// last relayed change is remembered, and the next write builds only on
+/// a `tokenURI` that has settled ([`Hold::settled`]), re-reading `reads`
+/// times `every` apart, else refuses. An unsettled change is forgotten
+/// `expiry` after the relay answered: by then it has landed or never will.
 pub struct CollectionLocks {
     held: Mutex<HashSet<String>>,
     freed: Condvar,
+    relayed: Mutex<HashMap<String, Relayed>>,
+    reads: usize,
+    every: Duration,
+    expiry: Duration,
+}
+
+/// A collection's last change relayed from this app.
+struct Relayed {
+    /// The collection manifest it replaced, and the one it points to.
+    replaced: String,
+    relayed: String,
+    /// Its receipt said it was mined.
+    landed: bool,
+    at: Instant,
+}
+
+impl Default for CollectionLocks {
+    fn default() -> Self {
+        Self {
+            held: Mutex::default(),
+            freed: Condvar::default(),
+            relayed: Mutex::default(),
+            reads: 6,
+            every: Duration::from_secs(5),
+            expiry: Duration::from_secs(300),
+        }
+    }
 }
 
 /// A write's hold on its collection, let go when dropped.
@@ -180,6 +219,10 @@ struct Hold<'a> {
 impl CollectionLocks {
     /// Wait for collection `token_id` of `address`, then hold it.
     pub fn hold(&self, address: &str, token_id: &str) -> impl Drop + '_ {
+        self.take(address, token_id)
+    }
+
+    fn take(&self, address: &str, token_id: &str) -> Hold<'_> {
         let key = format!("{}/{token_id}", address.to_ascii_lowercase());
         let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
         while held.contains(&key) {
@@ -187,6 +230,43 @@ impl CollectionLocks {
         }
         held.insert(key.clone());
         Hold { locks: self, key }
+    }
+}
+
+impl Hold<'_> {
+    /// Whether a write may build on `current`, the CID `tokenURI` answers
+    /// now: nothing relayed from here is in doubt, the last change shows,
+    /// a confirmed one isn't hidden by a stale read, or it is too old to
+    /// wait for.
+    fn settled(&self, current: &str) -> bool {
+        let mut relayed = self.locks.relayed.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(last) = relayed.get(&self.key) else {
+            return true;
+        };
+        let shows = current == last.relayed || (last.landed && current != last.replaced);
+        let settled = shows || last.at.elapsed() >= self.locks.expiry;
+        if settled {
+            relayed.remove(&self.key);
+        }
+        settled
+    }
+
+    /// Remember the change from `replaced` to `relayed` the relay answered
+    /// with `outcome`; one it refused or that reverted changed nothing.
+    fn remember(&self, replaced: &str, relayed: &str, outcome: &Outcome) {
+        let landed = match outcome {
+            Outcome::Landed => true,
+            Outcome::Unsettled(_) => false,
+            Outcome::Refused(_) => return,
+        };
+        let change = Relayed {
+            replaced: replaced.into(),
+            relayed: relayed.into(),
+            landed,
+            at: Instant::now(),
+        };
+        let mut remembered = self.locks.relayed.lock().unwrap_or_else(|e| e.into_inner());
+        remembered.insert(self.key.clone(), change);
     }
 }
 
@@ -337,7 +417,7 @@ pub fn add(
     let name = asset_name(&target.name);
     let split = decompose(file, &name)?;
     let reader = Reader::open(http, site, cache_dir)?;
-    let (_, collection) = reader.collection_manifest_with_cid(&target.token_id)?;
+    let (_, collection) = an_object(reader.collection_manifest_with_cid(&target.token_id)?)?;
     claim(&reader, &collection, target, overwrite)?;
     let uploader = Uploader::new(http, site, session, split.parts.len() + 3, &target.name)?;
     let mut write = Write {
@@ -352,8 +432,27 @@ pub fn add(
         name,
     };
     let source = write.upload_source(&split)?;
-    let _held = locks.hold(&target.address, &target.token_id);
-    write.save(&source, split.format)
+    let held = locks.take(&target.address, &target.token_id);
+    write.save(&held, &source, split.format)
+}
+
+/// A collection read whose manifest is a JSON object, as every collection's is.
+fn an_object(read: (String, Value)) -> Result<(String, Value), String> {
+    match read.1.is_object() {
+        true => Ok(read),
+        false => Err(UNREADABLE.into()),
+    }
+}
+
+/// What the relay's answer says of a change.
+enum Outcome {
+    /// Mined.
+    Landed,
+    /// May still land: no receipt status yet, no answer, or the relay
+    /// failed (502) after perhaps sending it.
+    Unsettled(String),
+    /// Refused before it was sent, or reverted: nothing changed.
+    Refused(String),
 }
 
 /// The asset listed as `target.name` in `collection` (its id and manifest
@@ -419,13 +518,13 @@ impl Write<'_> {
 
     /// Under the collection's lock: the asset manifest, then the
     /// collection's, then the relay; the asset's path.
-    fn save(&mut self, source: &str, format: Format) -> Result<String, String> {
+    fn save(&mut self, held: &Hold, source: &str, format: Format) -> Result<String, String> {
         let token_id = &self.target.token_id;
-        let (current_cid, collection) = self.reader.collection_manifest_with_cid(token_id)?;
+        let (current_cid, collection) = self.settled_collection(held)?;
         // Checked again: another write may have taken the name meanwhile.
         let replaced = claim(&self.reader, &collection, self.target, self.overwrite)?;
         let (asset_id, asset_cid) = self.put_asset(&collection, replaced, source, format)?;
-        let next = next_collection(&collection, &current_cid, &asset_id, &asset_cid);
+        let next = next_collection(&collection, &current_cid, &asset_id, &asset_cid)?;
         let file_name = format!(
             "collect_{}.json",
             sanitize_file_name(&collection_key(&next))
@@ -435,10 +534,36 @@ impl Write<'_> {
             .uploader
             .upload(&file_name, &stored_json(&next, false))?;
         self.progress.set_phase(Phase::Saving);
-        self.relay(&next_cid, &asset_id)?;
+        let outcome = self.relay(&next_cid, &asset_id);
+        held.remember(&current_cid, &next_cid, &outcome);
+        match outcome {
+            Outcome::Landed => {}
+            Outcome::Unsettled(error) | Outcome::Refused(error) => return Err(error),
+        }
         let folder = collection_path(&self.target.address, token_id, &collection_name(&next));
         let listed = format!("{}.{}", self.name, format.ext());
         Ok(asset_path_named(&folder, &asset_id, &listed))
+    }
+
+    /// The collection's CID and manifest once this app's last change to
+    /// it has settled ([`Hold::settled`]), re-reading `tokenURI` while it
+    /// hasn't; refused when it still hasn't.
+    fn settled_collection(&self, held: &Hold) -> Result<(String, Value), String> {
+        let token_id = &self.target.token_id;
+        let read = || an_object(self.reader.collection_manifest_with_cid(token_id)?);
+        let mut current = read()?;
+        for _ in 0..held.locks.reads {
+            if held.settled(&current.0) {
+                return Ok(current);
+            }
+            self.progress.check()?;
+            std::thread::sleep(held.locks.every);
+            current = read()?;
+        }
+        match held.settled(&current.0) {
+            true => Ok(current),
+            false => Err(EARLIER_UNSETTLED.into()),
+        }
     }
 
     /// Upload the asset manifest: a new asset, or the next version of
@@ -477,7 +602,7 @@ impl Write<'_> {
 
     /// Point the collection's token at `collection_cid` through Arbesk's
     /// wallet relay, as the account's only editor (`proof: []`, spec D9).
-    fn relay(&self, collection_cid: &str, asset_id: &str) -> Result<(), String> {
+    fn relay(&self, collection_cid: &str, asset_id: &str) -> Outcome {
         let body = json!({
             "op": "updateUri",
             "tokenId": self.target.token_id,
@@ -490,22 +615,33 @@ impl Write<'_> {
         });
         let url = format!("{}/api/v1/wallet/relay", self.site.origin);
         let name = &self.target.name;
-        let answer = self
-            .http
-            .post_json_slow(&url, &body, Some(self.session))
-            .map_err(|error| match error.status {
-                Some(502) => RELAY_FAILED.to_string(),
-                _ => refused(error, |why| {
-                    format!("Couldn't save “{name}” in the collection: {why}")
-                }),
-            })?;
-        let answer: Value = serde_json::from_slice(&answer).unwrap_or_default();
-        // A receipt's `status`: true mined, false reverted, null not known yet.
-        match answer["receipt"]["status"].as_bool() {
-            Some(true) => Ok(()),
-            Some(false) => Err(not_saved(name)),
-            None => Err(still_saving(name)),
+        match self.http.post_json_slow(&url, &body, Some(self.session)) {
+            Ok(answer) => receipt_outcome(&answer, name),
+            Err(error) => relay_failure(error, name),
         }
+    }
+}
+
+/// What a relay's receipt says: `status` true mined, false reverted, null
+/// (or no receipt to read) not known yet.
+fn receipt_outcome(answer: &[u8], name: &str) -> Outcome {
+    let answer: Value = serde_json::from_slice(answer).unwrap_or_default();
+    match answer["receipt"]["status"].as_bool() {
+        Some(true) => Outcome::Landed,
+        Some(false) => Outcome::Refused(not_saved(name)),
+        None => Outcome::Unsettled(still_saving(name)),
+    }
+}
+
+/// What a failed relay request means. Arbesk refuses before sending
+/// (401, 403, 429 and its other checks); its 502 and a lost answer may
+/// come after the transaction was sent.
+fn relay_failure(error: HttpError, name: &str) -> Outcome {
+    let step = |why: &str| format!("Couldn't save “{name}” in the collection: {why}");
+    match error.status {
+        Some(502) => Outcome::Unsettled(RELAY_FAILED.into()),
+        None => Outcome::Unsettled(step(&error.message)),
+        Some(_) => Outcome::Refused(refused(error, step)),
     }
 }
 
@@ -660,6 +796,8 @@ mod tests {
         inner: &'a FakeHttp,
         relay_delay: Duration,
         failing_uploads: bool,
+        /// The relay gets the request, but its answer is lost.
+        lost_relay_answer: bool,
         cancel_after: Option<(usize, Progress)>,
         /// Runs once, before the first upload.
         before_uploads: Mutex<Option<Box<dyn FnOnce() + Send + 'a>>>,
@@ -672,6 +810,7 @@ mod tests {
                 inner,
                 relay_delay: Duration::ZERO,
                 failing_uploads: false,
+                lost_relay_answer: false,
                 cancel_after: None,
                 before_uploads: Mutex::new(None),
                 uploads: AtomicUsize::new(0),
@@ -700,7 +839,11 @@ mod tests {
             session: Option<&str>,
         ) -> Result<Vec<u8>, HttpError> {
             std::thread::sleep(self.relay_delay);
-            self.inner.post_json_slow(url, body, session)
+            let answer = self.inner.post_json_slow(url, body, session);
+            if self.lost_relay_answer {
+                return Err(HttpError::new(None, "operation timed out"));
+            }
+            answer
         }
 
         fn post_multipart(
@@ -838,13 +981,13 @@ mod tests {
         let current = json!({ "type": "collection", "name": "Shapes", "version": 4,
             "timestamp": 7, "assets": { "a1": "bafyA1" } });
         assert_eq!(
-            next_collection(&current, "bafyC1", "asset_5", "bafyNew"),
+            next_collection(&current, "bafyC1", "asset_5", "bafyNew").unwrap(),
             json!({ "type": "collection", "name": "Shapes", "version": 5, "timestamp": 7,
                 "prev_asset_manifest_cid": "bafyC1",
                 "assets": { "a1": "bafyA1", "asset_5": "bafyNew" } })
         );
         assert_eq!(
-            next_collection(&json!({ "type": "collection" }), "bafyC", "x", "bafyX"),
+            next_collection(&json!({ "type": "collection" }), "bafyC", "x", "bafyX").unwrap(),
             json!({ "type": "collection", "version": 1, "prev_asset_manifest_cid": "bafyC",
                 "assets": { "x": "bafyX" } })
         );
@@ -1055,6 +1198,153 @@ mod tests {
         let names = listed(&http, cache.path());
         assert!(names.contains(&"One.gltf".to_string()), "{names:?}");
         assert!(names.contains(&"Two.3mf".to_string()), "{names:?}");
+    }
+
+    const EARLIER: &str =
+        "Arbesk is still saving an earlier copy into this collection. Try again in a minute.";
+
+    /// Locks that re-read the chain 3 times, 1 ms apart, and forget an
+    /// unsettled change after `expiry`.
+    fn quick_locks(expiry: Duration) -> CollectionLocks {
+        CollectionLocks {
+            reads: 3,
+            every: Duration::from_millis(1),
+            expiry,
+            ..CollectionLocks::default()
+        }
+    }
+
+    fn add_with(
+        http: &dyn Http,
+        cache: &Path,
+        locks: &CollectionLocks,
+        name: &str,
+        file: PathBuf,
+    ) -> Result<String, String> {
+        let progress = Progress::default();
+        let target = into("1", name);
+        let added = add(
+            http,
+            &site(),
+            SESSION,
+            &target,
+            &file,
+            false,
+            &progress,
+            cache,
+            locks,
+        );
+        if let Err(error) = &added {
+            assert!(!error.contains(SESSION), "{error}");
+        }
+        added
+    }
+
+    fn relayed_uri(http: &FakeHttp, nth: usize) -> String {
+        let relays = sent(http, RELAY);
+        let body = relays[nth].body.as_ref().unwrap();
+        body["params"]["newUri"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn a_stale_chain_read_waits_for_the_last_write() {
+        let (world, http, cache) = signed_in();
+        let locks = quick_locks(Duration::from_secs(300));
+        // Two reads after each confirmed relay still answer the CID before:
+        // the next write's pre-check and its first read under the lock.
+        world.lock().unwrap().lag = 2;
+        add_with(&http, cache.path(), &locks, "One.gltf", glb()).unwrap();
+        add_with(&http, cache.path(), &locks, "Two.3mf", three_mf()).unwrap();
+        world.lock().unwrap().lagging.clear();
+        let names = listed(&http, cache.path());
+        assert!(names.contains(&"One.gltf".to_string()), "{names:?}");
+        assert!(names.contains(&"Two.3mf".to_string()), "{names:?}");
+
+        // A chain that stays behind past the wait: refused, not built on.
+        let (world, http, cache) = signed_in();
+        world.lock().unwrap().lag = 10;
+        add_with(&http, cache.path(), &locks, "One.gltf", glb()).unwrap();
+        let error = add_with(&http, cache.path(), &locks, "Two.3mf", three_mf()).unwrap_err();
+        assert_eq!(error, EARLIER);
+        assert_eq!(sent(&http, RELAY).len(), 1);
+    }
+
+    #[test]
+    fn an_unsettled_write_holds_back_the_next_until_it_lands() {
+        type Setup = fn(&mut World, &mut Watched);
+        let cases: [Setup; 3] = [
+            |w, _| w.relay = Relay::Pending,
+            |w, _| w.relay = Relay::Status(502),
+            |w, watched| {
+                w.relay = Relay::Pending;
+                watched.lost_relay_answer = true;
+            },
+        ];
+        for setup in cases {
+            let (world, http, cache) = signed_in();
+            let locks = quick_locks(Duration::from_secs(300));
+            let mut watched = Watched::new(&http);
+            setup(&mut world.lock().unwrap(), &mut watched);
+            add_with(&watched, cache.path(), &locks, "One.gltf", glb()).unwrap_err();
+            world.lock().unwrap().relay = Relay::Ok;
+            let error = add_with(&http, cache.path(), &locks, "Two.3mf", three_mf()).unwrap_err();
+            assert_eq!(error, EARLIER);
+            assert_eq!(sent(&http, RELAY).len(), 1);
+            // The first write lands after all; the next one builds on it.
+            let landed = relayed_uri(&http, 0);
+            world.lock().unwrap().tokens.insert(1, landed);
+            add_with(&http, cache.path(), &locks, "Two.3mf", three_mf()).unwrap();
+            let names = listed(&http, cache.path());
+            assert!(names.contains(&"One.gltf".to_string()), "{names:?}");
+            assert!(names.contains(&"Two.3mf".to_string()), "{names:?}");
+        }
+    }
+
+    #[test]
+    fn a_reverted_write_holds_nothing_back() {
+        let (world, http, cache) = signed_in();
+        let locks = quick_locks(Duration::from_secs(300));
+        world.lock().unwrap().relay = Relay::Failed;
+        add_with(&http, cache.path(), &locks, "One.gltf", glb()).unwrap_err();
+        world.lock().unwrap().relay = Relay::Ok;
+        add_with(&http, cache.path(), &locks, "Two.3mf", three_mf()).unwrap();
+    }
+
+    #[test]
+    fn an_unsettled_write_is_forgotten_after_a_while() {
+        let (world, http, cache) = signed_in();
+        let locks = quick_locks(Duration::ZERO);
+        world.lock().unwrap().relay = Relay::Pending;
+        add_with(&http, cache.path(), &locks, "One.gltf", glb()).unwrap_err();
+        world.lock().unwrap().relay = Relay::Ok;
+        add_with(&http, cache.path(), &locks, "Two.3mf", three_mf()).unwrap();
+    }
+
+    #[test]
+    fn a_collection_that_isnt_an_object_is_refused() {
+        assert_eq!(
+            next_collection(&json!(["bafyA1"]), "bafyC", "x", "bafyX").unwrap_err(),
+            "Arbesk's answer can't be read."
+        );
+        let (world, http, cache) = signed_in();
+        {
+            let mut w = world.lock().unwrap();
+            w.put("bafyList", json!(["bafyA1"]));
+            w.tokens.insert(6, "bafyList".into());
+            w.owned.push("6".into());
+        }
+        let error = add_to(
+            &http,
+            cache.path(),
+            &into("6", "Crate.gltf"),
+            &glb(),
+            false,
+            &Progress::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error, "Arbesk's answer can't be read.");
+        assert!(sent(&http, UPLOADS).is_empty());
+        assert_eq!(world.lock().unwrap().tokens[&6], "bafyList");
     }
 
     #[test]

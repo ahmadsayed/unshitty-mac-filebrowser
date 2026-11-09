@@ -42,6 +42,11 @@ pub(crate) struct World {
     pub(crate) kubo: bool,
     /// Arbesk's rate limit is reached: upload URLs answer 429.
     pub(crate) busy: bool,
+    /// How many `tokenURI` reads after a confirmed relay still answer the
+    /// token's CID from before it, as a node a block behind does.
+    pub(crate) lag: usize,
+    /// Tokens whose reads still lag: the CID before, and how many reads.
+    pub(crate) lagging: HashMap<u64, (String, usize)>,
     /// Upload URLs handed out so far; the next is `https://up.test/<minted>`.
     pub(crate) minted: usize,
     /// Upload URLs already used (a second use is refused, as Pinata does).
@@ -211,7 +216,12 @@ pub(crate) fn arbesk(world: Arc<Mutex<World>>) -> FakeHttp {
                 .only_via
                 .get(&token)
                 .is_none_or(|contract| call["to"] == contract.as_str());
-            let answer = match w.tokens.get(&token).filter(|_| through) {
+            let stale = w.lagging.get_mut(&token).filter(|(_, reads)| *reads > 0);
+            let stale = stale.map(|(cid, reads)| {
+                *reads -= 1;
+                cid.clone()
+            });
+            let answer = match stale.as_ref().or(w.tokens.get(&token)).filter(|_| through) {
                 Some(cid) => json!({ "result": abi_string(&format!("ipfs://{cid}")) }),
                 None => json!({ "error": { "message": "execution reverted" } }),
             };
@@ -338,8 +348,13 @@ fn wallet_relay(w: &mut World, request: &Request) -> Result<Vec<u8>, HttpError> 
         Relay::Ok => {
             let uri = body["params"]["newUri"].as_str().unwrap_or_default();
             let cid = uri.strip_prefix("ipfs://").unwrap_or(uri);
-            w.tokens
-                .insert(token.parse().unwrap_or_default(), cid.to_string());
+            let token = token.parse().unwrap_or_default();
+            if let Some(before) = w.tokens.insert(token, cid.to_string())
+                && w.lag > 0
+            {
+                let lag = w.lag;
+                w.lagging.insert(token, (before, lag));
+            }
             receipt(Some(true))
         }
     }
