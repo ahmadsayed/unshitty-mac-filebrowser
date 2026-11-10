@@ -587,8 +587,22 @@ mod tests {
                 Kind::Arbesk => place::writable(path).err(),
                 _ => place::local_write(path).err(),
             };
-            for operation in [Operation::Create, Operation::Rename, Operation::Trash] {
+            for operation in [Operation::Rename, Operation::Trash] {
                 assert_eq!(refusal(&caps, operation), write, "{path} {operation:?}");
+            }
+            // Arbesk creates only a collection, in an account (New
+            // Collection), and refuses anywhere else in its `create`'s words.
+            let create = match kind {
+                Kind::Arbesk if path == ACCOUNT => None,
+                Kind::Arbesk => provider
+                    .create(path, "x", places::NewKind::Folder, &Cx::default())
+                    .err()
+                    .map(|error| error.to_string()),
+                _ => write,
+            };
+            assert_eq!(refusal(&caps, Operation::Create), create, "{path} Create");
+            if kind == Kind::Arbesk {
+                assert_eq!(caps.can_create, create.is_none(), "{path}");
             }
             let model = "/Users/me/Box.glb";
             let copy_in = match kind {

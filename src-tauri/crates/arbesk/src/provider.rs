@@ -7,7 +7,8 @@
 //! method the app called before, with the same words; a failure is
 //! `Error::Other` with them, so a command returns exactly the same text.
 //!
-//! Arbesk is read only but for copies in, new collections and sharing:
+//! Arbesk is read only but for copies in, new collections (`create` in an
+//! account, which its capabilities allow there only) and sharing:
 //! renaming, trashing and restoring are refused with “Arbesk is read
 //! only.”, as `place::writable` refuses them in the app.
 
@@ -32,6 +33,8 @@ const NOT_LOCAL: &str = "This action is not available for Arbesk.";
 const COLLECTION_COPY: &str = "Copying Arbesk collections comes next.";
 /// Copying in goes into a collection.
 const INTO_COLLECTION: &str = "Paste into a collection.";
+/// A collection is created in an account, nowhere else (the client's words).
+const IN_ACCOUNT: &str = "Create collections in the account's folder.";
 
 /// The client's errors are words; they stay these words.
 fn words(message: String) -> Error {
@@ -61,9 +64,21 @@ fn refusals(each: [(Operation, Option<String>); 6]) -> Vec<Refused> {
 /// are known only once an asset is built, and a save is a new version.
 /// The copy refusals are the app's route table's (`place::copy`), word for
 /// word: a malformed path is refused by its parser.
+///
+/// Creating is what [`places::Provider::create`] does: a folder in an
+/// account is a new collection (New Collection), so an account allows it,
+/// a collection or an asset refuses it in the client's words, and nothing
+/// else is ever created (a new file is refused as read only by `create`
+/// itself). The account stays `read_only`: nothing in it is renamed,
+/// trashed or copied in.
 pub fn capabilities(path: &str) -> Capabilities {
     let parsed = location::parse(path);
     let is_asset = matches!(parsed, Ok(ArbeskPath::Asset { .. }));
+    let create = match &parsed {
+        Ok(ArbeskPath::Account { .. }) => None,
+        Ok(_) => Some(IN_ACCOUNT.to_string()),
+        Err(error) => Some(error.clone()),
+    };
     let copy_in = match &parsed {
         Ok(ArbeskPath::Collection { .. }) => None,
         Ok(_) => Some(INTO_COLLECTION.to_string()),
@@ -77,7 +92,7 @@ pub fn capabilities(path: &str) -> Capabilities {
     let read_only = || Some(READ_ONLY.to_string());
     Capabilities {
         read_only: true,
-        can_create: false,
+        can_create: create.is_none(),
         can_rename: false,
         can_trash: false,
         can_copy_out: is_asset,
@@ -92,7 +107,7 @@ pub fn capabilities(path: &str) -> Capabilities {
         // A save lands whole, once Arbesk has it.
         put_is_whole: true,
         refused: refusals([
-            (Operation::Create, read_only()),
+            (Operation::Create, create),
             (Operation::Rename, read_only()),
             (Operation::Trash, read_only()),
             (Operation::CopyIn, copy_in),
@@ -320,28 +335,34 @@ mod tests {
         caps.refused.iter().find(|r| r.operation == operation).map(|r| r.message.clone())
     }
 
-    /// Read only, with thumbnails, a save as a new version; copies in only
-    /// into a collection and out only of an asset, each other path refused
-    /// as the app's route table refuses it.
+    /// Read only, with thumbnails, a save as a new version; a collection
+    /// created only in an account; copies in only into a collection and out
+    /// only of an asset, each other path refused as the app's route table
+    /// refuses it.
     #[test]
     fn what_each_arbesk_path_allows() {
         for path in [ACCOUNT, COLLECTION, ASSET, "arbesk://", "arbesk://bad"] {
             let caps = capabilities(path);
-            assert!(caps.read_only && !caps.can_create && !caps.can_rename && !caps.can_trash, "{path}");
+            assert!(caps.read_only && !caps.can_rename && !caps.can_trash, "{path}");
+            assert_eq!(caps.can_create, path == ACCOUNT, "{path}");
             assert!(!caps.knows_sizes && !caps.knows_counts && !caps.searchable && caps.has_thumbnails);
             assert_eq!((caps.replace, caps.put_is_whole, caps.names_unique), (Replace::NewVersion, true, true));
-            for operation in [Operation::Create, Operation::Rename, Operation::Trash] {
+            for operation in [Operation::Rename, Operation::Trash] {
                 assert_eq!(refusal(&caps, operation).as_deref(), Some(READ_ONLY), "{path}");
             }
             assert_eq!(refusal(&caps, Operation::LocalOnly).as_deref(), Some(NOT_LOCAL));
             assert_eq!(caps.can_copy_out, path == ASSET, "{path}");
         }
+        assert_eq!(refusal(&capabilities(ACCOUNT), Operation::Create), None);
+        assert_eq!(refusal(&capabilities(COLLECTION), Operation::Create).as_deref(), Some(IN_ACCOUNT));
+        assert_eq!(refusal(&capabilities(ASSET), Operation::Create).as_deref(), Some(IN_ACCOUNT));
         assert_eq!(refusal(&capabilities(COLLECTION), Operation::CopyIn), None);
         assert_eq!(refusal(&capabilities(ACCOUNT), Operation::CopyIn).as_deref(), Some(INTO_COLLECTION));
         assert_eq!(refusal(&capabilities(ASSET), Operation::CopyIn).as_deref(), Some(INTO_COLLECTION));
         assert_eq!(refusal(&capabilities(ASSET), Operation::CopyOut), None);
         assert_eq!(refusal(&capabilities(COLLECTION), Operation::CopyOut).as_deref(), Some(COLLECTION_COPY));
         let bad = location::parse("arbesk://bad").unwrap_err();
+        assert_eq!(refusal(&capabilities("arbesk://bad"), Operation::Create), Some(bad.clone()));
         assert_eq!(refusal(&capabilities("arbesk://bad"), Operation::CopyIn), Some(bad.clone()));
         assert_eq!(refusal(&capabilities("arbesk://bad"), Operation::CopyOut), Some(bad));
     }
@@ -434,6 +455,26 @@ mod tests {
             client.create(&made, "Another", NewKind::Folder, &cx),
             Err(Error::Other("Create collections in the account's folder.".into()))
         );
+    }
+
+    /// `create` and the capabilities agree: a collection is created where
+    /// they allow it, and anywhere else `create` refuses in the very words
+    /// of their Create refusal, before it asks Arbesk anything.
+    #[test]
+    fn a_new_collection_goes_where_the_capabilities_allow_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, _, _) = client(dir.path());
+        let cx = Cx::default();
+        let root = format!("arbesk://{}", testing::ADDRESS);
+        let made = client.create(&root, "My Set", NewKind::Folder, &cx).unwrap();
+        let asset = format!("{made}/a1~Box.gltf");
+        assert!(capabilities(&root).can_create);
+        for path in [made.as_str(), asset.as_str(), "arbesk://", "arbesk://bad"] {
+            let caps = capabilities(path);
+            assert!(!caps.can_create, "{path}");
+            let refused = refusal(&caps, Operation::Create).unwrap();
+            assert_eq!(client.create(path, "x", NewKind::Folder, &cx), Err(Error::Other(refused)), "{path}");
+        }
     }
 
     /// A copy in saves the model file in the collection; a copy out is the
