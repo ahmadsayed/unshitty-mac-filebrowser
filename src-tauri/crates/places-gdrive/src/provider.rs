@@ -1,19 +1,18 @@
 //! Google Drive as a `places::Provider`: listing, whether an item exists,
 //! path info, opening and thumbnails through [`Calls`] (the server calls,
-//! which the app's tests answer themselves), and its `places::Transfer`,
-//! each primitive on a fresh context ([`Calls::with`]).
+//! which the app's tests answer themselves), and its transfer session: the
+//! app's engine runs a whole copy or move on one [`Ctx`] ([`Calls::with`]),
+//! so its steps share what it learnt.
 //!
 //! The app's commands still make Drive's own writes (New Folder, Rename,
 //! Move to Trash, Undo) through `write.rs`, so those methods say they don't
-//! go through the registry yet; a copy or move runs the app's engine on one
-//! [`Ctx`] for the whole transfer (`live_with`), so its steps share what it
-//! learnt.
+//! go through the registry yet.
 
 use std::path::{Path, PathBuf};
 
 use places::{
-    Capabilities, Cx, Entry, Error, Extensions, Fetch, Fetched, Landing, ListOptions, NewKind, OpenTarget,
-    Operation, PathInfo, Progress, Provider, Put, Reading, Refused, Replace, Result, Trashed, ext,
+    Capabilities, Cx, Entry, Error, Extensions, Fetch, Fetched, ListOptions, NewKind, OpenTarget, Operation,
+    PathInfo, Progress, Provider, Refused, Replace, Result, Trashed, ext,
 };
 
 use crate::{CloudState, Ctx, service, write};
@@ -93,7 +92,7 @@ fn not_yet<T>(what: &str) -> Result<T> {
 
 /// What Drive allows: everything but the features of items on this
 /// computer, which it refuses with the local-only gate's words.
-fn capabilities() -> Capabilities {
+pub fn capabilities() -> Capabilities {
     Capabilities {
         read_only: false,
         can_create: true,
@@ -156,8 +155,10 @@ impl<C: Calls> Provider for Drive<C> {
     fn restore(&self, _: &str, _: &Cx) -> Result<String> {
         not_yet("Restoring")
     }
-    fn transfer(&self) -> Option<&dyn places::Transfer> {
-        Some(self)
+    /// The whole transfer on one context for the live server ([`Calls::with`]),
+    /// so a step after `landing` asks Drive nothing again.
+    fn transfer(&self, cx: &Cx, work: &mut dyn FnMut(&dyn places::Transfer)) {
+        self.calls.with(&cx.progress, |c| work(c));
     }
     fn extensions(&self) -> Extensions<'_> {
         Extensions { thumbnails: Some(self), ..Extensions::default() }
@@ -168,51 +169,6 @@ impl<C: Calls> ext::Thumbnails for Drive<C> {
     /// Drive's own thumbnail; a request, once sent, isn't stopped.
     fn thumbnail(&self, path: &str, size: u32, _stop: &dyn Fn() -> bool) -> Vec<u8> {
         self.calls.thumbnail(path, size)
-    }
-}
-
-/// Each primitive on a context of its own. A transfer the app runs uses
-/// one [`Ctx`] for all its steps instead (`live_with`), so a step after
-/// `landing` asks nothing again; here `copy_within` asks for its source.
-impl<C: Calls> places::Transfer for Drive<C> {
-    fn check(&self, from: Option<&str>, to: Option<&str>, cx: &Cx) -> Result<()> {
-        self.calls.with(&cx.progress, |c| c.check(from, to, cx))
-    }
-    fn landing(&self, from: Option<&str>, to: &str, cx: &Cx) -> Result<Landing> {
-        self.calls.with(&cx.progress, |c| c.landing(from, to, cx))
-    }
-    fn pending(&self, parent: &str, name: &str) -> Result<String> {
-        self.calls.with(&Progress::default(), |c| c.pending(parent, name))
-    }
-    fn read(&self, path: &str, place: &mut dyn FnMut(&dyn Reading) -> Result<()>, cx: &Cx) -> Result<()> {
-        self.calls.with(&cx.progress, |c| c.read(path, place, cx))
-    }
-    fn write(&self, source: &Path, target: &str, replace: bool, cx: &Cx) -> Result<Put> {
-        self.calls.with(&cx.progress, |c| c.write(source, target, replace, cx))
-    }
-    fn read_into(&self, path: &str, target: &Path, cx: &Cx) -> Result<Put> {
-        self.calls.with(&cx.progress, |c| c.read_into(path, target, cx))
-    }
-    fn export(&self, path: &str, cx: &Cx) -> Result<PathBuf> {
-        self.calls.with(&cx.progress, |c| c.export(path, cx))
-    }
-    fn copy_within(&self, from: &str, to: &str, cx: &Cx) -> Result<Put> {
-        self.calls.with(&cx.progress, |c| c.copy_within(from, to, cx))
-    }
-    fn rename_new(&self, from: &str, to: &str, cx: &Cx) -> Result<String> {
-        self.calls.with(&cx.progress, |c| c.rename_new(from, to, cx))
-    }
-    fn move_to(&self, from: &str, to: &str, cx: &Cx) -> Result<String> {
-        self.calls.with(&cx.progress, |c| c.move_to(from, to, cx))
-    }
-    fn trash_for_replace(&self, path: &str, cx: &Cx) -> Result<String> {
-        self.calls.with(&cx.progress, |c| c.trash_for_replace(path, cx))
-    }
-    fn take_back(&self, trashed: &str, original: &str, cx: &Cx) -> Result<()> {
-        self.calls.with(&cx.progress, |c| c.take_back(trashed, original, cx))
-    }
-    fn discard(&self, staged: &str, cx: &Cx) -> Result<()> {
-        self.calls.with(&cx.progress, |c| c.discard(staged, cx))
     }
 }
 
@@ -267,26 +223,25 @@ mod tests {
         assert_eq!((caps.rename_atomic, caps.names_unique, caps.put_is_whole), (false, false, true));
     }
 
-    /// The provider's transfer runs each primitive on a context of its own:
-    /// the same requests as the transfer's own context, except that a copy
-    /// asks for its source again.
+    /// The provider's transfer is one session on one context: the source
+    /// `landing` fetched serves the copy after it, which asks Drive nothing
+    /// again, as the app's engine runs it.
     #[test]
-    fn the_providers_transfer_runs_each_primitive_on_the_server() {
-        let (base, log, server) =
-            serve_replies(vec![found(&[]), ok(file("f1", "a.txt")), ok(file("c1", "a.txt")), ok(file("c1", "b.txt"))]);
+    fn the_providers_transfer_runs_a_whole_transfer_on_one_context() {
+        let (base, log, server) = serve_replies(vec![ok(file("f1", "a.txt")), found(&[]), ok(file("c1", "b.txt"))]);
         let (state, _dir) = crate::testing::state();
         let drive = Drive::new(OnServer { state, base }, Err("No app cache in tests.".into()));
-        let transfer = drive.transfer().unwrap();
         let cx = Cx::default();
-        let landing = transfer.landing(None, &format!("{ROOT}/~a.txt"), &cx).unwrap();
-        assert!(landing.existing.is_empty());
-        let target = transfer.pending(&landing.parent, "a.txt").unwrap();
-        let copied = transfer.copy_within(&format!("{ROOT}/f1~a.txt"), &target, &cx).unwrap();
-        assert_eq!(copied.path, format!("{ROOT}/c1~a.txt"));
-        let renamed = transfer.rename_new(&copied.path, &format!("{ROOT}/~b.txt"), &cx).unwrap();
-        assert_eq!(renamed, format!("{ROOT}/c1~b.txt"));
+        let copied = places::with_transfer(&drive, &cx, |t| {
+            let landing = t.landing(Some(&format!("{ROOT}/f1~a.txt")), &format!("{ROOT}/~b.txt"), &cx).unwrap();
+            assert!(landing.existing.is_empty());
+            let target = t.pending(&landing.parent, &landing.name).unwrap();
+            t.copy_within(&landing.source.unwrap().path, &target, &cx).unwrap()
+        });
+        assert_eq!(copied.unwrap().path, format!("{ROOT}/c1~b.txt"));
         server.join().unwrap();
         let heads = heads(&log);
-        assert!(heads[1].starts_with("GET /files/f1?") && heads[2].starts_with("POST /files/f1/copy?"), "{heads:?}");
+        assert_eq!(heads.len(), 3, "{heads:?}");
+        assert!(heads[0].starts_with("GET /files/f1?") && heads[2].starts_with("POST /files/f1/copy?"), "{heads:?}");
     }
 }

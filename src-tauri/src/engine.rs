@@ -1,6 +1,9 @@
 //! The transfer engine's routes to, from and inside Google Drive (design
-//! D6, spec D17): copy and move built from Drive's `places::Transfer`
-//! primitives, with `placement.rs` placing what lands on this computer.
+//! D6, spec D17): copy and move built from a provider's `places::Transfer`
+//! primitives and its declared `Capabilities` (`names_unique`,
+//! `put_is_whole`), with `placement.rs` placing what lands on this
+//! computer. The way a transfer runs comes from `place::kind` of its two
+//! ends, the app's route table; nothing here names Drive's scheme.
 //!
 //! The engine decides what Drive's primitives don't: the refusals' order
 //! (the place's own, then this computer's, then what is at the target),
@@ -11,8 +14,9 @@
 //! item, during a move that replaces) is only ever moved back.
 //!
 //! Per route, as before:
-//! - local → Drive: a file goes straight to its final name (Drive creates
-//!   it only once its upload is whole); a folder, or a Replace, is uploaded
+//! - local → Drive: a file goes straight to its final name (Drive declares
+//!   `put_is_whole`: it creates it only once its upload is whole); a folder,
+//!   a Replace, or a file in a place without `put_is_whole`, is uploaded
 //!   under `.<name>.filebrowser-upload` and renamed in. A move sends the
 //!   local source to the Trash only after the whole upload.
 //! - Drive → local: `placement` stages a file (and a Replace) and fills a
@@ -29,11 +33,12 @@
 //! move keeps its source.
 
 use std::cell::RefCell;
+use std::ops::Deref;
 use std::path::Path;
 
-use places::{Cx, Error, Landing, Transfer, Unread};
+use places::{Capabilities, Cx, Error, Landing, Transfer, Unread};
 
-use places_gdrive::is_cloud;
+use crate::place::{self, Kind};
 use crate::placement::{self, DiscardFn, Refusal, Stage, Staged, TrashFn, Unfilled};
 
 /// The staging names of each route, next to the target.
@@ -49,12 +54,45 @@ fn move_staging(name: &str) -> String {
     format!(".{name}.filebrowser-move")
 }
 
-/// Copy or move between any two locations where at least one is in Drive,
-/// through `drive`'s primitives. `trash_local` is the local Trash: for a
-/// local source after a move, a partial folder a download leaves and the
-/// local item a download replaces.
+/// The place on the far side of a transfer: its transfer session and what
+/// its provider declares of it (`names_unique`, `put_is_whole`), which the
+/// engine decides from.
+pub struct Remote<'a> {
+    pub transfer: &'a dyn Transfer,
+    pub caps: Capabilities,
+}
+
+impl<'a> Deref for Remote<'a> {
+    type Target = dyn Transfer + 'a;
+    fn deref(&self) -> &Self::Target {
+        self.transfer
+    }
+}
+
+/// Which way a transfer runs, by the kinds of its two ends (the route table
+/// `place::transfer` already allowed it).
+enum Way {
+    Within,
+    Up,
+    Down,
+}
+
+fn way(from: &str, to: &str) -> Result<Way, String> {
+    match (place::kind(from), place::kind(to)) {
+        (Kind::Local, Kind::Local) => Err("Neither location is in Google Drive.".into()),
+        (Kind::Local, _) => Ok(Way::Up),
+        (_, Kind::Local) => Ok(Way::Down),
+        (a, b) if a == b => Ok(Way::Within),
+        _ => Err("Copying between two different places is not supported.".into()),
+    }
+}
+
+/// Copy or move between any two locations where at least one is in a
+/// remote place, through `remote`'s primitives. `trash_local` is the local
+/// Trash: for a local source after a move, a partial folder a download
+/// leaves and the local item a download replaces.
 pub fn dispatch(
-    drive: &dyn Transfer,
+    remote: &Remote,
     cx: &Cx,
     from: &str,
     to: &str,
@@ -62,16 +100,15 @@ pub fn dispatch(
     moving: bool,
     trash_local: TrashFn,
 ) -> Result<String, String> {
-    match (is_cloud(from), is_cloud(to), moving) {
-        (true, true, true) => move_within(drive, cx, from, to, overwrite),
-        (true, true, false) => copy_within(drive, cx, from, to, overwrite),
-        (false, true, true) => move_up(drive, cx, Path::new(from), to, overwrite, discard_to(trash_local)),
-        (false, true, false) => upload(drive, cx, Path::new(from), to, overwrite),
-        (true, false, true) => move_down(drive, cx, from, Path::new(to), overwrite, trash_local),
-        (true, false, false) => {
-            download(drive, cx, from, Path::new(to), overwrite, &discard_to(trash_local), trash_local)
+    match (way(from, to)?, moving) {
+        (Way::Within, true) => move_within(remote, cx, from, to, overwrite),
+        (Way::Within, false) => copy_within(remote, cx, from, to, overwrite),
+        (Way::Up, true) => move_up(remote, cx, Path::new(from), to, overwrite, discard_to(trash_local)),
+        (Way::Up, false) => upload(remote, cx, Path::new(from), to, overwrite),
+        (Way::Down, true) => move_down(remote.transfer, cx, from, Path::new(to), overwrite, trash_local),
+        (Way::Down, false) => {
+            download(remote.transfer, cx, from, Path::new(to), overwrite, &discard_to(trash_local), trash_local)
         }
-        (false, false, _) => Err("Neither location is in Google Drive.".into()),
     }
 }
 
@@ -84,14 +121,15 @@ fn discard_to<'a>(trash: TrashFn<'a>) -> impl Fn(&Path) -> Result<(), String> + 
 // ---- What is at the target ---------------------------------------------------------
 
 /// The item a transfer replaces, if any: a taken name is refused without
-/// `overwrite`, and where names aren't unique, so is an ambiguous one;
-/// then a folder can't be replaced with an item inside it.
-fn replaced(landing: &Landing, overwrite: bool) -> Result<Option<String>, String> {
+/// `overwrite`, and where names aren't unique (`caps.names_unique`), so is
+/// an ambiguous one; then a folder can't be replaced with an item inside it.
+fn replaced(landing: &Landing, caps: &Capabilities, overwrite: bool) -> Result<Option<String>, String> {
     let name = &landing.name;
     let old = match landing.existing.as_slice() {
         [] => return Ok(None),
         _ if !overwrite => return Err(Refusal::Exists(name.clone()).into()),
         [old] => old,
+        [old, ..] if caps.names_unique => old,
         _ => {
             return Err(format!(
                 "Several items in this folder are named “{name}”. Rename or remove the extra ones in Google Drive first."
@@ -172,12 +210,12 @@ fn swap_in(
 
 /// A server-side copy; a folder, or a Replace, is built under a staging
 /// name and renamed in once complete.
-pub fn copy_within(t: &dyn Transfer, cx: &Cx, from: &str, to: &str, overwrite: bool) -> Result<String, String> {
+pub fn copy_within(t: &Remote, cx: &Cx, from: &str, to: &str, overwrite: bool) -> Result<String, String> {
     t.check(Some(from), Some(to), cx)?;
     let landing = t.landing(Some(from), to, cx)?;
-    let replaced = replaced(&landing, overwrite)?;
+    let replaced = replaced(&landing, &t.caps, overwrite)?;
     let source = landing.source.as_ref().ok_or("The source is not in Google Drive.")?;
-    let staged_name = if source.is_dir || replaced.is_some() {
+    let staged_name = if source.is_dir || replaced.is_some() || !t.caps.put_is_whole {
         copy_staging(&landing.name)
     } else {
         landing.name.clone()
@@ -186,16 +224,16 @@ pub fn copy_within(t: &dyn Transfer, cx: &Cx, from: &str, to: &str, overwrite: b
     if staged_name == landing.name {
         return Ok(put.path);
     }
-    swap_in(t, cx, &landing, &put.path, replaced.as_deref(), Placing::Copy)
+    swap_in(t.transfer, cx, &landing, &put.path, replaced.as_deref(), Placing::Copy)
 }
 
 /// One move; with Replace, the item moves in under a staging name first
 /// (stage, trash the old item, then rename into place), and goes back where
 /// and as it was if that fails.
-pub fn move_within(t: &dyn Transfer, cx: &Cx, from: &str, to: &str, overwrite: bool) -> Result<String, String> {
+pub fn move_within(t: &Remote, cx: &Cx, from: &str, to: &str, overwrite: bool) -> Result<String, String> {
     t.check(Some(from), Some(to), cx)?;
     let landing = t.landing(Some(from), to, cx)?;
-    let replaced = replaced(&landing, overwrite)?;
+    let replaced = replaced(&landing, &t.caps, overwrite)?;
     let source = landing.source.as_ref().ok_or("The source is not in Google Drive.")?;
     let staged_name = match replaced {
         Some(_) => move_staging(&landing.name),
@@ -207,19 +245,19 @@ pub fn move_within(t: &dyn Transfer, cx: &Cx, from: &str, to: &str, overwrite: b
     };
     // A source at the top of My Drive was refused by the move itself.
     let home = source.home.as_deref().unwrap_or(&source.path);
-    swap_in(t, cx, &landing, &moved, Some(&old), Placing::Original(home))
+    swap_in(t.transfer, cx, &landing, &moved, Some(&old), Placing::Original(home))
 }
 
 // ---- This computer to Drive ----------------------------------------------------------
 
 /// Upload `from` to the pending `to`.
-pub fn upload(t: &dyn Transfer, cx: &Cx, from: &Path, to: &str, overwrite: bool) -> Result<String, String> {
+pub fn upload(t: &Remote, cx: &Cx, from: &Path, to: &str, overwrite: bool) -> Result<String, String> {
     t.check(None, Some(to), cx)?;
     let meta = std::fs::symlink_metadata(from)
         .map_err(|_| String::from(Refusal::Vanished(from.display().to_string())))?;
     let landing = t.landing(None, to, cx)?;
-    let replaced = replaced(&landing, overwrite)?;
-    let staged_name = if meta.is_dir() || replaced.is_some() {
+    let replaced = replaced(&landing, &t.caps, overwrite)?;
+    let staged_name = if meta.is_dir() || replaced.is_some() || !t.caps.put_is_whole {
         upload_staging(&landing.name)
     } else {
         landing.name.clone()
@@ -228,14 +266,14 @@ pub fn upload(t: &dyn Transfer, cx: &Cx, from: &Path, to: &str, overwrite: bool)
     let uploaded = if staged_name == landing.name {
         put.path
     } else {
-        swap_in(t, cx, &landing, &put.path, replaced.as_deref(), Placing::Copy)?
+        swap_in(t.transfer, cx, &landing, &put.path, replaced.as_deref(), Placing::Copy)?
     };
     finished(uploaded, &put.skipped)
 }
 
 /// Upload, then hand the local source to `trash_source`.
 pub fn move_up(
-    t: &dyn Transfer,
+    t: &Remote,
     cx: &Cx,
     from: &Path,
     to: &str,
@@ -329,12 +367,18 @@ mod tests {
     // and asserts the requests Drive is sent, as before the engine took
     // these routes over. The names they call are the routes' old names.
 
+    /// Drive's primitives as the engine reaches them, with what Drive's
+    /// provider declares.
+    fn on(t: &dyn Transfer) -> Remote<'_> {
+        Remote { transfer: t, caps: places_gdrive::capabilities() }
+    }
+
     fn cx_of(c: &Ctx) -> Cx {
         Cx { progress: c.progress.clone(), ..Cx::default() }
     }
 
     fn upload_in(c: &Ctx, from: &Path, to: &str, overwrite: bool) -> Result<String, String> {
-        upload(c, &cx_of(c), from, to, overwrite)
+        upload(&on(c), &cx_of(c), from, to, overwrite)
     }
 
     /// `download_into` that removes a partial folder instead of trashing it.
@@ -361,7 +405,7 @@ mod tests {
         moving: bool,
         trash_local: TrashFn,
     ) -> Result<String, String> {
-        dispatch(c, &cx_of(c), from, to, overwrite, moving, trash_local)
+        dispatch(&on(c), &cx_of(c), from, to, overwrite, moving, trash_local)
     }
 
     fn move_up_in(
@@ -371,7 +415,7 @@ mod tests {
         overwrite: bool,
         trash_source: impl FnOnce(&Path) -> Result<(), String>,
     ) -> Result<String, String> {
-        move_up(c, &cx_of(c), from, to, overwrite, trash_source)
+        move_up(&on(c), &cx_of(c), from, to, overwrite, trash_source)
     }
 
     fn move_down_in(c: &Ctx, from: &str, to: &Path, overwrite: bool, trash: TrashFn) -> Result<String, String> {
@@ -379,11 +423,11 @@ mod tests {
     }
 
     fn copy_in(c: &Ctx, from: &str, to: &str, overwrite: bool) -> Result<String, String> {
-        copy_within(c, &cx_of(c), from, to, overwrite)
+        copy_within(&on(c), &cx_of(c), from, to, overwrite)
     }
 
     fn move_in(c: &Ctx, from: &str, to: &str, overwrite: bool) -> Result<String, String> {
-        move_within(c, &cx_of(c), from, to, overwrite)
+        move_within(&on(c), &cx_of(c), from, to, overwrite)
     }
 
 
@@ -1376,6 +1420,30 @@ mod tests {
         ));
     }
 
+    /// Renamed in Drive to a name a path can't say ("a/b") since the folder
+    /// was listed: put back, it gets Drive's exact name, not its path's.
+    #[test]
+    fn a_failed_move_with_replace_puts_back_drives_own_name() {
+        let (result, log) = run(
+            vec![
+                ok(file("f1", "a/b")),
+                found(&[file("old", "a.txt")]),
+                ok(file("f1", ".a.txt.filebrowser-move")),
+                ok(file("old", "a.txt")),
+                Reply::json(403, r#"{"error":{"message":"nope"}}"#),
+                ok(file("old", "a.txt")),
+                ok(file("f1", "a/b")),
+            ],
+            |c| move_in(c, &format!("{ROOT}/f1~a.txt"), &format!("{ROOT}/p2~Other/~a.txt"), true),
+        );
+        assert!(result.unwrap_err().contains("nope"));
+        let log = log.lock().unwrap();
+        let back = &log[6];
+        assert!(back.head.starts_with("PATCH /files/f1?"), "{}", back.head);
+        assert!(back.head.contains("addParents=root") && back.head.contains("removeParents=p2"));
+        assert_eq!(back.body_text(), r#"{"name":"a/b"}"#);
+    }
+
     #[test]
     fn a_vanished_source_is_refused() {
         let (result, _) = run(vec![Reply::json(404, "{}")], |c| {
@@ -1457,6 +1525,11 @@ mod fake_drive_tests {
     use places::{Existing, Put, Reading, Source};
 
     const ROOT: &str = "gdrive://acct/root~R";
+
+    /// The fake's primitives with what Drive's provider declares.
+    fn on(t: &dyn Transfer) -> Remote<'_> {
+        Remote { transfer: t, caps: places_gdrive::capabilities() }
+    }
 
     /// An item of the fake Drive.
     #[derive(Clone, Debug, PartialEq)]
@@ -1711,7 +1784,7 @@ mod fake_drive_tests {
     fn a_new_file_is_written_straight_under_its_name() {
         let dir = tempfile::tempdir().unwrap();
         let drive = FakeDrive::default();
-        let put = upload(&drive, &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), false).unwrap();
+        let put = upload(&on(&drive), &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), false).unwrap();
         assert_eq!(put, format!("{ROOT}/n1~a.txt"));
         assert_eq!(drive.calls(), [format!("check - {ROOT}/~a.txt"), format!("landing {ROOT}/~a.txt"), format!("write {ROOT}/~a.txt")]);
     }
@@ -1721,7 +1794,7 @@ mod fake_drive_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("Docs")).unwrap();
         let drive = FakeDrive::default();
-        let put = upload(&drive, &cx(), &dir.path().join("Docs"), &format!("{ROOT}/~Docs"), false).unwrap();
+        let put = upload(&on(&drive), &cx(), &dir.path().join("Docs"), &format!("{ROOT}/~Docs"), false).unwrap();
         assert_eq!(put, format!("{ROOT}/n1~Docs"));
         let staged = format!("{ROOT}/n1~.Docs.filebrowser-upload");
         assert_eq!(drive.calls()[2..], [
@@ -1730,11 +1803,57 @@ mod fake_drive_tests {
         ]);
     }
 
+    /// The engine decides from what the provider declares: where a write
+    /// isn't whole, a new file is staged too, and so is a copy within.
+    #[test]
+    fn a_place_whose_writes_arent_whole_gets_every_file_staged() {
+        let dir = tempfile::tempdir().unwrap();
+        let drive = FakeDrive::default();
+        let mut caps = places_gdrive::capabilities();
+        caps.put_is_whole = false;
+        let remote = Remote { transfer: &drive, caps };
+        let put = upload(&remote, &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), false).unwrap();
+        assert_eq!(put, format!("{ROOT}/n1~a.txt"));
+        assert_eq!(drive.calls()[2..], [
+            format!("write {ROOT}/~.a.txt.filebrowser-upload"),
+            format!("rename_new {ROOT}/n1~.a.txt.filebrowser-upload {ROOT}/~a.txt"),
+        ]);
+        let src = "gdrive://acct/root~R/f1~b.txt";
+        let drive = FakeDrive::with(&[(src, false)]);
+        let remote = Remote { transfer: &drive, caps: remote.caps.clone() };
+        copy_within(&remote, &cx(), src, &format!("{ROOT}/p~P/~b.txt"), false).unwrap();
+        assert!(drive.calls().iter().any(|c| c.starts_with("copy_within") && c.ends_with("~.b.txt.filebrowser-copy")));
+    }
+
+    /// Where names are unique, a second item of the name can't be there to
+    /// make Replace ambiguous: the engine replaces the one it found.
+    #[test]
+    fn where_names_are_unique_no_name_is_ambiguous() {
+        let dir = tempfile::tempdir().unwrap();
+        let drive = FakeDrive::with(&[(OLD, false), ("gdrive://acct/root~R/o2~a.txt", false)]);
+        let mut caps = places_gdrive::capabilities();
+        caps.names_unique = true;
+        let remote = Remote { transfer: &drive, caps };
+        upload(&remote, &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap();
+        assert!(drive.calls().iter().any(|c| c.starts_with("trash_for_replace")), "{:?}", drive.calls());
+    }
+
+    /// The way a transfer runs comes from the kinds of its two ends.
+    #[test]
+    fn the_way_comes_from_the_kinds_of_both_ends() {
+        let drive = FakeDrive::default();
+        let remote = on(&drive);
+        let refused = |from: &str, to: &str| dispatch(&remote, &cx(), from, to, false, false, &no_trash).unwrap_err();
+        assert_eq!(refused("/a", "/b"), "Neither location is in Google Drive.");
+        assert_eq!(refused(ROOT, "sftp://me@host/a"), "Copying between two different places is not supported.");
+        assert!(drive.calls().is_empty());
+    }
+
     #[test]
     fn replace_writes_staged_trashes_the_old_item_then_renames_in() {
         let dir = tempfile::tempdir().unwrap();
         let drive = FakeDrive::with(&[(OLD, false)]);
-        let put = upload(&drive, &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap();
+        let put = upload(&on(&drive), &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap();
         assert_eq!(put, format!("{ROOT}/n1~a.txt"));
         let staged = format!("{ROOT}/n1~.a.txt.filebrowser-upload");
         assert_eq!(drive.calls()[2..], [
@@ -1750,7 +1869,7 @@ mod fake_drive_tests {
     fn a_write_that_fails_midway_leaves_the_old_item_alone() {
         let dir = tempfile::tempdir().unwrap();
         let drive = FakeDrive::with(&[(OLD, false)]).failing("write");
-        let error = upload(&drive, &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap_err();
+        let error = upload(&on(&drive), &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap_err();
         assert_eq!(error, "write failed");
         assert_eq!(drive.calls().len(), 3, "nothing after the write");
         assert!(!drive.item(OLD).unwrap().trashed);
@@ -1760,7 +1879,7 @@ mod fake_drive_tests {
     fn a_replace_whose_trash_fails_discards_the_staged_copy() {
         let dir = tempfile::tempdir().unwrap();
         let drive = FakeDrive::with(&[(OLD, false)]).failing("trash_for_replace");
-        let error = upload(&drive, &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap_err();
+        let error = upload(&on(&drive), &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap_err();
         assert_eq!(error, "Could not move the existing item to the Trash: trash_for_replace failed");
         let staged = format!("{ROOT}/n1~.a.txt.filebrowser-upload");
         assert_eq!(drive.calls()[3..], [format!("trash_for_replace {OLD}"), format!("discard {staged}")]);
@@ -1774,7 +1893,7 @@ mod fake_drive_tests {
     fn a_failed_last_rename_takes_the_old_item_back_then_discards_the_copy() {
         let dir = tempfile::tempdir().unwrap();
         let drive = FakeDrive::with(&[(OLD, false)]).failing("rename_new");
-        let error = upload(&drive, &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap_err();
+        let error = upload(&on(&drive), &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap_err();
         assert_eq!(error, "rename_new failed");
         let staged = format!("{ROOT}/n1~.a.txt.filebrowser-upload");
         assert_eq!(drive.calls()[3..], [
@@ -1793,7 +1912,7 @@ mod fake_drive_tests {
     fn a_take_back_that_fails_leaves_the_old_item_in_drives_trash() {
         let dir = tempfile::tempdir().unwrap();
         let drive = FakeDrive::with(&[(OLD, false)]).failing("rename_new").failing("take_back");
-        let error = upload(&drive, &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap_err();
+        let error = upload(&on(&drive), &cx(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap_err();
         assert_eq!(error, "rename_new failed");
         assert!(drive.item(OLD).unwrap().trashed);
         assert!(drive.calls().last().unwrap().starts_with("discard "));
@@ -1804,7 +1923,7 @@ mod fake_drive_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("Docs")).unwrap();
         let drive = FakeDrive { skips: vec!["“link” was not copied.".into()], ..FakeDrive::default() };
-        let error = upload(&drive, &cx(), &dir.path().join("Docs"), &format!("{ROOT}/~Docs"), false).unwrap_err();
+        let error = upload(&on(&drive), &cx(), &dir.path().join("Docs"), &format!("{ROOT}/~Docs"), false).unwrap_err();
         assert_eq!(error, "“link” was not copied.");
         assert_eq!(drive.shown(), [format!("{ROOT}/Docs")]);
     }
@@ -1813,7 +1932,7 @@ mod fake_drive_tests {
     fn a_cancelled_write_trashes_and_renames_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let drive = FakeDrive::with(&[(OLD, false)]);
-        let error = upload(&drive, &cancelled(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap_err();
+        let error = upload(&on(&drive), &cancelled(), &local_file(&dir, "a.txt"), &format!("{ROOT}/~a.txt"), true).unwrap_err();
         assert_eq!(error, "Cancelled.");
         assert!(drive.calls().last().unwrap().starts_with("write "));
         assert_eq!(drive.shown(), [format!("{ROOT}/a.txt")]);
@@ -1826,7 +1945,7 @@ mod fake_drive_tests {
     fn the_places_own_refusal_comes_before_anything_else() {
         let drive = FakeDrive::default().failing_with("check", Error::Other("read only".into()));
         // The source doesn't exist either: the place's refusal is first.
-        let error = upload(&drive, &cx(), Path::new("/nonexistent/a.txt"), &format!("{ROOT}/~a.txt"), false);
+        let error = upload(&on(&drive), &cx(), Path::new("/nonexistent/a.txt"), &format!("{ROOT}/~a.txt"), false);
         assert_eq!(error.unwrap_err(), "read only");
         assert_eq!(drive.calls().len(), 1);
     }
@@ -1834,7 +1953,7 @@ mod fake_drive_tests {
     #[test]
     fn a_vanished_local_source_is_refused_before_drive_is_asked() {
         let drive = FakeDrive::default();
-        let error = upload(&drive, &cx(), Path::new("/nonexistent/a.txt"), &format!("{ROOT}/~a.txt"), false);
+        let error = upload(&on(&drive), &cx(), Path::new("/nonexistent/a.txt"), &format!("{ROOT}/~a.txt"), false);
         assert_eq!(error.unwrap_err(), "“/nonexistent/a.txt” no longer exists");
         assert_eq!(drive.calls().len(), 1, "only the place's own check");
     }
@@ -1845,20 +1964,18 @@ mod fake_drive_tests {
         let source = local_file(&dir, "a.txt");
         let to = format!("{ROOT}/~a.txt");
         let drive = FakeDrive::with(&[(OLD, false)]);
-        assert_eq!(upload(&drive, &cx(), &source, &to, false).unwrap_err(), "Target already exists: a.txt");
+        assert_eq!(upload(&on(&drive), &cx(), &source, &to, false).unwrap_err(), "Target already exists: a.txt");
         let drive = FakeDrive::with(&[(OLD, false), ("gdrive://acct/root~R/o2~a.txt", false)]);
-        assert_eq!(upload(&drive, &cx(), &source, &to, false).unwrap_err(), "Target already exists: a.txt");
+        assert_eq!(upload(&on(&drive), &cx(), &source, &to, false).unwrap_err(), "Target already exists: a.txt");
         assert_eq!(
-            upload(&drive, &cx(), &source, &to, true).unwrap_err(),
+            upload(&on(&drive), &cx(), &source, &to, true).unwrap_err(),
             "Several items in this folder are named “a.txt”. Rename or remove the extra ones in Google Drive first."
         );
         let docs = "gdrive://acct/root~R/d1~Docs";
         let inner = "gdrive://acct/root~R/d1~Docs/f1~Docs";
         let drive = FakeDrive::with(&[(docs, true), (inner, false)]);
-        assert_eq!(move_within(&drive, &cx(), inner, &format!("{ROOT}/~Docs"), true).unwrap_err(), "Cannot replace a folder with an item inside it");
-        for drive in [&drive] {
-            assert!(drive.calls().iter().all(|c| c.starts_with("check") || c.starts_with("landing")));
-        }
+        assert_eq!(move_within(&on(&drive), &cx(), inner, &format!("{ROOT}/~Docs"), true).unwrap_err(), "Cannot replace a folder with an item inside it");
+        assert!(drive.calls().iter().all(|c| c.starts_with("check") || c.starts_with("landing")));
     }
 
     // ---- Inside Drive -------------------------------------------------------------
@@ -1867,7 +1984,7 @@ mod fake_drive_tests {
     fn a_copy_within_of_a_file_lands_under_its_name() {
         let src = "gdrive://acct/root~R/f1~a.txt";
         let drive = FakeDrive::with(&[(src, false)]);
-        let put = copy_within(&drive, &cx(), src, &format!("{ROOT}/p~P/~a.txt"), false).unwrap();
+        let put = copy_within(&on(&drive), &cx(), src, &format!("{ROOT}/p~P/~a.txt"), false).unwrap();
         assert_eq!(put, format!("{ROOT}/p~P/n1~a.txt"));
         assert_eq!(drive.calls()[2], format!("copy_within {src} {ROOT}/p~P/~a.txt"));
     }
@@ -1876,7 +1993,7 @@ mod fake_drive_tests {
     fn a_copy_within_of_a_folder_is_staged_and_a_failed_rename_discards_it() {
         let src = "gdrive://acct/root~R/d1~Docs";
         let drive = FakeDrive::with(&[(src, true)]).failing("rename_new");
-        let error = copy_within(&drive, &cx(), src, &format!("{ROOT}/p~P/~Docs"), false).unwrap_err();
+        let error = copy_within(&on(&drive), &cx(), src, &format!("{ROOT}/p~P/~Docs"), false).unwrap_err();
         assert_eq!(error, "rename_new failed");
         let staged = format!("{ROOT}/p~P/n1~.Docs.filebrowser-copy");
         assert_eq!(drive.calls()[2..], [
@@ -1891,7 +2008,7 @@ mod fake_drive_tests {
     fn a_cancelled_copy_within_copies_nothing() {
         let src = "gdrive://acct/root~R/f1~a.txt";
         let drive = FakeDrive::with(&[(src, false)]);
-        let error = copy_within(&drive, &cancelled(), src, &format!("{ROOT}/p~P/~a.txt"), false).unwrap_err();
+        let error = copy_within(&on(&drive), &cancelled(), src, &format!("{ROOT}/p~P/~a.txt"), false).unwrap_err();
         assert_eq!(error, "Cancelled.");
         assert_eq!(drive.shown(), [format!("{ROOT}/a.txt")]);
     }
@@ -1900,7 +2017,7 @@ mod fake_drive_tests {
     fn a_move_within_that_replaces_nothing_is_one_move() {
         let src = "gdrive://acct/root~R/f1~a.txt";
         let drive = FakeDrive::with(&[(src, false)]);
-        let moved = move_within(&drive, &cx(), src, &format!("{ROOT}/p~P/~a.txt"), false).unwrap();
+        let moved = move_within(&on(&drive), &cx(), src, &format!("{ROOT}/p~P/~a.txt"), false).unwrap();
         assert_eq!(moved, format!("{ROOT}/p~P/f1~a.txt"));
         assert_eq!(drive.calls()[2..], [format!("move_to {src} {ROOT}/p~P/~a.txt")]);
     }
@@ -1913,7 +2030,7 @@ mod fake_drive_tests {
         let old = "gdrive://acct/root~R/p~P/o1~a.txt";
         for failing in ["trash_for_replace", "rename_new"] {
             let drive = FakeDrive::with(&[(src, false), (old, false)]).failing(failing);
-            assert!(move_within(&drive, &cx(), src, &format!("{ROOT}/p~P/~a.txt"), true).is_err());
+            assert!(move_within(&on(&drive), &cx(), src, &format!("{ROOT}/p~P/~a.txt"), true).is_err());
             let staged = format!("{ROOT}/p~P/f1~.a.txt.filebrowser-move");
             let calls = drive.calls();
             assert_eq!(calls[2], format!("move_to {src} {ROOT}/p~P/~.a.txt.filebrowser-move"));
@@ -2033,14 +2150,14 @@ mod fake_drive_tests {
         let source = local_file(&dir, "a.txt");
         let trashed = RefCell::new(Vec::new());
         let drive = FakeDrive::default().failing("write");
-        let failed = move_up(&drive, &cx(), &source, &format!("{ROOT}/~a.txt"), false, |p| {
+        let failed = move_up(&on(&drive), &cx(), &source, &format!("{ROOT}/~a.txt"), false, |p| {
             trashed.borrow_mut().push(p.to_path_buf());
             Ok(())
         });
         assert!(failed.is_err());
         assert!(trashed.borrow().is_empty());
         let drive = FakeDrive::default();
-        move_up(&drive, &cx(), &source, &format!("{ROOT}/~a.txt"), false, |p| {
+        move_up(&on(&drive), &cx(), &source, &format!("{ROOT}/~a.txt"), false, |p| {
             trashed.borrow_mut().push(p.to_path_buf());
             Ok(())
         })

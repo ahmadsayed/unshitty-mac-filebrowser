@@ -188,8 +188,9 @@ impl places::Provider for Client {
     fn restore(&self, _: &str, _: &Cx) -> Result<String> {
         read_only()
     }
-    fn transfer(&self) -> Option<&dyn places::Transfer> {
-        Some(self)
+    /// The client itself: its primitives keep nothing between steps.
+    fn transfer(&self, _: &Cx, work: &mut dyn FnMut(&dyn places::Transfer)) {
+        work(self)
     }
     fn extensions(&self) -> Extensions<'_> {
         Extensions {
@@ -210,6 +211,8 @@ impl places::Provider for Client {
 /// cache (`export`). Nothing else is written on Arbesk.
 /// Why an asset isn't read into a target: a copy out reads its export.
 const EXPORTED: &str = "An Arbesk asset is copied from its exported file.";
+/// Why a copy into Arbesk looks nothing up first.
+const LANDING: &str = "A copy into Arbesk finds the asset it replaces as it saves.";
 
 impl places::Transfer for Client {
     /// The local model file `source` saved at the pending name `target` in
@@ -224,15 +227,26 @@ impl places::Transfer for Client {
     fn read(&self, _: &str, _: &mut dyn FnMut(&dyn places::Reading) -> Result<()>, _: &Cx) -> Result<()> {
         Err(Error::Unsupported(EXPORTED.into()))
     }
-    /// A copy in is checked by the route table and `add` itself.
-    fn check(&self, _: Option<&str>, _: Option<&str>, _: &Cx) -> Result<()> {
-        read_only()
+    /// A copy in may target a name pending in a collection (`add` makes
+    /// the rest of its refusals); nothing else is written on Arbesk.
+    fn check(&self, from: Option<&str>, to: Option<&str>, _: &Cx) -> Result<()> {
+        match (from, to) {
+            (None, Some(to)) => location::parse_target(to).map(|_| ()).map_err(words),
+            _ => read_only(),
+        }
     }
+    /// `write` finds the asset a copy in replaces as it saves (a new
+    /// version of it), so there is nothing to look up first.
     fn landing(&self, _: Option<&str>, _: &str, _: &Cx) -> Result<places::Landing> {
-        read_only()
+        Err(Error::Unsupported(LANDING.into()))
     }
-    fn pending(&self, _: &str, _: &str) -> Result<String> {
-        read_only()
+    /// The name pending in the collection `parent`, as `parse_target`
+    /// reads it.
+    fn pending(&self, parent: &str, name: &str) -> Result<String> {
+        match location::parse(parent) {
+            Ok(ArbeskPath::Collection { .. }) => Ok(location::asset_path_named(parent, "", name)),
+            _ => Err(words(location::parse_target(parent).unwrap_err())),
+        }
     }
     fn export(&self, path: &str, cx: &Cx) -> Result<PathBuf> {
         Client::export(self, path, &cx.progress).map_err(words)
@@ -499,14 +513,18 @@ mod tests {
     fn a_copy_goes_in_by_writing_and_out_by_exporting() {
         let dir = tempfile::tempdir().unwrap();
         let (client, _, _) = client(dir.path());
-        let transfer = client.transfer().unwrap();
+        let cx = Cx::default();
+        places::with_transfer(&client, &cx, |transfer| copies_in_and_out(&client, transfer, dir.path())).unwrap();
+    }
+
+    fn copies_in_and_out(client: &Client, transfer: &dyn places::Transfer, dir: &Path) {
         let cx = Cx::default();
         let file = testing::fixture("glb-box").join("input.glb");
         let to = format!("{}/~Fresh.glb", testing::shapes());
         let put = transfer.write(&file, &to, false, &cx).unwrap();
         assert!(put.skipped.is_empty());
         assert!(put.path.ends_with("~Fresh.gltf"), "{}", put.path);
-        assert!(Client::list(&client, &testing::shapes()).unwrap().iter().any(|e| e.path == put.path));
+        assert!(Client::list(client, &testing::shapes()).unwrap().iter().any(|e| e.path == put.path));
         let outside = format!("{ACCOUNT}/~Fresh.glb");
         let refused = transfer.write(&file, &outside, false, &cx).unwrap_err();
         assert_eq!(refused, Error::Other(client.add(&outside, &file, false, &places::Progress::default()).unwrap_err()));
@@ -516,7 +534,7 @@ mod tests {
         assert_eq!(exported, client.export(&asset, &places::Progress::default()).unwrap());
         let collection = transfer.export(&testing::shapes(), &cx).unwrap_err();
         assert_eq!(collection, Error::Other(client.export(&testing::shapes(), &places::Progress::default()).unwrap_err()));
-        assert!(matches!(transfer.read_into(&asset, dir.path(), &cx), Err(Error::Unsupported(_))));
+        assert!(matches!(transfer.read_into(&asset, dir, &cx), Err(Error::Unsupported(_))));
         let read_only = Err::<String, _>(Error::ReadOnly(READ_ONLY.into()));
         assert_eq!(transfer.rename_new(&asset, &to, &cx), read_only);
         assert_eq!(transfer.move_to(&asset, &to, &cx), read_only);
@@ -524,6 +542,30 @@ mod tests {
         assert_eq!(transfer.take_back(&asset, &asset, &cx), Err(Error::ReadOnly(READ_ONLY.into())));
         assert_eq!(transfer.discard(&asset, &cx), Err(Error::ReadOnly(READ_ONLY.into())));
         assert_eq!(transfer.copy_within(&asset, &to, &cx), Err(Error::ReadOnly(READ_ONLY.into())));
+    }
+
+    /// A copy in may target a name pending in a collection, which `pending`
+    /// builds as `parse_target` reads it; anything else is refused, and
+    /// `landing` leaves the asset a copy replaces to `write`.
+    #[test]
+    fn a_copy_in_targets_a_name_pending_in_a_collection() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, _, _) = client(dir.path());
+        let cx = Cx::default();
+        let pending = places::Transfer::pending(&client, COLLECTION, "My Box.gltf").unwrap();
+        assert_eq!(pending, format!("{COLLECTION}/~My%20Box.gltf"));
+        let (_, token, name) = location::parse_target(&pending).unwrap();
+        assert_eq!((token.as_str(), name.as_str()), ("12", "My Box.gltf"));
+        assert_eq!(places::Transfer::check(&client, None, Some(&pending), &cx), Ok(()));
+        let into = Error::Other("Paste into a collection.".into());
+        assert_eq!(places::Transfer::pending(&client, ACCOUNT, "x.glb"), Err(into.clone()));
+        assert_eq!(places::Transfer::pending(&client, ASSET, "x.glb"), Err(into.clone()));
+        assert_eq!(places::Transfer::check(&client, None, Some(&format!("{ACCOUNT}/~x.glb")), &cx), Err(into));
+        let read_only = || Err(Error::ReadOnly(READ_ONLY.into()));
+        assert_eq!(places::Transfer::check(&client, Some(ASSET), Some(&pending), &cx), read_only());
+        assert_eq!(places::Transfer::check(&client, Some(ASSET), None, &cx), read_only());
+        let landing = places::Transfer::landing(&client, None, &pending, &cx);
+        assert_eq!(landing, Err(Error::Unsupported(LANDING.into())));
     }
 
     /// The saves, the scene and its parts, and sharing answer as the client

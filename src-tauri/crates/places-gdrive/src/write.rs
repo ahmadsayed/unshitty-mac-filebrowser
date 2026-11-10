@@ -27,11 +27,15 @@ pub struct Ctx<'a> {
     /// Drive nothing again (the source `landing` fetched, an item as a move
     /// left it).
     pub(crate) seen: RefCell<HashMap<String, DriveFile>>,
+    /// Drive's exact name of each moved source, by the pending path of its
+    /// home (`Source::home`): a move put back gets that name again, even
+    /// where a path can't say it (a name with a `/`).
+    pub(crate) homes: RefCell<HashMap<String, String>>,
 }
 
 impl<'a> Ctx<'a> {
     pub fn new(state: &'a CloudState, base: &'a str, refresh: Refresh<'a>, progress: Progress) -> Self {
-        Ctx { state, base, refresh, progress, seen: RefCell::default() }
+        Ctx { state, base, refresh, progress, seen: RefCell::default(), homes: RefCell::default() }
     }
 }
 

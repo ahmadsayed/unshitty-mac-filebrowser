@@ -98,7 +98,8 @@ pub trait Provider: Send + Sync {
     fn list(&self, dir: &str, opts: &ListOptions, cx: &Cx) -> Result<Vec<Entry>>;
     fn stat(&self, path: &str, cx: &Cx) -> Result<Option<Entry>>;
     /// Every item at a pending `parent/~name`: more than one where names
-    /// aren't unique (Drive), so Replace can refuse instead of guessing.
+    /// aren't unique (Drive). Not the engine's path: a transfer asks its
+    /// `Transfer::landing` (D6), which also says where the source is.
     fn lookup(&self, pending: &str, cx: &Cx) -> Result<Vec<Entry>>;
     /// `path_exists` as today: false where the place can't tell.
     fn exists(&self, path: &str, cx: &Cx) -> bool;
@@ -120,9 +121,13 @@ pub trait Provider: Send + Sync {
     fn trash(&self, paths: &[&str], cx: &Cx) -> Vec<Trashed>;
     fn restore(&self, trashed: &str, cx: &Cx) -> Result<String>;
 
-    /// The transfer primitives the engine (D6) builds copy and move from.
-    /// None when this provider can't be a transfer target (read only).
-    fn transfer(&self) -> Option<&dyn Transfer> { None }
+    /// Run `work` once on the transfer primitives the engine (D6) builds
+    /// copy and move from, for one whole transfer: every step on the same
+    /// session (Drive: one context, so what `landing` fetched serves the
+    /// later steps). Never runs it when this provider can't be a transfer
+    /// target (read only). Callers use `places::with_transfer`, which hands
+    /// back `work`'s answer, or `None`.
+    fn transfer(&self, cx: &Cx, work: &mut dyn FnMut(&dyn Transfer)) {}
     /// Optional, non-POSIX parts (D4).
     fn extensions(&self) -> Extensions<'_> { Extensions::default() }
 }
@@ -205,8 +210,10 @@ the backend's wording is a later, visible decision for the human. Rules about
 UI places rather than providers (Recent, Starred, Network, the Trash view)
 stay in the frontend.
 
-**D6. The data-safety rules live once, above the providers.** `placement.rs`
-becomes the **transfer engine** in the app. It keeps everything it decides
+**D6. The data-safety rules live once, above the providers.** The
+**transfer engine** in the app is `engine.rs` (the routes over a provider's
+`Transfer`, since step 4) beside `placement.rs` (what lands on this
+computer, as before). Together they keep everything `placement.rs` decides
 today: the refusals and their order and wording, the name-clash decision
 (Replace / Skip / Keep Both), staging, Replace via the Trash with take-back,
 "delete the source only after the whole copy", "a move that replaces nothing
@@ -230,7 +237,7 @@ and declares how in `Capabilities`:
 | write a file or a whole folder from a source into a target path the engine chose, reporting skipped items | staged file, folder filled in place (`Stage::by_kind`) | resumable upload; a file whose upload is whole goes straight to its final name, folders and Replace staged as `.<name>.filebrowser-upload`; size checked after each file | `put` of a local model file (`write`, whose `replace` flag asks for a new version); Replace saves a new version |
 | read an item into that writer | the file or tree itself | in two steps (`read`): the item is fetched and refused if it has no bytes, then handed to the engine (`Reading`), which picks the local target by its kind and has it filled: download streamed into the target, Docs and shortcuts skipped and named, duplicate names made unique, size checked | the built `.gltf`/`.3mf` (`export`, a primitive of its own: a local file in the app cache the engine copies from as a local source, as today; `read_into` is unsupported) |
 | rename that never replaces | `renameat2`/`renamex_np` | check-then-act: one PATCH of the name, the engine having looked it up (`landing`) just before; the final rename of a staged copy doesn't check again, as before | — |
-| move the provider's own item to any path in it, never replacing, and move it back | `rename_new` | one PATCH, the name when it changes from the one Drive last gave the item, the parents when the folder changes, after the engine's lookup; put back the same way, to the item's old folder and name (`Source::home`) | — |
+| move the provider's own item to any path in it, never replacing, and move it back | `rename_new` | one PATCH, the name when it changes from the one Drive last gave the item, the parents when the folder changes, after the engine's `landing`; put back the same way, to the item's old folder and Drive's exact name (`Source::home`; where a path can't say that name, a `/` in it, the context remembers it and sends it) | — |
 | send to its Trash for Replace (or a source a move to another place copied away), and take it back | `Trash::send` / `Trash::untrash` (no parent folders made, log entry forgotten) — not `restore` | `trashed=true` / `false`; Drive's take-back is best effort, as before: if it fails, the rename's error is the transfer's | — (Replace = new version) |
 | copy the provider's own item inside it, its bytes never passing through this computer (`copy_within`) | — (Unsupported: a local copy is the engine's staged copy) | server-side `files.copy` (Docs and shortcuts too), a folder staged then renamed in, as `copy_in` and `finish_staged` do today | — |
 | discard a staged or partial copy the engine made with this provider's own primitives | removed for good | `trashed=true`, never deleted | — |
@@ -252,7 +259,11 @@ the place's parser reads it. The engine then makes the name-clash
 refusals itself, in today's order: a taken name without `overwrite`, an
 ambiguous one where names aren't unique, a folder replaced by its own
 child. Drive's primitives run on one context per transfer (`Ctx`), which
-remembers what `landing` fetched, so no step asks Drive twice.
+remembers what `landing` fetched, so no step asks Drive twice. Arbesk answers
+them for a copy in: `check` accepts a name pending in a collection (the rest
+of the refusals stay `write`'s), `pending` builds one as `parse_target`
+reads it, and `landing` is unsupported, since `write` finds the asset it
+replaces as it saves a new version.
 
 The policies that differ by route stay per route, as `DiscardFn` is today,
 and never go through a provider's `discard`: a Drive download's partial local
@@ -263,12 +274,17 @@ after a download goes to Drive's Trash. A staged **original** (the user's own
 item, moved under a staging name during a move that replaces) is only ever
 moved back, never discarded or trashed, on every provider.
 
-Before a move between providers the engine checks that the source can be
-moved away (`can_trash`, writability) before copying, as `move_down` does, so
-a read-only source never leaves a copy behind. Skipped items make the
-transfer an error, so a move keeps its source. Cancel removes partial staged
-files. Where `names_unique` is false the engine asks `lookup` and keeps the
-"Several items in this folder are named “…”." refusal. Downloads keep
+Before a move between providers the engine asks the source's place whether
+it can be moved away (`Transfer::check` with the source alone: Drive's
+writability) before copying, as `move_down` does, so a read-only source never
+leaves a copy behind. Skipped items make the transfer an error, so a move
+keeps its source. Cancel removes partial staged files. What is at the target
+comes from `Transfer::landing`; where `names_unique` is false the engine keeps
+the "Several items in this folder are named “…”." refusal, and where
+`put_is_whole` is false a new file is staged too. The engine reads both from
+the provider's `Capabilities`, and the way a transfer runs (inside a place,
+up from this computer, down to it) from `place::kind` of its two ends; it
+names no provider's scheme. Downloads keep
 streaming straight into the staged target: no copy goes through the app
 cache, so disk use, progress phases and what the cache prune sees don't
 change. `fetch` (to the cache) is for open and preview only, and every file
@@ -309,7 +325,9 @@ still reaches its provider, whose parser refuses it. Each provider also gives
 its "This action is not available for …" text for the local-only gate, as
 its `Capabilities::refused` entry for `Operation::LocalOnly`.
 `place.rs` shrinks to the registry's lookup plus that gate; its table test
-keeps every row. Each command becomes one lookup and one call; the frontend's
+keeps every row. Each command becomes one lookup and one call (a copy or
+move: the remote end's provider, its `Capabilities` and its transfer
+session, handed to the engine); the frontend's
 `Record<LocationKind, …>` tables keep their compile-time check. A command
 that belongs to one place (the `arbesk_*` commands: New Collection, sharing,
 saves, scenes, accounts) takes that place's provider by its scheme instead
@@ -386,8 +404,10 @@ next starts only after the human merged the last.
    Then `src/cloud/` moves into the `places-gdrive` crate with Drive's
    `places::Provider` (`Calls`, `Live`, `Drive`), which replaces step 2's
    adapter; the sign-in window, the `drive_*` commands and the managed
-   `CloudState` stay in `lib.rs`, which runs a copy or move on one Drive
-   context (`live_with`) for all its steps. Drive's tests came along
+   `CloudState` stay in `lib.rs`, which runs a copy or move through the
+   registry like any provider: the Drive provider's transfer session
+   (`Provider::transfer`, one context for all the steps) and its
+   `Capabilities`, handed to `engine::dispatch`. Drive's tests came along
    unchanged in body (the 46 that copy or move now run the engine, from
    `engine.rs`, through wrappers named as the routes were), the request
    sequences they assert are identical, and the engine has a fake-Drive
@@ -451,7 +471,7 @@ the guard tests over every crate.
 
 New: `src-tauri/crates/places`, `places-local`, `places-gdrive`,
 `places-sftp`. Changed over the steps: `src-tauri/Cargo.toml` (workspace),
-`src-tauri/src/lib.rs`, `place.rs`, `placement.rs` (the engine), `fs_ops.rs`,
+`src-tauri/src/lib.rs`, `place.rs`, `engine.rs` and `placement.rs` (the engine), `fs_ops.rs`,
 `trash_ops.rs`, `cloud/`, `sftp.rs`, `share/`, `downloads.rs`,
 `progress.rs`, the `arbesk` crate, `src/locations.ts`, `src/item-actions.ts`,
 `src/api.ts`, `dev/mock-tauri/core.ts`, `tests/mock-core.test.ts`, AGENTS.md,

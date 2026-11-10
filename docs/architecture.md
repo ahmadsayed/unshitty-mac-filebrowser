@@ -54,10 +54,12 @@ the place may be written. Then:
 
 - copies, moves and Drive downloads go through `placement.rs`: the refusals
   and their wording, staging under a hidden name, and Replace; a copy or
-  move to, from or inside Google Drive is `engine.rs`'s, which builds it
-  from Drive's `places::Transfer` primitives (what is at the target, write,
-  read, a copy on the server, rename, move, Trash and take back) and runs
-  Drive's Replace the same way, placing what lands here through
+  move to, from or inside Google Drive is `engine.rs`'s: `lib.rs` takes
+  the Drive provider from the registry, and the engine builds the transfer
+  from that provider's transfer session (its `places::Transfer`
+  primitives: what is at the target, write, read, a copy on the server,
+  rename, move, Trash and take back) and its declared `Capabilities`, runs
+  Drive's Replace the same way, and places what lands here through
   `placement.rs`;
 - Move to Trash, Restore, Delete Permanently and Empty Trash go through
   `trash_ops::Trash`: the trash log, where an item came from (sidecar, log,

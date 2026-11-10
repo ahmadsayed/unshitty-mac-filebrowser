@@ -29,8 +29,8 @@ pub mod test_server;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-pub use provider::{Calls, Drive, Live, Reach};
-pub use write::{Ctx, live_with};
+pub use provider::{Calls, Drive, Live, Reach, capabilities};
+pub use write::Ctx;
 
 use std::collections::HashMap;
 use std::path::Path;

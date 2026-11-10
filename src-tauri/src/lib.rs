@@ -836,8 +836,10 @@ fn make_local_dir(path: String) -> Result<String, String> {
 }
 
 /// Copy or move when either side is in Drive, by the transfer engine
-/// (`engine.rs`) over Drive's primitives. A local source of a move goes to
-/// the Trash the way Move to Trash sends it, after the upload succeeded.
+/// (`engine.rs`) over the Drive provider's transfer session, taken from the
+/// registry like any provider's: one session for the whole transfer, so
+/// its steps share what it learnt. A local source of a move goes to the
+/// Trash the way Move to Trash sends it, after the upload succeeded.
 async fn drive_transfer(
     app: tauri::AppHandle,
     from: String,
@@ -849,11 +851,14 @@ async fn drive_transfer(
     blocking(move || {
         let versions = app.state::<VersionsState>();
         let trash_local = VersionedTrash::new(&versions, AppTrash { app: &app });
-        let state = app.state::<CloudState>();
-        let cx = places_cx(&app, progress.clone());
-        // One context for the whole transfer: Drive's primitives run on it.
-        places_gdrive::write::live_with(&state, &progress, |drive| {
-            engine::dispatch(drive, &cx, &from, &to, overwrite, moving, &trash_local)
+        let cx = places_cx(&app, progress);
+        // The far side: whichever end isn't on this computer.
+        let remote = if place::kind(&from) == Kind::Local { &to } else { &from };
+        let registry = app.state::<places::Registry>();
+        let caps = registry.provider_for(remote).capabilities(remote);
+        in_transfer(&registry, remote, &cx, |transfer| {
+            let remote = engine::Remote { transfer, caps };
+            engine::dispatch(&remote, &cx, &from, &to, overwrite, moving, &trash_local)
         })
     })
     .await?
@@ -919,7 +924,7 @@ async fn copied_file(
 /// The file Arbesk's provider exports for the asset `from`, by its
 /// `Transfer` (`copy_source` for a source in Arbesk).
 fn exported_source(registry: &places::Registry, from: String, cx: &places::Cx) -> Result<String, String> {
-    copy_source(from, true, |path| Ok(transfer_of(registry, path)?.export(path, cx)?))
+    copy_source(from, true, |path| in_transfer(registry, path, cx, |t| Ok(t.export(path, cx)?)))
 }
 
 /// The local file `from` saved at the pending name `to` in an Arbesk
@@ -932,15 +937,20 @@ fn write_into_place(
     overwrite: bool,
     cx: &places::Cx,
 ) -> Result<String, String> {
-    Ok(transfer_of(registry, to)?.write(Path::new(from), to, overwrite, cx)?.path)
+    in_transfer(registry, to, cx, |t| Ok(t.write(Path::new(from), to, overwrite, cx)?.path))
 }
 
-/// The transfer primitives of `path`'s provider: the route table
-/// (`place::copy`) already said this copy may run, so a place without them
-/// is refused as not writable.
-fn transfer_of<'a>(registry: &'a places::Registry, path: &str) -> Result<&'a dyn places::Transfer, String> {
-    let provider = registry.provider_for(path);
-    provider.transfer().ok_or_else(|| place::writable(path).err().unwrap_or_else(|| format!("“{path}” can't be copied.")))
+/// `work` on the transfer session of `path`'s provider: the route table
+/// (`place::copy`) already said this copy may run, so a place without
+/// transfer primitives is refused as not writable.
+fn in_transfer<T>(
+    registry: &places::Registry,
+    path: &str,
+    cx: &places::Cx,
+    work: impl FnOnce(&dyn places::Transfer) -> Result<T, String>,
+) -> Result<T, String> {
+    places::with_transfer(registry.provider_for(path), cx, work)
+        .unwrap_or_else(|| Err(place::writable(path).err().unwrap_or_else(|| format!("“{path}” can't be copied."))))
 }
 
 /// The file a copy reads: `from` itself, or the file `export` builds for
@@ -3070,9 +3080,10 @@ mod read_gate_tests {
         assert_eq!(write_into_place(&registry, model, PENDING, false, &cx), Err(unknown.clone()));
         // A local path has no transfer through the registry yet.
         let local = "/Users/me/Box.gltf";
-        assert_eq!(transfer_of(&registry, local).err(), Some(format!("“{local}” can't be copied.")));
+        let none = |_: &dyn places::Transfer| -> Result<(), String> { unreachable!("no transfer here") };
+        assert_eq!(in_transfer(&registry, local, &cx, none).err(), Some(format!("“{local}” can't be copied.")));
         assert_eq!(
-            transfer_of(&registry, "share://r1/a").err().as_deref(),
+            in_transfer(&registry, "share://r1/a", &cx, none).err().as_deref(),
             Some("Shared folders are read only.")
         );
         let in_account = "Create collections in the account's folder.".to_string();

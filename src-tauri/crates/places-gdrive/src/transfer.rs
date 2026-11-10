@@ -124,7 +124,8 @@ fn pending_child(parent: &DriveLocation, name: &str) -> Option<String> {
 }
 
 /// Where a moved item goes back to: its old folder, under the name Drive
-/// gave it, or the name its path gave it where a path can't say Drive's.
+/// gave it, or the name its path gave it where a path can't say Drive's
+/// (`move_to` then sends Drive's own name, from `Ctx::homes`).
 fn home_of(source: &DriveLocation, name: &str) -> Option<String> {
     let parent = source.parent()?;
     pending_child(&parent, name).or_else(|| pending_child(&parent, source.name().unwrap_or_default()))
@@ -182,6 +183,10 @@ impl places::Transfer for Ctx<'_> {
             Err(error) => return Err(drive_words(error)),
         };
         self.remember(&source);
+        let home = home_of(&w.source, &source.name);
+        if let Some(home) = &home {
+            self.homes.borrow_mut().insert(home.clone(), source.name.clone());
+        }
         let existing = client
             .find_children(&w.target_parent_id, &w.name)
             .map_err(drive_words)?
@@ -199,7 +204,7 @@ impl places::Transfer for Ctx<'_> {
             source: Some(Source {
                 path: w.source.to_uri(),
                 is_dir: source.is_dir(),
-                home: home_of(&w.source, &source.name),
+                home,
             }),
         })
     }
@@ -308,7 +313,8 @@ impl places::Transfer for Ctx<'_> {
     }
 
     /// One PATCH: the name when it changes, the parents when the folder
-    /// does. The top of My Drive can't move.
+    /// does. The top of My Drive can't move. Moved back to its home, an
+    /// item gets Drive's exact name again, which its path may not say.
     fn move_to(&self, from: &str, to: &str, _: &Cx) -> places::Result<String> {
         let item = service::drive_location(from).map_err(words)?;
         let id = id_of(&item).map_err(words)?;
@@ -317,6 +323,7 @@ impl places::Transfer for Ctx<'_> {
             .and_then(|p| p.file_id().map(str::to_string))
             .ok_or_else(|| words("My Drive itself cannot be moved.".into()))?;
         let (parent, parent_id, name) = pending_target(to).map_err(words)?;
+        let name = self.homes.borrow().get(to).cloned().unwrap_or(name);
         let client = client_of(self, &item.account)?;
         let current = match self.seen.borrow().get(&id) {
             Some(file) => file.name.clone(),

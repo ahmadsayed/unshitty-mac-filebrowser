@@ -706,8 +706,8 @@ mod tests {
         assert!(extensions.thumbnails.is_some() && extensions.versions.is_some() && extensions.preview.is_some());
         assert!(extensions.sharing.is_some() && extensions.accounts.is_some());
         assert!(extensions.accounts.unwrap().accounts().is_empty());
-        let transfer = provider.transfer().unwrap();
-        assert_eq!(transfer.export(ASSET, &cx).unwrap_err(), unknown);
+        let exported = places::with_transfer(provider, &cx, |t| t.export(ASSET, &cx)).unwrap();
+        assert_eq!(exported.unwrap_err(), unknown);
     }
 
     /// The app's own states, as `lib.rs`' managed state holds them.
@@ -730,7 +730,7 @@ mod tests {
 
     /// The app's registry, over its real states: each kind reaches its
     /// provider, and a malformed Drive or Arbesk path is answered without
-    /// a server, as `cloud::service` and the `arbesk` client answer it.
+    /// a server, as `places_gdrive::service` and the `arbesk` client answer it.
     #[test]
     fn the_apps_registry_reaches_each_kinds_state() {
         let dir = tempfile::tempdir().unwrap();

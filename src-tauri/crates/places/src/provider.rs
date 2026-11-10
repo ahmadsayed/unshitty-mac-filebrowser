@@ -201,15 +201,31 @@ pub trait Provider: Send + Sync {
     /// returns where it went.
     fn restore(&self, trashed: &str, cx: &Cx) -> Result<String>;
 
-    /// The transfer primitives the engine builds copy and move from. `None`
-    /// when this provider can't be a transfer target (read only).
-    fn transfer(&self) -> Option<&dyn Transfer> {
-        None
-    }
+    /// Run `work` once on the transfer primitives the engine builds copy
+    /// and move from, for one whole transfer: every step runs on the same
+    /// session, so what an early step learnt serves the later ones (Drive:
+    /// one context, so the steps after `landing` ask the server nothing
+    /// again). A provider that can't be a transfer target (read only) never
+    /// runs `work`. Callers use [`with_transfer`], which hands back what
+    /// `work` returned.
+    fn transfer(&self, _cx: &Cx, _work: &mut dyn FnMut(&dyn Transfer)) {}
     /// Optional, non-POSIX parts.
     fn extensions(&self) -> Extensions<'_> {
         Extensions::default()
     }
+}
+
+/// `work` on `provider`'s transfer session ([`Provider::transfer`]): its
+/// answer, or `None` when the provider has no transfer primitives.
+pub fn with_transfer<T>(provider: &dyn Provider, cx: &Cx, work: impl FnOnce(&dyn Transfer) -> T) -> Option<T> {
+    let mut work = Some(work);
+    let mut out = None;
+    provider.transfer(cx, &mut |t| {
+        if let Some(work) = work.take() {
+            out = Some(work(t));
+        }
+    });
+    out
 }
 
 /// What is at a transfer's pending target in a place, as [`Transfer::landing`]
