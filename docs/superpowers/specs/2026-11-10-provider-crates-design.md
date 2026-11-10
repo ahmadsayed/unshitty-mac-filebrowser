@@ -1,6 +1,9 @@
 # One interface for every place — design
 
-Date: 2026-11-10 · Status: proposed, waiting for the human's review
+Date: 2026-11-10 · Status: done (2026-11-10): steps 1–7 and 6b merged as
+#253–#260, step 8 (the docs) in the PR that adds this line. What was built
+differs from the proposal where a step's "As done" says so; "Where things
+stand after the migration" below sums it up.
 
 ## Goal
 
@@ -21,9 +24,9 @@ behaviour, the requests each provider sends and the tests as they are. New
 providers, new copy routes (SSH to this computer, say) and Windows come
 after, each as its own visible change.
 
-## Where things stand
+## Where things stood before
 
-From an inventory of the code (local, Drive, Arbesk, SSH, shares and the glue
+From an inventory of the code before step 1 (local, Drive, Arbesk, SSH, shares and the glue
 between them):
 
 - **Only Arbesk is a crate.** Drive is `src/cloud/`, SSH is `sftp.rs`, shares
@@ -76,7 +79,7 @@ do. A pending name (a target that doesn't exist yet) keeps today's form
 | `places-sftp` | SSH servers (what was `sftp.rs`) | `places`, `ssh2` |
 | app (`src-tauri`) | commands, Tauri state, **the transfer engine** (D6), Keep Versions, shares (iroh stays in the app for now), the frontend | all of the above |
 
-Crate names are a proposal; the split is what matters. No crate but the app
+The crate names above are the ones built. No crate but the app
 depends on Tauri. Each new crate joins `members` and `default-members` in
 `src-tauri/Cargo.toml` (so `cargo test` from `src-tauri` keeps running
 everything), gets a cargo-deny run, and changes `Cargo.lock` minimally.
@@ -174,6 +177,12 @@ come from the provider that owns them.
 
 An extension a provider lacks is simply absent; the app checks for it instead
 of matching on a kind.
+
+As built, `Thumbnails`, `Versions`, `Preview`, `Sharing`, `Accounts` and
+`LocalOnly` (Batch Rename, `rename_many`) have methods. `Properties`,
+`Counts`, `Search`, `Measure`, `PermanentDelete` and `EmptyTrash` are still
+empty slots: their commands call their modules through `place.rs`' gate, as
+before the migration.
 
 Step 1 declares only the slots: each trait gets its methods in the step that
 first implements it, shaped like the command it replaces so nothing visible
@@ -327,8 +336,9 @@ malformed path with a registered prefix (`gdrive://`, `share://r1/%2E%2E`)
 still reaches its provider, whose parser refuses it. Each provider also gives
 its "This action is not available for …" text for the local-only gate, as
 its `Capabilities::refused` entry for `Operation::LocalOnly`.
-`place.rs` shrinks to the registry's lookup plus that gate; its table test
-keeps every row. Each command becomes one lookup and one call (a copy or
+`place.rs` keeps the gate (`kind`, `local`, `writable`, `local_only`) and
+the route table (D6); its table test keeps every row. Each command that
+goes through the registry is one lookup and one call (a copy or
 move: the remote end's provider, its `Capabilities` and its transfer
 session, handed to the engine); the frontend's
 `Record<LocationKind, …>` tables keep their compile-time check. A command
@@ -561,6 +571,11 @@ next starts only after the human merged the last.
    the row each path picks, the rules reading a changed table) and
    `tests/mock-core.test.ts` check it.
 8. **Docs:** AGENTS.md's layout, `docs/architecture.md` and its diagram.
+   As done: AGENTS.md describes the code as built (the layout rows of the
+   crates, the registry, the engine and Keep Versions' decorator; the
+   gotchas, data-safety rules and conventions; a new "Adding a provider"
+   checklist), `docs/architecture.md` explains the providers, the
+   registry, the engine and the capabilities, and its diagram shows them.
 
 **Guard tests move with the code.** The tests that enforce "only
 `trash_ops` calls the `trash` crate" and "only listed modules call
@@ -572,13 +587,52 @@ trash-crate exemption with `trash_ops` to `places-local`
 `rename_new`'s `std::fs::rename` fallback from `placement.rs` to
 `crates/places-local/src/rename.rs`.
 
-After the migration, a new provider is: a crate and a registry line; a row in
-`paths.ts`' SCHEMES and a `Place`; a `LocationKind` and a cell in each
-`Record` table (item actions, menus, `listing-failure.ts`, `item-icons.ts`);
-its capabilities row; a `providers.ts` row and `PROVIDER_ACTIONS` entry if it
-signs in; the mock and its tests; a cache folder in `downloads::DIRS`. That
-is about 10 places instead of 33, each one a table row the compiler or a test
-points at. Collapsing the frontend tables further is a later step.
+After the migration, a new provider is: a crate and a registry line; its
+capabilities row (`providers::KINDS`, `tests/capabilities.json`,
+`capabilities.ts`' built-in table); a `Kind` in `place.rs` (its local-only
+and read-only words; the route table refuses it until a route is opened); a
+row in `paths.ts`' SCHEMES and a `Place`; a `LocationKind` and a cell in each
+`Record<Place, …>` and `Record<LocationKind, …>` table (`locations.ts`,
+`item-actions.ts`, `main.ts`' menus), plus a row in `listing-failure.ts` or
+`item-icons.ts` only where it differs; a `providers.ts` row and
+`PROVIDER_ACTIONS` entry if it signs in; the mock and its tests; a cache
+folder in `downloads::DIRS`. That is about 10 places instead of 33, each one
+a table row the compiler or a test points at; AGENTS.md's "Adding a
+provider" is the checklist. Collapsing the frontend tables further is a
+later step.
+
+## Where things stand after the migration
+
+- **Crates.** `places` (the interface and the shared types),
+  `places-local`, `places-gdrive`, `places-sftp` and `arbesk`, all
+  workspace and default members of `src-tauri/Cargo.toml`, none depending
+  on Tauri or on the app. Received shares are a provider in the app
+  (`share/provider.rs`), since iroh stays there.
+- **Registry.** `providers.rs` builds the `places::Registry` `lib.rs`
+  manages: this computer's `places_local::Local` inside Keep Versions'
+  decorator (`versions/versioned.rs`, `Versioned`), then Drive, Arbesk,
+  SSH and shares. Reads (listing, existence, path info, thumbnails,
+  opening, the preview's file), this computer's writes (New Folder, New
+  File, Rename, Batch Rename, Move to Trash, Put Back), every copy and move
+  and the `arbesk_*` commands go through it.
+- **Engine.** `engine.rs` runs every copy and move from the two ends'
+  `places::Transfer` primitives and declared `Capabilities`; `placement.rs`
+  places what lands on this computer. `cloud/`, `sftp.rs` and
+  `local_transfer.rs` are gone; `fs_ops.rs` and `trash_ops.rs` are
+  `places-local`'s.
+- **Frontend.** The `capabilities` command (`providers::capability_table`)
+  feeds `src/capabilities.ts`; `locations.ts` and `item-actions.ts` read
+  the booleans, and keep their own wording and their views' rules.
+- **Not moved yet**, each a later change of its own: Drive's own writes
+  (New Folder, Rename, Move to Trash, Put Back) are still `lib.rs`' calls
+  into `places_gdrive::write`, so Drive's provider answers `create`,
+  `rename`, `trash`, `restore`, `stat` and `lookup` with
+  “… doesn't go through the places registry yet.” (Arbesk's `stat` and
+  `lookup` too); Properties, folder sizes, item counts, search, measure,
+  Delete Permanently and Empty Trash call their modules, their extensions
+  being empty slots (D4). Commands still return `String`, so the frontend
+  (`listing-failure.ts`, `drive-auth.ts`) still reads the wording, not
+  `places::Error`'s kinds (D9).
 
 ## Risks
 
@@ -608,7 +662,11 @@ the guard tests over every crate.
 ## Files
 
 New: `src-tauri/crates/places`, `places-local`, `places-gdrive`,
-`places-sftp`. Changed over the steps: `src-tauri/Cargo.toml` (workspace),
+`places-sftp`, `src-tauri/src/providers.rs`, `engine.rs`,
+`share/provider.rs`, `versions/versioned.rs`, `src/capabilities.ts`,
+`tests/capabilities.json`. Gone into the crates: `cloud/`, `sftp.rs`,
+`fs_ops.rs`, `trash_ops.rs`, and `local_transfer.rs` (step 6's, into
+`engine.rs`). Changed over the steps: `src-tauri/Cargo.toml` (workspace),
 `src-tauri/src/lib.rs`, `place.rs`, `engine.rs` and `placement.rs` (the engine), `fs_ops.rs`,
 `trash_ops.rs`, `cloud/`, `sftp.rs`, `share/`, `downloads.rs`,
 `progress.rs`, the `arbesk` crate, `src/locations.ts`, `src/item-actions.ts`,
