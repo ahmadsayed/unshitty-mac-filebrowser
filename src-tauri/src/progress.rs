@@ -56,6 +56,51 @@ pub fn ticker(
     send(ProgressUpdate::of(progress, true));
 }
 
+/// One command's part of operation `op` while it runs: its progress,
+/// registered in `registry` so `cancel_operation` reaches it, and a ticker
+/// thread sending it through `send` every `every`. Dropping it, when the
+/// work ends or unwinds from a panic, stops the ticker (which sends a last
+/// update with `done`) and forgets `op`, so an operation that failed never
+/// keeps `restart_app` refusing.
+pub struct Tracked<'r> {
+    registry: &'r Registry,
+    op: String,
+    pub progress: Progress,
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    ticker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl<'r> Tracked<'r> {
+    pub fn start(
+        registry: &'r Registry,
+        op: &str,
+        send: impl Fn(ProgressUpdate) + Send + 'static,
+        every: std::time::Duration,
+    ) -> Self {
+        let progress = registry.register(op);
+        progress.set_phase(Phase::Working);
+        let (stop, stopped) = std::sync::mpsc::channel();
+        let ticker = {
+            let progress = progress.clone();
+            std::thread::spawn(move || ticker(&progress, send, &stopped, every))
+        };
+        Tracked { registry, op: op.to_string(), progress, stop: Some(stop), ticker: Some(ticker) }
+    }
+
+    /// The work is over: stop the ticker and forget `op` (what dropping does).
+    pub fn finish(self) {}
+}
+
+impl Drop for Tracked<'_> {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(ticker) = self.ticker.take() {
+            let _ = ticker.join();
+        }
+        self.registry.remove(&self.op);
+    }
+}
+
 /// The running operations by id, so `cancel_operation` can reach them.
 #[derive(Default)]
 pub struct Registry(Mutex<HashMap<String, Progress>>);
@@ -134,6 +179,34 @@ mod tests {
         registry.cancel("missing");
         registry.remove("a");
         assert!(!registry.register("a").is_cancelled());
+    }
+
+    #[test]
+    fn a_finished_operation_is_forgotten_after_its_last_update() {
+        let registry = Registry::default();
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let tracked = {
+            let sent = sent.clone();
+            Tracked::start(&registry, "op", move |u| sent.lock().unwrap().push(u), std::time::Duration::from_secs(10))
+        };
+        assert!(!registry.is_empty());
+        assert_eq!(tracked.progress.snapshot().phase, Phase::Working);
+        tracked.finish();
+        assert!(registry.is_empty());
+        assert!(sent.lock().unwrap().last().unwrap().done);
+    }
+
+    /// A panic in the work must not leave `op` registered: `restart_app`
+    /// would refuse for the rest of the session.
+    #[test]
+    fn an_operation_whose_work_panics_is_forgotten_too() {
+        let registry = Registry::default();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _tracked = Tracked::start(&registry, "op", |_| {}, std::time::Duration::from_secs(10));
+            panic!("the fetch failed");
+        }));
+        assert!(unwound.is_err());
+        assert!(registry.is_empty());
     }
 
     #[test]

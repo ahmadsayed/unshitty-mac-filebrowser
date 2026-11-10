@@ -191,43 +191,14 @@ async fn blocking<T: Send + 'static>(
 /// How often a running operation reports its progress.
 const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// One command's part of operation `op`: its progress, registered so
-/// `cancel_operation` reaches it, and a thread streaming it to the frontend.
-struct Tracking {
-    op: String,
-    progress: progress::Progress,
-    stop: std::sync::mpsc::Sender<()>,
-    ticker: std::thread::JoinHandle<()>,
-}
-
-impl Tracking {
-    fn start(app: &tauri::AppHandle, op: &str, channel: Channel<ProgressUpdate>) -> Self {
-        let progress = app.state::<progress::Registry>().register(op);
-        progress.set_phase(progress::Phase::Working);
-        let (stop, stopped) = std::sync::mpsc::channel();
-        let ticker = {
-            let progress = progress.clone();
-            std::thread::spawn(move || {
-                let send = |update| {
-                    let _ = channel.send(update);
-                };
-                progress::ticker(&progress, send, &stopped, PROGRESS_EVERY);
-            })
-        };
-        Tracking {
-            op: op.to_string(),
-            progress,
-            stop,
-            ticker,
-        }
-    }
-
-    /// Stop the ticker (it sends a last update with `done`) and forget `op`.
-    fn finish(self, app: &tauri::AppHandle) {
-        drop(self.stop);
-        let _ = self.ticker.join();
-        app.state::<progress::Registry>().remove(&self.op);
-    }
+/// One command's part of operation `op`, streamed to the frontend through
+/// `channel`; dropping it (`finish`, or a panic unwinding past it) forgets
+/// `op`.
+fn track<'a>(app: &'a tauri::AppHandle, op: &str, channel: Channel<ProgressUpdate>) -> progress::Tracked<'a> {
+    let send = move |update| {
+        let _ = channel.send(update);
+    };
+    progress::Tracked::start(app.state::<progress::Registry>().inner(), op, send, PROGRESS_EVERY)
 }
 
 /// Cancel operation `op`; its current command ends with "Cancelled.".
@@ -542,18 +513,35 @@ async fn open_target(
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<OpenTarget, String> {
     blocking(move || {
-        let registry = app.state::<places::Registry>();
-        let provider = registry.provider_for(&path);
-        if !provider.fetch_reports_progress() {
-            // The file itself: nothing to download, so no progress to report.
-            return fetch_to_open(provider, &path, &places::Cx::default());
-        }
-        let tracking = Tracking::start(&app, &op, on_progress);
-        let result = fetch_to_open(provider, &path, &places_cx(&app, tracking.progress.clone()));
-        tracking.finish(&app);
-        result
+        open_in(
+            &app.state::<places::Registry>(),
+            &path,
+            || track(&app, &op, on_progress),
+            |progress| places_cx(&app, progress),
+        )
     })
     .await?
+}
+
+/// `open_target`'s work: what `path`'s provider opens, a download tracked
+/// by `track` with `cx_for` its context. The tracking is dropped however
+/// the fetch ends, a panic included, so the operation never stays
+/// registered.
+fn open_in<'r>(
+    providers: &places::Registry,
+    path: &str,
+    track: impl FnOnce() -> progress::Tracked<'r>,
+    cx_for: impl FnOnce(progress::Progress) -> places::Cx,
+) -> Result<OpenTarget, String> {
+    let provider = providers.provider_for(path);
+    if !provider.fetch_reports_progress() {
+        // The file itself: nothing to download, so no progress to report.
+        return fetch_to_open(provider, path, &places::Cx::default());
+    }
+    let tracking = track();
+    let result = fetch_to_open(provider, path, &cx_for(tracking.progress.clone()));
+    tracking.finish();
+    result
 }
 
 /// What `provider` opens for `path` (each parses its own scheme and
@@ -860,13 +848,13 @@ async fn copy_entry(
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
     let plan = place::copy(&from, &to)?;
-    let tracking = Tracking::start(&app, &op, on_progress);
+    let tracking = track(&app, &op, on_progress);
     let progress = tracking.progress.clone();
     let result = match copied_file(&app, from, plan.from_arbesk, &progress).await {
         Ok(from) => copy_routed(app.clone(), from, to, overwrite, plan.route, progress).await,
         Err(error) => Err(error),
     };
-    tracking.finish(&app);
+    tracking.finish();
     result
 }
 
@@ -977,7 +965,7 @@ async fn move_entry(
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
     let route = place::transfer(&from, &to)?;
-    let tracking = Tracking::start(&app, &op, on_progress);
+    let tracking = track(&app, &op, on_progress);
     let progress = tracking.progress.clone();
     let result = if route == Route::Drive {
         drive_transfer(app.clone(), from, to, overwrite, true, progress).await
@@ -995,7 +983,7 @@ async fn move_entry(
         .await
         .and_then(|result| result)
     };
-    tracking.finish(&app);
+    tracking.finish();
     result
 }
 
@@ -1073,11 +1061,11 @@ async fn trash_entries(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<Vec<TrashOutcome>, String> {
-    let tracking = Tracking::start(&app, &op, on_progress);
+    let tracking = track(&app, &op, on_progress);
     let progress = tracking.progress.clone();
     let worker = app.clone();
     let outcomes = blocking(move || trash_batch(&worker, &paths, &progress)).await;
-    tracking.finish(&app);
+    tracking.finish();
     outcomes
 }
 
@@ -1535,11 +1523,11 @@ async fn empty_trash(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<(), String> {
-    let tracking = Tracking::start(&app, &op, on_progress);
+    let tracking = track(&app, &op, on_progress);
     let progress = tracking.progress.clone();
     let worker = app.clone();
     let result = blocking(move || trash_of(&worker)?.empty(&progress)).await;
-    tracking.finish(&app);
+    tracking.finish();
     result?
 }
 
@@ -3195,5 +3183,67 @@ mod local_gate_tests {
         assert_eq!(infos.len(), paths.len());
         assert!(infos[..paths.len() - 1].iter().all(Option::is_none), "{infos:?}");
         assert!(infos[paths.len() - 1].as_ref().is_some_and(|info| info.trashed > 0));
+    }
+}
+
+#[cfg(test)]
+mod open_target_tests {
+    //! A download `open_target` tracks is forgotten however its fetch ends.
+    use super::*;
+    use std::sync::Arc;
+
+    /// A remote place whose download panics or fails, as `panics` says.
+    struct Failing {
+        scheme: &'static str,
+        panics: bool,
+    }
+
+    impl places::Provider for Failing {
+        fn scheme(&self) -> &'static str {
+            self.scheme
+        }
+        fn list(&self, _: &str, _: &places::ListOptions, _: &places::Cx) -> places::Result<Vec<places::Entry>> {
+            Ok(Vec::new())
+        }
+        fn fetch(&self, _: &str, _: places::Fetch, _: &places::Cx) -> places::Result<places::Fetched> {
+            if self.panics {
+                panic!("the download panicked");
+            }
+            Err(places::Error::Unsupported("The download failed.".into()))
+        }
+        fn fetch_reports_progress(&self) -> bool {
+            true
+        }
+        places::read_only_place!("Read only.", "Not here.");
+    }
+
+    fn providers(panics: bool) -> places::Registry {
+        let local = Arc::new(Failing { scheme: "", panics: false });
+        places::Registry::new(local).register(Arc::new(Failing { scheme: "test", panics }))
+    }
+
+    fn open(providers: &places::Registry, ops: &progress::Registry) -> Result<OpenTarget, String> {
+        open_in(
+            providers,
+            "test://host/a.txt",
+            || progress::Tracked::start(ops, "op", |_| {}, std::time::Duration::from_secs(10)),
+            |progress| places::Cx { progress, ..places::Cx::default() },
+        )
+    }
+
+    #[test]
+    fn a_download_that_fails_is_forgotten() {
+        let ops = progress::Registry::default();
+        assert_eq!(open(&providers(false), &ops).unwrap_err(), "The download failed.");
+        assert!(ops.is_empty());
+    }
+
+    /// Restart Now would refuse for the rest of the session otherwise.
+    #[test]
+    fn a_download_that_panics_is_forgotten() {
+        let (providers, ops) = (providers(true), progress::Registry::default());
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| open(&providers, &ops)));
+        assert!(unwound.is_err());
+        assert!(ops.is_empty());
     }
 }
