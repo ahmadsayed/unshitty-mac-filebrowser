@@ -10,6 +10,7 @@ pub mod link;
 pub mod location;
 pub mod manifest;
 pub mod proto;
+pub mod provider;
 pub mod registry;
 pub mod state;
 

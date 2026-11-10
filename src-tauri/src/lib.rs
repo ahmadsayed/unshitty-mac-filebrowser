@@ -11,7 +11,6 @@ mod progress;
 mod properties;
 mod providers;
 mod recent;
-mod sftp;
 mod share;
 #[cfg(test)]
 mod test_support;
@@ -285,15 +284,29 @@ impl<T: Send + Sync + 'static> providers::Reach<T> for tauri::AppHandle {
     }
 }
 
-/// The registry over the app's managed state and folders, with `arbesk`,
-/// the Arbesk client, as its own provider.
-fn places_registry(app: &tauri::AppHandle, arbesk: Arc<arbesk::Client>) -> places::Registry {
+/// Received shares reach their managed state, and the Keep Versions hint
+/// their node starts with, through the app's handle.
+impl share::provider::Shares for tauri::AppHandle {
+    fn share_state(&self) -> &share::state::ShareState {
+        self.state::<share::state::ShareState>().inner()
+    }
+    fn versions_hint(&self) -> share::host::VersionsHint {
+        share_versions_hint(self)
+    }
+}
+
+/// The registry over the app's managed state and folders, with the places
+/// that are their own crates' providers (`held`); received shares wait on
+/// Tauri's async runtime, from the blocking threads commands call
+/// providers on (D3).
+fn places_registry(app: &tauri::AppHandle, held: providers::Held) -> places::Registry {
     let folders = providers::Folders {
         cache: app.path().app_cache_dir().map_err(|error| error.to_string()),
         thumbnails: thumbnail_dir(app),
         shared_thumbnails: shared_thumbnail_dir(app),
     };
-    providers::registry(app.clone(), folders, arbesk)
+    let runtime = tauri::async_runtime::handle().inner().clone();
+    providers::registry(app.clone(), folders, held, runtime)
 }
 
 /// Arbesk's provider, for the `arbesk_*` commands: they are Arbesk's own,
@@ -311,21 +324,12 @@ fn arbesk_ext<'a, T: ?Sized + 'a>(
     pick(arbesk_place(registry)?.extensions()).ok_or_else(|| "Arbesk isn't available.".to_string())
 }
 
-/// Whether `path` is in a received share, whose listing and download are
-/// still awaited here rather than run by its provider (D3, until step 5).
-fn in_share(app: &tauri::AppHandle, path: &str) -> bool {
-    app.state::<places::Registry>().provider_for(path).scheme() == providers::SHARE
-}
-
 #[tauri::command]
 async fn list_dir(
     app: tauri::AppHandle,
     path: String,
     show_hidden: bool,
 ) -> Result<Vec<fs_ops::Entry>, String> {
-    if in_share(&app, &path) {
-        return share_listing(&app, &path, show_hidden).await;
-    }
     blocking(move || {
         let options = places::ListOptions { show_hidden };
         let cx = places_cx(&app, progress::Progress::default());
@@ -335,39 +339,29 @@ async fn list_dir(
     .await?
 }
 
-/// A received share's folder, listed on the async runtime.
-async fn share_listing(
-    app: &tauri::AppHandle,
-    path: &str,
-    show_hidden: bool,
-) -> Result<Vec<fs_ops::Entry>, String> {
-    let state = app.state::<share::state::ShareState>();
-    state.list_dir(path, show_hidden, share_versions_hint(app)).await
-}
-
 #[tauri::command]
 async fn sftp_connect(
     app: tauri::AppHandle,
     url: String,
     password: Option<String>,
     trust_host: bool,
-) -> Result<sftp::ConnectOutcome, String> {
+) -> Result<places_sftp::ConnectOutcome, String> {
     let app = app.clone();
     blocking(move || {
-        app.state::<sftp::SftpState>()
+        app.state::<Arc<places_sftp::SftpState>>()
             .connect(&url, password, trust_host)
     })
     .await?
 }
 
 #[tauri::command]
-fn sftp_servers(app: tauri::AppHandle) -> Vec<sftp::ServerInfo> {
-    app.state::<sftp::SftpState>().servers()
+fn sftp_servers(app: tauri::AppHandle) -> Vec<places_sftp::ServerInfo> {
+    app.state::<Arc<places_sftp::SftpState>>().servers()
 }
 
 #[tauri::command]
 fn sftp_disconnect(app: tauri::AppHandle, id: String) {
-    app.state::<sftp::SftpState>().disconnect(&id);
+    app.state::<Arc<places_sftp::SftpState>>().disconnect(&id);
 }
 
 /// The search running in each window: starting another, or `cancel_search`,
@@ -548,7 +542,7 @@ async fn open_target(
     {
         let registry = app.state::<places::Registry>();
         let provider = registry.provider_for(&path);
-        if provider.scheme().is_empty() {
+        if !provider.fetch_reports_progress() {
             // The file itself: nothing to download, so no progress to report.
             return fetch_to_open(provider, &path, &places::Cx::default());
         }
@@ -565,33 +559,20 @@ fn fetch_to_open(provider: &dyn places::Provider, path: &str, cx: &places::Cx) -
 }
 
 /// A remote file's copy to open, or the page to open instead, fetched by
-/// its place's provider (each parses its own scheme and refuses a
-/// malformed path); a received share's, on the async runtime.
+/// its place's provider on a blocking thread (each parses its own scheme
+/// and refuses a malformed path; a received share's waits on the async
+/// runtime from there).
 async fn download_to_open(
     app: &tauri::AppHandle,
     path: String,
     progress: &progress::Progress,
 ) -> Result<OpenTarget, String> {
-    if in_share(app, &path) {
-        return share_target(app, &path, progress).await;
-    }
     let (app, progress) = (app.clone(), progress.clone());
     blocking(move || {
         let cx = places_cx(&app, progress);
         fetch_to_open(app.state::<places::Registry>().provider_for(&path), &path, &cx)
     })
     .await?
-}
-
-/// A received share's file, fetched into the app cache.
-async fn share_target(
-    app: &tauri::AppHandle,
-    path: &str,
-    progress: &progress::Progress,
-) -> Result<OpenTarget, String> {
-    let state = app.state::<share::state::ShareState>();
-    let path = state.open(path, share_versions_hint(app), progress).await?;
-    Ok(OpenTarget::File { path })
 }
 
 #[tauri::command]
@@ -2353,11 +2334,14 @@ pub fn run() {
                 config_dir.join("arbesk_accounts.json"),
                 config_dir.join("tokens"),
             ));
-            app.manage(sftp::SftpState::new(
+            // SSH connections are their crate's provider, held by the
+            // registry and by the commands that connect.
+            let sftp = Arc::new(places_sftp::SftpState::new(
                 config_dir.join("sftp_known_hosts"),
                 home,
                 cache_dir.join("sftp"),
             ));
+            app.manage(sftp.clone());
             // Drop copies of remote files nobody has touched for a week.
             let download_dirs: Vec<PathBuf> = downloads::DIRS
                 .iter()
@@ -2376,7 +2360,7 @@ pub fn run() {
                 cache_dir,
             ));
             // One provider per kind of place, over the states above.
-            app.manage(places_registry(app.handle(), arbesk));
+            app.manage(places_registry(app.handle(), providers::Held { arbesk, sftp }));
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 handle.state::<VersionsState>().startup();

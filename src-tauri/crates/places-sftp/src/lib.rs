@@ -1,9 +1,18 @@
-//! A small, read-only SFTP client for Network > Connect to Server.
+//! SSH servers for File Browser, a place of its own (design
+//! `docs/superpowers/specs/2026-11-10-provider-crates-design.md`, step 5):
+//! a small, read-only SFTP client for Network > Connect to Server, and its
+//! `places::Provider` ([`provider`]). No Tauri: the app keeps the commands
+//! that connect, list the servers and disconnect.
+//!
 //! SSH keys and the agent are tried first; the UI supplies a password when
 //! neither works. Host keys are checked against the system and app known-hosts
 //! files; an unknown host is only accepted after an explicit trust decision.
 
-use crate::progress::{CANCELLED, Progress, copy_counted, is_cancel};
+pub mod provider;
+
+pub use provider::{LOCAL_ONLY, READ_ONLY, SCHEME};
+
+use places::{CANCELLED, Progress, copy_counted, is_cancel};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::Serialize;
 use ssh2::{CheckResult, HashType, KnownHostFileKind, Session};
@@ -37,7 +46,8 @@ pub enum ConnectOutcome {
     HostKeyUnknown { server: ServerInfo, fingerprint: String },
 }
 
-pub(crate) struct Target {
+/// A parsed `sftp://` address: the server and the path on it.
+pub struct Target {
     user: String,
     host: String,
     port: u16,
@@ -69,13 +79,13 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn list_entry(base: &str, remote: &Path, stat: &ssh2::FileStat) -> Option<crate::fs_ops::Entry> {
+fn list_entry(base: &str, remote: &Path, stat: &ssh2::FileStat) -> Option<places::Entry> {
     let name = remote.file_name()?.to_str()?;
     if name == "." || name == ".." {
         return None;
     }
     let encoded = utf8_percent_encode(name, NON_ALPHANUMERIC).to_string();
-    Some(crate::fs_ops::Entry {
+    Some(places::Entry {
         name: name.to_string(),
         path: format!("{base}/{encoded}"),
         is_dir: stat.is_dir(),
@@ -87,7 +97,7 @@ fn list_entry(base: &str, remote: &Path, stat: &ssh2::FileStat) -> Option<crate:
     })
 }
 
-pub(crate) fn parse_target(input: &str) -> Result<Target, String> {
+pub fn parse_target(input: &str) -> Result<Target, String> {
     let text = input.trim();
     if text.is_empty() {
         return Err("Enter a server, for example user@host.".into());
@@ -310,7 +320,7 @@ impl SftpState {
         lock(&self.conns).remove(id);
     }
 
-    pub fn list(&self, path: &str, show_hidden: bool) -> Result<Vec<crate::fs_ops::Entry>, String> {
+    pub fn list(&self, path: &str, show_hidden: bool) -> Result<Vec<places::Entry>, String> {
         let target = parse_target(path)?;
         let conn = self.connection(&target.id)?;
         let conn = lock(&conn);
@@ -383,7 +393,7 @@ fn save_copy(
         .and_then(|mut local| copy_counted(reader, &mut local, progress));
     match copied {
         Ok(_) => {
-            crate::downloads::mark(&dest);
+            places::mark(&dest);
             Ok(dest.to_string_lossy().to_string())
         }
         Err(e) => {

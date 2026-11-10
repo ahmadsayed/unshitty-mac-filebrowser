@@ -1610,6 +1610,7 @@ dependencies = [
  "percent-encoding",
  "places",
  "places-gdrive",
+ "places-sftp",
  "plist",
  "png",
  "postcard",
@@ -1618,7 +1619,6 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
- "ssh2",
  "tar",
  "tauri",
  "tauri-build",
@@ -4675,6 +4675,19 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "places-sftp"
+version = "0.1.0"
+dependencies = [
+ "data-encoding",
+ "percent-encoding",
+ "places",
+ "serde",
+ "ssh2",
  "tempfile",
  "url",
 ]

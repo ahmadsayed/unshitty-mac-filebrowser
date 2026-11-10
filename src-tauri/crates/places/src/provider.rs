@@ -75,6 +75,40 @@ pub struct Capabilities {
     pub refused: Vec<Refused>,
 }
 
+impl Capabilities {
+    /// A read-only place (an SSH server, a received share): sizes are
+    /// known, nothing else is offered, every write is refused with
+    /// `read_only`'s words and the features of items on this computer with
+    /// `local_only`'s. Nothing is renamed or replaced there; the behaviour
+    /// values are a disk's.
+    pub fn read_only_place(read_only: &str, local_only: &str) -> Self {
+        let refused = |operation| Refused { operation, message: read_only.to_string() };
+        Capabilities {
+            read_only: true,
+            can_create: false,
+            can_rename: false,
+            can_trash: false,
+            can_copy_out: false,
+            knows_sizes: true,
+            knows_counts: false,
+            searchable: false,
+            has_thumbnails: false,
+            rename_atomic: false,
+            replace: Replace::Trash,
+            names_unique: true,
+            put_is_whole: false,
+            refused: vec![
+                refused(Operation::Create),
+                refused(Operation::Rename),
+                refused(Operation::Trash),
+                refused(Operation::CopyIn),
+                refused(Operation::CopyOut),
+                Refused { operation: Operation::LocalOnly, message: local_only.to_string() },
+            ],
+        }
+    }
+}
+
 // ---- Arguments and results ---------------------------------------------------
 
 /// How to list a folder.
@@ -189,6 +223,14 @@ pub trait Provider: Send + Sync {
     /// file itself here, a download or a build in the app cache elsewhere,
     /// marked with the `.downloaded` mark), or a URL to open instead.
     fn fetch(&self, path: &str, purpose: Fetch, cx: &Cx) -> Result<Fetched>;
+    /// Whether [`fetch`](Provider::fetch) may take a while and reports into
+    /// its `Cx`'s progress (a download or a build), so opening an item here
+    /// is an operation the app tracks and the user can cancel. False where
+    /// `fetch` hands back the item itself (this computer), which starts no
+    /// operation.
+    fn fetch_reports_progress(&self) -> bool {
+        true
+    }
 
     /// New folder or empty file at `parent/name`, never over an existing
     /// name. Returns the final path (Drive learns its id only now).

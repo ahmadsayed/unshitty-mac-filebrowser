@@ -14,13 +14,13 @@
 //! prefix rule matches [`kind`]'s; the write commands that serve remote
 //! paths (Drive's copies, say) still pick their handler with [`kind`]. Each
 //! handler parses its own scheme (`places_gdrive::location`, `share::location`,
-//! `sftp`) and refuses a malformed path.
+//! `places_sftp`) and refuses a malformed path.
 //!
 //! Plain functions, no Tauri.
 
 use std::path::{Path, PathBuf};
 
-use crate::{share, sftp};
+use crate::share;
 
 // ---- Kinds -------------------------------------------------------------------
 
@@ -48,7 +48,7 @@ pub fn kind(path: &str) -> Kind {
         Kind::Drive
     } else if share::location::is_share(path) {
         Kind::Share
-    } else if sftp::is_sftp(path) {
+    } else if places_sftp::is_sftp(path) {
         Kind::Sftp
     } else {
         Kind::Local
@@ -64,8 +64,8 @@ pub fn local(path: &str) -> Result<&Path, String> {
         Kind::Local if local.is_absolute() => Ok(local),
         Kind::Local => Err(format!("“{path}” is not a local file.")),
         Kind::Drive => Err(places_gdrive::service::unsupported()),
-        Kind::Share => Err("This action is not available for shared folders.".into()),
-        Kind::Sftp => Err("This action is not available for SSH servers.".into()),
+        Kind::Share => Err(share::provider::LOCAL_ONLY.into()),
+        Kind::Sftp => Err(places_sftp::LOCAL_ONLY.into()),
         Kind::Arbesk => Err("This action is not available for Arbesk.".into()),
     }
 }
@@ -74,8 +74,8 @@ pub fn local(path: &str) -> Result<&Path, String> {
 /// and Arbesk are read only.
 pub fn writable(path: &str) -> Result<(), String> {
     match kind(path) {
-        Kind::Sftp => Err("SSH servers are read only for now.".into()),
-        Kind::Share => Err("Shared folders are read only.".into()),
+        Kind::Sftp => Err(places_sftp::READ_ONLY.into()),
+        Kind::Share => Err(share::provider::READ_ONLY.into()),
         Kind::Arbesk => Err("Arbesk is read only.".into()),
         Kind::Local | Kind::Drive => Ok(()),
     }
@@ -290,7 +290,7 @@ mod tests {
         }
         for path in ["sftp://", "sftp://host/home", "sftp://me@/home", "sftp://me@host/%FF"] {
             assert_eq!(kind(path), Kind::Sftp);
-            assert!(sftp::parse_target(path).is_err(), "{path}");
+            assert!(places_sftp::parse_target(path).is_err(), "{path}");
         }
         for path in ["arbesk://", "arbesk://0xab", "arbesk://0x00000000000000000000000000000000000000ab/x~Set"] {
             assert_eq!(kind(path), Kind::Arbesk);
