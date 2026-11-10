@@ -914,10 +914,28 @@ async fn copied_file(
     let (app, progress) = (app.clone(), progress.clone());
     blocking(move || {
         let cx = places_cx(&app, progress);
-        let registry = app.state::<places::Registry>();
-        copy_source(from, true, |path| Ok(transfer_of(&registry, path)?.export(path, &cx)?))
+        exported_source(&app.state::<places::Registry>(), from, &cx)
     })
     .await?
+}
+
+/// The file Arbesk's provider exports for the asset `from`, by its
+/// `Transfer` (`copy_source` for a source in Arbesk).
+fn exported_source(registry: &places::Registry, from: String, cx: &places::Cx) -> Result<String, String> {
+    copy_source(from, true, |path| Ok(transfer_of(registry, path)?.export(path, cx)?))
+}
+
+/// The local file `from` saved at the pending name `to` in an Arbesk
+/// collection by the destination's provider (`Route::IntoArbesk`): the new
+/// asset's path.
+fn write_into_place(
+    registry: &places::Registry,
+    from: &str,
+    to: &str,
+    overwrite: bool,
+    cx: &places::Cx,
+) -> Result<String, String> {
+    Ok(transfer_of(registry, to)?.write(Path::new(from), to, overwrite, cx)?.path)
 }
 
 /// The transfer primitives of `path`'s provider: the route table
@@ -957,9 +975,7 @@ async fn copy_routed(
     if route == Route::IntoArbesk {
         return blocking(move || {
             let cx = places_cx(&app, progress);
-            let registry = app.state::<places::Registry>();
-            let put = transfer_of(&registry, &to)?.write(Path::new(&from), &to, overwrite, &cx)?;
-            Ok(put.path)
+            write_into_place(&app.state::<places::Registry>(), &from, &to, overwrite, &cx)
         })
         .await?;
     }
@@ -1783,10 +1799,15 @@ async fn arbesk_create_collection(
 ) -> Result<String, String> {
     blocking(move || {
         let cx = places_cx(&app, progress::Progress::default());
-        let registry = app.state::<places::Registry>();
-        Ok(arbesk_place(&registry)?.create(&path, &name, places::NewKind::Folder, &cx)?)
+        new_collection(&app.state::<places::Registry>(), &path, &name, &cx)
     })
     .await?
+}
+
+/// A collection named `name` in the Arbesk account `path`: Arbesk's
+/// provider's `create` of a folder there.
+fn new_collection(registry: &places::Registry, path: &str, name: &str, cx: &places::Cx) -> Result<String, String> {
+    Ok(arbesk_place(registry)?.create(path, name, places::NewKind::Folder, cx)?)
 }
 
 /// Add an Arbesk account to a collection's editor list by its email, as a
@@ -3032,6 +3053,43 @@ mod read_gate_tests {
         let root = dir.path().to_string_lossy().to_string();
         search_local(&root, "notes", false, 10, &mut |batch| found.extend(batch), &|| false).unwrap();
         assert_eq!(found.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["notes.txt"]);
+    }
+
+    /// The Arbesk commands reach Arbesk's provider for the right path:
+    /// a copy in by its destination, a copy out by its source, a new
+    /// collection and each extension by the scheme. With no account
+    /// connected, each answers in the client's words, never a local or
+    /// “can't be copied” refusal.
+    #[test]
+    fn arbesk_commands_reach_arbesks_provider() {
+        const COLLECTION: &str = "arbesk://0x00000000000000000000000000000000000000ab/12~Set";
+        const ASSET: &str = "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf";
+        const PENDING: &str = "arbesk://0x00000000000000000000000000000000000000ab/12~Set/~Box.gltf";
+        let registry = providers::testing::plain();
+        let cx = places::Cx::default();
+        let unknown = "Connect this Arbesk account first.".to_string();
+        let model = "/nonexistent-filebrowser-tests/Box.gltf";
+        assert_eq!(exported_source(&registry, ASSET.into(), &cx), Err(unknown.clone()));
+        assert_eq!(write_into_place(&registry, model, PENDING, false, &cx), Err(unknown.clone()));
+        // A local path has no transfer through the registry yet.
+        let local = "/Users/me/Box.gltf";
+        assert_eq!(transfer_of(&registry, local).err(), Some(format!("“{local}” can't be copied.")));
+        assert_eq!(
+            transfer_of(&registry, "share://r1/a").err().as_deref(),
+            Some("Shared folders are read only.")
+        );
+        let in_account = "Create collections in the account's folder.".to_string();
+        assert_eq!(new_collection(&registry, COLLECTION, "x", &cx), Err(in_account));
+        assert_eq!(arbesk_place(&registry).unwrap().scheme(), arbesk::SCHEME);
+        let words = |error: places::Error| error.to_string();
+        let scene = arbesk_ext(&registry, |e| e.preview).unwrap().scene(ASSET, None);
+        assert_eq!(scene.map_err(words).err(), Some(unknown.clone()));
+        let saves = arbesk_ext(&registry, |e| e.versions).unwrap().versions(ASSET);
+        assert_eq!(saves.map_err(words).err(), Some(unknown.clone()));
+        let shared = arbesk_ext(&registry, |e| e.sharing).unwrap().share(COLLECTION, "a@b.c", 1);
+        assert_eq!(shared.map_err(words).err(), Some(unknown));
+        assert!(arbesk_ext(&registry, |e| e.accounts).unwrap().accounts().is_empty());
+        assert!(arbesk_ext(&registry, |e| e.thumbnails).is_ok());
     }
 
     /// `open_target` for a path the registry sends to this computer.
