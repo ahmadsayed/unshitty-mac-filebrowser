@@ -1,0 +1,98 @@
+{
+  "about": "What each kind of place allows, as the backend's `capabilities` command answers it (src-tauri/src/providers.rs, capability_table) for a path of each kind (`paths`). The Rust test and tests/capabilities.test.ts both check it, so the backend, the frontend's built-in table (src/capabilities.ts) and the mock agree.",
+  "paths": {
+    "folder": "/",
+    "drive": "gdrive://acct/root~x",
+    "share": "share://r1/Photos",
+    "sftp": "sftp://me@host/home",
+    "arbesk-account": "arbesk://0x00000000000000000000000000000000000000ab",
+    "arbesk-collection": "arbesk://0x00000000000000000000000000000000000000ab/12~Set",
+    "arbesk-asset": "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf"
+  },
+  "table": {
+    "folder": {
+      "read_only": false,
+      "can_create": true,
+      "can_rename": true,
+      "can_trash": true,
+      "can_copy_in": true,
+      "can_copy_out": true,
+      "knows_sizes": true,
+      "knows_counts": true,
+      "searchable": true,
+      "has_thumbnails": true
+    },
+    "drive": {
+      "read_only": false,
+      "can_create": true,
+      "can_rename": true,
+      "can_trash": true,
+      "can_copy_in": true,
+      "can_copy_out": true,
+      "knows_sizes": true,
+      "knows_counts": false,
+      "searchable": false,
+      "has_thumbnails": true
+    },
+    "share": {
+      "read_only": true,
+      "can_create": false,
+      "can_rename": false,
+      "can_trash": false,
+      "can_copy_in": false,
+      "can_copy_out": false,
+      "knows_sizes": true,
+      "knows_counts": false,
+      "searchable": false,
+      "has_thumbnails": false
+    },
+    "sftp": {
+      "read_only": true,
+      "can_create": false,
+      "can_rename": false,
+      "can_trash": false,
+      "can_copy_in": false,
+      "can_copy_out": false,
+      "knows_sizes": true,
+      "knows_counts": false,
+      "searchable": false,
+      "has_thumbnails": false
+    },
+    "arbesk-account": {
+      "read_only": true,
+      "can_create": true,
+      "can_rename": false,
+      "can_trash": false,
+      "can_copy_in": false,
+      "can_copy_out": false,
+      "knows_sizes": false,
+      "knows_counts": false,
+      "searchable": false,
+      "has_thumbnails": true
+    },
+    "arbesk-collection": {
+      "read_only": true,
+      "can_create": false,
+      "can_rename": false,
+      "can_trash": false,
+      "can_copy_in": true,
+      "can_copy_out": false,
+      "knows_sizes": false,
+      "knows_counts": false,
+      "searchable": false,
+      "has_thumbnails": true
+    },
+    "arbesk-asset": {
+      "read_only": true,
+      "can_create": false,
+      "can_rename": false,
+      "can_trash": false,
+      "can_copy_in": false,
+      "can_copy_out": true,
+      "knows_sizes": false,
+      "knows_counts": false,
+      "searchable": false,
+      "has_thumbnails": true
+    }
+  }
+}

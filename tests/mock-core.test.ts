@@ -1173,6 +1173,11 @@ test("list_apps lists, waits, fails and can be replaced; open_with fails once on
 
 // ----- Any command -----
 
+test("capabilities serves the backend's table, as tests/capabilities.json pins it", async () => {
+  const { default: fixture } = await import("./capabilities.json");
+  expect(await invoke("capabilities")).toEqual(fixture.table);
+});
+
 type MockCalls = {
   count(cmd: string): number; hold(cmd: string): void; release(cmd: string): void;
   releaseLast(cmd: string): void; failNext(cmd: string, error: string): void; reset(): void;

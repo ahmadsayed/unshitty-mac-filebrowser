@@ -160,6 +160,72 @@ impl<S: Reach<CloudState>> places_gdrive::Reach for DriveState<S> {
     }
 }
 
+// ---- What the frontend reads (design D5, step 7) --------------------------------
+
+/// The booleans of a place's `places::Capabilities` the frontend reads,
+/// for one kind of place it tells apart. Only the booleans: the frontend
+/// keeps its own toasts (D5), so no refusal wording goes with them, and
+/// `can_copy_in` is whether the place has no copy-in refusal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct KindCapabilities {
+    pub read_only: bool,
+    pub can_create: bool,
+    pub can_rename: bool,
+    pub can_trash: bool,
+    pub can_copy_in: bool,
+    pub can_copy_out: bool,
+    pub knows_sizes: bool,
+    pub knows_counts: bool,
+    pub searchable: bool,
+    pub has_thumbnails: bool,
+}
+
+impl KindCapabilities {
+    fn of(caps: &places::Capabilities) -> Self {
+        KindCapabilities {
+            read_only: caps.read_only,
+            can_create: caps.can_create,
+            can_rename: caps.can_rename,
+            can_trash: caps.can_trash,
+            can_copy_in: !caps.refused.iter().any(|r| r.operation == places::Operation::CopyIn),
+            can_copy_out: caps.can_copy_out,
+            knows_sizes: caps.knows_sizes,
+            knows_counts: caps.knows_counts,
+            searchable: caps.searchable,
+            has_thumbnails: caps.has_thumbnails,
+        }
+    }
+}
+
+/// Each kind of place the frontend tells apart (`src/capabilities.ts`'
+/// `CapabilityRow`, picked by `locations.ts`' `capabilityRow`), with a path
+/// of that kind its provider answers for. Every place answers the same for
+/// all its paths but Arbesk, whose account, collection and asset differ
+/// (New Collection in an account, copies into a collection, out of an
+/// asset), so it has a row each. Recent, Starred, Network and the Trash are
+/// the frontend's own views, not places: they have no row.
+pub const KINDS: [(&str, &str); 7] = [
+    ("folder", "/"),
+    ("drive", "gdrive://acct/root~x"),
+    ("share", "share://r1/Photos"),
+    ("sftp", "sftp://me@host/home"),
+    ("arbesk-account", "arbesk://0x00000000000000000000000000000000000000ab"),
+    ("arbesk-collection", "arbesk://0x00000000000000000000000000000000000000ab/12~Set"),
+    ("arbesk-asset", "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf"),
+];
+
+/// What each kind of place allows, asked of the registered providers
+/// themselves (`Provider::capabilities`, no network), so the frontend's
+/// table can't drift from the backend's. The `capabilities` command's
+/// answer; `tests/capabilities.json` pins it, and the frontend's built-in
+/// copy and the mock against it.
+pub fn capability_table(registry: &Registry) -> std::collections::BTreeMap<&'static str, KindCapabilities> {
+    KINDS
+        .iter()
+        .map(|&(kind, path)| (kind, KindCapabilities::of(&registry.provider_for(path).capabilities(path))))
+        .collect()
+}
+
 /// Stand-ins for the servers, so tests run the adapters and the registry
 /// without Tauri or a network.
 #[cfg(test)]
@@ -670,5 +736,44 @@ mod tests {
             assert!(!provider.exists(path, &cx), "{path}");
         }
         assert_eq!(registry.provider_for("gdrive://").path_info(&["gdrive://".into()], &cx), vec![None]);
+    }
+
+    /// The table the frontend reads (design D5) is the providers' own
+    /// answers, and `tests/capabilities.json` holds it: the frontend's
+    /// built-in copy and the mock are tested against the same file
+    /// (`tests/capabilities.test.ts`), so none of the three can drift.
+    #[test]
+    fn the_frontends_capability_table_is_the_shared_fixture() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/capabilities.json")).unwrap();
+        let table = serde_json::to_value(capability_table(&testing::plain())).unwrap();
+        assert_eq!(table, fixture["table"]);
+        let paths: serde_json::Map<String, serde_json::Value> =
+            KINDS.iter().map(|&(kind, path)| (kind.to_string(), path.into())).collect();
+        assert_eq!(serde_json::Value::Object(paths), fixture["paths"]);
+        // Each row's path is of its kind: its place, and for Arbesk the
+        // account, collection or asset.
+        let registry = testing::plain();
+        let schemes: Vec<&str> = KINDS.iter().map(|&(_, path)| registry.provider_for(path).scheme()).collect();
+        assert_eq!(schemes, ["", "gdrive", "share", "sftp", "arbesk", "arbesk", "arbesk"]);
+        assert_eq!([KINDS[4].1, KINDS[5].1, KINDS[6].1], [ACCOUNT, ARBESK, ASSET]);
+    }
+
+    /// The frontend picks an Arbesk path's row by its number of segments
+    /// (`locations.ts`' `capabilityRow`): the root, a single segment that
+    /// isn't an address and four or more segments get the account's row,
+    /// and it reads a path's row for its copy flags only (`copiesOf`).
+    /// Those agree with what the provider says for such a path; New
+    /// Collection doesn't (the account allows it, these paths refuse it).
+    #[test]
+    fn the_arbesk_root_and_a_malformed_path_copy_as_the_account() {
+        let registry = testing::plain();
+        let account = KindCapabilities::of(&registry.provider_for(ACCOUNT).capabilities(ACCOUNT));
+        for path in ["arbesk://", "arbesk://not-an-address", "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf/x"] {
+            assert_eq!(registry.provider_for(path).scheme(), "arbesk", "{path}");
+            let caps = KindCapabilities::of(&registry.provider_for(path).capabilities(path));
+            assert_eq!((caps.can_copy_in, caps.can_copy_out), (account.can_copy_in, account.can_copy_out), "{path}");
+            assert!(!caps.can_create && account.can_create, "{path}");
+        }
     }
 }

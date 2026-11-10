@@ -864,6 +864,17 @@ async fn path_exists(app: tauri::AppHandle, path: String) -> bool {
     .unwrap_or(false)
 }
 
+/// What each kind of place the frontend tells apart allows (design D5): the
+/// booleans of each registered provider's own `capabilities`, read once at
+/// startup into `src/capabilities.ts`. A plain command: it asks no server
+/// and touches no file, only each provider's parser.
+#[tauri::command]
+fn capabilities(
+    registry: tauri::State<places::Registry>,
+) -> std::collections::BTreeMap<&'static str, providers::KindCapabilities> {
+    providers::capability_table(&registry)
+}
+
 /// `path_exists` for `path`: its place's provider answers.
 fn exists_in(registry: &places::Registry, path: &str, cx: &places::Cx) -> bool {
     registry.provider_for(path).exists(path, cx)
@@ -2414,6 +2425,7 @@ pub fn run() {
             make_dir,
             rename_entry,
             path_exists,
+            capabilities,
             path_info,
             file_properties,
             folder_size,
