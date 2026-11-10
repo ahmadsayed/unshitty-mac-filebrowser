@@ -5,7 +5,7 @@ which module owns which rule, how a call travels from the window to the
 filesystem, and where a change lands. The module list itself, with one line
 per file, is the Layout table in [AGENTS.md](../AGENTS.md).
 
-![Block diagram of the app: the frontend's main.ts asks four groups of rule and state modules and calls typed commands in api.ts; Tauri IPC carries them to lib.rs, where every path goes through the place.rs gate before reaching placement.rs, trash_ops::Trash, this computer's places-local crate, Drive, shares, SSH or Arbesk; placement uses the Trash (in places-local) for Replace and places-local's rename.rs and platform.rs for renames that never replace.](architecture.svg)
+![Block diagram of the app: the frontend's main.ts asks four groups of rule and state modules and calls typed commands in api.ts; Tauri IPC carries them to lib.rs, where every path goes through the place.rs gate before reaching the engine (engine.rs and placement.rs), trash_ops::Trash, this computer's places-local crate, Drive, shares, SSH or Arbesk; placement uses the Trash (in places-local) for Replace and places-local's rename.rs and platform.rs for renames that never replace.](architecture.svg)
 
 Teal boxes are the modules the refactors added or deepened, with their PR
 numbers. Dashed boxes are outside the app (the operating system) or stand in
@@ -52,23 +52,34 @@ receives goes through `place.rs` first: its kind, whether it is a local path
 (remote, malformed and relative paths never reach `std::fs`), and whether
 the place may be written. Then:
 
-- copies, moves and Drive downloads go through `placement.rs`: the refusals
-  and their wording, staging under a hidden name, and Replace (a local copy
-  or move is `local_transfer.rs`, over `places-local`'s file primitives); a copy or
-  move to, from or inside Google Drive is `engine.rs`'s: `lib.rs` takes
+- copies, moves and Drive downloads are the transfer engine's
+  (`engine.rs`), which places what lands on this computer through
+  `placement.rs`: the refusals and their wording, staging under a hidden
+  name, and Replace. A local copy or move is `engine::local`, run on this
+  computer's transfer session from the registry (`places-local`'s
+  `transfer.rs`: its read of the item, the rename that never replaces,
+  Replace's logged Trash and take-back), inside Keep Versions' decorator
+  (`versions/versioned.rs`), which closes the histories in both ends
+  around it; a copy or
+  move to, from or inside Google Drive is the engine's too: `lib.rs` takes
   the Drive provider from the registry, and the engine builds the transfer
   from that provider's transfer session (its `places::Transfer`
   primitives: what is at the target, write, read, a copy on the server,
   rename, move, Trash and take back) and its declared `Capabilities`, runs
   Drive's Replace the same way, and places what lands here through
   `placement.rs`;
-- Move to Trash, Restore, Delete Permanently and Empty Trash go through
+- New Folder, New File, Rename, Batch Rename, Move to Trash and Put Back
+  on this computer ask its provider in the registry (Keep Versions'
+  decorator around `places_local::Local`; Put Back reaches
+  `Trash::restore` through it), and Delete Permanently and Empty Trash go
+  through
   `trash_ops::Trash` (in the `places-local` crate): the trash log, where an item came from (sidecar, log,
   Finder's Put Back), and both Trash layouts;
 - listing, whether an item exists, path info, thumbnails and opening ask
   the place's provider in the `places::Registry`, picked by the path's
   scheme (`providers.rs`: this computer's provider from the `places-local`
-  crate, handed the app's thumbnails, Google Drive's, Arbesk's and SSH's own crates' providers, and
+  crate, handed the app's thumbnails and Trash, inside Keep Versions'
+  decorator, Google Drive's, Arbesk's and SSH's own crates' providers, and
   received shares' provider in `share/provider.rs`, registered as they
   are), one lookup and one call per command, on a blocking thread (a
   share's provider waits on the async runtime from there);
@@ -120,8 +131,8 @@ opening files, windows, dragging out and installs.
 | A new kind of location (SMB, WebDAV) | a row in `paths.ts`, a kind in `locations.ts`, a `Kind` in `place.rs`, a provider in `providers.rs` and its registry line |
 | A new online account provider (OneDrive, Dropbox) | a row in `providers.ts` and in `PROVIDER_ACTIONS` (`main.ts`), plus the location rows above |
 | Arbesk's listings, builds, versions or uploads | the private modules of `src-tauri/crates/arbesk`, answered through its provider (`provider.rs`: `places::Provider`, `Transfer` and the extensions); a new kind of answer is a method on a `places` extension, not a new type on the facade |
-| How copy, move or Replace behaves | `placement.rs` and `local_transfer.rs`, and `engine.rs` for the routes to, from and inside Google Drive |
-| Listing, search, counts, renames or path info on this computer | `src-tauri/crates/places-local` (`fs_ops.rs`, `rename.rs`), its provider in `provider.rs` |
+| How copy, move or Replace behaves | `engine.rs` (every route: `local` on this computer, the routes to, from and inside Google Drive) and `placement.rs` (what lands on this computer); a step of a local copy or move is one of `places-local`'s `transfer.rs` primitives |
+| Listing, search, counts, renames or path info on this computer | `src-tauri/crates/places-local` (`fs_ops.rs`, `rename.rs`), its provider in `provider.rs`; what Keep Versions does around a write, `versions/versioned.rs` |
 | What Google Drive is asked, its sign-in, its paths | `src-tauri/crates/places-gdrive`; a step of a Drive copy or move is one of its `places::Transfer` primitives, and their order is `engine.rs`'s |
 | The trash log, Put Back, Restore, Empty Trash | `trash_ops::Trash`, in `src-tauri/crates/places-local` (a test on each layout) |
 | Something new that remembers paths | one holder in `path-refs.ts` |

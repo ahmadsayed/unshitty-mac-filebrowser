@@ -19,6 +19,7 @@ pub mod registry;
 pub mod restore;
 pub mod state;
 pub mod store;
+pub mod versioned;
 pub mod watch;
 
 /// Written into the index's `meta` table and `.versions/meta.json`.

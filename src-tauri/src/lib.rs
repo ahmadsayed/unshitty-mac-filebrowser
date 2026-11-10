@@ -3,7 +3,6 @@ mod config_store;
 mod downloads;
 mod engine;
 mod file_icons;
-mod local_transfer;
 mod place;
 mod placement;
 mod platform;
@@ -30,7 +29,7 @@ use places_gdrive::CloudState;
 use places_gdrive::service::OpenTarget;
 use place::{Kind, Route};
 use versions::history::History;
-use versions::state::{Transfer, VersionedTrash, VersionsState};
+use versions::state::VersionsState;
 use versions::{VersionDiff, VersionInfo, restore};
 
 fn config_file(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
@@ -265,6 +264,20 @@ impl share::provider::Shares for tauri::AppHandle {
     }
 }
 
+/// The app's handle as this computer's provider reaches the app's Trash
+/// and its log, and the home folder Move to Trash uses
+/// (`places_local::TrashReach`), in the words the commands answered with.
+struct AppTrash(tauri::AppHandle);
+
+impl places_local::TrashReach for AppTrash {
+    fn trash(&self) -> Result<&trash_ops::Trash, String> {
+        Ok(trash_of(&self.0)?.inner())
+    }
+    fn home(&self) -> Result<PathBuf, String> {
+        home_dir(&self.0)
+    }
+}
+
 /// The registry over the app's managed state and folders, with the places
 /// that are their own crates' providers (`held`); received shares wait on
 /// Tauri's async runtime, from the blocking threads commands call
@@ -276,7 +289,7 @@ fn places_registry(app: &tauri::AppHandle, held: providers::Held) -> places::Reg
         shared_thumbnails: shared_thumbnail_dir(app),
     };
     let runtime = tauri::async_runtime::handle().inner().clone();
-    providers::registry(app.clone(), folders, held, runtime)
+    providers::registry(app.clone(), Box::new(AppTrash(app.clone())), folders, held, runtime)
 }
 
 /// Arbesk's provider, for the `arbesk_*` commands: they are Arbesk's own,
@@ -643,12 +656,26 @@ fn preview_file(registry: &places::Registry, path: &str, cx: &places::Cx) -> Res
 }
 
 #[tauri::command]
-async fn rename_many(items: Vec<fs_ops::RenameItem>) -> Result<(), String> {
+async fn rename_many(app: tauri::AppHandle, items: Vec<fs_ops::RenameItem>) -> Result<(), String> {
+    blocking(move || rename_many_in(&app.state::<places::Registry>(), items)).await?
+}
+
+/// Batch Rename: every path on this computer (refused otherwise, on either
+/// side), then this computer's `LocalOnly` extension, all or nothing.
+fn rename_many_in(registry: &places::Registry, items: Vec<fs_ops::RenameItem>) -> Result<(), String> {
     for item in &items {
         place::local_write(&item.from)?;
         place::local_write(&item.to)?;
     }
-    blocking(move || fs_ops::rename_many(items)).await?
+    let renames: Vec<(String, String)> = items.into_iter().map(|item| (item.from, item.to)).collect();
+    let here = this_computer(registry).extensions().local_only.ok_or("Batch Rename isn't available.")?;
+    Ok(here.rename_many(&renames)?)
+}
+
+/// This computer's provider: Keep Versions' decorator around
+/// `places_local::Local`, which every absolute path reaches.
+fn this_computer(registry: &places::Registry) -> &dyn places::Provider {
+    registry.provider_for("/")
 }
 
 #[tauri::command]
@@ -664,9 +691,18 @@ async fn create_symlink(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn create_file(path: String) -> Result<(), String> {
+async fn create_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    blocking(move || new_item_in(&app.state::<places::Registry>(), path, places::NewKind::EmptyFile).map(drop)).await?
+}
+
+/// A new folder or empty file at `path` on this computer, by its provider
+/// (`create` in `path`'s folder, never over an item); shares, SSH servers
+/// and anything that isn't a path on this computer are refused. Returns
+/// `path`.
+fn new_item_in(registry: &places::Registry, path: String, kind: places::NewKind) -> Result<String, String> {
     place::local_write(&path)?;
-    blocking(move || fs_ops::create_file(path)).await?
+    let (parent, name) = path.rsplit_once('/').ok_or_else(|| format!("“{path}” is not a local file."))?;
+    Ok(registry.provider_for(&path).create(parent, name, kind, &places::Cx::default())?)
 }
 
 #[tauri::command]
@@ -779,22 +815,17 @@ async fn make_dir(app: tauri::AppHandle, path: String) -> Result<String, String>
     if place::kind(&path) == Kind::Drive {
         return blocking(move || places_gdrive::write::make_dir(&app.state::<CloudState>(), &path)).await?;
     }
-    make_local_dir(path)
-}
-
-/// `make_dir` anywhere but Drive: refused for shares, SSH servers and
-/// anything that isn't a path on this computer.
-fn make_local_dir(path: String) -> Result<String, String> {
-    place::local_write(&path)?;
-    fs_ops::make_dir(path.clone())?;
-    Ok(path)
+    new_item_in(&app.state::<places::Registry>(), path, places::NewKind::Folder)
 }
 
 /// Copy or move when either side is in Drive, by the transfer engine
 /// (`engine.rs`) over the Drive provider's transfer session, taken from the
 /// registry like any provider's: one session for the whole transfer, so
-/// its steps share what it learnt. A local source of a move goes to the
-/// Trash the way Move to Trash sends it, after the upload succeeded.
+/// its steps share what it learnt. This computer's Trash comes from its
+/// own transfer session, Keep Versions' decorator's: the item a download
+/// replaces, a partial folder and a moved local source go to the logged
+/// Trash through `VersionedTrash`, which closes the histories inside them
+/// first and reopens them if a failed Replace takes the item back.
 async fn drive_transfer(
     app: tauri::AppHandle,
     from: String,
@@ -804,16 +835,17 @@ async fn drive_transfer(
     progress: progress::Progress,
 ) -> Result<String, String> {
     blocking(move || {
-        let versions = app.state::<VersionsState>();
-        let trash_local = VersionedTrash::new(&versions, AppTrash { app: &app });
         let cx = places_cx(&app, progress);
         // The far side: whichever end isn't on this computer.
         let remote = if place::kind(&from) == Kind::Local { &to } else { &from };
         let registry = app.state::<places::Registry>();
         let caps = registry.provider_for(remote).capabilities(remote);
-        in_transfer(&registry, remote, &cx, |transfer| {
-            let remote = engine::Remote { transfer, caps };
-            engine::dispatch(&remote, &cx, &from, &to, overwrite, moving, &trash_local)
+        in_transfer(&registry, "/", &cx, |here| {
+            let trash_local = places_local::transfer::TrashOf::new(here, &cx);
+            in_transfer(&registry, remote, &cx, |transfer| {
+                let remote = engine::Remote { transfer, caps };
+                engine::dispatch(&remote, &cx, &from, &to, overwrite, moving, &trash_local)
+            })
         })
     })
     .await?
@@ -941,17 +973,23 @@ async fn copy_routed(
         })
         .await?;
     }
-    blocking(move || {
-        let state = app.state::<VersionsState>();
-        let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
-        state.transfer(&from_path, &to_path, Transfer::Copy, || {
-            let trash = AppTrash { app: &app };
-            local_transfer::copy_entry_with(from, to.clone(), overwrite, &progress, &trash)
-        })?;
-        Ok(to_path.to_string_lossy().to_string())
-    })
-    .await
-    .and_then(|result| result)
+    blocking(move || transfer_here(&app, &from, &to, overwrite, false, progress)).await?
+}
+
+/// A copy or move on this computer: the engine's local route
+/// (`engine::local`) on this computer's transfer session, which Keep
+/// Versions' decorator keeps the histories consistent around. Returns `to`.
+fn transfer_here(
+    app: &tauri::AppHandle,
+    from: &str,
+    to: &str,
+    overwrite: bool,
+    moving: bool,
+    progress: progress::Progress,
+) -> Result<String, String> {
+    let cx = places_cx(app, progress);
+    let registry = app.state::<places::Registry>();
+    in_transfer(&registry, from, &cx, |t| engine::local(t, &cx, from, to, overwrite, moving))
 }
 
 #[tauri::command]
@@ -970,17 +1008,7 @@ async fn move_entry(
         drive_transfer(app.clone(), from, to, overwrite, true, progress).await
     } else {
         let app = app.clone();
-        blocking(move || {
-            let state = app.state::<VersionsState>();
-            let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
-            state.transfer(&from_path, &to_path, Transfer::Move, || {
-                let trash = AppTrash { app: &app };
-                local_transfer::move_entry_with(from, to.clone(), overwrite, &progress, &trash)
-            })?;
-            Ok(to_path.to_string_lossy().to_string())
-        })
-        .await
-        .and_then(|result| result)
+        blocking(move || transfer_here(&app, &from, &to, overwrite, true, progress)).await.and_then(|result| result)
     };
     tracking.finish();
     result
@@ -994,14 +1022,22 @@ async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result
             .await?;
     }
     blocking(move || {
-        let state = app.state::<VersionsState>();
-        let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
-        state.transfer(&from_path, &to_path, Transfer::Move, || {
-            fs_ops::rename_entry(from, to.clone())
-        })?;
-        Ok(to_path.to_string_lossy().to_string())
+        let cx = places_cx(&app, progress::Progress::default());
+        let registry = app.state::<places::Registry>();
+        Ok(registry.provider_for(&from).rename(&from, rename_name(&from, &to)?, &cx)?)
     })
     .await?
+}
+
+/// The name a Rename from `from` to `to` gives its provider: `to`'s name,
+/// when it stays in `from`'s folder (as the frontend always asks). A `to`
+/// in another folder is refused in Drive's words: a move goes through the
+/// transfer's refusals, never through Rename.
+fn rename_name<'a>(from: &str, to: &'a str) -> Result<&'a str, String> {
+    match (from.rsplit_once('/'), to.rsplit_once('/')) {
+        (Some((folder, _)), Some((to_folder, name))) if folder == to_folder => Ok(name),
+        _ => Err(places_local::provider::RENAME_STAYS.to_string()),
+    }
 }
 
 /// The home Trash and this app's log of it (`trash_ops::Trash`). Missing
@@ -1015,27 +1051,6 @@ fn trash_of(app: &tauri::AppHandle) -> Result<tauri::State<'_, trash_ops::Trash>
 /// Restore From Trash knows where it came from.
 fn send_to_trash(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
     trash_of(app)?.send(path).map(|_| ())
-}
-
-/// The app's logged Trash as a copy, a move or a Drive transfer uses it
-/// (`placement::ReplaceTrash`): Restore knows where each item came from,
-/// and the old item a failed Replace takes back is forgotten. Looked up only
-/// when something goes to the Trash. A local copy or move closes the
-/// histories inside an item with `VersionsState::transfer`; a Drive
-/// transfer wraps this in `VersionedTrash`, which closes them before an
-/// item goes and reopens them if a failed Replace takes it back.
-struct AppTrash<'a> {
-    app: &'a tauri::AppHandle,
-}
-
-impl placement::ReplaceTrash for AppTrash<'_> {
-    fn send(&self, path: &Path) -> Result<Option<PathBuf>, String> {
-        trash_of(self.app)?.send(path)
-    }
-
-    fn take_back(&self, trashed: &Path, origin: &Path) -> Result<(), String> {
-        trash_of(self.app)?.untrash(trashed, origin)
-    }
 }
 
 fn home_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -1073,17 +1088,17 @@ fn trash_batch(
     paths: &[String],
     progress: &progress::Progress,
 ) -> Vec<TrashOutcome> {
-    let home = home_dir(app);
-    let versions = app.state::<VersionsState>();
-    let local = |origins: &[PathBuf]| match &home {
-        Ok(home) => versions.trash_many(origins, |ready| trash_ops::trash_many(ready, home, progress)),
-        Err(error) => origins.iter().map(|_| Err(error.clone())).collect(),
+    let registry = app.state::<places::Registry>();
+    let cx = places_cx(app, progress.clone());
+    // This computer's provider trashes its paths as one batch, logged, with
+    // Keep Versions closing the histories inside them first.
+    let local = |origins: &[PathBuf]| -> Vec<trash_ops::TrashResult> {
+        let origins: Vec<String> = origins.iter().map(|path| path.to_string_lossy().into_owned()).collect();
+        let origins: Vec<&str> = origins.iter().map(String::as_str).collect();
+        let trashed = this_computer(&registry).trash(&origins, &cx);
+        trashed.into_iter().map(|t| t.result.map(|at| at.map(PathBuf::from)).map_err(String::from)).collect()
     };
-    let (results, moves) =
-        trash_ops::trash_routed(paths, |path| trash_elsewhere(app, path, progress), local);
-    if let Ok(trash) = trash_of(app) {
-        trash.record(&moves);
-    }
+    let results = trash_ops::trash_routed(paths, |path| trash_elsewhere(app, path, progress), local);
     results.into_iter().map(TrashOutcome::from).collect()
 }
 
@@ -1150,10 +1165,10 @@ async fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, St
     if place::kind(&path) == Kind::Drive {
         return blocking(move || places_gdrive::write::restore(&app.state::<CloudState>(), &path)).await?;
     }
-    let trashed = place::local(&path)?.to_path_buf();
+    place::local(&path)?;
     blocking(move || {
-        let origin = trash_of(&app)?.restore(&trashed)?;
-        Ok(origin.to_string_lossy().to_string())
+        let cx = places_cx(&app, progress::Progress::default());
+        Ok(app.state::<places::Registry>().provider_for(&path).restore(&path, &cx)?)
     })
     .await?
 }
@@ -2747,6 +2762,23 @@ mod write_guard_tests {
     use super::*;
     use tauri::async_runtime::block_on;
 
+    // The commands as these tests called them before they took the app's
+    // registry (migration step 6b), now through this computer's provider
+    // in the tests' registry. Answered before `block_on` runs: a registry
+    // holds clients that may not be dropped on an async runtime.
+
+    fn create_file(path: String) -> std::future::Ready<Result<(), String>> {
+        std::future::ready(new_item_in(&providers::testing::plain(), path, places::NewKind::EmptyFile).map(drop))
+    }
+
+    fn make_local_dir(path: String) -> Result<String, String> {
+        new_item_in(&providers::testing::plain(), path, places::NewKind::Folder)
+    }
+
+    fn rename_many(items: Vec<fs_ops::RenameItem>) -> std::future::Ready<Result<(), String>> {
+        std::future::ready(rename_many_in(&providers::testing::plain(), items))
+    }
+
     const SHARED: &str = "Shared folders are read only.";
     const SSH: &str = "SSH servers are read only for now.";
     const DRIVE: &str = "This action is not available for Google Drive items yet.";
@@ -2803,11 +2835,10 @@ mod write_guard_tests {
         let others: Vec<(&str, String)> = refused().into_iter().filter(|(p, _)| place::kind(p) != Kind::Drive).collect();
         paths.extend(others.iter().map(|(path, _)| path.to_string()));
         paths.push("src".into());
-        let (results, moves) = trash_ops::trash_routed(&paths, local_trash_refusal, |origins| {
+        let results = trash_ops::trash_routed(&paths, local_trash_refusal, |origins| {
             assert_eq!(origins, [PathBuf::from("/Users/me/a.txt")]);
             vec![Ok(None)]
         });
-        assert!(moves.is_empty());
         let errors: Vec<Option<String>> = results.into_iter().map(Result::err).collect();
         let mut expected = vec![None];
         expected.extend(others.into_iter().map(|(_, refusal)| Some(refusal)));
@@ -3036,10 +3067,11 @@ mod read_gate_tests {
         let model = "/nonexistent-filebrowser-tests/Box.gltf";
         assert_eq!(exported_source(&registry, ASSET.into(), &cx), Err(unknown.clone()));
         assert_eq!(write_into_place(&registry, model, PENDING, false, &cx), Err(unknown.clone()));
-        // A local path has no transfer through the registry yet.
+        // A local path has this computer's transfer (step 6b); a read-only
+        // place has none.
         let local = "/Users/me/Box.gltf";
+        assert_eq!(in_transfer(&registry, local, &cx, |_| Ok(())), Ok(()));
         let none = |_: &dyn places::Transfer| -> Result<(), String> { unreachable!("no transfer here") };
-        assert_eq!(in_transfer(&registry, local, &cx, none).err(), Some(format!("“{local}” can't be copied.")));
         assert_eq!(
             in_transfer(&registry, "share://r1/a", &cx, none).err().as_deref(),
             Some("Shared folders are read only.")

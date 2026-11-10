@@ -5,7 +5,9 @@
 //! renames that never replace an item and the staging names
 //! (`rename`); the Trash in both layouts and its log (`trash_ops`); what
 //! differs between macOS and Linux for files (`platform`); and this
-//! computer's `places::Provider` (`provider`).
+//! computer's `places::Provider` (`provider`), which creates, renames,
+//! trashes and restores, with its `places::Transfer` (`transfer`) for the
+//! app's transfer engine.
 //!
 //! The app keeps the transfer engine (`engine.rs` and `placement.rs`, D6),
 //! Keep Versions as the decorator around this provider (D7), thumbnails, OS
@@ -17,6 +19,7 @@ pub mod fs_ops;
 pub mod platform;
 pub mod provider;
 pub mod rename;
+pub mod transfer;
 pub mod trash_ops;
 
 /// The source guards' walker, shared with the app's guard tests (its
@@ -24,4 +27,4 @@ pub mod trash_ops;
 #[cfg(any(test, feature = "testing"))]
 pub mod test_support;
 
-pub use provider::{Local, local};
+pub use provider::{Local, LoggedTrash, TrashReach, local};

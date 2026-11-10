@@ -2,16 +2,21 @@
 //! them (design `2026-11-10-provider-crates-design.md`, step 2).
 //!
 //! This computer's provider is its crate's (`places_local::Local`, step 6),
-//! handed the app's thumbnails (`LocalThumbnails`). Google Drive (`places_gdrive::Drive`,
+//! handed the app's thumbnails (`LocalThumbnails`) and Trash
+//! (`places_local::TrashReach`), inside Keep Versions' decorator
+//! (`versions::versioned::Versioned`, step 6b), which is what the registry
+//! holds for this computer. Google Drive (`places_gdrive::Drive`,
 //! step 4), Arbesk (`arbesk::Client`, step 3) and SSH servers
 //! (`places_sftp::SftpState`, step 5) are their own crates' providers, and
 //! received shares the app's own (`share::provider::ReceivedShares`, step
 //! 5), registered here as they are.
 //! The read side goes through them: listing, whether an item exists, path
-//! info, thumbnails, opening and the preview's file. This computer's and
-//! Drive's writes (new folders, rename, copy, move, Trash, restore) stay on
-//! their commands' own dispatch until the steps that move them, so their
-//! write methods say so instead of acting; Arbesk's copies in and out, new
+//! info, thumbnails, opening and the preview's file. This computer's writes
+//! (new folders and files, Rename, Batch Rename, copy and move, Move to
+//! Trash, Put Back) go through its provider too (step 6b); Drive's writes
+//! (new folders, rename, Trash, restore) stay on their commands' own
+//! dispatch, so its write methods say so instead of acting, while its
+//! copies and moves run on its transfer session; Arbesk's copies in and out, new
 //! collections, sharing, saves, scenes and accounts already go through its
 //! provider, and SSH servers and shares refuse every write as read only.
 //!
@@ -34,10 +39,12 @@ use std::sync::Arc;
 use places::{Registry, ext};
 
 use places_gdrive::{Calls as DriveCalls, CloudState, Drive, Live};
-use places_local::Local;
+use places_local::{Local, TrashReach};
 use places_sftp::SftpState;
 use crate::share::provider::{ReceivedShares, Shares};
 use crate::thumbnails;
+use crate::versions::state::VersionsState;
+use crate::versions::versioned::Versioned;
 
 /// Where an adapter finds the state it wraps: `lib.rs` answers it for the
 /// app handle with the managed state, as the commands did.
@@ -65,15 +72,23 @@ pub struct Held {
 }
 
 /// The registry of every place the app shows, its providers reaching their
-/// state through `states`; received shares wait on `runtime`, the app's
-/// async runtime.
-pub fn registry<S>(states: S, folders: Folders, held: Held, runtime: tokio::runtime::Handle) -> Registry
+/// state through `states` (this computer: Keep Versions' histories), this
+/// computer's provider the app's Trash through `trash` (`lib.rs` answers
+/// `places_local::TrashReach` for the app handle); received shares wait on
+/// `runtime`, the app's async runtime.
+pub fn registry<S>(
+    states: S,
+    trash: Box<dyn TrashReach>,
+    folders: Folders,
+    held: Held,
+    runtime: tokio::runtime::Handle,
+) -> Registry
 where
-    S: Reach<CloudState> + Shares + Clone,
+    S: Reach<CloudState> + Reach<VersionsState> + Shares + Clone,
 {
     let Folders { cache, thumbnails, shared_thumbnails } = folders;
     registry_with(
-        local(thumbnails, shared_thumbnails),
+        local(thumbnails, shared_thumbnails, trash, Box::new(states.clone())),
         Drive::new(Live(DriveState(states.clone())), cache),
         held,
         ReceivedShares::new(states, runtime),
@@ -82,7 +97,7 @@ where
 
 /// The registry over these providers.
 fn registry_with(
-    local: Local,
+    local: Versioned,
     drive: Drive<impl DriveCalls>,
     held: Held,
     shares: ReceivedShares<impl Shares>,
@@ -104,9 +119,16 @@ pub struct LocalThumbnails {
     shared_thumbnails: Option<PathBuf>,
 }
 
-/// This computer's provider, with the app's thumbnails in these folders.
-fn local(thumbnails: Option<PathBuf>, shared_thumbnails: Option<PathBuf>) -> Local {
-    Local::new(Box::new(LocalThumbnails { thumbnails, shared_thumbnails }))
+/// This computer's provider, with the app's thumbnails in these folders and
+/// the app's Trash, inside Keep Versions' decorator over `versions`.
+fn local(
+    thumbnails: Option<PathBuf>,
+    shared_thumbnails: Option<PathBuf>,
+    trash: Box<dyn TrashReach>,
+    versions: Box<dyn Reach<VersionsState>>,
+) -> Versioned {
+    let thumbnails = Box::new(LocalThumbnails { thumbnails, shared_thumbnails });
+    Versioned::new(Local::new(thumbnails, trash), versions)
 }
 
 impl ext::Thumbnails for LocalThumbnails {
@@ -224,11 +246,39 @@ pub(crate) mod testing {
         Arc::new(arbesk::Client::new(nowhere.join("cache"), nowhere.join("accounts.json"), nowhere.join("sessions")))
     }
 
+    /// No Trash: the tests that use the registry trash nothing on this
+    /// computer.
+    pub struct NoTrash;
+
+    impl TrashReach for NoTrash {
+        fn trash(&self) -> std::result::Result<&places_local::trash_ops::Trash, String> {
+            Err("The home folder is unknown".into())
+        }
+        fn home(&self) -> std::result::Result<PathBuf, String> {
+            Err("No home folder in tests.".into())
+        }
+    }
+
+    /// Keep Versions with no history registered.
+    pub struct NoHistories(VersionsState);
+
+    impl Reach<VersionsState> for NoHistories {
+        fn reach(&self) -> &VersionsState {
+            &self.0
+        }
+    }
+
+    /// This computer's provider with no Trash and no history.
+    fn plain_local() -> Versioned {
+        let versions = VersionsState::new(PathBuf::from("/nonexistent-filebrowser-tests/versioned.json"));
+        local(None, None, Box::new(NoTrash), Box::new(NoHistories(versions)))
+    }
+
     /// The registry with Drive answered by `drive`, the real Arbesk
     /// provider with no account and the real SSH provider with no server.
     pub fn registry(drive: StubDrive) -> Registry {
         registry_with(
-            local(None, None),
+            plain_local(),
             Drive::new(drive, Err("No app cache in tests.".into())),
             Held { arbesk: arbesk(), sftp: sftp() },
             ReceivedShares::new(NoShares, runtime()),
@@ -239,7 +289,7 @@ pub(crate) mod testing {
     /// other server expected to be asked anything.
     pub fn registry_with_shares(shares: ReceivedShares<impl Shares>) -> Registry {
         registry_with(
-            local(None, None),
+            plain_local(),
             Drive::new(StubDrive::default(), Err("No app cache in tests.".into())),
             Held { arbesk: arbesk(), sftp: sftp() },
             shares,
@@ -462,15 +512,16 @@ mod tests {
         assert!(thumbnails.thumbnail("file:///a.png", 64, &|| false).is_empty());
     }
 
-    /// This computer's and Drive's writes and lookups stay on their
-    /// commands' dispatch; their providers say so rather than acting.
+    /// Drive's writes and lookups stay on their commands' dispatch; its
+    /// provider says so rather than acting. This computer's act (step 6b:
+    /// `places_local::provider`'s tests, and `versions::versioned`'s).
     #[test]
-    fn writes_are_not_routed_through_providers_yet() {
+    fn drives_writes_are_not_routed_through_providers_yet() {
         let registry = testing::plain();
         let cx = Cx::default();
         // Arbesk refuses them as read only, in its own crate's tests, and
         // so do SSH servers and shares (below).
-        for path in ["/Users/me/a", "gdrive://acct/root~x"] {
+        for path in ["gdrive://acct/root~x"] {
             let provider = registry.provider_for(path);
             let not_yet = |result: Result<String>| {
                 matches!(result, Err(Error::Unsupported(words)) if words.ends_with("registry yet."))
@@ -580,6 +631,13 @@ mod tests {
         }
     }
 
+    /// Keep Versions, as `lib.rs` answers it; the test asks none.
+    impl Reach<VersionsState> for Arc<States> {
+        fn reach(&self) -> &VersionsState {
+            panic!("no history in this test")
+        }
+    }
+
     impl Shares for Arc<States> {
         fn share_state(&self) -> &crate::share::state::ShareState {
             &self.shares
@@ -602,7 +660,7 @@ mod tests {
         let sftp = Arc::new(SftpState::new(dir.path().join("known_hosts"), dir.path().into(), dir.path().join("sftp")));
         let folders = Folders { cache: Ok(dir.path().join("cache")), thumbnails: None, shared_thumbnails: None };
         let arbesk = Arc::new(arbesk::Client::new(dir.path().join("cache"), dir.path().join("a.json"), dir.path().join("s")));
-        let registry = registry(states, folders, Held { arbesk, sftp }, testing::runtime());
+        let registry = registry(states, Box::new(testing::NoTrash), folders, Held { arbesk, sftp }, testing::runtime());
         for path in PATHS {
             assert_eq!(registry.provider_for(path).scheme(), scheme_of(place::kind(path)), "{path}");
         }

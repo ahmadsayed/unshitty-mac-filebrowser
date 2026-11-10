@@ -24,8 +24,10 @@
 //! lib.rs keeps one `Trash`, which owns the log (its file and lock), the
 //! order origins are looked up in, Restore, Delete Permanently, Empty Trash
 //! and what counts as inside the Trash. Move to Trash goes through the free
-//! functions `trash_many` and `trash_routed`, whose moves are then handed to
-//! `Trash::record`; every other item the app trashes goes through
+//! functions `trash_routed` (the routing of a batch across places) and
+//! `trash_many` (one local batch), and this computer's provider
+//! (`provider::Local::trash`) hands that batch's moves to `Trash::record`;
+//! every other item the app trashes goes through
 //! `Trash::send`, which logs it itself. Replace (the app's `placement.rs`) sends the
 //! old item through `Trash::send` too, and if its last step fails a moment
 //! later takes it straight back out with `Trash::untrash` (`untrash`, then
@@ -408,15 +410,14 @@ pub fn trash_many(paths: &[PathBuf], home: &Path, progress: &Progress) -> Vec<Tr
 
 /// One Move to Trash over `paths`: each path `elsewhere` takes (a refusal,
 /// or another Trash such as Drive's) gets its result from there; the rest go
-/// to `local` together, as one batch. Returns one result per path (the
-/// place in the Trash as text, for the frontend) and the `(trashed, origin)`
-/// pairs of the local items that could be found, for the log.
-#[allow(clippy::type_complexity)]
+/// to `local` together, as one batch, which logs its own moves (this
+/// computer's provider). Returns one result per path: the place in the
+/// Trash as text, for the frontend.
 pub fn trash_routed(
     paths: &[String],
     mut elsewhere: impl FnMut(&str) -> Option<Result<Option<String>, String>>,
     local: impl FnOnce(&[PathBuf]) -> Vec<TrashResult>,
-) -> (Vec<Result<Option<String>, String>>, Vec<(PathBuf, PathBuf)>) {
+) -> Vec<Result<Option<String>, String>> {
     let mut results: Vec<Result<Option<String>, String>> = Vec::with_capacity(paths.len());
     let mut origins = Vec::new();
     let mut at = Vec::new();
@@ -430,14 +431,10 @@ pub fn trash_routed(
             }
         }
     }
-    let mut moves = Vec::new();
-    for ((i, origin), result) in at.into_iter().zip(origins.iter()).zip(local(&origins)) {
-        if let Ok(Some(trashed)) = &result {
-            moves.push((trashed.clone(), origin.clone()));
-        }
+    for (i, result) in at.into_iter().zip(local(&origins)) {
         results[i] = result.map(|place| place.map(|p| p.to_string_lossy().to_string()));
     }
-    (results, moves)
+    results
 }
 
 /// `trash_many` with the Trash folder and the trashing itself passed in, so
@@ -764,7 +761,8 @@ fn empty(layout: Layout, trash_root: &Path, progress: &Progress) -> Result<(), S
 // Back), Restore (never overwriting, then forgetting the entry) and what
 // counts as inside the Trash. It is plain, so it is tested without Tauri;
 // lib.rs keeps one in its state. Move to Trash's batches (`trash_many`,
-// `trash_routed`) stay in the free functions above; `send` trashes and logs
+// `trash_routed`) stay in the free functions above, and this computer's
+// provider logs them (`Trash::record`); `send` trashes and logs
 // any other single item.
 // ---------------------------------------------------------------------------
 
@@ -1569,7 +1567,7 @@ mod tests {
             vec![Ok(Some(PathBuf::from("/Trash/a"))), Err("locked".to_string())]
         };
 
-        let (results, moves) = trash_routed(&paths, elsewhere, local);
+        let results = trash_routed(&paths, elsewhere, local);
 
         assert_eq!(batches, vec![vec![PathBuf::from("/a"), PathBuf::from("/b")]]);
         assert_eq!(
@@ -1581,7 +1579,6 @@ mod tests {
                 Err("Shared folders are read only.".into()),
             ]
         );
-        assert_eq!(moves, vec![(PathBuf::from("/Trash/a"), PathBuf::from("/a"))]);
     }
 
     #[test]
