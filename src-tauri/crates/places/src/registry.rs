@@ -52,6 +52,20 @@ impl Registry {
             .map_or(&*self.local, |(_, provider)| &**provider)
     }
 
+    /// The provider registered for `scheme` ("" for this computer), for a
+    /// command that belongs to one place whatever path it gets (Arbesk's
+    /// sign-in, say, or its collections), so that place's own parser
+    /// answers every path, as it did before the registry.
+    pub fn provider(&self, scheme: &str) -> Option<&dyn Provider> {
+        if scheme.is_empty() {
+            return Some(&*self.local);
+        }
+        self.remote
+            .iter()
+            .find(|(_, provider)| provider.scheme() == scheme)
+            .map(|(_, provider)| &**provider)
+    }
+
     /// One answer per path, in order, for a batch that spans places: each
     /// provider gets its own paths, in order, in a single call to `answer`
     /// (providers in the order their first path comes). A provider that
@@ -180,6 +194,17 @@ mod tests {
         assert_eq!(scheme_for("arbesk://0xab/1~Set"), "arbesk");
         assert_eq!(scheme_for("sftp://me@host/home"), "sftp");
         assert_eq!(scheme_for("share://r1/a.txt"), "share");
+    }
+
+    #[test]
+    fn a_provider_is_found_by_its_scheme() {
+        let registry = registry();
+        for scheme in ["", "gdrive", "arbesk", "sftp", "share"] {
+            assert_eq!(registry.provider(scheme).map(|p| p.scheme()), Some(scheme), "{scheme}");
+        }
+        for scheme in ["GDRIVE", "file", "gdrive://", "smb"] {
+            assert!(registry.provider(scheme).is_none(), "{scheme}");
+        }
     }
 
     #[test]

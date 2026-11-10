@@ -72,7 +72,7 @@ do. A pending name (a target that doesn't exist yet) keeps today's form
 | `places` | the interface: `Provider`, the extension traits, `Entry`, `Capabilities`, `Error`, `Progress`/`Phase`/`Snapshot`/`CANCELLED`, `OpenTarget`, `Registry`, and the shared helpers providers use today from the app: `PathInfo`, `Measure`, `FileProperties`, `Refusal`'s wording, `copy_counted`/`is_cancel`, a clock, an atomic JSON save (`write_json`; the 0600 `write_json_private` stays in `config_store`), the `.downloaded` mark (one copy, which `downloads.rs` and Drive both use) | `serde`, `serde_json` |
 | `places-local` | this computer: listing, stat, mkdir, the exclusive rename, the Trash (both layouts) and its log, properties, local thumbnail sources; `cfg` per OS (Linux, macOS; Windows later) | `places`, `trash`, `libc`, `gio` (Linux), `objc2`/`xattr` (macOS), `image` |
 | `places-gdrive` | Google Drive (today's `src/cloud/`, minus the local↔Drive half of `transfer.rs`, which joins the engine: D6) | `places`, `reqwest`, `oauth2`, `keyring` |
-| `arbesk` | stays its own crate; gains a `places::Provider` impl beside its `Client` | `places` |
+| `arbesk` | stays its own crate; its `Client` implements `places::Provider` itself (`provider.rs`) | `places` |
 | `places-sftp` | SSH servers (today's `sftp.rs`) | `places`, `ssh2` |
 | app (`src-tauri`) | commands, Tauri state, **the transfer engine** (D6), Keep Versions, shares (iroh stays in the app for now), the frontend | all of the above |
 
@@ -227,8 +227,8 @@ and declares how in `Capabilities`:
 
 | Primitive | Local | Drive | Arbesk |
 |---|---|---|---|
-| write a file or a whole folder from a source into a target path the engine chose, reporting skipped items | staged file, folder filled in place (`Stage::by_kind`) | resumable upload; a file whose upload is whole goes straight to its final name, folders and Replace staged as `.<name>.filebrowser-upload`; size checked after each file | `put` of a local model file; Replace saves a new version |
-| read an item into that writer | the file or tree itself | download streamed into the target, Docs and shortcuts skipped and named, duplicate names made unique, size checked | the built `.gltf`/`.3mf` (today's `export`) |
+| write a file or a whole folder from a source into a target path the engine chose, reporting skipped items | staged file, folder filled in place (`Stage::by_kind`) | resumable upload; a file whose upload is whole goes straight to its final name, folders and Replace staged as `.<name>.filebrowser-upload`; size checked after each file | `put` of a local model file (`write`, whose `replace` flag asks for a new version); Replace saves a new version |
+| read an item into that writer | the file or tree itself | download streamed into the target, Docs and shortcuts skipped and named, duplicate names made unique, size checked | the built `.gltf`/`.3mf` (`export`, a primitive of its own: a local file in the app cache the engine copies from as a local source, as today; `read_into` is unsupported) |
 | rename that never replaces | `renameat2`/`renamex_np` | check-then-act; the final rename of a staged copy doesn't check first, as today | — |
 | move the provider's own item to any path in it, never replacing, and move it back | `rename_new` | PATCH name + parents, after checking the name; put back on failure | — |
 | send to its Trash for Replace, and take it back | `Trash::send` / `Trash::untrash` (no parent folders made, log entry forgotten) — not `restore` | `trashed=true` / `false` | — (Replace = new version) |
@@ -296,7 +296,11 @@ its "This action is not available for …" text for the local-only gate, as
 its `Capabilities::refused` entry for `Operation::LocalOnly`.
 `place.rs` shrinks to the registry's lookup plus that gate; its table test
 keeps every row. Each command becomes one lookup and one call; the frontend's
-`Record<LocationKind, …>` tables keep their compile-time check.
+`Record<LocationKind, …>` tables keep their compile-time check. A command
+that belongs to one place (the `arbesk_*` commands: New Collection, sharing,
+saves, scenes, accounts) takes that place's provider by its scheme instead
+(`Registry::provider`), so the place's own parser answers any path it gets,
+malformed ones included, as its client did before the registry.
 
 **D11. Windows lands in `places-local`.** What is platform-specific is
 already confined: the exclusive rename (`MoveFileExW` without
@@ -333,9 +337,29 @@ next starts only after the human merged the last.
    path where today's refusals differ by path (an Arbesk asset can be
    copied out, a collection can't; a relative path is refused as not
    local), with a table test against `place.rs`' refusals.
-3. **Arbesk implements `Provider`** (it is already a crate): reads, its
-   `Transfer` for copy-in and copy-out, `Preview`, `Versions`, `Sharing`,
-   `Accounts`.
+3. **Arbesk implements `Provider`** (it is already a crate): its `Client`
+   is the provider (`crates/arbesk/src/provider.rs`), registered as it is,
+   and step 2's Arbesk adapter goes. Reads (list, exists, path info, fetch
+   for Open and Preview, `Thumbnails`), its capabilities path by path (copy
+   in only into a collection, copy out only of an asset, with the route
+   table's words), New Collection as `create` (a folder in an account,
+   which its capabilities allow there only, `can_create` with no Create
+   refusal; a collection or an asset refuses it with `create`'s own
+   “Create collections in the account's folder.”, a malformed path with its
+   parser's words, and a new file is refused by `create` as read only;
+   nothing is renamed, trashed or restored: “Arbesk is read only.”), its `Transfer` for copy-in (`write`, a local model file into a
+   collection; `replace` saves a new version) and copy-out (`export`, the
+   asset's own file built in the app cache, which the route then copies as
+   a local source, as today), and the extensions `Preview` (scene and
+   part), `Versions`, `Sharing` and `Accounts`. Their answers are `places`
+   types where one fits (`Version`, `Shared`, `SignIn`) and otherwise the
+   provider's own record as it serialised it (`places::Json`: an account,
+   a scene), so every command's JSON stays byte for byte. The `arbesk_*`
+   commands take Arbesk's provider by its scheme (`Registry::provider`),
+   so its parser answers any path they get, as the client did; the route
+   table stays in `place.rs` (D6). The app's tests run the real client with
+   no account (it asks no server); the answers are tested in the crate
+   against its fake Arbesk.
 4. **The transfer engine takes the local↔Drive half of `cloud/transfer.rs`
    and Drive's `finish_staged`**, then Drive becomes `places-gdrive`. The
    riskiest step, reviewed on its own: Drive's 169 tests come along, the

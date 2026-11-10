@@ -344,11 +344,7 @@ pub fn scene(
 pub const MAX_VERSIONS: usize = 50;
 
 /// One save of an asset: its manifest's CID, and when it was saved (ms).
-#[derive(serde::Serialize, Debug, Clone, PartialEq)]
-pub struct Version {
-    pub id: String,
-    pub timestamp: Option<i64>,
-}
+pub use places::Version;
 
 /// The saves of the asset at `path`, oldest first: its manifest and the ones
 /// before it (`prev_asset_manifest_cid`), the newest `MAX_VERSIONS`, up to

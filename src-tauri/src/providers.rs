@@ -3,12 +3,14 @@
 //!
 //! Each provider here is a thin adapter over today's code, where it is: this
 //! computer's over `fs_ops` and `thumbnails`, Google Drive's over
-//! `cloud::service`, Arbesk's over the `arbesk` crate's `Client`, SSH's over
-//! `sftp::SftpState`. The read side goes through them: listing, whether an
-//! item exists, path info, thumbnails, opening and the preview's file.
-//! Writes (new folders, rename, copy, move, Trash, restore) stay on their
-//! commands' own dispatch until the steps that move them, so each adapter's
-//! write methods say so instead of acting.
+//! `cloud::service`, SSH's over `sftp::SftpState`. Arbesk is its own
+//! crate's provider (`arbesk::Client`, step 3), registered here as it is.
+//! The read side goes through them: listing, whether an item exists, path
+//! info, thumbnails, opening and the preview's file. Writes (new folders,
+//! rename, copy, move, Trash, restore) stay on their commands' own dispatch
+//! until the steps that move them, so each adapter's write methods say so
+//! instead of acting; Arbesk's copies in and out, new collections, sharing,
+//! saves, scenes and accounts already go through its provider.
 //!
 //! Received shares are the one async place (D3): their listing and download
 //! are still awaited on the async runtime by `list_dir` and `open_target`
@@ -17,9 +19,10 @@
 //!
 //! Each adapter reaches the state it wraps through [`Reach`], which `lib.rs`
 //! answers with the app's managed state, and gets its folders at startup
-//! ([`Folders`]): nothing here holds a Tauri type. Drive's and Arbesk's
-//! server calls go through [`DriveCalls`] and [`ArbeskCalls`], so a test
-//! answers them itself and still runs each adapter and the registry.
+//! ([`Folders`]): nothing here holds a Tauri type. Drive's server calls go
+//! through [`DriveCalls`], so a test answers them itself and still runs
+//! each adapter and the registry; Arbesk's tests answer through its crate's
+//! own fake server, and here the registry runs the real `arbesk::Client`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -55,15 +58,16 @@ pub struct Folders {
 
 /// The registry of every place the app shows, its providers reaching their
 /// state through `states`.
-pub fn registry<S>(states: S, folders: Folders) -> Registry
+/// `arbesk` is the app's Arbesk client, its own crate's provider.
+pub fn registry<S>(states: S, folders: Folders, arbesk: Arc<arbesk::Client>) -> Registry
 where
-    S: Reach<CloudState> + Reach<arbesk::Client> + Reach<sftp::SftpState> + Clone,
+    S: Reach<CloudState> + Reach<sftp::SftpState> + Clone,
 {
     let Folders { cache, thumbnails, shared_thumbnails } = folders;
     registry_with(
         Local { thumbnails, shared_thumbnails },
         Drive { calls: LiveDrive(states.clone()), cache },
-        Arbesk { calls: LiveArbesk(states.clone()) },
+        arbesk,
         Sftp { states },
     )
 }
@@ -72,12 +76,12 @@ where
 fn registry_with(
     local: Local,
     drive: Drive<impl DriveCalls>,
-    arbesk: Arbesk<impl ArbeskCalls>,
+    arbesk: Arc<arbesk::Client>,
     sftp: Sftp<impl Reach<sftp::SftpState>>,
 ) -> Registry {
     Registry::new(Arc::new(local))
         .register(Arc::new(drive))
-        .register(Arc::new(arbesk))
+        .register(arbesk)
         .register(Arc::new(sftp))
         .register(Arc::new(Share))
 }
@@ -143,8 +147,7 @@ fn refusals(each: &[(Operation, Option<String>)]) -> Vec<Refused> {
         .collect()
 }
 
-/// A read-only place: SSH servers, received shares and, with its own
-/// differences, Arbesk. Nothing is written there; `read_only` names the
+/// A read-only place: SSH servers and received shares. Nothing is written there; `read_only` names the
 /// refusal of every write, `local_only` the local-only gate's.
 fn read_only(read_only: &str, local_only: Option<String>) -> Capabilities {
     let refused = || Some(read_only.to_string());
@@ -365,121 +368,6 @@ impl<C: DriveCalls> ext::Thumbnails for Drive<C> {
     }
 }
 
-// ---- Arbesk ----------------------------------------------------------------------
-
-/// The `arbesk` crate's calls the provider makes.
-pub trait ArbeskCalls: Send + Sync + 'static {
-    fn list(&self, dir: &str) -> std::result::Result<Vec<arbesk::Entry>, String>;
-    fn exists(&self, path: &str) -> bool;
-    fn studio_url(&self, path: &str) -> std::result::Result<String, String>;
-    fn build(&self, path: &str, progress: &Progress) -> std::result::Result<PathBuf, String>;
-    fn thumbnail(&self, path: &str, size: u32, stop: &dyn Fn() -> bool) -> Vec<u8>;
-}
-
-/// The app's `arbesk::Client`.
-pub struct LiveArbesk<S>(S);
-
-impl<S: Reach<arbesk::Client>> ArbeskCalls for LiveArbesk<S> {
-    fn list(&self, dir: &str) -> std::result::Result<Vec<arbesk::Entry>, String> {
-        self.0.reach().list(dir)
-    }
-    fn exists(&self, path: &str) -> bool {
-        self.0.reach().exists(path)
-    }
-    fn studio_url(&self, path: &str) -> std::result::Result<String, String> {
-        self.0.reach().studio_url(path)
-    }
-    fn build(&self, path: &str, progress: &Progress) -> std::result::Result<PathBuf, String> {
-        self.0.reach().build(path, progress)
-    }
-    fn thumbnail(&self, path: &str, size: u32, stop: &dyn Fn() -> bool) -> Vec<u8> {
-        self.0.reach().thumbnail(path, size, stop)
-    }
-}
-
-/// Arbesk accounts, over the `arbesk` crate's `Client` (through `calls`).
-pub struct Arbesk<C> {
-    calls: C,
-}
-
-/// Arbesk is read only but for copies in: a local model file into a
-/// collection (`place::copy`), and an asset out (built first). Its sizes are
-/// known only once an asset is built, and a save is a new version.
-fn arbesk_capabilities(path: &str) -> Capabilities {
-    const READ_ONLY: &str = "Arbesk is read only.";
-    let parsed = arbesk::parse(path);
-    let is_asset = matches!(parsed, Ok(arbesk::Location::Asset { .. }));
-    let copy_in = match &parsed {
-        Ok(arbesk::Location::Collection { .. }) => None,
-        Ok(_) => Some("Paste into a collection.".to_string()),
-        Err(error) => Some(error.clone()),
-    };
-    let copy_out = match &parsed {
-        Ok(arbesk::Location::Asset { .. }) => None,
-        Ok(_) => Some("Copying Arbesk collections comes next.".to_string()),
-        Err(error) => Some(error.clone()),
-    };
-    Capabilities {
-        can_copy_out: is_asset,
-        knows_sizes: false,
-        has_thumbnails: true,
-        replace: Replace::NewVersion,
-        // A save lands whole, once Arbesk has it.
-        put_is_whole: true,
-        refused: refusals(&[
-            (Operation::Create, Some(READ_ONLY.into())),
-            (Operation::Rename, Some(READ_ONLY.into())),
-            (Operation::Trash, Some(READ_ONLY.into())),
-            (Operation::CopyIn, copy_in),
-            (Operation::CopyOut, copy_out),
-            (Operation::LocalOnly, local_only_refusal(path)),
-        ]),
-        ..read_only(READ_ONLY, None)
-    }
-}
-
-impl<C: ArbeskCalls> Provider for Arbesk<C> {
-    fn scheme(&self) -> &'static str {
-        "arbesk"
-    }
-    fn capabilities(&self, path: &str) -> Capabilities {
-        arbesk_capabilities(path)
-    }
-    fn list(&self, dir: &str, _: &ListOptions, _: &Cx) -> Result<Vec<Entry>> {
-        let entries = self.calls.list(dir).map_err(words)?;
-        Ok(entries.into_iter().map(crate::arbesk_entry).collect())
-    }
-    /// A name pending in a collection exists when the collection lists it.
-    fn exists(&self, path: &str, _: &Cx) -> bool {
-        self.calls.exists(path)
-    }
-    /// Accounts and collections are folders, assets files; nothing for a
-    /// path Arbesk can't read.
-    fn path_info(&self, paths: &[String], _: &Cx) -> Vec<Option<PathInfo>> {
-        let info = |path: &String| arbesk::is_folder(path).map(|is_dir| PathInfo { is_dir, device: 0 });
-        paths.iter().map(info).collect()
-    }
-    /// An asset opens in Arbesk's Studio, in the browser; the preview gets
-    /// its file built in the app cache.
-    fn fetch(&self, path: &str, purpose: Fetch, cx: &Cx) -> Result<Fetched> {
-        match purpose {
-            Fetch::Open => self.calls.studio_url(path).map(Fetched::Url).map_err(words),
-            Fetch::Preview => self.calls.build(path, &cx.progress).map(Fetched::File).map_err(words),
-        }
-    }
-    not_wired_yet!();
-    fn extensions(&self) -> Extensions<'_> {
-        Extensions { thumbnails: Some(self), ..Extensions::default() }
-    }
-}
-
-impl<C: ArbeskCalls> ext::Thumbnails for Arbesk<C> {
-    /// The thumbnail the asset was saved with, if any.
-    fn thumbnail(&self, path: &str, size: u32, stop: &dyn Fn() -> bool) -> Vec<u8> {
-        self.calls.thumbnail(path, size, stop)
-    }
-}
-
 // ---- SSH servers -----------------------------------------------------------------
 
 /// SSH servers, read only, over `sftp::SftpState`.
@@ -592,37 +480,6 @@ pub(crate) mod testing {
         }
     }
 
-    /// Arbesk: whether an item exists and an asset's build, as the test
-    /// says; anything else isn't asked in tests.
-    pub struct StubArbesk {
-        pub exists: Answer<bool>,
-        pub build: Answer<std::result::Result<PathBuf, String>>,
-    }
-
-    impl Default for StubArbesk {
-        fn default() -> Self {
-            StubArbesk { exists: unexpected("Arbesk"), build: unexpected("Arbesk") }
-        }
-    }
-
-    impl ArbeskCalls for StubArbesk {
-        fn list(&self, dir: &str) -> std::result::Result<Vec<arbesk::Entry>, String> {
-            unexpected("Arbesk")(dir)
-        }
-        fn exists(&self, path: &str) -> bool {
-            (self.exists)(path)
-        }
-        fn studio_url(&self, path: &str) -> std::result::Result<String, String> {
-            unexpected("Arbesk")(path)
-        }
-        fn build(&self, path: &str, _: &Progress) -> std::result::Result<PathBuf, String> {
-            (self.build)(path)
-        }
-        fn thumbnail(&self, path: &str, _: u32, _: &dyn Fn() -> bool) -> Vec<u8> {
-            unexpected("Arbesk")(path)
-        }
-    }
-
     /// No SSH server: the tests never reach one.
     pub struct NoServer;
 
@@ -632,25 +489,34 @@ pub(crate) mod testing {
         }
     }
 
-    /// The registry with Drive and Arbesk answered by `drive` and `arbesk`.
-    pub fn registry(drive: StubDrive, arbesk: StubArbesk) -> Registry {
+    /// The real Arbesk client, with no account connected: it answers every
+    /// path without a server (“Connect this Arbesk account first.”, or its
+    /// parser's refusal), and writes nothing (its folders don't exist).
+    pub fn arbesk() -> Arc<arbesk::Client> {
+        let nowhere = PathBuf::from("/nonexistent-filebrowser-tests/arbesk");
+        Arc::new(arbesk::Client::new(nowhere.join("cache"), nowhere.join("accounts.json"), nowhere.join("sessions")))
+    }
+
+    /// The registry with Drive answered by `drive`, and the real Arbesk
+    /// provider with no account.
+    pub fn registry(drive: StubDrive) -> Registry {
         registry_with(
             Local { thumbnails: None, shared_thumbnails: None },
             Drive { calls: drive, cache: Err("No app cache in tests.".into()) },
-            Arbesk { calls: arbesk },
+            arbesk(),
             Sftp { states: NoServer },
         )
     }
 
     /// The registry, with no server expected to be asked anything.
     pub fn plain() -> Registry {
-        registry(StubDrive::default(), StubArbesk::default())
+        registry(StubDrive::default())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::testing::{StubArbesk, StubDrive};
+    use super::testing::StubDrive;
     use super::*;
     use crate::place::Kind;
 
@@ -721,8 +587,22 @@ mod tests {
                 Kind::Arbesk => place::writable(path).err(),
                 _ => place::local_write(path).err(),
             };
-            for operation in [Operation::Create, Operation::Rename, Operation::Trash] {
+            for operation in [Operation::Rename, Operation::Trash] {
                 assert_eq!(refusal(&caps, operation), write, "{path} {operation:?}");
+            }
+            // Arbesk creates only a collection, in an account (New
+            // Collection), and refuses anywhere else in its `create`'s words.
+            let create = match kind {
+                Kind::Arbesk if path == ACCOUNT => None,
+                Kind::Arbesk => provider
+                    .create(path, "x", places::NewKind::Folder, &Cx::default())
+                    .err()
+                    .map(|error| error.to_string()),
+                _ => write,
+            };
+            assert_eq!(refusal(&caps, Operation::Create), create, "{path} Create");
+            if kind == Kind::Arbesk {
+                assert_eq!(caps.can_create, create.is_none(), "{path}");
             }
             let model = "/Users/me/Box.glb";
             let copy_in = match kind {
@@ -854,7 +734,8 @@ mod tests {
     fn writes_are_not_routed_through_providers_yet() {
         let registry = testing::plain();
         let cx = Cx::default();
-        for path in ["/Users/me/a", "gdrive://acct/root~x", ARBESK, "sftp://me@host/a", "share://r1/a"] {
+        // Arbesk refuses them as read only, in its own crate's tests.
+        for path in ["/Users/me/a", "gdrive://acct/root~x", "sftp://me@host/a", "share://r1/a"] {
             let provider = registry.provider_for(path);
             let not_yet = |result: Result<String>| {
                 matches!(result, Err(Error::Unsupported(words)) if words.ends_with("registry yet."))
@@ -883,7 +764,7 @@ mod tests {
                 _ => Err("File not found.".into()),
             }),
         };
-        let registry = testing::registry(drive, StubArbesk::default());
+        let registry = testing::registry(drive);
         let (provider, cx) = (registry.provider_for(FOLDER), Cx::default());
         assert!(provider.exists(FOLDER, &cx));
         assert!(!provider.exists("gdrive://acct/f2~gone", &cx));
@@ -901,43 +782,36 @@ mod tests {
         assert_eq!(opened.unwrap_err().to_string(), "No app cache in tests.");
     }
 
-    /// Arbesk's adapter asks its client whether a name pending in a
-    /// collection exists, and has an asset built for the preview.
+    /// The registry runs the real Arbesk provider, the crate's `Client`: with
+    /// no account connected it asks no server, and says so in its words.
     #[test]
-    fn arbesk_asks_its_client_for_pending_names_and_preview_builds() {
+    fn arbesk_is_its_own_crates_provider() {
         const PENDING: &str = "arbesk://0x00000000000000000000000000000000000000ab/12~Set/~Box.gltf";
-        let arbesk = StubArbesk {
-            exists: Box::new(|path| path == PENDING),
-            build: Box::new(|path| match path {
-                ASSET => Ok(PathBuf::from("/cache/arbesk/Box.gltf")),
-                _ => Err("Not an Arbesk asset.".into()),
-            }),
-        };
-        let registry = testing::registry(StubDrive::default(), arbesk);
+        let registry = testing::plain();
         let (provider, cx) = (registry.provider_for(PENDING), Cx::default());
-        assert!(provider.exists(PENDING, &cx));
-        assert!(!provider.exists(&format!("{ARBESK}/~Other.glb"), &cx));
-        let built = provider.fetch(ASSET, Fetch::Preview, &cx).unwrap();
-        assert_eq!(built, Fetched::File("/cache/arbesk/Box.gltf".into()));
-        assert_eq!(provider.fetch(ARBESK, Fetch::Preview, &cx).unwrap_err().to_string(), "Not an Arbesk asset.");
+        assert_eq!(provider.scheme(), arbesk::SCHEME);
+        assert!(registry.provider(arbesk::SCHEME).is_some_and(|p| p.scheme() == "arbesk"));
+        assert!(!provider.exists(PENDING, &cx));
+        let unknown = Error::Other("Connect this Arbesk account first.".into());
+        assert_eq!(provider.fetch(ASSET, Fetch::Preview, &cx).unwrap_err(), unknown);
+        assert_eq!(provider.list(ARBESK, &ListOptions::default(), &cx).unwrap_err(), unknown);
+        let extensions = provider.extensions();
+        assert!(extensions.thumbnails.is_some() && extensions.versions.is_some() && extensions.preview.is_some());
+        assert!(extensions.sharing.is_some() && extensions.accounts.is_some());
+        assert!(extensions.accounts.unwrap().accounts().is_empty());
+        let transfer = provider.transfer().unwrap();
+        assert_eq!(transfer.export(ASSET, &cx).unwrap_err(), unknown);
     }
 
     /// The app's own states, as `lib.rs`' managed state holds them.
     struct States {
         cloud: CloudState,
-        arbesk: arbesk::Client,
         sftp: sftp::SftpState,
     }
 
     impl Reach<CloudState> for Arc<States> {
         fn reach(&self) -> &CloudState {
             &self.cloud
-        }
-    }
-
-    impl Reach<arbesk::Client> for Arc<States> {
-        fn reach(&self) -> &arbesk::Client {
-            &self.arbesk
         }
     }
 
@@ -955,11 +829,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let states = Arc::new(States {
             cloud: CloudState::new(dir.path()),
-            arbesk: arbesk::Client::new(dir.path().join("cache"), dir.path().join("a.json"), dir.path().join("s")),
             sftp: sftp::SftpState::new(dir.path().join("known_hosts"), dir.path().into(), dir.path().join("sftp")),
         });
         let folders = Folders { cache: Ok(dir.path().join("cache")), thumbnails: None, shared_thumbnails: None };
-        let registry = registry(states, folders);
+        let arbesk = Arc::new(arbesk::Client::new(dir.path().join("cache"), dir.path().join("a.json"), dir.path().join("s")));
+        let registry = registry(states, folders, arbesk);
         for path in PATHS {
             assert_eq!(registry.provider_for(path).scheme(), scheme_of(place::kind(path)), "{path}");
         }

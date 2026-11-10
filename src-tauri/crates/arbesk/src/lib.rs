@@ -8,7 +8,9 @@
 //! uploads to IPFS through Arbesk's upload URLs and saves through its wallet
 //! relay, with the session kept from sign-in. Every module below is an
 //! implementation detail: the app uses only the types and the [`Client`]
-//! re-exported here.
+//! re-exported here. `Client` is also Arbesk's `places::Provider` (with its
+//! `Transfer` and extensions), which the app registers for `arbesk://`
+//! paths.
 
 mod accounts;
 mod cache;
@@ -24,6 +26,7 @@ mod ipfs;
 mod location;
 mod merkle;
 mod progress;
+mod provider;
 mod scene;
 mod service;
 mod session;
@@ -49,6 +52,7 @@ use crate::signin::{CALLBACK_TIMEOUT, Flow, now_ms};
 pub use accounts::Account;
 pub use location::{ArbeskPath as Location, is_arbesk, is_folder, parse, parse_target};
 pub use progress::{CANCELLED, Phase, Progress, Snapshot};
+pub use provider::SCHEME;
 pub use scene::Scene;
 pub use service::Version;
 pub use share::Shared;
