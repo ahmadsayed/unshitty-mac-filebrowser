@@ -9,10 +9,12 @@
 //! `share://` or `sftp://` path, well formed or not, nor a relative path,
 //! which would be read from the app's working directory. The program and
 //! disk-image actions and dragging out refuse anything but an absolute path
-//! themselves. Commands that serve remote paths (listing, opening, Drive's
-//! copies) pick their handler with [`kind`]; each handler parses its own
-//! scheme (`cloud::location`, `share::location`, `sftp`) and refuses a
-//! malformed path.
+//! themselves. Listing, existence, path info, thumbnails and opening ask
+//! the place's provider in the `places::Registry` (`providers.rs`), whose
+//! prefix rule matches [`kind`]'s; the write commands that serve remote
+//! paths (Drive's copies, say) still pick their handler with [`kind`]. Each
+//! handler parses its own scheme (`cloud::location`, `share::location`,
+//! `sftp`) and refuses a malformed path.
 //!
 //! Plain functions, no Tauri.
 

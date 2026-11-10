@@ -57,6 +57,9 @@ the place may be written. Then:
 - Move to Trash, Restore, Delete Permanently and Empty Trash go through
   `trash_ops::Trash`: the trash log, where an item came from (sidecar, log,
   Finder's Put Back), and both Trash layouts;
+- listing, whether an item exists, path info, thumbnails and opening ask
+  the place's provider in the `places::Registry` (`providers.rs`: one thin
+  adapter per kind over the modules below, picked by the path's scheme);
 - listing, counts, opening and reading go to `fs_ops.rs`, `cloud/` (Google
   Drive), `share/` (iroh shares), `sftp.rs` (SSH, read only) and the
   `crates/arbesk` workspace crate (Arbesk: its read path rebuilt from public
@@ -86,7 +89,7 @@ between macOS and Linux too: XDG paths and volumes.
 | Change | Lands in |
 | --- | --- |
 | Allow or refuse an action in a kind of place | one cell in `item-actions.ts` |
-| A new kind of location (SMB, WebDAV) | a row in `paths.ts`, a kind in `locations.ts`, a `Kind` in `place.rs` |
+| A new kind of location (SMB, WebDAV) | a row in `paths.ts`, a kind in `locations.ts`, a `Kind` in `place.rs`, a provider in `providers.rs` and its registry line |
 | A new online account provider (OneDrive, Dropbox) | a row in `providers.ts` and in `PROVIDER_ACTIONS` (`main.ts`), plus the location rows above |
 | Arbesk's listings, builds, versions or uploads | the private modules of `src-tauri/crates/arbesk`; expose a new type or method only through its `lib.rs` facade, and map it in `src-tauri/src/lib.rs` |
 | How copy, move or Replace behaves | `placement.rs` |

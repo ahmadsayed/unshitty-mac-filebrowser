@@ -76,6 +76,8 @@ unicode-normalization = "0.1.26"
 
 [dev-dependencies]
 tempfile = "3"
+# Tauri's mock runtime, for the place providers' tests (the feature adds no crate).
+tauri = { version = "2", features = ["test"] }
 # tests/release_signing.rs checks release signatures as tauri-plugin-updater
 # does; both are already in Cargo.lock through tauri.
 base64 = "0.23"
