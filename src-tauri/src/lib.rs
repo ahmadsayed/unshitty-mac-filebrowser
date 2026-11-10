@@ -531,7 +531,9 @@ async fn list_apps() -> Result<Vec<platform::AppChoice>, String> {
 /// What opening `path` opens: the file itself on this computer; for Drive,
 /// a share or an SSH server, a copy downloaded into the app cache, or a
 /// Google Docs file's web page. A download is operation `op`: it reports
-/// through `on_progress` and `cancel_operation` stops it.
+/// through `on_progress` and `cancel_operation` stops it. One registry
+/// lookup and one fetch, on a blocking thread (a received share's waits on
+/// the async runtime from there).
 #[tauri::command]
 async fn open_target(
     app: tauri::AppHandle,
@@ -539,40 +541,25 @@ async fn open_target(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<OpenTarget, String> {
-    {
+    blocking(move || {
         let registry = app.state::<places::Registry>();
         let provider = registry.provider_for(&path);
         if !provider.fetch_reports_progress() {
             // The file itself: nothing to download, so no progress to report.
             return fetch_to_open(provider, &path, &places::Cx::default());
         }
-    }
-    let tracking = Tracking::start(&app, &op, on_progress);
-    let result = download_to_open(&app, path, &tracking.progress).await;
-    tracking.finish(&app);
-    result
-}
-
-/// What `provider` opens for `path`.
-fn fetch_to_open(provider: &dyn places::Provider, path: &str, cx: &places::Cx) -> Result<OpenTarget, String> {
-    provider.fetch(path, places::Fetch::Open, cx).map(OpenTarget::from).map_err(String::from)
-}
-
-/// A remote file's copy to open, or the page to open instead, fetched by
-/// its place's provider on a blocking thread (each parses its own scheme
-/// and refuses a malformed path; a received share's waits on the async
-/// runtime from there).
-async fn download_to_open(
-    app: &tauri::AppHandle,
-    path: String,
-    progress: &progress::Progress,
-) -> Result<OpenTarget, String> {
-    let (app, progress) = (app.clone(), progress.clone());
-    blocking(move || {
-        let cx = places_cx(&app, progress);
-        fetch_to_open(app.state::<places::Registry>().provider_for(&path), &path, &cx)
+        let tracking = Tracking::start(&app, &op, on_progress);
+        let result = fetch_to_open(provider, &path, &places_cx(&app, tracking.progress.clone()));
+        tracking.finish(&app);
+        result
     })
     .await?
+}
+
+/// What `provider` opens for `path` (each parses its own scheme and
+/// refuses a malformed path).
+fn fetch_to_open(provider: &dyn places::Provider, path: &str, cx: &places::Cx) -> Result<OpenTarget, String> {
+    provider.fetch(path, places::Fetch::Open, cx).map(OpenTarget::from).map_err(String::from)
 }
 
 #[tauri::command]

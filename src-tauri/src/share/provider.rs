@@ -11,9 +11,7 @@
 
 use std::path::PathBuf;
 
-use places::{
-    Capabilities, Cx, Entry, Error, Fetch, Fetched, ListOptions, NewKind, PathInfo, Provider, Result, Trashed,
-};
+use places::{Cx, Entry, Error, Fetch, Fetched, ListOptions, Provider, Result};
 use tokio::runtime::Handle;
 
 use crate::share::host::VersionsHint;
@@ -56,66 +54,32 @@ fn words(message: String) -> Error {
     Error::Other(message)
 }
 
-fn read_only<T>() -> Result<T> {
-    Err(Error::Unsupported(READ_ONLY.into()))
-}
-
-fn local_only<T>() -> Result<T> {
-    Err(Error::Unsupported(LOCAL_ONLY.into()))
-}
-
 impl<S: Shares> Provider for ReceivedShares<S> {
     fn scheme(&self) -> &'static str {
         SCHEME
-    }
-    fn capabilities(&self, _: &str) -> Capabilities {
-        Capabilities::read_only_place(READ_ONLY, LOCAL_ONLY)
     }
     /// The folder as its sharer lists it, fetched on the async runtime.
     fn list(&self, dir: &str, opts: &ListOptions, _: &Cx) -> Result<Vec<Entry>> {
         let listing = self.shares.share_state().list_dir(dir, opts.show_hidden, self.shares.versions_hint());
         self.runtime.block_on(listing).map_err(words)
     }
-    /// Nothing is pasted in a share, so nothing is looked up there.
-    fn stat(&self, _: &str, _: &Cx) -> Result<Option<Entry>> {
-        local_only()
-    }
-    fn lookup(&self, _: &str, _: &Cx) -> Result<Vec<Entry>> {
-        local_only()
-    }
-    fn exists(&self, _: &str, _: &Cx) -> bool {
-        false
-    }
-    fn path_info(&self, paths: &[String], _: &Cx) -> Vec<Option<PathInfo>> {
-        paths.iter().map(|_| None).collect()
-    }
     /// The file, downloaded into the app cache on the async runtime; the
     /// preview refuses it.
     fn fetch(&self, path: &str, purpose: Fetch, cx: &Cx) -> Result<Fetched> {
-        if purpose == Fetch::Preview {
-            return local_only();
+        if let Some(refused) = places::refuse_preview(purpose, LOCAL_ONLY) {
+            return Err(refused);
         }
         let opening = self.shares.share_state().open(path, self.shares.versions_hint(), &cx.progress);
         let file = self.runtime.block_on(opening).map_err(words)?;
         Ok(Fetched::File(PathBuf::from(file)))
     }
-    fn create(&self, _: &str, _: &str, _: NewKind, _: &Cx) -> Result<String> {
-        read_only()
-    }
-    fn rename(&self, _: &str, _: &str, _: &Cx) -> Result<String> {
-        read_only()
-    }
-    fn trash(&self, paths: &[&str], _: &Cx) -> Vec<Trashed> {
-        paths.iter().map(|path| Trashed { path: path.to_string(), result: read_only() }).collect()
-    }
-    fn restore(&self, _: &str, _: &Cx) -> Result<String> {
-        read_only()
-    }
+    places::read_only_place!(READ_ONLY, LOCAL_ONLY);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use places::NewKind;
     use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;

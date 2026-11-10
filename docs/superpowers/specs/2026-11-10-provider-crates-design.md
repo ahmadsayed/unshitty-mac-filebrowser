@@ -427,12 +427,17 @@ next starts only after the human merged the last.
    Received shares are `share::provider::ReceivedShares`, which reaches the
    managed `ShareState` and the Keep Versions hint through `Shares` (answered
    for the app handle) and waits on `tauri::async_runtime::handle()`'s Tokio
-   handle. Both read-only places build their capabilities with
-   `Capabilities::read_only_place` and refuse `stat` and `lookup` with
-   their local-only words (nothing is pasted there). Whether opening starts
+   handle. Both read-only places take what they answer alike from
+   `places`: `Capabilities::read_only_place`, and the `read_only_place!`
+   macro (`stat` and `lookup` refused with their local-only words, since
+   nothing is pasted there; no existence or path info; every write refused
+   with their read-only words) with `refuse_preview`; each writes only
+   `list` and `fetch`. Whether opening starts
    a tracked operation is provider data, `Provider::fetch_reports_progress`
    (true by default, false for this computer, whose file opens as itself),
-   not a capability: the frontend has no use for it.
+   not a capability: the frontend has no use for it. `open_target` looks
+   the provider up once, on a blocking thread, asks it that, and fetches
+   from it, registering the operation only when it reports progress.
 6. **Local becomes `places-local`** (fs_ops' file operations, the Trash and
    its log, the exclusive rename, platform pieces). The engine stays in the
    app (D6); Keep Versions stays as its decorator (D7). `/big` (10,000
