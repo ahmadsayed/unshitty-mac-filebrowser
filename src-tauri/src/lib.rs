@@ -277,6 +277,24 @@ fn places_cx(app: &tauri::AppHandle, progress: progress::Progress) -> places::Cx
     places::Cx { progress, cache_dir }
 }
 
+/// The providers reach the app's managed state through its handle, as the
+/// commands do.
+impl<T: Send + Sync + 'static> providers::Reach<T> for tauri::AppHandle {
+    fn reach(&self) -> &T {
+        self.state::<T>().inner()
+    }
+}
+
+/// The registry over the app's managed state and folders.
+fn places_registry(app: &tauri::AppHandle) -> places::Registry {
+    let folders = providers::Folders {
+        cache: app.path().app_cache_dir().map_err(|error| error.to_string()),
+        thumbnails: thumbnail_dir(app),
+        shared_thumbnails: shared_thumbnail_dir(app),
+    };
+    providers::registry(app.clone(), folders)
+}
+
 /// Whether `path` is in a received share, whose listing and download are
 /// still awaited here rather than run by its provider (D3, until step 5).
 fn in_share(app: &tauri::AppHandle, path: &str) -> bool {
@@ -836,10 +854,15 @@ async fn drive_transfer(
 async fn path_exists(app: tauri::AppHandle, path: String) -> bool {
     blocking(move || {
         let cx = places_cx(&app, progress::Progress::default());
-        app.state::<places::Registry>().provider_for(&path).exists(&path, &cx)
+        exists_in(&app.state::<places::Registry>(), &path, &cx)
     })
     .await
     .unwrap_or(false)
+}
+
+/// `path_exists` for `path`: its place's provider answers.
+fn exists_in(registry: &places::Registry, path: &str, cx: &places::Cx) -> bool {
+    registry.provider_for(path).exists(path, cx)
 }
 
 #[tauri::command]
@@ -1500,7 +1523,7 @@ async fn empty_trash(
     result?
 }
 
-fn thumbnail_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
+fn thumbnail_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path()
         .app_cache_dir()
         .ok()
@@ -1509,7 +1532,7 @@ fn thumbnail_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf
 
 /// The desktop's shared thumbnail cache, read only: `$XDG_CACHE_HOME/thumbnails`
 /// (`~/.cache/thumbnails`) on Linux; none on macOS.
-fn shared_thumbnail_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
+fn shared_thumbnail_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     if !cfg!(target_os = "linux") {
         return None;
     }
@@ -2275,7 +2298,7 @@ pub fn run() {
                 cache_dir,
             ));
             // One provider per kind of place, over the states above.
-            app.manage(providers::registry(app.handle()));
+            app.manage(places_registry(app.handle()));
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 handle.state::<VersionsState>().startup();
@@ -2499,44 +2522,41 @@ mod dispatch_tests {
         assert_eq!(counts(strings(&[RELATIVE])), vec![None]);
     }
 
-    // `list_dir`, `path_info` and `path_exists` ask the app's registry (on
-    // Tauri's mock runtime here). Drive and Arbesk need a server, so these
-    // stand-ins answer for them where a test says so; every other place's
-    // provider answers itself.
-
-    fn mock_registry() -> places::Registry {
-        providers::registry(tauri::test::mock_app().handle())
-    }
+    // `list_dir`, `path_info` and `path_exists` ask the registry. Drive
+    // and Arbesk need a server, so stand-ins answer their calls where a
+    // test says so (`providers::testing`); the registry, every adapter and
+    // the commands' own code run as in the app.
 
     /// `list_dir` for a path the registry sends to this computer.
     async fn list_local(path: String, show_hidden: bool) -> Result<Vec<fs_ops::Entry>, String> {
         let options = places::ListOptions { show_hidden };
-        let registry = mock_registry();
+        let registry = providers::testing::plain();
         registry.provider_for(&path).list(&path, &options, &places::Cx::default()).map_err(String::from)
     }
 
-    /// `path_info` through the registry, with Drive's answers from `drive`.
-    fn path_infos(
+    /// `path_info`'s answer, with Drive's server answering from `drive`.
+    fn path_infos_with(
         paths: &[String],
-        drive: impl Fn(&str) -> Option<fs_ops::PathInfo>,
+        drive: impl Fn(&str) -> Option<fs_ops::PathInfo> + Send + Sync + 'static,
     ) -> Vec<Option<fs_ops::PathInfo>> {
-        let cx = places::Cx::default();
-        mock_registry().answer_each(paths, |provider, batch| match provider.scheme() {
-            "gdrive" => batch.iter().map(|path| drive(path)).collect(),
-            _ => provider.path_info(batch, &cx),
-        })
+        let drive = providers::testing::StubDrive {
+            path_info: Box::new(move |path| drive(path).ok_or_else(|| "File not found.".into())),
+            ..Default::default()
+        };
+        let registry = providers::testing::registry(drive, Default::default());
+        path_infos(&registry, paths, &places::Cx::default())
     }
 
-    /// `path_exists` through the registry, with Drive's and Arbesk's
-    /// answers from `drive` and `arbesk`.
-    fn exists_at(path: &str, drive: impl FnOnce(&str) -> bool, arbesk: impl FnOnce(&str) -> bool) -> bool {
-        let registry = mock_registry();
-        let provider = registry.provider_for(path);
-        match provider.scheme() {
-            "gdrive" => drive(path),
-            "arbesk" => arbesk(path),
-            _ => provider.exists(path, &places::Cx::default()),
-        }
+    /// `path_exists`' answer, with Drive's and Arbesk's servers answering
+    /// from `drive` and `arbesk`.
+    fn exists_at(
+        path: &str,
+        drive: impl Fn(&str) -> bool + Send + Sync + 'static,
+        arbesk: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) -> bool {
+        let drive = providers::testing::StubDrive { exists: Box::new(drive), ..Default::default() };
+        let arbesk = providers::testing::StubArbesk { exists: Box::new(arbesk), ..Default::default() };
+        exists_in(&providers::testing::registry(drive, arbesk), path, &places::Cx::default())
     }
 
     #[test]
@@ -2556,26 +2576,27 @@ mod dispatch_tests {
         let f = fixture();
         let mut paths = vec![f.folder.clone(), f.file.clone()];
         paths.extend(remote());
-        let asked = RefCell::new(Vec::new());
-        let out = path_infos(&paths, |path| {
-            asked.borrow_mut().push(path.to_string());
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let asking = asked.clone();
+        let out = path_infos_with(&paths, move |path| {
+            asking.lock().unwrap().push(path.to_string());
             Some(fs_ops::PathInfo { is_dir: true, device: 7 })
         });
-        assert_eq!(asked.into_inner(), strings(&[DRIVE, BAD_DRIVE]));
+        assert_eq!(*asked.lock().unwrap(), strings(&[DRIVE, BAD_DRIVE]));
         let kinds: Vec<Option<(bool, bool)>> =
             out.iter().map(|o| o.as_ref().map(|i| (i.is_dir, i.device == 7))).collect();
         assert_eq!(
             kinds,
             vec![Some((true, false)), Some((false, false)), Some((true, true)), Some((true, true)), None, None, None, None]
         );
-        assert_eq!(path_infos(&strings(&[RELATIVE]), |_| panic!("not Drive")), vec![None]);
+        assert_eq!(path_infos_with(&strings(&[RELATIVE]), |_| panic!("not Drive")), vec![None]);
     }
 
     #[test]
     fn path_info_knows_arbesk_folders_and_files() {
         let account = "arbesk://0x00000000000000000000000000000000000000ab";
         let paths = strings(&[account, &format!("{account}/1~Set"), &format!("{account}/1~Set/a1~Box.gltf"), "arbesk://bad"]);
-        let out = path_infos(&paths, |_| panic!("not Drive"));
+        let out = path_infos_with(&paths, |_| panic!("not Drive"));
         let kinds: Vec<Option<bool>> = out.iter().map(|o| o.as_ref().map(|i| i.is_dir)).collect();
         assert_eq!(kinds, vec![Some(true), Some(true), Some(false), None]);
     }
@@ -2637,7 +2658,7 @@ mod dispatch_tests {
         }
         assert!(!exists_at(RELATIVE, no, no));
         let pending = "arbesk://0x00000000000000000000000000000000000000ab/1~Set/~Box.gltf";
-        assert!(exists_at(pending, no, |path| path == pending));
+        assert!(exists_at(pending, no, move |path| path == pending));
         assert!(!exists_at(pending, no, |_| false));
     }
 
@@ -2987,7 +3008,7 @@ mod read_gate_tests {
 
     /// `open_target` for a path the registry sends to this computer.
     fn open_local_target(path: String) -> Result<OpenTarget, String> {
-        let registry = providers::registry(tauri::test::mock_app().handle());
+        let registry = providers::testing::plain();
         fetch_to_open(registry.provider_for(&path), &path, &places::Cx::default())
     }
 
