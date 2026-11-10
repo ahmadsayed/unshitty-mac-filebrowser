@@ -22,6 +22,7 @@ mod files;
 mod info;
 mod progress;
 mod provider;
+mod read_only;
 mod records;
 mod refusal;
 mod registry;
@@ -37,6 +38,7 @@ pub use provider::{
     Capabilities, Cx, Existing, Extensions, Fetch, Fetched, Landing, ListOptions, NewKind, Operation,
     Provider, Put, Reading, Refused, Replace, Source, Transfer, Trashed, Unread, ext, with_transfer,
 };
+pub use read_only::refuse_preview;
 pub use records::{Json, Shared, SignIn, Version};
 pub use refusal::Refusal;
 pub use registry::Registry;

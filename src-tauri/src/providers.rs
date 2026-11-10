@@ -1,29 +1,32 @@
 //! One `places::Provider` per kind of place, and the registry that holds
 //! them (design `2026-11-10-provider-crates-design.md`, step 2).
 //!
-//! Each provider here is a thin adapter over today's code, where it is: this
-//! computer's over `fs_ops` and `thumbnails`, SSH's over `sftp::SftpState`.
-//! Google Drive (`places_gdrive::Drive`, step 4) and Arbesk
-//! (`arbesk::Client`, step 3) are their own crates' providers, registered
-//! here as they are.
+//! This computer's provider is a thin adapter over today's code, where it
+//! is (`fs_ops` and `thumbnails`). Google Drive (`places_gdrive::Drive`,
+//! step 4), Arbesk (`arbesk::Client`, step 3) and SSH servers
+//! (`places_sftp::SftpState`, step 5) are their own crates' providers, and
+//! received shares the app's own (`share::provider::ReceivedShares`, step
+//! 5), registered here as they are.
 //! The read side goes through them: listing, whether an item exists, path
-//! info, thumbnails, opening and the preview's file. Writes (new folders,
-//! rename, copy, move, Trash, restore) stay on their commands' own dispatch
-//! until the steps that move them, so each adapter's write methods say so
-//! instead of acting; Arbesk's copies in and out, new collections, sharing,
-//! saves, scenes and accounts already go through its provider.
+//! info, thumbnails, opening and the preview's file. This computer's and
+//! Drive's writes (new folders, rename, copy, move, Trash, restore) stay on
+//! their commands' own dispatch until the steps that move them, so their
+//! write methods say so instead of acting; Arbesk's copies in and out, new
+//! collections, sharing, saves, scenes and accounts already go through its
+//! provider, and SSH servers and shares refuse every write as read only.
 //!
-//! Received shares are the one async place (D3): their listing and download
-//! are still awaited on the async runtime by `list_dir` and `open_target`
-//! (`share_listing`, `share_target` in `lib.rs`), until step 5 moves them
-//! into `blocking(…)`. Their provider answers everything else.
+//! Received shares are the one async place (D3): their provider waits on the
+//! app's async runtime with `block_on`, so `list_dir` and `open_target` call
+//! it from `blocking(…)` like every other provider.
 //!
-//! Each adapter reaches the state it wraps through [`Reach`], which `lib.rs`
-//! answers with the app's managed state, and gets its folders at startup
-//! ([`Folders`]): nothing here holds a Tauri type. Drive's server calls go
-//! through its crate's `Calls`, so a test answers them itself and still runs
-//! each adapter and the registry; Arbesk's tests answer through its crate's
-//! own fake server, and here the registry runs the real `arbesk::Client`.
+//! Drive and shares reach the app's state through [`Reach`] and
+//! `share::provider::Shares`, which `lib.rs` answers with the app's managed
+//! state; this computer gets its folders at startup ([`Folders`]): nothing
+//! here holds a Tauri type. Drive's server calls go through its crate's
+//! `Calls`, so a test answers them itself and still runs each provider and
+//! the registry; Arbesk's tests answer through its crate's own fake server,
+//! and here the registry runs the real `arbesk::Client`, and the real
+//! `SftpState` with no server connected.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -34,11 +37,9 @@ use places::{
 };
 
 use places_gdrive::{Calls as DriveCalls, CloudState, Drive, Live};
-use crate::{fs_ops, place, sftp, thumbnails};
-
-/// The scheme of received shares, whose listing and download `lib.rs` still
-/// awaits itself (see the module comment).
-pub const SHARE: &str = "share";
+use places_sftp::SftpState;
+use crate::share::provider::{ReceivedShares, Shares};
+use crate::{fs_ops, place, thumbnails};
 
 /// Where an adapter finds the state it wraps: `lib.rs` answers it for the
 /// app handle with the managed state, as the commands did.
@@ -57,34 +58,42 @@ pub struct Folders {
     pub shared_thumbnails: Option<PathBuf>,
 }
 
+/// The places that are their own crates' providers, held by the registry
+/// and by the app's commands that belong to them: the app's Arbesk client
+/// and its SSH connections.
+pub struct Held {
+    pub arbesk: Arc<arbesk::Client>,
+    pub sftp: Arc<SftpState>,
+}
+
 /// The registry of every place the app shows, its providers reaching their
-/// state through `states`.
-/// `arbesk` is the app's Arbesk client, its own crate's provider.
-pub fn registry<S>(states: S, folders: Folders, arbesk: Arc<arbesk::Client>) -> Registry
+/// state through `states`; received shares wait on `runtime`, the app's
+/// async runtime.
+pub fn registry<S>(states: S, folders: Folders, held: Held, runtime: tokio::runtime::Handle) -> Registry
 where
-    S: Reach<CloudState> + Reach<sftp::SftpState> + Clone,
+    S: Reach<CloudState> + Shares + Clone,
 {
     let Folders { cache, thumbnails, shared_thumbnails } = folders;
     registry_with(
         Local { thumbnails, shared_thumbnails },
         Drive::new(Live(DriveState(states.clone())), cache),
-        arbesk,
-        Sftp { states },
+        held,
+        ReceivedShares::new(states, runtime),
     )
 }
 
-/// The registry over these providers, with received shares'.
+/// The registry over these providers.
 fn registry_with(
     local: Local,
     drive: Drive<impl DriveCalls>,
-    arbesk: Arc<arbesk::Client>,
-    sftp: Sftp<impl Reach<sftp::SftpState>>,
+    held: Held,
+    shares: ReceivedShares<impl Shares>,
 ) -> Registry {
     Registry::new(Arc::new(local))
         .register(Arc::new(drive))
-        .register(arbesk)
-        .register(Arc::new(sftp))
-        .register(Arc::new(Share))
+        .register(held.arbesk)
+        .register(held.sftp)
+        .register(Arc::new(shares))
 }
 
 // ---- What every adapter shares ---------------------------------------------------
@@ -133,12 +142,6 @@ fn local_only_refusal(path: &str) -> Option<String> {
     place::local(path).err()
 }
 
-/// A path's local-only refusal as an error: what `preview_bytes` answers
-/// for a remote item.
-fn not_previewed<T>(path: &str) -> Result<T> {
-    Err(Error::Unsupported(local_only_refusal(path).unwrap_or_default()))
-}
-
 /// `refused` with each operation that has words.
 fn refusals(each: &[(Operation, Option<String>)]) -> Vec<Refused> {
     each.iter()
@@ -146,36 +149,6 @@ fn refusals(each: &[(Operation, Option<String>)]) -> Vec<Refused> {
             message.clone().map(|message| Refused { operation: *operation, message })
         })
         .collect()
-}
-
-/// A read-only place: SSH servers and received shares. Nothing is written there; `read_only` names the
-/// refusal of every write, `local_only` the local-only gate's.
-fn read_only(read_only: &str, local_only: Option<String>) -> Capabilities {
-    let refused = || Some(read_only.to_string());
-    Capabilities {
-        read_only: true,
-        can_create: false,
-        can_rename: false,
-        can_trash: false,
-        can_copy_out: false,
-        knows_sizes: true,
-        knows_counts: false,
-        searchable: false,
-        has_thumbnails: false,
-        // Nothing is renamed or replaced here; the values are a disk's.
-        rename_atomic: false,
-        replace: Replace::Trash,
-        names_unique: true,
-        put_is_whole: false,
-        refused: refusals(&[
-            (Operation::Create, refused()),
-            (Operation::Rename, refused()),
-            (Operation::Trash, refused()),
-            (Operation::CopyIn, refused()),
-            (Operation::CopyOut, refused()),
-            (Operation::LocalOnly, local_only),
-        ]),
-    }
 }
 
 // ---- This computer ---------------------------------------------------------------
@@ -240,6 +213,10 @@ impl Provider for Local {
         place::local(path).map_err(words)?;
         Ok(Fetched::File(PathBuf::from(path)))
     }
+    /// The file itself: nothing to download, so no progress to report.
+    fn fetch_reports_progress(&self) -> bool {
+        false
+    }
     not_wired_yet!();
     fn extensions(&self) -> Extensions<'_> {
         Extensions { thumbnails: Some(self), ..Extensions::default() }
@@ -276,72 +253,6 @@ impl<S: Reach<CloudState>> places_gdrive::Reach for DriveState<S> {
     fn reach(&self) -> &CloudState {
         self.0.reach()
     }
-}
-
-// ---- SSH servers -----------------------------------------------------------------
-
-/// SSH servers, read only, over `sftp::SftpState`.
-pub struct Sftp<S> {
-    states: S,
-}
-
-impl<S: Reach<sftp::SftpState>> Provider for Sftp<S> {
-    fn scheme(&self) -> &'static str {
-        "sftp"
-    }
-    fn capabilities(&self, path: &str) -> Capabilities {
-        read_only("SSH servers are read only for now.", local_only_refusal(path))
-    }
-    fn list(&self, dir: &str, opts: &ListOptions, _: &Cx) -> Result<Vec<Entry>> {
-        self.states.reach().list(dir, opts.show_hidden).map_err(words)
-    }
-    /// Nothing is looked up on a server: nothing is pasted there.
-    fn exists(&self, _: &str, _: &Cx) -> bool {
-        false
-    }
-    fn path_info(&self, paths: &[String], _: &Cx) -> Vec<Option<PathInfo>> {
-        paths.iter().map(|_| None).collect()
-    }
-    /// The file, downloaded into the app cache.
-    fn fetch(&self, path: &str, purpose: Fetch, cx: &Cx) -> Result<Fetched> {
-        if purpose == Fetch::Preview {
-            return not_previewed(path);
-        }
-        let file = self.states.reach().open(path, &cx.progress).map_err(words)?;
-        Ok(Fetched::File(PathBuf::from(file)))
-    }
-    not_wired_yet!();
-}
-
-// ---- Received shares -------------------------------------------------------------
-
-/// Folders shared with this computer, read only. Their listing and download
-/// are async and stay in `lib.rs` for now (see the module comment).
-pub struct Share;
-
-impl Provider for Share {
-    fn scheme(&self) -> &'static str {
-        SHARE
-    }
-    fn capabilities(&self, path: &str) -> Capabilities {
-        read_only("Shared folders are read only.", local_only_refusal(path))
-    }
-    fn list(&self, _: &str, _: &ListOptions, _: &Cx) -> Result<Vec<Entry>> {
-        not_yet("Listing a shared folder")
-    }
-    fn exists(&self, _: &str, _: &Cx) -> bool {
-        false
-    }
-    fn path_info(&self, paths: &[String], _: &Cx) -> Vec<Option<PathInfo>> {
-        paths.iter().map(|_| None).collect()
-    }
-    fn fetch(&self, path: &str, purpose: Fetch, _: &Cx) -> Result<Fetched> {
-        match purpose {
-            Fetch::Open => not_yet("Opening a shared file"),
-            Fetch::Preview => not_previewed(path),
-        }
-    }
-    not_wired_yet!();
 }
 
 /// Stand-ins for the servers, so tests run the adapters and the registry
@@ -394,13 +305,32 @@ pub(crate) mod testing {
         }
     }
 
-    /// No SSH server: the tests never reach one.
-    pub struct NoServer;
+    /// No received share: the tests that use it never reach one.
+    pub struct NoShares;
 
-    impl Reach<sftp::SftpState> for NoServer {
-        fn reach(&self) -> &sftp::SftpState {
-            panic!("no SSH server in tests")
+    impl Shares for NoShares {
+        fn share_state(&self) -> &crate::share::state::ShareState {
+            panic!("no received share in tests")
         }
+        fn versions_hint(&self) -> crate::share::host::VersionsHint {
+            panic!("no received share in tests")
+        }
+    }
+
+    /// An async runtime of the tests' own, for the shares provider of a
+    /// registry no share is listed through.
+    pub fn runtime() -> tokio::runtime::Handle {
+        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        let build = || tokio::runtime::Builder::new_current_thread().build().expect("a test runtime");
+        RUNTIME.get_or_init(build).handle().clone()
+    }
+
+    /// The real SSH provider, with no server connected: it answers every
+    /// path without a network (“Connect to this server first.”, or its
+    /// parser's refusal), and writes nothing (its folders don't exist).
+    pub fn sftp() -> Arc<SftpState> {
+        let nowhere = PathBuf::from("/nonexistent-filebrowser-tests/sftp");
+        Arc::new(SftpState::new(nowhere.join("known_hosts"), nowhere.clone(), nowhere.join("cache")))
     }
 
     /// The real Arbesk client, with no account connected: it answers every
@@ -411,14 +341,25 @@ pub(crate) mod testing {
         Arc::new(arbesk::Client::new(nowhere.join("cache"), nowhere.join("accounts.json"), nowhere.join("sessions")))
     }
 
-    /// The registry with Drive answered by `drive`, and the real Arbesk
-    /// provider with no account.
+    /// The registry with Drive answered by `drive`, the real Arbesk
+    /// provider with no account and the real SSH provider with no server.
     pub fn registry(drive: StubDrive) -> Registry {
         registry_with(
             Local { thumbnails: None, shared_thumbnails: None },
             Drive::new(drive, Err("No app cache in tests.".into())),
-            arbesk(),
-            Sftp { states: NoServer },
+            Held { arbesk: arbesk(), sftp: sftp() },
+            ReceivedShares::new(NoShares, runtime()),
+        )
+    }
+
+    /// The registry with received shares answered by `shares`, and no
+    /// other server expected to be asked anything.
+    pub fn registry_with_shares(shares: ReceivedShares<impl Shares>) -> Registry {
+        registry_with(
+            Local { thumbnails: None, shared_thumbnails: None },
+            Drive::new(StubDrive::default(), Err("No app cache in tests.".into())),
+            Held { arbesk: arbesk(), sftp: sftp() },
+            shares,
         )
     }
 
@@ -474,7 +415,7 @@ mod tests {
         match kind {
             Kind::Local => "",
             Kind::Drive => "gdrive",
-            Kind::Share => SHARE,
+            Kind::Share => crate::share::provider::SCHEME,
             Kind::Sftp => "sftp",
             Kind::Arbesk => "arbesk",
         }
@@ -635,14 +576,15 @@ mod tests {
         assert!(thumbnails.thumbnail("file:///a.png", 64, &|| false).is_empty());
     }
 
-    /// The writes and the lookups stay on their commands' dispatch in this
-    /// step; a provider says so rather than acting.
+    /// This computer's and Drive's writes and lookups stay on their
+    /// commands' dispatch; their providers say so rather than acting.
     #[test]
     fn writes_are_not_routed_through_providers_yet() {
         let registry = testing::plain();
         let cx = Cx::default();
-        // Arbesk refuses them as read only, in its own crate's tests.
-        for path in ["/Users/me/a", "gdrive://acct/root~x", "sftp://me@host/a", "share://r1/a"] {
+        // Arbesk refuses them as read only, in its own crate's tests, and
+        // so do SSH servers and shares (below).
+        for path in ["/Users/me/a", "gdrive://acct/root~x"] {
             let provider = registry.provider_for(path);
             let not_yet = |result: Result<String>| {
                 matches!(result, Err(Error::Unsupported(words)) if words.ends_with("registry yet."))
@@ -655,8 +597,38 @@ mod tests {
             assert_eq!(trashed.len(), 1);
             assert!(trashed[0].result.is_err(), "{path}");
         }
-        assert!(registry.provider_for("share://r1/a").list("share://r1/a", &ListOptions::default(), &cx).is_err());
-        assert!(registry.provider_for("share://r1/a").fetch("share://r1/a", Fetch::Open, &cx).is_err());
+    }
+
+    /// SSH servers and received shares refuse every write in the words
+    /// `place::writable` refuses it with, and looking an item up in the
+    /// local-only gate's.
+    #[test]
+    fn ssh_servers_and_shares_refuse_writes_as_read_only() {
+        let registry = testing::plain();
+        let cx = Cx::default();
+        for path in ["sftp://me@host/a", "share://r1/a"] {
+            let provider = registry.provider_for(path);
+            let read_only = Error::Unsupported(place::writable(path).unwrap_err());
+            assert_eq!(provider.create(path, "b", NewKind::Folder, &cx).unwrap_err(), read_only, "{path}");
+            assert_eq!(provider.rename(path, "b", &cx).unwrap_err(), read_only, "{path}");
+            assert_eq!(provider.restore(path, &cx).unwrap_err(), read_only, "{path}");
+            assert_eq!(provider.trash(&[path], &cx), [Trashed { path: path.into(), result: Err(read_only) }]);
+            let local_only = Error::Unsupported(place::local(path).unwrap_err());
+            assert_eq!(provider.stat(path, &cx).unwrap_err(), local_only, "{path}");
+            assert_eq!(provider.lookup(path, &cx).unwrap_err(), local_only, "{path}");
+            assert!(places::with_transfer(provider, &cx, |_| ()).is_none(), "{path}");
+        }
+    }
+
+    /// Opening a file starts a tracked operation everywhere but on this
+    /// computer, where the file itself opens (`open_target`).
+    #[test]
+    fn only_this_computer_opens_without_reporting_progress() {
+        let registry = testing::plain();
+        for path in PATHS {
+            let provider = registry.provider_for(path);
+            assert_eq!(provider.fetch_reports_progress(), place::kind(path) != Kind::Local, "{path}");
+        }
     }
 
     /// Drive's adapter asks its server whether an item exists, and for each
@@ -713,7 +685,7 @@ mod tests {
     /// The app's own states, as `lib.rs`' managed state holds them.
     struct States {
         cloud: CloudState,
-        sftp: sftp::SftpState,
+        shares: crate::share::state::ShareState,
     }
 
     impl Reach<CloudState> for Arc<States> {
@@ -722,9 +694,12 @@ mod tests {
         }
     }
 
-    impl Reach<sftp::SftpState> for Arc<States> {
-        fn reach(&self) -> &sftp::SftpState {
-            &self.sftp
+    impl Shares for Arc<States> {
+        fn share_state(&self) -> &crate::share::state::ShareState {
+            &self.shares
+        }
+        fn versions_hint(&self) -> crate::share::host::VersionsHint {
+            Box::new(|_, _, _| None)
         }
     }
 
@@ -736,11 +711,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let states = Arc::new(States {
             cloud: CloudState::new(dir.path()),
-            sftp: sftp::SftpState::new(dir.path().join("known_hosts"), dir.path().into(), dir.path().join("sftp")),
+            shares: crate::share::state::ShareState::new(dir.path().join("config"), dir.path().join("cache")),
         });
+        let sftp = Arc::new(SftpState::new(dir.path().join("known_hosts"), dir.path().into(), dir.path().join("sftp")));
         let folders = Folders { cache: Ok(dir.path().join("cache")), thumbnails: None, shared_thumbnails: None };
         let arbesk = Arc::new(arbesk::Client::new(dir.path().join("cache"), dir.path().join("a.json"), dir.path().join("s")));
-        let registry = registry(states, folders, arbesk);
+        let registry = registry(states, folders, Held { arbesk, sftp }, testing::runtime());
         for path in PATHS {
             assert_eq!(registry.provider_for(path).scheme(), scheme_of(place::kind(path)), "{path}");
         }

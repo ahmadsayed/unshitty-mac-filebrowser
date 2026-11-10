@@ -1,7 +1,7 @@
 [workspace]
-members = ["crates/arbesk", "crates/places", "crates/places-gdrive"]
+members = ["crates/arbesk", "crates/places", "crates/places-gdrive", "crates/places-sftp"]
 # `cargo test` from src-tauri keeps covering the app and its crates.
-default-members = [".", "crates/arbesk", "crates/places", "crates/places-gdrive"]
+default-members = [".", "crates/arbesk", "crates/places", "crates/places-gdrive", "crates/places-sftp"]
 resolver = "3"
 
 [package]
@@ -28,6 +28,7 @@ tauri-build = { version = "2", features = [] }
 arbesk = { version = "0.1.0", path = "crates/arbesk" }
 places = { version = "0.1.0", path = "crates/places" }
 places-gdrive = { version = "0.1.0", path = "crates/places-gdrive" }
+places-sftp = { version = "0.1.0", path = "crates/places-sftp" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
@@ -90,7 +91,6 @@ panic = "abort"
 strip = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ssh2 = "0.9"
 # Already linked through Tauri; used for the icon theme and file icons.
 gio = "0.18"
 gtk = "0.18"
@@ -104,7 +104,6 @@ xattr = "1"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphicsContext", "NSGraphics", "objc2-core-foundation"] }
-ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 # Already linked through Tauri; used for renames that never replace
 # (renamex_np with RENAME_EXCL).
 libc = "0.2"

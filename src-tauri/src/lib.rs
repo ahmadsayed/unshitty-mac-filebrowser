@@ -11,7 +11,6 @@ mod progress;
 mod properties;
 mod providers;
 mod recent;
-mod sftp;
 mod share;
 #[cfg(test)]
 mod test_support;
@@ -192,43 +191,14 @@ async fn blocking<T: Send + 'static>(
 /// How often a running operation reports its progress.
 const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// One command's part of operation `op`: its progress, registered so
-/// `cancel_operation` reaches it, and a thread streaming it to the frontend.
-struct Tracking {
-    op: String,
-    progress: progress::Progress,
-    stop: std::sync::mpsc::Sender<()>,
-    ticker: std::thread::JoinHandle<()>,
-}
-
-impl Tracking {
-    fn start(app: &tauri::AppHandle, op: &str, channel: Channel<ProgressUpdate>) -> Self {
-        let progress = app.state::<progress::Registry>().register(op);
-        progress.set_phase(progress::Phase::Working);
-        let (stop, stopped) = std::sync::mpsc::channel();
-        let ticker = {
-            let progress = progress.clone();
-            std::thread::spawn(move || {
-                let send = |update| {
-                    let _ = channel.send(update);
-                };
-                progress::ticker(&progress, send, &stopped, PROGRESS_EVERY);
-            })
-        };
-        Tracking {
-            op: op.to_string(),
-            progress,
-            stop,
-            ticker,
-        }
-    }
-
-    /// Stop the ticker (it sends a last update with `done`) and forget `op`.
-    fn finish(self, app: &tauri::AppHandle) {
-        drop(self.stop);
-        let _ = self.ticker.join();
-        app.state::<progress::Registry>().remove(&self.op);
-    }
+/// One command's part of operation `op`, streamed to the frontend through
+/// `channel`; dropping it (`finish`, or a panic unwinding past it) forgets
+/// `op`.
+fn track<'a>(app: &'a tauri::AppHandle, op: &str, channel: Channel<ProgressUpdate>) -> progress::Tracked<'a> {
+    let send = move |update| {
+        let _ = channel.send(update);
+    };
+    progress::Tracked::start(app.state::<progress::Registry>().inner(), op, send, PROGRESS_EVERY)
 }
 
 /// Cancel operation `op`; its current command ends with "Cancelled.".
@@ -285,15 +255,29 @@ impl<T: Send + Sync + 'static> providers::Reach<T> for tauri::AppHandle {
     }
 }
 
-/// The registry over the app's managed state and folders, with `arbesk`,
-/// the Arbesk client, as its own provider.
-fn places_registry(app: &tauri::AppHandle, arbesk: Arc<arbesk::Client>) -> places::Registry {
+/// Received shares reach their managed state, and the Keep Versions hint
+/// their node starts with, through the app's handle.
+impl share::provider::Shares for tauri::AppHandle {
+    fn share_state(&self) -> &share::state::ShareState {
+        self.state::<share::state::ShareState>().inner()
+    }
+    fn versions_hint(&self) -> share::host::VersionsHint {
+        share_versions_hint(self)
+    }
+}
+
+/// The registry over the app's managed state and folders, with the places
+/// that are their own crates' providers (`held`); received shares wait on
+/// Tauri's async runtime, from the blocking threads commands call
+/// providers on (D3).
+fn places_registry(app: &tauri::AppHandle, held: providers::Held) -> places::Registry {
     let folders = providers::Folders {
         cache: app.path().app_cache_dir().map_err(|error| error.to_string()),
         thumbnails: thumbnail_dir(app),
         shared_thumbnails: shared_thumbnail_dir(app),
     };
-    providers::registry(app.clone(), folders, arbesk)
+    let runtime = tauri::async_runtime::handle().inner().clone();
+    providers::registry(app.clone(), folders, held, runtime)
 }
 
 /// Arbesk's provider, for the `arbesk_*` commands: they are Arbesk's own,
@@ -311,21 +295,12 @@ fn arbesk_ext<'a, T: ?Sized + 'a>(
     pick(arbesk_place(registry)?.extensions()).ok_or_else(|| "Arbesk isn't available.".to_string())
 }
 
-/// Whether `path` is in a received share, whose listing and download are
-/// still awaited here rather than run by its provider (D3, until step 5).
-fn in_share(app: &tauri::AppHandle, path: &str) -> bool {
-    app.state::<places::Registry>().provider_for(path).scheme() == providers::SHARE
-}
-
 #[tauri::command]
 async fn list_dir(
     app: tauri::AppHandle,
     path: String,
     show_hidden: bool,
 ) -> Result<Vec<fs_ops::Entry>, String> {
-    if in_share(&app, &path) {
-        return share_listing(&app, &path, show_hidden).await;
-    }
     blocking(move || {
         let options = places::ListOptions { show_hidden };
         let cx = places_cx(&app, progress::Progress::default());
@@ -335,39 +310,29 @@ async fn list_dir(
     .await?
 }
 
-/// A received share's folder, listed on the async runtime.
-async fn share_listing(
-    app: &tauri::AppHandle,
-    path: &str,
-    show_hidden: bool,
-) -> Result<Vec<fs_ops::Entry>, String> {
-    let state = app.state::<share::state::ShareState>();
-    state.list_dir(path, show_hidden, share_versions_hint(app)).await
-}
-
 #[tauri::command]
 async fn sftp_connect(
     app: tauri::AppHandle,
     url: String,
     password: Option<String>,
     trust_host: bool,
-) -> Result<sftp::ConnectOutcome, String> {
+) -> Result<places_sftp::ConnectOutcome, String> {
     let app = app.clone();
     blocking(move || {
-        app.state::<sftp::SftpState>()
+        app.state::<Arc<places_sftp::SftpState>>()
             .connect(&url, password, trust_host)
     })
     .await?
 }
 
 #[tauri::command]
-fn sftp_servers(app: tauri::AppHandle) -> Vec<sftp::ServerInfo> {
-    app.state::<sftp::SftpState>().servers()
+fn sftp_servers(app: tauri::AppHandle) -> Vec<places_sftp::ServerInfo> {
+    app.state::<Arc<places_sftp::SftpState>>().servers()
 }
 
 #[tauri::command]
 fn sftp_disconnect(app: tauri::AppHandle, id: String) {
-    app.state::<sftp::SftpState>().disconnect(&id);
+    app.state::<Arc<places_sftp::SftpState>>().disconnect(&id);
 }
 
 /// The search running in each window: starting another, or `cancel_search`,
@@ -537,7 +502,9 @@ async fn list_apps() -> Result<Vec<platform::AppChoice>, String> {
 /// What opening `path` opens: the file itself on this computer; for Drive,
 /// a share or an SSH server, a copy downloaded into the app cache, or a
 /// Google Docs file's web page. A download is operation `op`: it reports
-/// through `on_progress` and `cancel_operation` stops it.
+/// through `on_progress` and `cancel_operation` stops it. One registry
+/// lookup and one fetch, on a blocking thread (a received share's waits on
+/// the async runtime from there).
 #[tauri::command]
 async fn open_target(
     app: tauri::AppHandle,
@@ -545,53 +512,42 @@ async fn open_target(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<OpenTarget, String> {
-    {
-        let registry = app.state::<places::Registry>();
-        let provider = registry.provider_for(&path);
-        if provider.scheme().is_empty() {
-            // The file itself: nothing to download, so no progress to report.
-            return fetch_to_open(provider, &path, &places::Cx::default());
-        }
-    }
-    let tracking = Tracking::start(&app, &op, on_progress);
-    let result = download_to_open(&app, path, &tracking.progress).await;
-    tracking.finish(&app);
-    result
-}
-
-/// What `provider` opens for `path`.
-fn fetch_to_open(provider: &dyn places::Provider, path: &str, cx: &places::Cx) -> Result<OpenTarget, String> {
-    provider.fetch(path, places::Fetch::Open, cx).map(OpenTarget::from).map_err(String::from)
-}
-
-/// A remote file's copy to open, or the page to open instead, fetched by
-/// its place's provider (each parses its own scheme and refuses a
-/// malformed path); a received share's, on the async runtime.
-async fn download_to_open(
-    app: &tauri::AppHandle,
-    path: String,
-    progress: &progress::Progress,
-) -> Result<OpenTarget, String> {
-    if in_share(app, &path) {
-        return share_target(app, &path, progress).await;
-    }
-    let (app, progress) = (app.clone(), progress.clone());
     blocking(move || {
-        let cx = places_cx(&app, progress);
-        fetch_to_open(app.state::<places::Registry>().provider_for(&path), &path, &cx)
+        open_in(
+            &app.state::<places::Registry>(),
+            &path,
+            || track(&app, &op, on_progress),
+            |progress| places_cx(&app, progress),
+        )
     })
     .await?
 }
 
-/// A received share's file, fetched into the app cache.
-async fn share_target(
-    app: &tauri::AppHandle,
+/// `open_target`'s work: what `path`'s provider opens, a download tracked
+/// by `track` with `cx_for` its context. The tracking is dropped however
+/// the fetch ends, a panic included, so the operation never stays
+/// registered.
+fn open_in<'r>(
+    providers: &places::Registry,
     path: &str,
-    progress: &progress::Progress,
+    track: impl FnOnce() -> progress::Tracked<'r>,
+    cx_for: impl FnOnce(progress::Progress) -> places::Cx,
 ) -> Result<OpenTarget, String> {
-    let state = app.state::<share::state::ShareState>();
-    let path = state.open(path, share_versions_hint(app), progress).await?;
-    Ok(OpenTarget::File { path })
+    let provider = providers.provider_for(path);
+    if !provider.fetch_reports_progress() {
+        // The file itself: nothing to download, so no progress to report.
+        return fetch_to_open(provider, path, &places::Cx::default());
+    }
+    let tracking = track();
+    let result = fetch_to_open(provider, path, &cx_for(tracking.progress.clone()));
+    tracking.finish();
+    result
+}
+
+/// What `provider` opens for `path` (each parses its own scheme and
+/// refuses a malformed path).
+fn fetch_to_open(provider: &dyn places::Provider, path: &str, cx: &places::Cx) -> Result<OpenTarget, String> {
+    provider.fetch(path, places::Fetch::Open, cx).map(OpenTarget::from).map_err(String::from)
 }
 
 #[tauri::command]
@@ -892,13 +848,13 @@ async fn copy_entry(
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
     let plan = place::copy(&from, &to)?;
-    let tracking = Tracking::start(&app, &op, on_progress);
+    let tracking = track(&app, &op, on_progress);
     let progress = tracking.progress.clone();
     let result = match copied_file(&app, from, plan.from_arbesk, &progress).await {
         Ok(from) => copy_routed(app.clone(), from, to, overwrite, plan.route, progress).await,
         Err(error) => Err(error),
     };
-    tracking.finish(&app);
+    tracking.finish();
     result
 }
 
@@ -1009,7 +965,7 @@ async fn move_entry(
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<String, String> {
     let route = place::transfer(&from, &to)?;
-    let tracking = Tracking::start(&app, &op, on_progress);
+    let tracking = track(&app, &op, on_progress);
     let progress = tracking.progress.clone();
     let result = if route == Route::Drive {
         drive_transfer(app.clone(), from, to, overwrite, true, progress).await
@@ -1027,7 +983,7 @@ async fn move_entry(
         .await
         .and_then(|result| result)
     };
-    tracking.finish(&app);
+    tracking.finish();
     result
 }
 
@@ -1105,11 +1061,11 @@ async fn trash_entries(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<Vec<TrashOutcome>, String> {
-    let tracking = Tracking::start(&app, &op, on_progress);
+    let tracking = track(&app, &op, on_progress);
     let progress = tracking.progress.clone();
     let worker = app.clone();
     let outcomes = blocking(move || trash_batch(&worker, &paths, &progress)).await;
-    tracking.finish(&app);
+    tracking.finish();
     outcomes
 }
 
@@ -1567,11 +1523,11 @@ async fn empty_trash(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<(), String> {
-    let tracking = Tracking::start(&app, &op, on_progress);
+    let tracking = track(&app, &op, on_progress);
     let progress = tracking.progress.clone();
     let worker = app.clone();
     let result = blocking(move || trash_of(&worker)?.empty(&progress)).await;
-    tracking.finish(&app);
+    tracking.finish();
     result?
 }
 
@@ -2353,11 +2309,14 @@ pub fn run() {
                 config_dir.join("arbesk_accounts.json"),
                 config_dir.join("tokens"),
             ));
-            app.manage(sftp::SftpState::new(
+            // SSH connections are their crate's provider, held by the
+            // registry and by the commands that connect.
+            let sftp = Arc::new(places_sftp::SftpState::new(
                 config_dir.join("sftp_known_hosts"),
                 home,
                 cache_dir.join("sftp"),
             ));
+            app.manage(sftp.clone());
             // Drop copies of remote files nobody has touched for a week.
             let download_dirs: Vec<PathBuf> = downloads::DIRS
                 .iter()
@@ -2376,7 +2335,7 @@ pub fn run() {
                 cache_dir,
             ));
             // One provider per kind of place, over the states above.
-            app.manage(places_registry(app.handle(), arbesk));
+            app.manage(places_registry(app.handle(), providers::Held { arbesk, sftp }));
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 handle.state::<VersionsState>().startup();
@@ -3224,5 +3183,67 @@ mod local_gate_tests {
         assert_eq!(infos.len(), paths.len());
         assert!(infos[..paths.len() - 1].iter().all(Option::is_none), "{infos:?}");
         assert!(infos[paths.len() - 1].as_ref().is_some_and(|info| info.trashed > 0));
+    }
+}
+
+#[cfg(test)]
+mod open_target_tests {
+    //! A download `open_target` tracks is forgotten however its fetch ends.
+    use super::*;
+    use std::sync::Arc;
+
+    /// A remote place whose download panics or fails, as `panics` says.
+    struct Failing {
+        scheme: &'static str,
+        panics: bool,
+    }
+
+    impl places::Provider for Failing {
+        fn scheme(&self) -> &'static str {
+            self.scheme
+        }
+        fn list(&self, _: &str, _: &places::ListOptions, _: &places::Cx) -> places::Result<Vec<places::Entry>> {
+            Ok(Vec::new())
+        }
+        fn fetch(&self, _: &str, _: places::Fetch, _: &places::Cx) -> places::Result<places::Fetched> {
+            if self.panics {
+                panic!("the download panicked");
+            }
+            Err(places::Error::Unsupported("The download failed.".into()))
+        }
+        fn fetch_reports_progress(&self) -> bool {
+            true
+        }
+        places::read_only_place!("Read only.", "Not here.");
+    }
+
+    fn providers(panics: bool) -> places::Registry {
+        let local = Arc::new(Failing { scheme: "", panics: false });
+        places::Registry::new(local).register(Arc::new(Failing { scheme: "test", panics }))
+    }
+
+    fn open(providers: &places::Registry, ops: &progress::Registry) -> Result<OpenTarget, String> {
+        open_in(
+            providers,
+            "test://host/a.txt",
+            || progress::Tracked::start(ops, "op", |_| {}, std::time::Duration::from_secs(10)),
+            |progress| places::Cx { progress, ..places::Cx::default() },
+        )
+    }
+
+    #[test]
+    fn a_download_that_fails_is_forgotten() {
+        let ops = progress::Registry::default();
+        assert_eq!(open(&providers(false), &ops).unwrap_err(), "The download failed.");
+        assert!(ops.is_empty());
+    }
+
+    /// Restart Now would refuse for the rest of the session otherwise.
+    #[test]
+    fn a_download_that_panics_is_forgotten() {
+        let (providers, ops) = (providers(true), progress::Registry::default());
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| open(&providers, &ops)));
+        assert!(unwound.is_err());
+        assert!(ops.is_empty());
     }
 }

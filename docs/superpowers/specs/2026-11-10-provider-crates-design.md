@@ -73,7 +73,7 @@ do. A pending name (a target that doesn't exist yet) keeps today's form
 | `places-local` | this computer: listing, stat, mkdir, the exclusive rename, the Trash (both layouts) and its log, properties, local thumbnail sources; `cfg` per OS (Linux, macOS; Windows later) | `places`, `trash`, `libc`, `gio` (Linux), `objc2`/`xattr` (macOS), `image` |
 | `places-gdrive` | Google Drive (what was `src/cloud/`, minus the local↔Drive half of `transfer.rs` and `finish_staged`, which joined the engine: D6) | `places`, `reqwest`, `oauth2`, `keyring`, `chrono`, `image` |
 | `arbesk` | stays its own crate; its `Client` implements `places::Provider` itself (`provider.rs`) | `places` |
-| `places-sftp` | SSH servers (today's `sftp.rs`) | `places`, `ssh2` |
+| `places-sftp` | SSH servers (what was `sftp.rs`) | `places`, `ssh2` |
 | app (`src-tauri`) | commands, Tauri state, **the transfer engine** (D6), Keep Versions, shares (iroh stays in the app for now), the frontend | all of the above |
 
 Crate names are a proposal; the split is what matters. No crate but the app
@@ -417,7 +417,27 @@ next starts only after the human merged the last.
 5. **SSH becomes `places-sftp`**; shares implement `Provider` in the app, and
    their arms move into `blocking(…)` (D3) with a test that a share listing
    runs through the registry from a blocking thread; `in_share` and
-   `open_target`'s scheme check go with them (step 2).
+   `open_target`'s scheme check go with them (step 2). `SftpState`, moved
+   with its tests into the crate, is SSH's provider itself (as Arbesk's
+   `Client` is): listing, opening as today's download into the app cache,
+   no existence or path info, the preview refused, every write refused with
+   “SSH servers are read only for now.”; `lib.rs` manages it in an `Arc`
+   for the Connect to Server commands (the known-host and password prompts
+   stay in the frontend and `lib.rs`) and registers the same `Arc`.
+   Received shares are `share::provider::ReceivedShares`, which reaches the
+   managed `ShareState` and the Keep Versions hint through `Shares` (answered
+   for the app handle) and waits on `tauri::async_runtime::handle()`'s Tokio
+   handle. Both read-only places take what they answer alike from
+   `places`: `Capabilities::read_only_place`, and the `read_only_place!`
+   macro (`stat` and `lookup` refused with their local-only words, since
+   nothing is pasted there; no existence or path info; every write refused
+   with their read-only words) with `refuse_preview`; each writes only
+   `list` and `fetch`. Whether opening starts
+   a tracked operation is provider data, `Provider::fetch_reports_progress`
+   (true by default, false for this computer, whose file opens as itself),
+   not a capability: the frontend has no use for it. `open_target` looks
+   the provider up once, on a blocking thread, asks it that, and fetches
+   from it, registering the operation only when it reports progress.
 6. **Local becomes `places-local`** (fs_ops' file operations, the Trash and
    its log, the exclusive rename, platform pieces). The engine stays in the
    app (D6); Keep Versions stays as its decorator (D7). `/big` (10,000

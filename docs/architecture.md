@@ -66,14 +66,18 @@ the place may be written. Then:
   Finder's Put Back), and both Trash layouts;
 - listing, whether an item exists, path info, thumbnails and opening ask
   the place's provider in the `places::Registry`, picked by the path's
-  scheme (`providers.rs`: one thin adapter per kind over the modules below,
-  and Google Drive's and Arbesk's own crates' providers, registered as they
-  are);
+  scheme (`providers.rs`: this computer's thin adapter over the modules
+  below, Google Drive's, Arbesk's and SSH's own crates' providers, and
+  received shares' provider in `share/provider.rs`, registered as they
+  are), one lookup and one call per command, on a blocking thread (a
+  share's provider waits on the async runtime from there);
 - listing, counts, opening and reading go to `fs_ops.rs`, the
   `crates/places-gdrive` workspace crate (Google Drive: accounts and
   sign-in without the window, the REST client, listing, opening,
   thumbnails, its own writes and its transfer primitives; no Tauri),
-  `share/` (iroh shares), `sftp.rs` (SSH, read only) and the
+  `share/` (iroh shares), the `crates/places-sftp` workspace crate (SSH,
+  read only: connections, known hosts, listing and downloads; no Tauri,
+  the Connect to Server commands stay in `lib.rs`) and the
   `crates/arbesk` workspace crate (Arbesk: its read path rebuilt from public
   sources, assets built into the app cache to open, preview and copy out,
   each asset's saved thumbnail kept on disk, manifests and thumbnails in a
