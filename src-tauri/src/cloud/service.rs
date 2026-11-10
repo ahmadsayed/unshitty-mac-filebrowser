@@ -402,12 +402,7 @@ fn parent_uri(drive: &DriveLocation) -> String {
     parent.to_uri()
 }
 
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum OpenTarget {
-    File { path: String },
-    Url { url: String },
-}
+pub use places::OpenTarget;
 
 /// Materialize a read-only snapshot for the default app, or return the web
 /// URL for a Google-native document.
@@ -841,6 +836,23 @@ mod tests {
         let entry = entry_for(&drive(), &f);
         assert_eq!(entry.size, 0);
         assert_eq!(entry.modified, 0);
+    }
+
+    /// The JSON the frontend gets for a Drive row, byte for byte: the
+    /// entry's fields, then its `cloud` key (the entry type is shared
+    /// through the `places` crate).
+    #[test]
+    fn a_drive_entry_serialises_with_its_cloud_key() {
+        let entry = entry_for(&drive(), &file("application/pdf"));
+        assert_eq!(
+            serde_json::to_string(&entry).unwrap(),
+            concat!(
+                r#"{"name":"report.docx","path":"gdrive://acct/root~My%20Drive/file-id~report.docx","#,
+                r#""is_dir":false,"size":1234,"modified":1792864323,"is_hidden":false,"is_symlink":false,"#,
+                r#""cloud":{"account":"acct","id":"file-id","mime_type":"application/pdf","#,
+                r#""is_google_doc":false,"is_shortcut":false,"web_url":"https://docs.google.com/x","can_download":true}}"#
+            )
+        );
     }
 
     #[test]

@@ -2618,6 +2618,33 @@ mod dispatch_tests {
         assert_eq!(entry.path, "arbesk://0xab/1~Set/a1~Box.gltf");
         assert!(!entry.is_dir && entry.size == 0 && entry.modified == 1_762_000_000);
         assert!(!entry.is_hidden && !entry.is_symlink && entry.cloud.is_none());
+        assert_eq!(
+            serde_json::to_string(&entry).unwrap(),
+            concat!(
+                r#"{"name":"Box.gltf","path":"arbesk://0xab/1~Set/a1~Box.gltf","is_dir":false,"#,
+                r#""size":0,"modified":1762000000,"is_hidden":false,"is_symlink":false}"#
+            ),
+            "no cloud key: the frontend reads one as a Drive item"
+        );
+    }
+
+    /// The JSON the frontend gets for a row on this computer, byte for
+    /// byte, with no `cloud` key.
+    #[test]
+    fn a_local_entry_serialises_without_a_cloud_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(".notes.txt");
+        std::fs::write(&file, "abc").unwrap();
+        let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(modified).unwrap();
+        let entry = fs_ops::entry_for(&file).unwrap();
+        let path = serde_json::to_string(&file.to_string_lossy()).unwrap();
+        assert_eq!(
+            serde_json::to_string(&entry).unwrap(),
+            format!(
+                r#"{{"name":".notes.txt","path":{path},"is_dir":false,"size":3,"modified":1700000000,"is_hidden":true,"is_symlink":false}}"#
+            )
+        );
     }
 
     #[test]

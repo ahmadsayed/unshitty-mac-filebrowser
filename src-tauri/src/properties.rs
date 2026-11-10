@@ -2,37 +2,12 @@
 //! targets and folder contents. Plain functions so they can be tested without
 //! Tauri; `lib.rs` wraps the slow ones in the blocking-thread pool.
 
-use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Serialize, PartialEq)]
-pub struct FileProperties {
-    pub name: String,
-    pub path: String,
-    /// The containing folder, or empty for a filesystem root.
-    pub parent: String,
-    pub is_dir: bool,
-    pub is_symlink: bool,
-    /// Where a symlink points, if it is one.
-    pub symlink_target: Option<String>,
-    pub size: u64,
-    /// Direct children for folders; `None` for files.
-    pub item_count: Option<u32>,
-    pub modified: i64,
-    pub accessed: i64,
-    /// Birth time; 0 when the filesystem doesn't report one.
-    pub created: i64,
-    /// Permissions in `ls -l` form, e.g. "drwxr-xr-x".
-    pub mode: String,
-    /// The same permission bits in octal, e.g. "755".
-    pub octal: String,
-    pub owner: String,
-    pub group: String,
-    pub others: String,
-}
+pub use places::FileProperties;
 
 fn unix_secs(time: std::io::Result<SystemTime>) -> i64 {
     time.ok()

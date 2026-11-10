@@ -4,17 +4,14 @@
 //! Tauri channel messages.
 
 use std::collections::HashMap;
-use std::io::{self, Read, Write};
 use std::sync::Mutex;
 
 use serde::Serialize;
 
-/// The counters, cancel flag and phases live in the `arbesk` crate, so its
-/// long operations report into the same [`Progress`] the app shows.
-pub use arbesk::{CANCELLED, Phase, Progress};
-
-/// Copies move data in slices this big, checking for a cancel in between.
-pub const SLICE: u64 = 1024 * 1024;
+/// The counters, cancel flag, phases and the counted copy live in the
+/// `places` crate, so every provider reports into the same [`Progress`] the
+/// app shows.
+pub use places::{CANCELLED, Phase, Progress, cancelled_io, copy_counted, is_cancel};
 
 /// What the frontend receives, at most every 100 ms and once at the end.
 #[derive(Clone, Serialize, PartialEq, Eq, Debug)]
@@ -37,37 +34,6 @@ impl ProgressUpdate {
             phase: snapshot.phase,
             done,
         }
-    }
-}
-
-/// An `io::Error` carrying `CANCELLED`, for code that speaks `io::Result`.
-pub fn cancelled_io() -> io::Error {
-    io::Error::other(CANCELLED)
-}
-
-/// Whether `error` is the cancel from `cancelled_io`.
-pub fn is_cancel(error: &io::Error) -> bool {
-    error.to_string() == CANCELLED
-}
-
-/// Copy `reader` to `writer` in `SLICE`s, counting bytes and stopping with
-/// a cancel error between slices.
-pub fn copy_counted(
-    reader: &mut impl Read,
-    writer: &mut impl Write,
-    progress: &Progress,
-) -> io::Result<u64> {
-    let mut total = 0;
-    loop {
-        if progress.is_cancelled() {
-            return Err(cancelled_io());
-        }
-        let copied = io::copy(&mut reader.by_ref().take(SLICE), writer)?;
-        if copied == 0 {
-            return Ok(total);
-        }
-        total += copied;
-        progress.add_bytes(copied);
     }
 }
 
@@ -118,7 +84,6 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Cursor, Read};
 
     #[test]
     fn the_registry_knows_whether_anything_runs_in_any_window() {
@@ -152,70 +117,6 @@ mod tests {
                 done: false,
             }
         );
-    }
-
-    #[test]
-    fn each_phase_is_reported_by_its_name() {
-        let progress = Progress::default();
-        for (phase, name) in [
-            (Phase::Working, "\"working\""),
-            (Phase::Saving, "\"saving\""),
-            (Phase::Preparing, "\"preparing\""),
-        ] {
-            progress.set_phase(phase);
-            assert_eq!(progress.snapshot().phase, phase);
-            assert_eq!(serde_json::to_string(&phase).unwrap(), name);
-        }
-    }
-
-    #[test]
-    fn check_fails_with_cancelled_after_cancel() {
-        let progress = Progress::default();
-        let clone = progress.clone();
-        assert!(progress.check().is_ok());
-        progress.cancel();
-        assert_eq!(progress.check(), Err("Cancelled.".to_string()));
-        assert!(clone.is_cancelled());
-    }
-
-    #[test]
-    fn copy_counted_copies_and_counts() {
-        let data: Vec<u8> = (0..3 * 1024 * 1024 + 5).map(|i| (i % 251) as u8).collect();
-        let progress = Progress::default();
-        let mut out = Vec::new();
-        let copied = copy_counted(&mut Cursor::new(&data), &mut out, &progress).unwrap();
-        assert_eq!(copied, data.len() as u64);
-        assert_eq!(out, data);
-        assert_eq!(progress.snapshot().bytes, data.len() as u64);
-    }
-
-    /// A reader that cancels its progress once the first slice has been read.
-    struct CancelAfterFirst {
-        inner: Cursor<Vec<u8>>,
-        progress: Progress,
-    }
-
-    impl Read for CancelAfterFirst {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            if self.progress.snapshot().bytes > 0 {
-                self.progress.cancel();
-            }
-            self.inner.read(buf)
-        }
-    }
-
-    #[test]
-    fn copy_counted_stops_when_cancelled() {
-        let size = 4 * 1024 * 1024;
-        let progress = Progress::default();
-        let mut reader = CancelAfterFirst {
-            inner: Cursor::new(vec![7u8; size]),
-            progress: progress.clone(),
-        };
-        let mut out = Vec::new();
-        let error = copy_counted(&mut reader, &mut out, &progress).unwrap_err();
-        assert_eq!(error.to_string(), "Cancelled.");
-        assert!(out.len() < size);
     }
 
     #[test]

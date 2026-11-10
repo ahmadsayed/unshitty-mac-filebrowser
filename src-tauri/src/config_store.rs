@@ -23,18 +23,9 @@ pub fn read_flags(path: &Path) -> HashMap<String, bool> {
         .unwrap_or_default()
 }
 
-/// Write `value` as JSON via a temp file + rename, so a crash mid-write can't
-/// leave a half-written file behind.
-pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("Failed to create config directory: {}", e))?;
-    }
-    let json = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(|e| format!("Failed to save settings: {}", e))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("Failed to save settings: {}", e))
-}
+/// The atomic JSON save, shared with Google Drive's and Arbesk's account
+/// lists through the `places` crate.
+pub use places::write_json;
 
 /// Like `write_json`, for files that hold secrets: the temp file is created
 /// owner-only (0600) before any data goes in, so the content is never
