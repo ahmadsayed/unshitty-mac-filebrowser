@@ -70,7 +70,7 @@ do. A pending name (a target that doesn't exist yet) keeps today's form
 | Crate | Holds | Depends on (illustrative) |
 |---|---|---|
 | `places` | the interface: `Provider`, the extension traits, `Entry`, `Capabilities`, `Error`, `Progress`/`Phase`/`Snapshot`/`CANCELLED`, `OpenTarget`, `Registry`, and the shared helpers providers use today from the app: `PathInfo`, `Measure`, `FileProperties`, `Refusal`'s wording, `copy_counted`/`is_cancel`, a clock, an atomic JSON save (`write_json`; the 0600 `write_json_private` stays in `config_store`), the `.downloaded` mark (one copy, which `downloads.rs` and Drive both use) | `serde`, `serde_json` |
-| `places-local` | this computer: listing, stat, mkdir, the exclusive rename, the Trash (both layouts) and its log, properties, local thumbnail sources; `cfg` per OS (Linux, macOS; Windows later) | `places`, `trash`, `libc`, `gio` (Linux), `objc2`/`xattr` (macOS), `image` |
+| `places-local` | this computer: listing, stat, mkdir, the exclusive rename, the Trash (both layouts) and its log, and its provider; `cfg` per OS (Linux, macOS; Windows later). Properties and thumbnails stayed in the app (step 6) | `places`, `trash`, `libc`, `unicode-normalization` |
 | `places-gdrive` | Google Drive (what was `src/cloud/`, minus the local↔Drive half of `transfer.rs` and `finish_staged`, which joined the engine: D6) | `places`, `reqwest`, `oauth2`, `keyring`, `chrono`, `image` |
 | `arbesk` | stays its own crate; its `Client` implements `places::Provider` itself (`provider.rs`) | `places` |
 | `places-sftp` | SSH servers (what was `sftp.rs`) | `places`, `ssh2` |
@@ -440,8 +440,24 @@ next starts only after the human merged the last.
    from it, registering the operation only when it reports progress.
 6. **Local becomes `places-local`** (fs_ops' file operations, the Trash and
    its log, the exclusive rename, platform pieces). The engine stays in the
-   app (D6); Keep Versions stays as its decorator (D7). `/big` (10,000
-   entries) is timed before and after.
+   app (D6); Keep Versions stays as its decorator (D7). Listing 10,000
+   entries is timed before and after (no regression: about 11 ms either
+   way, release build). As done: `fs_ops.rs` and `trash_ops.rs` moved whole
+   (`git mv`), the platform's file pieces (volumes, `%XX` decoding,
+   `file://` URIs, the XDG data folder, `rename_exclusive`) into its
+   `platform.rs`, which the app's `platform.rs` re-exports, and
+   `placement.rs`' renames that never replace (with the staging names)
+   into its `rename.rs`, which `placement` re-exports; local copy and move
+   stay in the app as `local_transfer.rs` beside `placement.rs`, built on
+   the crate's file primitives. The crate never depends on the app: Keep
+   Versions' folder name moved into it (listings hide it; `versions`
+   re-exports it) and the version badge's ownership check is passed in
+   (`fs_ops::OwnsHistory`), and its `Local` provider gets the app's
+   thumbnailer. The provider keeps step 2's read side; its writes, and a
+   local `Transfer`, wait for the step that wraps it in Keep Versions'
+   decorator (D7), since the engine's local routes still go through
+   `placement.rs` directly. The Trash fixtures are the crate's `testing`
+   feature, for the app's Replace-through-the-logged-Trash test.
 7. **Capabilities reach the frontend** (D5): the command, its mock and
    mock-core case, the startup cache, the shared fixture; `locations.ts` and
    `item-actions.ts` read the booleans rule by rule.
@@ -451,8 +467,11 @@ next starts only after the human merged the last.
 `trash_ops` calls the `trash` crate" and "only listed modules call
 `std::fs::rename`" scan `src-tauri/src` and every crate under
 `src-tauri/crates/` (extended in step 1). Later steps only add allowed
-entries for code that moves, in the same PR, and step 6 moves the
-trash-crate exemption with `trash_ops` to `places-local`.
+entries for code that moves, in the same PR, and step 6 moved the
+trash-crate exemption with `trash_ops` to `places-local`
+(`crates/places-local/src/trash_ops.rs`, its guard test there) and
+`rename_new`'s `std::fs::rename` fallback from `placement.rs` to
+`crates/places-local/src/rename.rs`.
 
 After the migration, a new provider is: a crate and a registry line; a row in
 `paths.ts`' SCHEMES and a `Place`; a `LocationKind` and a cell in each
