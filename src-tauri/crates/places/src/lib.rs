@@ -3,7 +3,8 @@
 //! returns and the helpers they share, so no provider reaches into another
 //! one or into the app for them.
 //!
-//! The interface itself is declared here but not wired yet: a [`Provider`]
+//! The interface, wired into the app's read side (listing, existence, path
+//! info, thumbnails, opening) since step 2: a [`Provider`]
 //! per kind of place (blocking, POSIX-like verbs on path strings), the
 //! [`Transfer`] primitives the app's transfer engine builds copy and move
 //! from, the optional [`ext`] traits, typed [`Error`]s worded as today, and

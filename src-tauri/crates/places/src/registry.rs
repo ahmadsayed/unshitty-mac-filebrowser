@@ -51,12 +51,47 @@ impl Registry {
             .find(|(prefix, _)| path.starts_with(prefix.as_str()))
             .map_or(&*self.local, |(_, provider)| &**provider)
     }
+
+    /// One answer per path, in order, for a batch that spans places: each
+    /// provider gets its own paths, in order, in a single call to `answer`
+    /// (providers in the order their first path comes). A provider that
+    /// answers fewer paths than it got leaves the rest `None`.
+    pub fn answer_each<T>(
+        &self,
+        paths: &[String],
+        mut answer: impl FnMut(&dyn Provider, &[String]) -> Vec<Option<T>>,
+    ) -> Vec<Option<T>> {
+        let mut groups: Vec<(&dyn Provider, Vec<usize>)> = Vec::new();
+        for (index, path) in paths.iter().enumerate() {
+            let provider = self.provider_for(path);
+            match groups.iter_mut().find(|(known, _)| same(*known, provider)) {
+                Some((_, indices)) => indices.push(index),
+                None => groups.push((provider, vec![index])),
+            }
+        }
+        let mut out: Vec<Option<T>> = paths.iter().map(|_| None).collect();
+        for (provider, indices) in groups {
+            let batch: Vec<String> = indices.iter().map(|&index| paths[index].clone()).collect();
+            for (index, value) in indices.into_iter().zip(answer(provider, &batch)) {
+                out[index] = value;
+            }
+        }
+        out
+    }
+}
+
+/// Whether `a` and `b` are the same registered provider: each scheme is
+/// registered once, so the scheme names it.
+fn same(a: &dyn Provider, b: &dyn Provider) -> bool {
+    a.scheme() == b.scheme()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Capabilities, Cx, Entry, Error, Fetch, Fetched, ListOptions, NewKind, Replace, Result, Trashed};
+    use std::cell::RefCell;
+
+    use crate::{Capabilities, Cx, Entry, Error, Fetch, Fetched, ListOptions, NewKind, PathInfo, Replace, Result, Trashed};
 
     /// A provider that only knows its scheme; every call says which it is.
     struct Named(&'static str);
@@ -97,6 +132,15 @@ mod tests {
         }
         fn lookup(&self, _: &str, _: &Cx) -> Result<Vec<Entry>> {
             self.refuse()
+        }
+        fn exists(&self, path: &str, _: &Cx) -> bool {
+            path.ends_with(self.0)
+        }
+        /// A folder whose device is the length of the provider's scheme, one
+        /// answer short: the batch's last path gets none.
+        fn path_info(&self, paths: &[String], _: &Cx) -> Vec<Option<PathInfo>> {
+            let info = || Some(PathInfo { is_dir: true, device: self.0.len() as u64 });
+            paths.iter().skip(1).map(|_| info()).collect()
         }
         fn fetch(&self, _: &str, _: Fetch, _: &Cx) -> Result<Fetched> {
             self.refuse()
@@ -170,6 +214,43 @@ mod tests {
         let registry = registry();
         let error = registry.provider_for("file:///a").list("file:///a", &ListOptions::default(), &Cx::default());
         assert_eq!(error.unwrap_err().to_string(), "not available for \"\"");
+    }
+
+    #[test]
+    fn a_batch_reaches_each_provider_once_with_its_own_paths_in_order() {
+        let registry = registry();
+        let paths: Vec<String> = ["/a", "gdrive://x", "rel", "sftp://h/a", "gdrive://y", "/b", "gdrive://z"]
+            .map(String::from)
+            .to_vec();
+        let calls = RefCell::new(Vec::new());
+        let out = registry.answer_each(&paths, |provider, batch| {
+            calls.borrow_mut().push((provider.scheme(), batch.to_vec()));
+            provider.path_info(batch, &Cx::default())
+        });
+        assert_eq!(
+            calls.into_inner(),
+            vec![
+                ("", vec!["/a".to_string(), "rel".into(), "/b".into()]),
+                ("gdrive", vec!["gdrive://x".to_string(), "gdrive://y".into(), "gdrive://z".into()]),
+                ("sftp", vec!["sftp://h/a".to_string()]),
+            ]
+        );
+        // Each provider's short answer leaves its last path without one.
+        let devices: Vec<Option<u64>> = out.iter().map(|info| info.as_ref().map(|i| i.device)).collect();
+        assert_eq!(devices, vec![Some(0), Some(6), Some(0), None, Some(6), None, None]);
+    }
+
+    #[test]
+    fn an_empty_batch_asks_nobody() {
+        let out: Vec<Option<u8>> = registry().answer_each(&[], |_, _| panic!("nobody to ask"));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn exists_is_the_providers_own_answer() {
+        let registry = registry();
+        assert!(registry.provider_for("share://r1/share").exists("share://r1/share", &Cx::default()));
+        assert!(!registry.provider_for("share://r1/a").exists("share://r1/a", &Cx::default()));
     }
 
     #[test]

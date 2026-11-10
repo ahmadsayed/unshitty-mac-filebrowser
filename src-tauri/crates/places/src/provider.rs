@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::{Entry, Error, OpenTarget, Progress, Result};
+use crate::{Entry, Error, OpenTarget, PathInfo, Progress, Result};
 
 // ---- What a place allows -------------------------------------------------------
 
@@ -175,6 +175,15 @@ pub trait Provider: Send + Sync {
     /// Every item at a pending `parent/~name`: more than one where names
     /// aren't unique (Drive), so Replace can refuse instead of guessing.
     fn lookup(&self, pending: &str, cx: &Cx) -> Result<Vec<Entry>>;
+    /// Whether an item is at `path` (for a pending `parent/~name`, whether
+    /// its folder has an item of that name), as `path_exists` answers; false
+    /// when the place can't tell, or failed to.
+    fn exists(&self, path: &str, cx: &Cx) -> bool;
+    /// What drag and drop needs to know of each of `paths` (all this
+    /// provider's), one answer per path in order: `None` where the place has
+    /// nothing to say. One call per batch, so this computer asks the disk
+    /// once.
+    fn path_info(&self, paths: &[String], cx: &Cx) -> Vec<Option<PathInfo>>;
 
     /// For open and preview only: a local file with this item's bytes (the
     /// file itself here, a download or a build in the app cache elsewhere,
@@ -255,16 +264,22 @@ pub trait Transfer: Send + Sync {
 /// leaves it `None`, and the app checks for it instead of matching on a
 /// kind of place.
 ///
-/// Only the slots are declared now. Each trait gets its methods in the
-/// migration step that first implements it, shaped like the command it
-/// replaces so nothing visible changes: thumbnails as PNG bytes with the
-/// per-window cancel ticket, item counts as `FolderSummary` (with the
+/// Each trait gets its methods in the migration step that first implements
+/// it, shaped like the command it replaces so nothing visible changes:
+/// thumbnails as PNG bytes with the per-window cancel ticket (step 2), item
+/// counts as `FolderSummary` (with the
 /// version badges), search with `show_hidden`, its limit, the per-window
 /// stop and its summary, a folder size as bytes cancelled by walk id,
 /// sharing with Arbesk's numeric role and its `Shared` result.
 pub mod ext {
     /// Thumbnails of items (`thumbnail`'s per-kind arms).
-    pub trait Thumbnails: Send + Sync {}
+    pub trait Thumbnails: Send + Sync {
+        /// PNG bytes of a thumbnail of `path`, at most `size` pixels square;
+        /// empty when it has none, or once `stop` says the window's request
+        /// (its cancel ticket) was cancelled. A place that can't stop
+        /// half-way may ignore `stop`.
+        fn thumbnail(&self, path: &str, size: u32, stop: &dyn Fn() -> bool) -> Vec<u8>;
+    }
 
     /// What the Properties dialog shows, and a folder's total size
     /// (`file_properties`, `folder_size`).
