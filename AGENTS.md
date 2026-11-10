@@ -10,15 +10,28 @@ operation, plain TypeScript + Vite frontend (no UI framework). Personal hobby
 project, GPL-3.0-or-later; it contains no GNOME code and must not copy any (see
 "Licensing" below).
 
-Platform differences are confined to the `places-local` crate's
-`platform.rs` (volumes, percent-decoding, XDG paths, the rename that refuses
-a taken name) and `trash_ops.rs` (the two Trash layouts), both under
-`src-tauri/crates/places-local/src/`, and to the app's
-`src-tauri/src/platform.rs` (opening files and links, Open With, window
-buttons, dragging out, DMG and AppImage installs); `recent.rs` branches
-for its source and `file_icons.rs` for whose icons it asks (NSWorkspace on
-macOS, GIO and the icon theme on Linux).
-Everything else must stay platform-neutral.
+Every place the app shows (this computer, Google Drive, Arbesk, SSH
+servers, received shares) is a **provider** behind one Rust interface, the
+`places` crate's `Provider`, held in a `places::Registry` that picks the
+provider by the path's scheme. Each provider lives in its own crate under
+`src-tauri/crates/` (received shares stay in the app, in `share/`); the
+app keeps the commands, the transfer engine (`engine.rs` + `placement.rs`)
+and Keep Versions, which wraps this computer's provider. The frontend reads
+what each place allows from the providers (`capabilities.ts`). The design
+and how it was built: `docs/superpowers/specs/2026-11-10-provider-crates-design.md`;
+the picture: `docs/architecture.md`.
+
+Platform differences are confined to the `places-local` crate (this
+computer's provider): its `platform.rs` (volumes, percent-decoding, XDG
+paths, the rename that refuses a taken name) and `trash_ops.rs` (the two
+Trash layouts), both under `src-tauri/crates/places-local/src/`; and to the
+app's `src-tauri/src/platform.rs` (opening files and links, Open With,
+window buttons, dragging out, DMG and AppImage installs);
+`thumbnails.rs` asks Quick Look on macOS, `recent.rs` branches for its
+source and `file_icons.rs` for whose icons it asks (NSWorkspace on macOS,
+GIO and the icon theme on Linux). The remote providers are
+platform-neutral, and Windows, when it comes, lands in `places-local`
+(design D11). Everything else must stay platform-neutral.
 
 Design intent and decisions live in `docs/superpowers/specs/` and the task plan
 in `docs/superpowers/plans/`. Read the spec before changing behaviour.
@@ -51,7 +64,7 @@ step when a module's role changes.
 | `src/selection.ts` | The view's selection, cursor and anchor, and the user's intent counter a paste checks before selecting what it made (#50) |
 | `src/path-refs.ts` | What remembers paths (stars, bookmarks, the clipboard, the background tabs' folders and every tab's Back and Forward) kept pointing at moved, renamed and trashed items: `moved(pairs)` and `gone(paths)`, one rule per holder, each holder replaced (and saved) at most once per report, a paste reporting each item as it lands; `followPath`, the prefix rewrite for what is inside a moved folder |
 | `src/latest-save.ts` | `LatestSave`: one file's saves (`starred.json`, `pins.json`) one write at a time, each reading the state as it starts, so the last write is the latest state; saves asked for meanwhile share the next write, and each learns whether it was written |
-| `src/search.ts` | The search without the DOM: `SearchSession` (open or not, the text, the walk after a 160 ms pause, at most 1000 results, late answers dropped, what a tab saves), `arrangeSearch` / `searchSections` (what the view shows and its "In This Folder" / "In Subfolders" headers), and `fold`, tested against the backend's `fs_ops::fold` with `tests/fold-cases.json` |
+| `src/search.ts` | The search without the DOM: `SearchSession` (open or not, the text, the walk after a 160 ms pause, at most 1000 results, late answers dropped, what a tab saves), `arrangeSearch` / `searchSections` (what the view shows and its "In This Folder" / "In Subfolders" headers), and `fold`, tested against the backend's `fold` (`places-local`'s `fs_ops.rs`) with `tests/fold-cases.json` |
 | `src/locations.ts` | Which kind of place a path is (`locationKind`: Recent, Starred, Network, the Trash, a folder in it, a share, an SSH server, Arbesk, Drive, a folder), in one precedence built on `paths.ts`'s `placeOf`, and what each kind allows: read only, local, recursive search, versions, new items, its own thumbnails, known sizes; which row of `capabilities.ts`' table answers for a kind (`capabilityRow`: Arbesk's account, collection or asset by path, none for the frontend's own views, `ViewKind`: Recent, Starred, Network, the Trash), so read only, known sizes, recursive search, new items (`can_create`), paste and drops (`kindTakesPastes`, `takesDrops` for a drop's path: `can_copy_in`), copy out and the collection a paste into Arbesk needs come from the providers' capabilities (a path's row for its copy flags only, `copiesOf`: the Arbesk root and a malformed path share the account's row but not its New Collection), while local, versions, the preview, its own thumbnails and the views' answers stay its own rules (each says why); the copy-out refusal's wording; what a paste into Arbesk accepts (`arbeskPasteRefusal`, `isArbeskModelFile`, `arbeskTargetName`); which items are local files (`isLocalFile`, `isLocalRegularFile`) |
 | `src/item-actions.ts` | Whether an action several surfaces reach (cut, copy, paste, rename, trash, delete permanently, star, bookmark, properties, open location) may run in a kind of place, and the toast that says why not: rename and Move to Trash from the place's capability (`byPlace`: `can_rename`, `can_trash`) with a cell for each of the frontend's own views (`Record<ViewKind, …>`), cut, copy and paste through `locations.ts`'s predicates (which read the capabilities; paste reads `can_copy_in`, paste into Arbesk has its own rule; cut's read-only toast is picked by the item's kind), and a `Record<LocationKind, …>` where no capability matches (delete permanently, star, bookmark, properties) or a rule (open location); the toasts are its own; differences between surfaces kept on purpose are marked "Kept:" |
 | `src/capabilities.ts` | What each kind of place allows, as the backend's providers say it (design D5): the booleans of their `places::Capabilities`, one row per kind (`CapabilityRow`: a folder, Drive, a share, an SSH server, Arbesk's account, collection and asset), read once at startup (`loadCapabilities`, which nothing waits for) into a synchronous cache; until it lands, or if it fails, the built-in table answers, the same as the backend's: `tests/capabilities.json` pins the backend's (`providers.rs`' test), the built-in one and the mock's |
@@ -64,15 +77,17 @@ step when a module's role changes.
 | `src/open-with.ts` | Open With…: the searchable application chooser (filter, keyboard selection, launch and retry) |
 | `src/updates.ts` | Check for Updates dialogs: offer, download progress, restart, failures |
 | `src/drag-out.ts` | Dragging files out of the window: when the pointer has left it, and the system drag (our GTK command on Linux, the drag plugin on macOS) |
-| `src-tauri/crates/places-local/` | The `places-local` workspace crate: this computer's files, no Tauri, never depending on the app. `fs_ops.rs` (listing, entries, search, item counts with the version badge's ownership check passed in (`OwnsHistory`), mkdir, new files and links, Rename and Batch Rename, path info, previews, measure, the local half of copy and move the engine calls: `copy_recursive`, `make_folder`, the copy errors; `VERSIONS_DIR` and `is_internal_path`, which listings hide and `versions` re-exports), `rename.rs` (the renames that never replace: `rename_new`, `rename_in_place`, `rename_back`, and the staging names), `trash_ops.rs` (see the Trash row), `platform.rs` (volume roots per OS, `%XX` decoding, `file://` URIs, the XDG data dir, the rename that refuses a taken name: `rename_exclusive`, `renameat2` on Linux, `renamex_np` on macOS; the app's `platform.rs` re-exports them), `provider.rs` (this computer's `places::Provider`, `Local`: the read side, capabilities, thumbnails through the app's thumbnailer, and since step 6b the writes: New Folder and New File (`create`), Rename (`rename`, `rename_in_place`; a new name with a slash, or a Rename into another folder, is refused in Drive's words, `RENAME_STAYS`, never moved past the transfer's refusals), Batch Rename (its `LocalOnly` extension, `rename_many`), Move to Trash (`trash`: one logged batch, `trash_ops::trash_many`) and Put Back (`restore`, `Trash::restore`), the app's Trash and home folder handed in as `TrashReach`, the logged Trash for Replace as `LoggedTrash`; `local`, the words a path that isn't absolute is refused with; `answer_kept`, the one batch scatter `place::local_only` also uses), `transfer.rs` (its `places::Transfer`, `LocalTransfer`, the primitives the engine runs a copy or move on this computer from: `read` (the item itself, a file copied whole at the path the engine gives, a folder made there and filled in place, failures worded as the copy's or move's, `within`), `move_to`/`rename_new` (`rename::rename_new`; an item on another volume answers `Unsupported`, so the engine copies it), `trash_for_replace`/`take_back` (`Trash::send`/`Trash::untrash` through `ReplaceTrash`, the trait `placement` places with) and `discard` (`remove_any`, only the engine's own copies); `TrashOf`, a session's Replace-trash primitives as a `ReplaceTrash`); its `testing` feature (the app's dev-dependencies only) gives the Trash fixtures to the app's Replace tests and `test_support::source_roots`, the one walker every source guard scans with |
-| `src-tauri/src/place.rs` | The backend twin of `placeOf`: a path's kind (`Local`/`Drive`/`Share`/`Sftp`/`Arbesk`), a local path or why it isn't one (remote, malformed or relative), the read-only refusals (`writable`), where a copy, move or rename runs (`transfer`; `copy` also takes an Arbesk asset out, built first, and `Route::IntoArbesk` puts a local model file in), and answering a batch for its local paths only (`local_only`) |
-| `src-tauri/src/placement.rs` | How the engine's routes reach a local path (a copy or move on this computer, a Drive download): the refusals and their wording (`Refusal`, `check_transfer`), the `.`/`..` guard, staging names, Replace (stage, trash the old item through `ReplaceTrash`, `places_local::transfer`'s trait, rename in, or take it back out if that fails), the rename that never replaces (`rename_new`, re-exported from `places_local::rename`) and what a failure undoes (`Target::place`); the engine calls it, nothing else does |
-| `src-tauri/src/engine.rs` | The transfer engine's routes (design D6): on this computer (`local`, since step 6b: a copy or move on this computer's transfer session, inside its `within`, which Keep Versions' decorator runs inside `VersionsState::transfer`; refused by `placement::check_transfer`, placed by `placement::Target::place` from the session's primitives: its `read` filling a staged file or a folder in place, `move_to` as one rename that never replaces straight onto a free target, an item on another volume copied and its source removed for good only after the copy, Replace through `trash_for_replace`/`take_back`, the logged `Trash::send`/`Trash::untrash`), and to, from and inside Google Drive, built from a provider's `places::Transfer` primitives on its transfer session (`places::with_transfer`: Drive's is one `places_gdrive::Ctx` per transfer) and from its declared `Capabilities` (`names_unique`, `put_is_whole`), handed over as an `engine::Remote`; which way a transfer runs comes from `place::kind` of its two ends, and outside its tests it depends on `places` and `placement` only (with `places_local::transfer::TrashOf` to hand a session's Trash to placing): the refusals' order (the place's own `check`, then this computer's, then what `landing` found: a taken name, an ambiguous one, a folder holding the source), the staging names (`.<name>.filebrowser-upload`/`-copy`/`-move`), Replace in Drive (`swap_in`: trash the old item, rename the staged one in, take the old one back if that fails, then discard a staged copy or move a staged original back), downloads placed by `placement::Target::place` with a partial folder and a replaced item going to the logged local Trash (this computer's transfer session, whose Replace trash is `VersionedTrash` outside a local route), and a move's source sent away only after the whole copy; tested on Drive's real primitives against its fake server and on a fake Drive for every primitive, and on this computer by `local_tests` (what `local_transfer.rs` tested, bodies unchanged) |
-| `src-tauri/crates/places-sftp/` | The `places-sftp` workspace crate: SSH servers, no Tauri. `SftpState` (read-only SSH/SFTP connections for Network: agent/key/password auth, known-host checks, listing and downloads into the app cache) is itself SSH's `places::Provider` (`provider.rs`: listing, opening as a download with progress, no existence or path info, the preview refused with the local-only words, every write refused as read only, `Capabilities::read_only_place`); `lib.rs` holds it in an `Arc`, managed for the Connect to Server, server list and Disconnect commands and registered in the registry; `READ_ONLY` and `LOCAL_ONLY` are the words `place.rs` refuses with |
-| `src-tauri/crates/arbesk/` | The `arbesk` workspace crate. The app sees only its facade — `Client`, `SCHEME`, `Account`, `Entry`, `Scene`, `Version` and `Shared` (both `places` types), `Location` and the path helpers `place.rs` parses with, `Progress` (re-exported from `places`) — and reaches Arbesk through `Client` as a `places::Provider` (`provider.rs`: its capabilities, path by path with the route table's refusal words; listing, existence, path info, opening in the Studio and the preview's build; New Collection as `create`, which its capabilities allow in an account only (a collection or an asset refuses it in `create`'s own words); its `Transfer`, `write` for a local model file into a collection and `export` for an asset's own file out, `check` and `pending` for a name pending in a collection, `landing` unsupported (`write` finds what it replaces), the rest refused as read only; the extensions `Thumbnails`, `Versions`, `Preview` (scene and parts), `Sharing` and `Accounts`, an account and a scene handed on as `places::Json`); every module below is internal. Arbesk accounts in Network, read plus creating named collections, sharing one by email with a Viewer or Editor, and copying local `.gltf`/`.glb`/`.3mf` files into one: `location.rs` (`arbesk://<address>/<token>~<name>/<asset>~<name>.<ext>`, ids decide; `parse_target` for a paste's destination), `chain.rs` (the backend's config, kept for five minutes per app cache folder for reads while writes read it fresh, and its token index, `tokenURI` by hand-written `eth_call` — read live on every listing and Reload — decimal uint256 words), `create.rs` (New Collection and `besk create`: the token id from the account and name by keccak256, the first manifest and its one-editor Merkle root, both uploaded, then the relay's `publish`; an existing name is refused), `merkle.rs` (the editor tree as asset-core and OpenZeppelin build it: leaves, roots, proofs and the sorted-pair hash), `share.rs` (Share Collection: resolve the email through Arbesk, read `editorListURI` and its version, add or change the member, upload the new list and relay `updateEditors` with the caller's proof), `ipfs.rs` (gateway reads, brotli/gzip unpacking, a bounded disk file cache for manifests and Arbesk thumbnails, content-addressed and written whole), `compose.rs` (a stored source back to `.gltf`/`.3mf`, unknown formats refused), `service.rs` (listing, naming an asset from the format its manifest already names and only falling back to the source manifest when it names none; building an asset into the app cache, reused only while unchanged: the preview's file, `build`, or the asset's own `.gltf`/`.3mf` that a copy takes out, `export`; the thumbnail an asset was saved with, remembered by the listing and kept on disk by CID and size; an asset's saves through `prev_asset_manifest_cid`, the newest 50, and the scene of one of them, `versions`/`scene`), `scene.rs` (a manifest's nodes and links resolved into parts and placements), `signin.rs` (`besk login`'s email + code flow through the crate's own loopback wait in `callback.rs`, the callback confirmed with Arbesk, the session handed to `session.rs`), `session.rs` (the sign-in's session, 24 h, in the OS keychain with a 0600 file fallback; ended on Disconnect), `accounts.rs` (`arbesk_accounts.json`: email, address, deployment; no credential), `decompose.rs` (asset-core's decompose ported: GLB textures split, parts brotli-framed with `_arbesk` murmur3-128 metadata, 3MF parts raw), `write.rs` (uploads, manifests, the relay's collection update, one write at a time per collection, the wait after a save that may still land), `testing.rs` (the fake Arbesk the write tests share, test-only), `http.rs` (the `Http` seam tests fake, multipart, the slow relay POST); tested against `asset-core`'s own output (`crates/arbesk/tests/fixtures/arbesk/`, made by `scripts/make-arbesk-fixtures.ts`) |
-| `src-tauri/crates/places-gdrive/` | The `places-gdrive` workspace crate: Google Drive, no Tauri. `CloudState` (accounts, tokens, the user's OAuth client, sign-ins in flight, remembered thumbnail links), `accounts.rs`, `client.rs` (the OAuth client JSON), `token.rs` (keychain with a 0600 file fallback), `oauth.rs` + `loopback.rs` (PKCE sign-in through a loopback wait; the window and commands stay in `lib.rs`), `drive.rs` (the REST client: retries, 401 refresh, resumable uploads, downloads), `location.rs` (`gdrive://<account>/<id>~<name>`, pending `…/~<name>`), `service.rs` (listing, existence, path info, properties, opening into the app cache, thumbnails), `write.rs` (New Folder, Rename, Move to Trash, Undo, and `Ctx`, the context of one request or transfer), `transfer.rs` (Drive's `places::Transfer` on a `Ctx`: `check`, `landing`, `pending`, `write`, `read`/`read_into`, `copy_within`, `rename_new`, `move_to`, `trash_for_replace`, `take_back`, `discard`; and `measure`), `provider.rs` (Drive's `places::Provider` through `Calls`, the server calls the app's tests stub, its transfer session one `Ctx` for a whole transfer (`Calls::with`), and `capabilities`; `Live` over the app's state through `Reach`); `test_server.rs` and `testing.rs` (the fake Drive server and its fixtures) are also built for the app's tests by the `testing` feature |
-| `src-tauri/crates/places/` | The `places` workspace crate (design: `docs/superpowers/specs/2026-11-10-provider-crates-design.md`): what every place returns and shares, so no provider reaches into another or into the app — `Entry` (its `cloud` key, `CloudEntry`, set by Google Drive only), `OpenTarget`, `PathInfo`, `Measure`, `FileProperties`, `Progress`/`Phase`/`Snapshot`/`CANCELLED` with `copy_counted`/`is_cancel`, `Refusal`'s wording, the clock (`now`), `write_json` and the `.downloaded` mark; the old homes re-export what each used to define (`places-local`'s `fs_ops`: `Entry`, `PathInfo`, `Measure`; `progress`: `CANCELLED`, `Phase`, `Progress`, `SLICE`; `placement`: `Refusal`; `config_store`: `write_json`; `downloads`: `mark`; `properties`: `FileProperties`; `recent`: `now`; the `arbesk` crate: `Progress`, `Phase`, `Snapshot`, `CANCELLED`, `Shared`, `Version`), and `places-gdrive` uses them directly; `copy_counted`, `cancelled_io` and `is_cancel` are imported from `places` itself. Also the interface: `Provider` (its read side, `list`, `exists`, `path_info`, `fetch`, wired since step 2, and since step 5 `fetch_reports_progress`, whether opening is a tracked operation: true by default, false for this computer; Arbesk's `create` since step 3), `Transfer` (Arbesk's `write` and `export` since step 3; since step 4 every primitive of Google Drive's, with `check`, `landing` (`Landing`, `Existing`, `Source`), `pending` and the two-step `read` (`Reading`, `Unread`) the engine needs; since step 6b this computer's, and `within`, which runs a whole transfer inside one place as it keeps it (Keep Versions around a local one); not `Send + Sync`, one per transfer's thread; a provider hands it out as a session for one whole transfer, `Provider::transfer`, which callers reach through `with_transfer`), the `ext` traits and `Extensions` (`Thumbnails`, `LocalOnly`'s Batch Rename (`rename_many`) since step 6b, and since step 3 `Versions`, `Preview`, `Sharing` and `Accounts`, have their methods; what they answer: `Version`, `Shared`, `SignIn`, and `Json`, a provider's own record handed on as it serialised it), `Capabilities` (since step 5 `Capabilities::read_only_place`, the read-only places' capabilities, and the `read_only_place!` macro with `refuse_preview`, the `Provider` methods an SSH server and a received share answer alike), `Error` (typed kinds, each with today's message) and `Registry` (the exact `<scheme>://` prefix, anything else to the local provider; `answer_each` for a batch across places; `provider(scheme)` for a command that belongs to one place). Depends on `serde` and `serde_json` (with `raw_value`) only |
-| `src-tauri/src/providers.rs` | The `places::Registry` of every place: this computer's provider (`places_local::Local`, handed the app's thumbnails as `LocalThumbnails` and its Trash and home folder as a `places_local::TrashReach` (`lib.rs`' `AppTrash` around the app handle; `testing::NoTrash` in tests), inside Keep Versions' decorator, `versions::versioned::Versioned`, which is what the registry holds for this computer), and the others registered as they are (Google Drive's `places_gdrive::Drive`, Arbesk's `Client`, SSH's `places_sftp::SftpState`, received shares' `share::provider::ReceivedShares`), with their `Capabilities` tested row by row against `place.rs`' refusals. `capability_table` is the `capabilities` command's answer: the booleans of each registered provider's own `capabilities` (`KindCapabilities`, with `can_copy_in`: no copy-in refusal) for a path of each kind the frontend tells apart (`KINDS`), pinned by `tests/capabilities.json`. `registry(states, trash, folders, held, runtime)` builds the registry `lib.rs` manages: Drive reaches its state through `Reach` and shares through `share::provider::Shares` (both answered in `lib.rs` for the app handle, so no Tauri type here), `held` carries the providers the app's commands also hold (Arbesk's client, SSH's state) and `runtime` is Tauri's async runtime, which shares wait on. Drive's server calls go through its crate's `Calls`, which `providers::testing` stubs so tests run the real providers and registry (Arbesk there is the real client with no account and SSH the real state with no server, which ask no server). `list_dir`, `path_exists`, `path_info`, `thumbnail`, `open_target` and `preview_bytes` ask it, one lookup and one call each on a blocking thread, and so do the `arbesk_*` commands, Arbesk's copies in and out, and since step 6b this computer's writes (New Folder, New File, Rename, Batch Rename, Move to Trash, Put Back, copy and move); Drive's other writes (new folders, rename, Trash, restore) keep their own dispatch for now |
+| `src-tauri/crates/places/` | The interface every place implements (design: `docs/superpowers/specs/2026-11-10-provider-crates-design.md`); no Tauri, depends on `serde` and `serde_json` (with `raw_value`) only. `Provider`: `scheme`, `capabilities`, the reads (`list`, `stat`, `lookup`, `exists`, `path_info`, `fetch`, and `fetch_reports_progress`: whether opening is a tracked operation, false only for this computer), the writes (`create`, `rename`, `trash`, `restore`), `transfer` (a `Transfer` session for one whole copy or move, which callers reach through `with_transfer`) and `extensions`. `Transfer`: the primitives the app's engine builds copy and move from (`check`, `landing` with `Landing`/`Existing`/`Source`, `pending`, the two-step `read` with `Reading`/`Unread`, `write`, `read_into`, `export`, `copy_within`, `rename_new`, `move_to`, `trash_for_replace`, `take_back`, `discard`, and `within`, which runs a whole transfer inside one place as it keeps it); not `Send + Sync`, one per transfer's thread. `Capabilities`: the booleans the frontend reads, how operations behave (`rename_atomic`, `replace`, `names_unique`, `put_is_whole`) and the words of each refused `Operation`; `Capabilities::read_only_place`, the `read_only_place!` macro and `refuse_preview` are what an SSH server and a received share answer alike. The `ext` traits in `Extensions`: `Thumbnails`, `Versions`, `Preview`, `Sharing`, `Accounts` and `LocalOnly` (`rename_many`, Batch Rename) have methods; `Properties`, `Counts`, `Search`, `Measure`, `PermanentDelete` and `EmptyTrash` are empty slots, their commands still calling their modules. `Error` (typed kinds, each carrying the words the user sees) and `Registry` (`provider_for`: the exact, case-sensitive `<scheme>://` prefix, anything else to this computer's provider; `answer_each` for a batch across places; `provider(scheme)` for a command that belongs to one place). And what places share, so no provider reaches into another or into the app: `Entry` (its `cloud` key, `CloudEntry`, set by Google Drive only), `OpenTarget`, `PathInfo`, `Measure`, `FileProperties`, `Progress`/`Phase`/`Snapshot`/`CANCELLED` with `copy_counted`/`cancelled_io`/`is_cancel`, `Refusal`'s wording, the records extensions answer (`Version`, `Shared`, `SignIn`, `Json`: a provider's own record handed on as it serialised it), the clock (`now`), `write_json` and the `.downloaded` mark; the app's old homes re-export what they used to define (`progress`, `placement::Refusal`, `config_store::write_json`, `downloads::mark`, `properties::FileProperties`, `recent::now`) |
+| `src-tauri/src/providers.rs` | The `places::Registry` of every place, which `lib.rs` manages: `registry(states, trash, folders, held, runtime)` registers this computer's `places_local::Local` (handed the app's thumbnails as `LocalThumbnails` and its Trash and home folder as a `places_local::TrashReach`: `lib.rs`' `AppTrash`) inside Keep Versions' decorator, `versions::versioned::Versioned`, which is what the registry holds for this computer; then Google Drive's `places_gdrive::Drive` (reaching its state through `Reach`), Arbesk's `Client` and SSH's `places_sftp::SftpState` (`Held`: the same `Arc`s the app's commands hold) and received shares' `share::provider::ReceivedShares` (through `share::provider::Shares`, waiting on `runtime`, Tauri's async runtime). No Tauri type here: `lib.rs` answers `Reach` and `Shares` for the app handle. `capability_table` answers the `capabilities` command: the booleans of each registered provider's own `capabilities` (`KindCapabilities`, plus `can_copy_in`: no copy-in refusal) for a path of each kind the frontend tells apart (`KINDS`: a folder, Drive, a share, an SSH server, Arbesk's account, collection and asset), pinned by `tests/capabilities.json`. Its tests check every provider's `Capabilities` row by row against `place.rs`' refusals; `providers::testing` stubs Drive's `Calls`, so they run the real providers and registry (Arbesk's real client with no account, SSH's real state with no server, `NoTrash`, `NoShares`) |
+| `src-tauri/src/place.rs` | The backend twin of `placeOf`, and a narrow gate, not a router: the read commands (listing, existence, path info, thumbnails, opening, the preview's file) ask the registry directly and never call it; the local-only commands, the writes, the copy/move/rename route table and the local-only batches use it. A path's kind (`Kind`: `Local`/`Drive`/`Share`/`Sftp`/`Arbesk`, from its scheme), a local path or why it isn't one (`local`, `local_write`: remote, malformed or relative), the read-only refusals (`writable`), the route table of copy, move and rename (`transfer`, `Route`; `copy` also takes an Arbesk asset out, built first, and `Route::IntoArbesk` puts a local model file in), and a batch answered for its local paths only (`local_only`, over `places_local::provider::answer_kept`) |
+| `src-tauri/src/engine.rs` | The transfer engine (design D6): the copies and moves on this computer and to, from and inside Google Drive (a local model file copied into Arbesk, `Route::IntoArbesk`, skips it: `lib.rs`' `write_into_place` calls Arbesk's `Transfer::write`; an Arbesk asset copied out is built by `Transfer::export` in `lib.rs`, `exported_source`, before the engine copies it), built from the two ends' `places::Transfer` primitives and their declared `Capabilities` (`names_unique`, `put_is_whole`), never naming a provider's scheme; which way a transfer runs comes from `place::kind` of its two ends. It never sees the registry: `lib.rs` takes each provider from it and opens the transfer session (`in_transfer`, `drive_transfer`). `local`: a copy or move on this computer, on the `&dyn Transfer` it is handed and inside that session's `within` (which Keep Versions' decorator runs inside `VersionsState::transfer`), refused by `placement::check_transfer` and placed by `placement::Target::place`: `read` fills a staged file or a folder in place, `move_to` is one rename that never replaces straight onto a free target, an item on another volume is copied and its source removed for good (`remove_any`) only after the copy, Replace goes through `trash_for_replace`/`take_back`. `dispatch` (handed an `engine::Remote`: the remote end's session and capabilities): to, from and inside Google Drive (`upload`, `move_up`, `download`, `move_down`, `copy_within`, `move_within`), with the refusals' order (the place's own `check`, then this computer's, then what `landing` found: a taken name, an ambiguous one, a folder holding the source), the staging names (`.<name>.filebrowser-upload`/`-copy`/`-move`), Replace in Drive (`swap_in`: trash the old item, rename the staged one in, take the old one back if that fails, then discard a staged copy or move a staged original back), downloads placed by `placement::Target::place` with a partial folder and a replaced item going to the logged local Trash (`VersionedTrash`), and a move's source sent away only after the whole copy. Outside its tests it depends on `places`, `place` (`Kind`, `kind`), `placement` and `places_local::transfer::TrashOf` only. Tested on Drive's real primitives against its fake server, on a fake Drive for every primitive, and on this computer by `local_tests` |
+| `src-tauri/src/placement.rs` | How the engine lands on this computer (a local copy or move, a Drive download): the refusals and their wording (`Refusal`, `check_transfer`, `check_new`), the `.`/`..` guard, staging names and `Stage::by_kind` (a new file staged, a new folder filled in place), Replace (stage, trash the old item through `ReplaceTrash`, rename in, or take it back out if that fails) and what a failure undoes (`Target::place`); re-exports `rename_new` from `places_local::rename`; only the engine calls it |
+| `src-tauri/crates/places-local/` | The `places-local` crate: this computer's files, no Tauri, never depending on the app (what it needs is handed in: the version badge's ownership check, `fs_ops::OwnsHistory`; the thumbnailer; the Trash and home folder, `TrashReach`). `fs_ops.rs` (listing, entries, search, item counts, mkdir, new files and links, Rename and Batch Rename, path info, previews, measure, `copy_recursive`, `make_folder` and the copy errors; `VERSIONS_DIR` and `is_internal_path`, which listings hide and `versions` re-exports), `rename.rs` (the renames that never replace: `rename_new`, `rename_in_place`, `rename_back`, and the staging names), `trash_ops.rs` (see its row), `platform.rs` (volume roots per OS, `%XX` decoding, `file://` URIs, the XDG data dir, `rename_exclusive`: `renameat2` on Linux, `renamex_np` on macOS; the app's `platform.rs` re-exports them), `provider.rs` (`Local`, this computer's `places::Provider`: listing, existence, path info, opening, thumbnails, capabilities, New Folder and New File (`create`), Rename (`rename`; a new name with a slash, or a Rename into another folder, is refused in Drive's words, `RENAME_STAYS`), Batch Rename (`LocalOnly::rename_many`), Move to Trash (`trash`: one logged batch) and Put Back (`restore`); `local`, the words a path that isn't absolute is refused with; `answer_kept`, the batch scatter `place::local_only` uses; `LoggedTrash`, the logged Trash a Replace uses), `transfer.rs` (`LocalTransfer`, its `places::Transfer`: `read` (the item itself: a file copied whole at the path the engine gives, a folder made there and filled in place), `within` (failures worded as the copy's or the move's), `move_to`/`rename_new` (`rename::rename_new`; an item on another volume answers `Unsupported`, so the engine copies it), `trash_for_replace`/`take_back` (`Trash::send`/`Trash::untrash` through `ReplaceTrash`, the trait `placement` places with), `discard` (`remove_any`, only the engine's own copies), the rest `Unsupported`; `TrashOf`, a session's Replace-trash as a `ReplaceTrash`). Its `testing` feature (the app's dev-dependencies only) gives the Trash fixtures to the app's tests and `test_support::source_roots`, the one walker every source guard scans with |
+| `src-tauri/crates/places-local/src/trash_ops.rs` | `Trash` (one in `lib.rs`'s state): `trash_log.json` and its lock, where an item came from (sidecar, log, Put Back), send (trash one item and log it), untrash (for a Replace that failed after trashing the old item, forgetting its entry), restore, delete permanently, empty, what is inside the Trash; Move to Trash's batches (`trash_many`; `trash_routed`, which only routes a batch across places) as free functions, logged through `record` by this computer's provider (`Local::trash`); macOS `~/.Trash` and `<volume>/.Trashes/<uid>` + Finder "Put Back" in each one's own `.DS_Store`, Linux `Trash/{files,info}` and `<volume>/.Trash-<uid>` + `.trashinfo`; the layout is a value (`Layout`), so tests lay out either on any host; its fixtures are `trash_ops::testing` |
+| `src-tauri/crates/places-gdrive/` | The `places-gdrive` crate: Google Drive, no Tauri (the sign-in window, the `drive_*` commands and the managed `CloudState` stay in `lib.rs`). `CloudState` (accounts, tokens, the user's OAuth client, sign-ins in flight, remembered thumbnail links), `accounts.rs`, `client.rs` (the OAuth client JSON), `token.rs` (keychain with a 0600 file fallback), `oauth.rs` + `loopback.rs` (PKCE sign-in through a loopback wait), `drive.rs` (the REST client: retries, 401 refresh, resumable uploads, downloads), `location.rs` (`gdrive://<account>/<id>~<name>`, pending `…/~<name>`; `is_cloud`), `service.rs` (listing, existence, path info, properties, opening into the app cache, thumbnails), `write.rs` (New Folder, Rename, Move to Trash, Undo, and `Ctx`, the context of one request or transfer), `transfer.rs` (Drive's `places::Transfer` on a `Ctx`: `check`, `landing`, `pending`, `write`, `read`/`read_into`, `copy_within`, `rename_new`, `move_to`, `trash_for_replace`, `take_back`, `discard`; and `measure`), `provider.rs` (`Drive`, its `places::Provider`, over `Calls`, the server calls the app's tests stub: reads, thumbnails, `capabilities`, and its transfer session, one `Ctx` for a whole transfer (`Calls::with`); `Live` over the app's state through `Reach`). Drive's own writes (New Folder, Rename, Move to Trash, Put Back) are still `lib.rs`' calls into `write.rs`, so the provider's `create`, `rename`, `trash` and `restore`, and its `stat` and `lookup`, answer `Unsupported` ("… doesn't go through the places registry yet."). `test_server.rs` and `testing.rs` (the fake Drive server and its fixtures) are also built for the app's tests by the `testing` feature |
+| `src-tauri/crates/places-sftp/` | The `places-sftp` crate: SSH servers, no Tauri. `SftpState` (read-only SSH/SFTP connections for Network: agent/key/password auth, known-host checks, listing and downloads into the app cache) is itself SSH's `places::Provider` (`provider.rs`: listing, opening as a download with progress, no existence or path info, the preview refused with the local-only words, every write refused as read only, `Capabilities::read_only_place`); `lib.rs` holds it in an `Arc`, managed for the Connect to Server, server list and Disconnect commands (the known-host and password prompts stay there) and registered in the registry; `READ_ONLY` and `LOCAL_ONLY` are the words `place.rs` refuses with |
+| `src-tauri/crates/arbesk/` | The `arbesk` workspace crate. The app sees only its facade — `Client`, `SCHEME`, `Account`, `Entry`, `Scene`, `Version` and `Shared` (both `places` types), `Location` and the path helpers `place.rs` parses with, `Progress` (re-exported from `places`) — and reaches Arbesk through `Client` as a `places::Provider` (`provider.rs`: its capabilities, path by path with the route table's refusal words; listing, existence, path info, opening in the Studio and the preview's build; New Collection as `create`, which its capabilities allow in an account only (a collection or an asset refuses it in `create`'s own words); its `Transfer`, `write` for a local model file into a collection and `export` for an asset's own file out, `check` and `pending` for a name pending in a collection, `landing` unsupported (`write` finds what it replaces), the rest refused as read only; `stat` and `lookup` answer `Unsupported`, since no command routes them through a provider yet; the extensions `Thumbnails`, `Versions`, `Preview` (scene and parts), `Sharing` and `Accounts`, an account and a scene handed on as `places::Json`); every module below is internal. Arbesk accounts in Network, read plus creating named collections, sharing one by email with a Viewer or Editor, and copying local `.gltf`/`.glb`/`.3mf` files into one: `location.rs` (`arbesk://<address>/<token>~<name>/<asset>~<name>.<ext>`, ids decide; `parse_target` for a paste's destination), `chain.rs` (the backend's config, kept for five minutes per app cache folder for reads while writes read it fresh, and its token index, `tokenURI` by hand-written `eth_call` — read live on every listing and Reload — decimal uint256 words), `create.rs` (New Collection and `besk create`: the token id from the account and name by keccak256, the first manifest and its one-editor Merkle root, both uploaded, then the relay's `publish`; an existing name is refused), `merkle.rs` (the editor tree as asset-core and OpenZeppelin build it: leaves, roots, proofs and the sorted-pair hash), `share.rs` (Share Collection: resolve the email through Arbesk, read `editorListURI` and its version, add or change the member, upload the new list and relay `updateEditors` with the caller's proof), `ipfs.rs` (gateway reads, brotli/gzip unpacking, a bounded disk file cache for manifests and Arbesk thumbnails, content-addressed and written whole), `compose.rs` (a stored source back to `.gltf`/`.3mf`, unknown formats refused), `service.rs` (listing, naming an asset from the format its manifest already names and only falling back to the source manifest when it names none; building an asset into the app cache, reused only while unchanged: the preview's file, `build`, or the asset's own `.gltf`/`.3mf` that a copy takes out, `export`; the thumbnail an asset was saved with, remembered by the listing and kept on disk by CID and size; an asset's saves through `prev_asset_manifest_cid`, the newest 50, and the scene of one of them, `versions`/`scene`), `scene.rs` (a manifest's nodes and links resolved into parts and placements), `signin.rs` (`besk login`'s email + code flow through the crate's own loopback wait in `callback.rs`, the callback confirmed with Arbesk, the session handed to `session.rs`), `session.rs` (the sign-in's session, 24 h, in the OS keychain with a 0600 file fallback; ended on Disconnect), `accounts.rs` (`arbesk_accounts.json`: email, address, deployment; no credential), `decompose.rs` (asset-core's decompose ported: GLB textures split, parts brotli-framed with `_arbesk` murmur3-128 metadata, 3MF parts raw), `write.rs` (uploads, manifests, the relay's collection update, one write at a time per collection, the wait after a save that may still land), `testing.rs` (the fake Arbesk the write tests share, test-only), `http.rs` (the `Http` seam tests fake, multipart, the slow relay POST); tested against `asset-core`'s own output (`crates/arbesk/tests/fixtures/arbesk/`, made by `scripts/make-arbesk-fixtures.ts`) |
+| `src-tauri/src/share/` | Folder sharing over iroh (received shares are read only): `state.rs` (the Tauri-facing state: one lazily started iroh node, host and guest on one endpoint), `host.rs` and `guest.rs` (the sharer's and the recipient's sides), `manifest.rs`, `proto.rs`, `link.rs`, `identity.rs`, `registry.rs` (which folders are shared, who holds which link), `location.rs` (`share://<received-id>/<name>…`) |
 | `src-tauri/src/share/provider.rs` | Received shares as a `places::Provider` in the app (iroh stays here): `ReceivedShares` lists a shared folder and downloads a file by waiting on the app's async runtime with `block_on`, only ever from a blocking thread (D3); no existence or path info, the preview refused with the local-only words, every write refused as read only; `READ_ONLY` and `LOCAL_ONLY` are the words `place.rs` refuses with |
 | `src-tauri/src/share/file_share.rs`, `file_link.rs` | Send with QR Code: hashing, the separate iroh endpoint and serving (`file_share`); the ticket, file list and `filebrowser/file/2` wire format (the page still reads version 1 links), compiled into the phone page too (`file_link`) |
 | `web/file-get/` | The page a phone opens from the QR code: Rust → WebAssembly (iroh in the browser), `build.sh`, `serve.sh` (test from this computer), published by `.github/workflows/file-page.yml`; `static/get/preview.js` (file types and sizes, the image preview, the rows for several files) is tested in `tests/file-page.test.ts` |
@@ -80,13 +95,13 @@ step when a module's role changes.
 | `src-tauri/src/platform.rs` | The app's platform differences: opening files and links, Open With's application list, window buttons, dragging out (GTK on Linux), DMG and AppImage installs, shell scripts, helper processes; re-exports `places_local::platform` (volumes, `%XX` decoding, `file://` URIs, XDG data dir, `rename_exclusive`) |
 | `src-tauri/src/thumbnails.rs` | Thumbnails: the desktop's own on Linux (the shared `~/.cache/thumbnails`, read only, used while its URI and modification time match), Quick Look (`qlmanage`) on macOS, an `image`-crate fallback everywhere; disk cache (decoded photos as small JPEGs, transparent ones as PNG), pruned by age and kept under 100 MB; pictures a remote place hands over are decoded by the `arbesk` crate's own `image.rs` |
 | `src-tauri/src/file_icons.rs` | File and folder icons from the OS: Finder's (NSWorkspace) on macOS, the desktop's icon theme (GIO + freedesktop lookup) on Linux |
-| `src-tauri/crates/places-local/src/trash_ops.rs` | `Trash` (one in `lib.rs`'s state): `trash_log.json` and its lock, where an item came from (sidecar, log, Put Back), send (trash one item and log it), untrash (for a Replace that failed after trashing the old item, forgetting its entry), restore, delete permanently, empty, what is inside the Trash; Move to Trash's batches (`trash_many`, `trash_routed`, the routing across places) as free functions, logged through `record` by this computer's provider (`places_local::provider::Local::trash`); macOS `~/.Trash` and `<volume>/.Trashes/<uid>` + Finder "Put Back" in each one's own `.DS_Store`, Linux `Trash/{files,info}` and `<volume>/.Trash-<uid>` + `.trashinfo`; the layout is a value (`Layout`), so tests lay out either on any host; its fixtures are `trash_ops::testing` |
 | `src-tauri/src/updates.rs` | Check for Updates: how this copy was installed (only the AppImage and the Mac app replace themselves), failure kinds, one install at a time; `lib.rs` wraps `tauri-plugin-updater` |
-| `src-tauri/src/downloads.rs` | Copies of opened SFTP/Drive/share files and built Arbesk assets in the app cache: marks them as downloaded, prunes them after a week (edited copies go to the Trash) |
+| `src-tauri/src/downloads.rs` | Copies of opened SFTP/Drive/share files and built Arbesk assets in the app cache (one folder per place, `DIRS`): marks them as downloaded (`places::mark`), prunes them after a week (edited copies go to the Trash) |
+| `src-tauri/src/progress.rs` | Progress and cancel for long operations as the frontend receives them (at most every 100 ms and once at the end); the counters, cancel flag and phases are `places`' `Progress`, re-exported here |
 | `src-tauri/src/recent.rs` | Recent: Spotlight (`mdfind`) on macOS, `recently-used.xbel` on Linux, merged with `recent.json` |
 | `src-tauri/src/config_store.rs` | `pins.json` / `starred.json` / `flags.json` in the app config dir, Full Disk Access check |
-| `src-tauri/src/versions/` | Keep Versions: `.versions/` ownership, SQLite index, content-addressed zstd objects, capture/watch/restore; `versioned.rs`, the decorator around this computer's provider (design D7) that the registry holds: Rename inside `VersionsState::transfer`, Move to Trash inside `trash_many`, Batch Rename passed through untouched as before (a history in a folder it renames isn't moved), a local copy or move inside `transfer` (its session's `within`), and Replace's Trash of any other route landing here through `VersionedTrash` |
-| `src-tauri/src/lib.rs` | Command registration, commands that need `AppHandle`, startup |
+| `src-tauri/src/versions/` | Keep Versions: `.versions/` ownership, SQLite index, content-addressed zstd objects, capture/watch/restore; `versioned.rs`, `Versioned`, the decorator around this computer's provider (design D7) that the registry holds in its place, a `places::Provider` itself but not a place: Rename inside `VersionsState::transfer`, Move to Trash inside `trash_many`, New Folder, New File, Put Back and Batch Rename passed through untouched (a history in a folder Batch Rename renames isn't moved), a local copy or move inside `transfer` (its session's `within`), and Replace's Trash of any other route landing here (a Drive download, a moved local source of an upload) through `VersionedTrash` |
+| `src-tauri/src/lib.rs` | Command registration, commands that need `AppHandle`, startup: the managed `places::Registry` (`providers::registry`), each command one lookup and one call on a blocking thread (`blocking`), the `capabilities` command, and the answers the providers reach the app through (`AppTrash`, Drive's and shares' state) |
 | `dev/mock-tauri/` | In-memory fake backend for browser previews and the frontend tests |
 | `tests/` | Vitest frontend tests: the real app in jsdom against `dev/mock-tauri/` (`tests/app.ts` boots and drives it) |
 | `scripts/crap-gate.mjs` | CRAP gate run by `.githooks/pre-commit` |
@@ -196,67 +211,69 @@ GPL-3.0-or-later).
            tauri-linux cargo test
   ```
   `npm run build` must run first, because `generate_context!` reads `../dist`.
-- **Backend modules must still be testable without Tauri.** This computer's
-  files are the `places-local` crate (`cargo test -p places-local` runs its
-  file operations, renames, Trash and platform pieces alone). For the app's
-  own modules, copy `placement.rs`, `engine.rs` (with
-  a stub `place` module giving the `Kind` and `kind` it asks for the way a
-  transfer runs), `config_store.rs`, `platform.rs`, `properties.rs`,
-  `thumbnails.rs`, `recent.rs`, `downloads.rs`, `file_icons.rs` and
-  `versions/` into a scratch crate depending on `places` and `places-local`
-  (by path, `src-tauri/crates/places` and `src-tauri/crates/places-local`,
-  the latter also as a dev-dependency with `features = ["testing"]`;
-  `places-gdrive` too, as a dev-dependency with `features = ["testing"]`,
-  for the engine's tests), `serde`,
-  `serde_json`, `image` (same features as `src-tauri/Cargo.toml`),
-  `rusqlite` (`default-features = false`, features `bundled` + `backup`), `zstd`,
-  `blake3`, `notify` and `similar` (and `gio` on
-  Linux, `objc2`, `objc2-foundation`, `objc2-app-kit` and `xattr` on macOS,
-  with the features `src-tauri/Cargo.toml` lists), plus dev-dependency
-  `tempfile`, strip the `#[tauri::command]` lines, and run `cargo test`.
-  Keep new backend logic in plain functions; only `lib.rs` may use
-  `AppHandle` and other Tauri types.
-- **Arbesk is its own crate.** `src-tauri/crates/arbesk` is a workspace member
-  (`cargo test -p arbesk` runs it alone, and `cargo test` from `src-tauri`
-  includes it). Keep its modules private: the app reaches Arbesk through
-  `Client` as a `places::Provider` (`provider.rs`), so what the app needs
-  is a method of the provider, its `Transfer` or a `places` extension, not
-  a new facade type. Its `Progress`, `Phase`, `Snapshot`, `CANCELLED`,
-  `Version` and `Shared` come from the `places` crate, which it depends on
-  (and nothing else of the app's: no Tauri).
-- **Google Drive is its own crate.** `src-tauri/crates/places-gdrive` is a
-  workspace member (`cargo test -p places-gdrive`) and knows nothing of
-  Tauri: the sign-in window, the `drive_*` commands and the managed
-  `CloudState` stay in `lib.rs`. Its copies and moves are the app's engine
-  (`engine.rs`) over its `places::Transfer` primitives, reached through the
-  registry like any provider's (`Provider::transfer`, one session for the
-  whole transfer: don't build a `Ctx` in `lib.rs`); the engine's tests
-  reach Drive's fake server through the crate's `testing` feature, which
-  the app turns on in its dev-dependencies only.
-- **SSH is its own crate.** `src-tauri/crates/places-sftp` is a workspace
-  member (`cargo test -p places-sftp`) and knows nothing of Tauri: the
-  Connect to Server, server list and Disconnect commands stay in `lib.rs`,
-  over the `Arc<SftpState>` it manages and registers as SSH's provider.
+- **Backend modules must still be testable without Tauri.** No crate under
+  `src-tauri/crates/` depends on Tauri or on the app, so each one tests
+  alone: `cargo test -p places`, `-p places-local`, `-p places-gdrive`,
+  `-p places-sftp`, `-p arbesk` (and `cargo test` from `src-tauri` runs the
+  app and every crate: they are all in `default-members`). For the app's
+  own modules, copy `placement.rs`, `engine.rs`, `config_store.rs`,
+  `platform.rs`, `properties.rs`, `thumbnails.rs`, `recent.rs`,
+  `downloads.rs`, `file_icons.rs` and `versions/` into a scratch crate with
+  `use places_local::{fs_ops, trash_ops};` at its root (as `lib.rs` has) and
+  stubs for what they ask of the rest of the app: a `place` module giving
+  the `Kind` and `kind` `engine.rs` asks for the way a transfer runs, a
+  `progress` module (or `progress.rs` copied: `engine.rs`' tests and
+  `versions/state.rs`' use `crate::progress::Progress`), and
+  `providers::Reach` plus `providers::testing::NoTrash` for
+  `versions/versioned.rs` and its tests (or leave `versioned.rs` out). It depends on `places` and `places-local` (by path,
+  `src-tauri/crates/places` and `src-tauri/crates/places-local`, the latter
+  also as a dev-dependency with `features = ["testing"]`; `places-gdrive`
+  too, as a dev-dependency with `features = ["testing"]`, for the engine's
+  tests), `serde`, `serde_json`, `image` (same features as
+  `src-tauri/Cargo.toml`), `rusqlite` (`default-features = false`, features
+  `bundled` + `backup`), `zstd`, `blake3`, `notify` and `similar` (and `gio`
+  on Linux, `objc2`, `objc2-foundation`, `objc2-app-kit` and `xattr` on
+  macOS, with the features `src-tauri/Cargo.toml` lists), plus
+  dev-dependency `tempfile`; strip the `#[tauri::command]` lines and run
+  `cargo test`. Keep new backend logic in plain functions; only `lib.rs` may
+  use `AppHandle` and other Tauri types.
+- **A provider is its own crate and knows nothing of the app.** Each
+  depends on `places` (and its own libraries), never on the app or on
+  another provider: what it shares with another place comes from `places`,
+  and what it needs of the app is handed in through a trait the app answers
+  (`places_local::TrashReach`, `fs_ops::OwnsHistory`, the thumbnailer;
+  Drive's `Reach` and `Calls`; shares' `Shares`). What the app asks of a
+  place is a method of its `Provider`, its `Transfer` or a `places`
+  extension, not a new facade type or a module made public. Per crate:
+  - `arbesk`: keep its modules private; the app sees the facade in
+    `lib.rs` (`Client`, `SCHEME`, `Location` and the path helpers
+    `place.rs` parses with, and a few records).
+  - `places-gdrive`: the sign-in window, the `drive_*` commands and the
+    managed `CloudState` stay in `lib.rs`. Its copies and moves are the
+    app's engine over its `Transfer`, reached through the registry
+    (`Provider::transfer`, one `Ctx` for the whole transfer: don't build a
+    `Ctx` in `lib.rs`); its `testing` feature (the app's dev-dependencies
+    only) gives the engine's tests its fake server.
+  - `places-sftp`: the Connect to Server, server list and Disconnect
+    commands stay in `lib.rs`, over the `Arc<SftpState>` it manages and
+    registers as SSH's provider.
+  - `places-local`: the engine (`engine.rs`, `placement.rs`) and Keep
+    Versions (its decorator, `versions/versioned.rs`) stay in the app: the
+    crate's writes and transfer primitives touch no history.
+  - `places`: depends on `serde` and `serde_json` only.
 - **Received shares are the app's provider.** `share::provider` runs the
   share's async calls with `block_on` on Tauri's runtime handle, so call it
   only from `blocking(…)`, never from an async command's body, where
   `block_on` panics.
-- **This computer is its own crate.** `src-tauri/crates/places-local` is a
-  workspace member (`cargo test -p places-local`) and depends on `places`,
-  never on the app: what it needs of the app is handed in (the version
-  badge's ownership check, `versions::owns_history`; the thumbnailer,
-  `providers::LocalThumbnails`; the Trash, `TrashReach`). The engine
-  (`engine.rs`, `placement.rs`) and Keep Versions (its decorator,
-  `versions/versioned.rs`) stay in the app: the crate's writes and
-  transfer primitives touch no history.
-- **Types places share live in `places`.** `src-tauri/crates/places` is a
-  workspace member too (`cargo test -p places`). It depends on `serde` and
-  `serde_json` only; a provider takes what it shares with another from it, never
-  from the app's modules. The source guards (only `places-local`'s
-  `trash_ops.rs` calls the `trash` crate, checked in its tests; only listed
-  modules call `std::fs::rename`, checked in `placement.rs`) scan every
-  crate under `src-tauri/crates/` as well as `src-tauri/src`, both through
-  `places_local::test_support::source_roots`.
+- **The source guards scan every crate.** Only `places-local`'s
+  `trash_ops.rs` calls the `trash` crate (checked in its tests); only listed
+  modules call `std::fs::rename` (checked in `placement.rs`). Both walk
+  `src-tauri/src` and every crate under `src-tauri/crates/` through
+  `places_local::test_support::source_roots`; code that moves takes its
+  allowed entry with it, in the same PR.
+- **A new crate** joins `members` and `default-members` in
+  `src-tauri/Cargo.toml`, gets a cargo-deny run and changes `Cargo.lock`
+  minimally (below).
 - **macOS-only behaviour can't be verified from Linux**: window chrome, traffic
   lights, Quick Look thumbnails, Spotlight results in Recent, where Finder puts
   trashed items and its `.DS_Store` "Put Back" records, Full Disk Access,
@@ -334,6 +351,16 @@ GPL-3.0-or-later).
   Drive's uploads, copies and moves only through `engine.rs` (`swap_in`,
   over Drive's primitives); don't build the sequence again at a call site
   or in a provider (`places-local`'s `transfer.rs` gives primitives only).
+- A provider says how safe its primitives are instead of pretending:
+  `Capabilities` declares whether its rename refuses a taken name atomically
+  (`rename_atomic`: on disk yes, on Drive check-then-act), whether names are
+  unique in a folder (`names_unique`: not on Drive, where the engine refuses
+  an ambiguous name) and whether a written file appears only whole
+  (`put_is_whole`: a Drive upload; elsewhere a new file is staged); the
+  engine decides from `names_unique` and `put_is_whole`. A staged **original** (the user's own item,
+  moved under a staging name during a move that replaces) is only ever
+  moved back, never discarded or trashed; `Transfer::discard` takes only
+  the engine's own staged or partial copies.
 - Placing renames with `rename_new` (`places_local::rename`, re-exported
   by `placement`), never `std::fs::rename`:
   on Unix that replaces a file that took the name after it was checked free.
@@ -455,20 +482,35 @@ GPL-3.0-or-later).
   to Trash) instead of updating stars, bookmarks, the clipboard or tabs by
   hand. Something new that remembers paths is a holder there, with its rule
   tested in `tests/path-refs.test.ts`.
-- In `lib.rs`, a read (listing, existence, path info, thumbnails, opening)
-  asks the place's provider in the managed `places::Registry`
-  (`provider_for`, `answer_each` for a batch), never a `match` on the kind;
-  what a provider can't do is its own answer, not a fallthrough. A command
-  that belongs to one place whatever path it gets (the `arbesk_*`
+- In `lib.rs`, a command asks the place's provider in the managed
+  `places::Registry` (`provider_for`, `answer_each` for a batch), never a
+  `match` on the kind: the reads (listing, existence, path info,
+  thumbnails, opening, the preview's file), this computer's writes (New
+  Folder, New File, Rename, Batch Rename, Move to Trash, Put Back) and every
+  copy and move (the provider's transfer session, `places::with_transfer`,
+  which `lib.rs` opens and hands to `engine.rs` for a local or Drive route,
+  or uses itself for Arbesk: `Transfer::write` for a local model file into
+  a collection, `Transfer::export` to build an asset before the engine
+  copies it out). What a provider can't do is its own answer
+  (`Error::Unsupported` or `ReadOnly`, in its words), not a fallthrough. A
+  command that belongs to one place whatever path it gets (the `arbesk_*`
   commands) takes that place's provider by its scheme
   (`Registry::provider`, `arbesk_place`/`arbesk_ext`), so its parser still
-  answers every path. No
-  read command looks at `provider.scheme()`: what differs is the
-  provider's own answer (`open_target` asks `fetch_reports_progress`,
-  false only for this computer, whose file opens without registering a
-  progress operation, then fetches from the same provider: one lookup on
-  the blocking thread), and a received share's async listing and download
-  run inside its provider, on a blocking thread like every other.
+  answers every path. No command looks at `provider.scheme()`: what
+  differs is the provider's own answer (`open_target` asks
+  `fetch_reports_progress`, false only for this computer, whose file opens
+  without registering a progress operation, then fetches from the same
+  provider: one lookup on the blocking thread). Still outside the registry,
+  each calling its module through `place.rs`' gate: Drive's own writes
+  (`places_gdrive::write`), Properties, folder sizes, item counts, search
+  and measure (their extensions are empty slots), Delete Permanently and
+  Empty Trash (`trash_ops::Trash`). Moving one of them is a change of its
+  own, with its extension's methods shaped like the command.
+- A copy or move never builds its sequence at the call site or in a
+  provider: the engine (`engine.rs`) runs it from the two ends' `Transfer`
+  primitives and reads how they behave from `Capabilities`
+  (`names_unique`, `put_is_whole`); which pairs may transfer is `place.rs`'
+  route table, not the providers'.
 - In `lib.rs`, ask `place.rs` which kind a path is and whether it may be
   written, rather than chaining `is_cloud`, `is_share` and `is_sftp`: a
   command that works on this computer only takes its path from
@@ -482,6 +524,50 @@ GPL-3.0-or-later).
   imperative subject, a body explaining what and why.
 - Keep the README's feature list and "Not supported yet" section in sync with
   behaviour changes.
+
+## Adding a provider
+
+A new place (another cloud, SMB, WebDAV) is a provider. Opening a copy route
+or offering a new action is a visible change for the human to decide; the
+list below only makes the place exist. Each step is a table row the
+compiler or a test points at:
+
+1. **The crate**: `src-tauri/crates/places-<name>`, depending on `places`
+   and never on the app or Tauri. Its `places::Provider` answers every
+   method: what it can't do is `Error::Unsupported` or `Error::ReadOnly` in
+   its own words (a read-only place uses `Capabilities::read_only_place` and
+   the `read_only_place!` macro). It gives a `Transfer` only if it can be
+   copied to or from, and fills only the extensions it has. It never sets
+   `Entry.cloud` (the frontend reads that key as Drive's). Add it to
+   `members` and `default-members` in `src-tauri/Cargo.toml`, run
+   cargo-deny, keep the `Cargo.lock` diff minimal.
+2. **The registry line** in `providers::registry` (`.register(…)`), and a
+   row in `providers::KINDS` with a path of the new kind, so the
+   `capabilities` command answers for it; then its row in
+   `tests/capabilities.json` and in `capabilities.ts`
+   (`CapabilityRow`, `BUILT_IN_CAPABILITIES`).
+3. **The gate**: a `Kind` in `place.rs` (`kind`, and `local`'s and
+   `writable`'s words), with rows in its table test. The route table
+   (`transfer`, `copy`) refuses the new kind until a route is opened on
+   purpose. `lib.rs`' `properties_refusal` and `folder_size_refusal` match
+   on `Kind` exhaustively and need their own words for it, and
+   `providers.rs`' tests map each `Kind` to its scheme (`scheme_of`).
+4. **The frontend's tables**: a `Place` and a row in `paths.ts`' `SCHEMES`
+   (and `tests/paths.test.ts`), a `LocationKind` with its `capabilityRow`
+   in `locations.ts`, and a cell in each `Record<Place, …>` and
+   `Record<LocationKind, …>` table (`locations.ts`, `item-actions.ts`,
+   `main.ts`'s menus); a row in `listing-failure.ts` or `item-icons.ts`
+   only if it fails or looks unlike the others.
+5. **If it signs in**: an `Accounts` extension, its commands in `lib.rs`
+   and `api.ts`, a row in `providers.ts`' `PROVIDERS` and in
+   `PROVIDER_ACTIONS` (`main.ts`).
+6. **The mock**: its commands in `dev/mock-tauri/core.ts`, each with a case
+   in `tests/mock-core.test.ts`.
+7. **If opening downloads into the app cache**: its folder in
+   `downloads::DIRS`, and every file it leaves there marked
+   (`places::mark`).
+8. **The docs**: its Layout row here, `docs/architecture.md` and its
+   diagram, and the README's feature list.
 
 ## Life of a task
 
