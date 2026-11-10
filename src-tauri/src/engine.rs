@@ -48,9 +48,7 @@ use std::cell::RefCell;
 use std::ops::Deref;
 use std::path::Path;
 
-use places::{Capabilities, Cx, Error, Landing, Transfer, Unread};
-
-use places::Reading;
+use places::{Capabilities, Cx, Error, Landing, Reading, Transfer, Unread};
 use places_local::transfer::TrashOf;
 
 use crate::place::{self, Kind};
@@ -3118,24 +3116,5 @@ pub(crate) mod local_tests {
                 }
             }
         }
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_copy_10000_files() {
-        use std::fs;
-        let dir = tempfile::tempdir().unwrap();
-        let src = dir.path().join("big");
-        fs::create_dir(&src).unwrap();
-        for i in 0..10_000 { fs::write(src.join(format!("f{i}.txt")), b"hello world").unwrap(); }
-        let mut times = Vec::new();
-        let none = |_: &Path| -> Result<Option<std::path::PathBuf>, String> { panic!() };
-        for run in 0..5 {
-            let dst = dir.path().join(format!("copy{run}"));
-            let t = std::time::Instant::now();
-            copy_entry_with(src.to_string_lossy().into(), dst.to_string_lossy().into(), false, &Progress::default(), &none).unwrap();
-            times.push(t.elapsed().as_secs_f64() * 1000.0);
-        }
-        eprintln!("BENCH copy 10000 files ms: {times:?}");
     }
 }

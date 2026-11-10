@@ -475,7 +475,7 @@ mod tests {
         let read_only = Err(Error::ReadOnly(READ_ONLY.into()));
         assert_eq!(client.rename(ASSET, "b", &cx), read_only);
         assert_eq!(client.restore(ASSET, &cx), read_only);
-        assert_eq!(client.trash(&[ASSET], &cx), vec![Trashed { path: ASSET.into(), result: read_only.clone() }]);
+        assert_eq!(client.trash(&[ASSET], &cx), vec![Trashed { path: ASSET.into(), result: Err(Error::ReadOnly(READ_ONLY.into())) }]);
         assert_eq!(client.create(ACCOUNT, "x", NewKind::EmptyFile, &cx), read_only);
         assert!(matches!(client.stat(ASSET, &cx), Err(Error::Unsupported(_))));
         assert!(matches!(client.lookup(ASSET, &cx), Err(Error::Unsupported(_))));

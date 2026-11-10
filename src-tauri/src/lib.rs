@@ -972,13 +972,13 @@ async fn copy_routed(
         })
         .await?;
     }
-    blocking(move || local_transfer(&app, &from, &to, overwrite, false, progress)).await?
+    blocking(move || transfer_here(&app, &from, &to, overwrite, false, progress)).await?
 }
 
 /// A copy or move on this computer: the engine's local route
 /// (`engine::local`) on this computer's transfer session, which Keep
 /// Versions' decorator keeps the histories consistent around. Returns `to`.
-fn local_transfer(
+fn transfer_here(
     app: &tauri::AppHandle,
     from: &str,
     to: &str,
@@ -1007,7 +1007,7 @@ async fn move_entry(
         drive_transfer(app.clone(), from, to, overwrite, true, progress).await
     } else {
         let app = app.clone();
-        blocking(move || local_transfer(&app, &from, &to, overwrite, true, progress)).await.and_then(|result| result)
+        blocking(move || transfer_here(&app, &from, &to, overwrite, true, progress)).await.and_then(|result| result)
     };
     tracking.finish();
     result
