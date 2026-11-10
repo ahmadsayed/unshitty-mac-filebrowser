@@ -3,21 +3,20 @@
 //! touches the network runs on a blocking thread; the frontend simply sees
 //! `Entry` values with a `cloud` field.
 
-use crate::progress::Progress;
+use places::Progress;
 use std::path::Path;
 
 use chrono::DateTime;
-use serde::Serialize;
 
-use crate::cloud::CloudEntry;
-use crate::cloud::CloudState;
-use crate::cloud::accounts::DriveAccount;
-use crate::cloud::drive::{API_BASE, DriveClient, DriveError, DriveFile};
-use crate::cloud::location::{DriveLocation, Location, Segment};
-use crate::cloud::oauth::TokenExchange;
-use crate::cloud::token::Token;
-use crate::fs_ops::{Entry, PathInfo};
-use crate::properties::FileProperties;
+use crate::CloudEntry;
+use crate::CloudState;
+use crate::accounts::DriveAccount;
+use crate::drive::{API_BASE, DriveClient, DriveError, DriveFile};
+use crate::location::{DriveLocation, Location, Segment};
+use crate::oauth::TokenExchange;
+use crate::token::Token;
+use places::{Entry, PathInfo};
+use places::FileProperties;
 
 /// Stop after this many children; a Drive listing is not streamed page by page
 /// in the UI yet. Reported in the README as the large-folder limit.
@@ -29,7 +28,7 @@ pub struct Auth {
 }
 
 /// Exchanges a refresh token for a new access token. Tests use a fake.
-pub(crate) type Refresh<'a> = &'a dyn Fn(&str) -> Result<Token, String>;
+pub type Refresh<'a> = &'a dyn Fn(&str) -> Result<Token, String>;
 
 /// Refreshes with the user's OAuth client, the one that issued the token.
 pub(crate) fn google_refresh(state: &CloudState) -> impl Fn(&str) -> Result<Token, String> + '_ {
@@ -38,7 +37,7 @@ pub(crate) fn google_refresh(state: &CloudState) -> impl Fn(&str) -> Result<Toke
         let client = state.oauth_client().ok_or(
             "Google Drive session expired. Disconnect Google Drive, then connect again with your own OAuth client.",
         )?;
-        crate::cloud::oauth::GoogleExchange::new(&client).refresh(refresh_token)
+        crate::oauth::GoogleExchange::new(&client).refresh(refresh_token)
     }
 }
 
@@ -63,7 +62,7 @@ fn credentials_with(
     let token = state
         .token(account_id)?
         .ok_or_else(|| "Google Drive is not connected. Sign in again.".to_string())?;
-    let token = if token.is_expired(crate::recent::now()) {
+    let token = if token.is_expired(places::now()) {
         renew(state, &account, &token, refresh)?
     } else {
         token
@@ -85,7 +84,7 @@ fn renew(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(current) = state.token(&account.id)? {
-        if current.access_token != stale.access_token && !current.is_expired(crate::recent::now()) {
+        if current.access_token != stale.access_token && !current.is_expired(places::now()) {
             return Ok(current);
         }
     }
@@ -161,7 +160,7 @@ fn authorized_with<T>(
 pub fn about(
     state: &CloudState,
     access_token: &str,
-) -> Result<crate::cloud::drive::AboutInfo, String> {
+) -> Result<crate::drive::AboutInfo, String> {
     DriveClient::new(state.http()?, API_BASE, access_token.to_string())
         .about()
         .map_err(|error| error.message())
@@ -184,7 +183,7 @@ pub fn writable(state: &CloudState, path: &str) -> Result<(DriveLocation, DriveA
     if !account
         .scopes
         .iter()
-        .any(|scope| scope == crate::cloud::oauth::SCOPE_FULL)
+        .any(|scope| scope == crate::oauth::SCOPE_FULL)
     {
         return Err(READONLY.into());
     }
@@ -192,7 +191,7 @@ pub fn writable(state: &CloudState, path: &str) -> Result<(DriveLocation, DriveA
 }
 
 pub fn drive_location(path: &str) -> Result<DriveLocation, String> {
-    match crate::cloud::parse(path)? {
+    match crate::parse(path)? {
         Location::Drive(drive) => Ok(drive),
         Location::Local(_) => Err("Not a Google Drive location.".into()),
     }
@@ -479,7 +478,7 @@ fn open_with(
     }
     std::fs::rename(&part, &dest)
         .map_err(|error| format!("Could not finish the Google Drive download: {error}"))?;
-    crate::downloads::mark(&dest);
+    places::mark(&dest);
     Ok(OpenTarget::File {
         path: dest.to_string_lossy().to_string(),
     })
@@ -572,12 +571,12 @@ pub(crate) fn safe_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::progress::Progress;
-    use crate::cloud::accounts::Accounts;
-    use crate::cloud::drive::Capabilities;
-    use crate::cloud::oauth::SCOPE_READONLY;
-    use crate::cloud::test_server::{json, serve};
-    use crate::cloud::token::{FileTokenStore, TokenStore};
+    use places::Progress;
+    use crate::accounts::Accounts;
+    use crate::drive::Capabilities;
+    use crate::oauth::SCOPE_READONLY;
+    use crate::test_server::{json, serve};
+    use crate::token::{FileTokenStore, TokenStore};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
@@ -597,7 +596,7 @@ mod tests {
         Token::new(
             "access".into(),
             Some("refresh".into()),
-            crate::recent::now() + 3600,
+            places::now() + 3600,
             vec![SCOPE_READONLY.into()],
         )
     }
@@ -606,7 +605,7 @@ mod tests {
         Token::new(
             "old".into(),
             Some("refresh".into()),
-            crate::recent::now() - 10,
+            places::now() - 10,
             vec![SCOPE_READONLY.into()],
         )
     }
@@ -621,7 +620,7 @@ mod tests {
             CloudState::with_store(
                 accounts,
                 Box::new(store),
-                crate::cloud::client::ClientStore::new(dir.path().join("google-client.json")),
+                crate::client::ClientStore::new(dir.path().join("google-client.json")),
             ),
             dir,
         )
@@ -633,7 +632,7 @@ mod tests {
         Ok(Token::new(
             "refreshed".into(),
             None,
-            crate::recent::now() + 3600,
+            places::now() + 3600,
             vec![],
         ))
     }
@@ -901,7 +900,7 @@ mod tests {
 
     #[test]
     fn a_pending_path_exists_when_the_parent_has_that_name() {
-        let (base, log, server) = crate::cloud::test_server::serve_logged(vec![full_reply(
+        let (base, log, server) = crate::test_server::serve_logged(vec![full_reply(
             r#"{"files":[{"id":"f1","name":"a.txt","mimeType":"text/plain"}]}"#,
         )]);
         let (state, _dir) = test_state(valid_token());
@@ -949,7 +948,7 @@ mod tests {
     #[test]
     fn names_with_quotes_are_escaped_in_the_query() {
         let (base, log, server) =
-            crate::cloud::test_server::serve_logged(vec![full_reply(r#"{"files":[]}"#)]);
+            crate::test_server::serve_logged(vec![full_reply(r#"{"files":[]}"#)]);
         let (state, _dir) = test_state(valid_token());
         path_exists_with(
             &state,
@@ -969,7 +968,7 @@ mod tests {
         assert_eq!(writable(&state, path).err().as_deref(), Some(READONLY));
 
         let mut account = test_account();
-        account.scopes = vec![crate::cloud::oauth::SCOPE_FULL.into()];
+        account.scopes = vec![crate::oauth::SCOPE_FULL.into()];
         state.accounts.lock().unwrap().upsert(account).unwrap();
         let (location, account) = writable(&state, path).unwrap();
         assert!(location.is_pending());
@@ -994,7 +993,7 @@ mod tests {
             ),
         ]);
         let client = DriveClient::new(
-            crate::cloud::drive::http_client().unwrap(),
+            crate::drive::http_client().unwrap(),
             &base,
             "token".into(),
         );

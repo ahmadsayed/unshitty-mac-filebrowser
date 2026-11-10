@@ -2,9 +2,10 @@
 //! them (design `2026-11-10-provider-crates-design.md`, step 2).
 //!
 //! Each provider here is a thin adapter over today's code, where it is: this
-//! computer's over `fs_ops` and `thumbnails`, Google Drive's over
-//! `cloud::service`, SSH's over `sftp::SftpState`. Arbesk is its own
-//! crate's provider (`arbesk::Client`, step 3), registered here as it is.
+//! computer's over `fs_ops` and `thumbnails`, SSH's over `sftp::SftpState`.
+//! Google Drive (`places_gdrive::Drive`, step 4) and Arbesk
+//! (`arbesk::Client`, step 3) are their own crates' providers, registered
+//! here as they are.
 //! The read side goes through them: listing, whether an item exists, path
 //! info, thumbnails, opening and the preview's file. Writes (new folders,
 //! rename, copy, move, Trash, restore) stay on their commands' own dispatch
@@ -20,7 +21,7 @@
 //! Each adapter reaches the state it wraps through [`Reach`], which `lib.rs`
 //! answers with the app's managed state, and gets its folders at startup
 //! ([`Folders`]): nothing here holds a Tauri type. Drive's server calls go
-//! through [`DriveCalls`], so a test answers them itself and still runs
+//! through its crate's `Calls`, so a test answers them itself and still runs
 //! each adapter and the registry; Arbesk's tests answer through its crate's
 //! own fake server, and here the registry runs the real `arbesk::Client`.
 
@@ -28,11 +29,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use places::{
-    Capabilities, Cx, Entry, Error, Extensions, Fetch, Fetched, ListOptions, NewKind, OpenTarget,
-    Operation, PathInfo, Progress, Provider, Refused, Registry, Replace, Result, Trashed, ext,
+    Capabilities, Cx, Entry, Error, Extensions, Fetch, Fetched, ListOptions, NewKind,
+    Operation, PathInfo, Provider, Refused, Registry, Replace, Result, Trashed, ext,
 };
 
-use crate::cloud::{self, CloudState};
+use places_gdrive::{Calls as DriveCalls, CloudState, Drive, Live};
 use crate::{fs_ops, place, sftp, thumbnails};
 
 /// The scheme of received shares, whose listing and download `lib.rs` still
@@ -66,7 +67,7 @@ where
     let Folders { cache, thumbnails, shared_thumbnails } = folders;
     registry_with(
         Local { thumbnails, shared_thumbnails },
-        Drive { calls: LiveDrive(states.clone()), cache },
+        Drive::new(Live(DriveState(states.clone())), cache),
         arbesk,
         Sftp { states },
     )
@@ -177,14 +178,6 @@ fn read_only(read_only: &str, local_only: Option<String>) -> Capabilities {
     }
 }
 
-/// What a command gets back from a provider's fetch.
-fn fetched(target: OpenTarget) -> Fetched {
-    match target {
-        OpenTarget::File { path } => Fetched::File(PathBuf::from(path)),
-        OpenTarget::Url { url } => Fetched::Url(url),
-    }
-}
-
 // ---- This computer ---------------------------------------------------------------
 
 /// Files on this computer and mounted volumes. A path no other provider
@@ -275,96 +268,13 @@ impl ext::Thumbnails for Local {
 
 // ---- Google Drive ----------------------------------------------------------------
 
-/// Google Drive's server calls the provider makes.
-pub trait DriveCalls: Send + Sync + 'static {
-    fn list(&self, dir: &str, show_hidden: bool) -> std::result::Result<Vec<Entry>, String>;
-    fn exists(&self, path: &str) -> bool;
-    fn path_info(&self, path: &str) -> std::result::Result<PathInfo, String>;
-    fn open(&self, path: &str, cache: &Path, progress: &Progress) -> std::result::Result<OpenTarget, String>;
-    fn thumbnail(&self, path: &str, size: u32) -> Vec<u8>;
-}
+/// Google Drive is its own crate's provider (`places_gdrive::Drive`); it
+/// reaches the app's `CloudState` through this.
+pub struct DriveState<S>(S);
 
-/// `cloud::service`'s calls on the app's `CloudState`.
-pub struct LiveDrive<S>(S);
-
-impl<S: Reach<CloudState>> DriveCalls for LiveDrive<S> {
-    fn list(&self, dir: &str, show_hidden: bool) -> std::result::Result<Vec<Entry>, String> {
-        cloud::service::list_dir(self.0.reach(), dir, show_hidden)
-    }
-    fn exists(&self, path: &str) -> bool {
-        cloud::service::path_exists(self.0.reach(), path)
-    }
-    fn path_info(&self, path: &str) -> std::result::Result<PathInfo, String> {
-        cloud::service::path_info(self.0.reach(), path)
-    }
-    fn open(&self, path: &str, cache: &Path, progress: &Progress) -> std::result::Result<OpenTarget, String> {
-        cloud::service::open(self.0.reach(), path, cache, progress)
-    }
-    fn thumbnail(&self, path: &str, size: u32) -> Vec<u8> {
-        cloud::service::thumbnail(self.0.reach(), path, size)
-    }
-}
-
-/// Google Drive, over `cloud::service` (through `calls`).
-pub struct Drive<C> {
-    calls: C,
-    cache: std::result::Result<PathBuf, String>,
-}
-
-fn drive_capabilities(path: &str) -> Capabilities {
-    Capabilities {
-        read_only: false,
-        can_create: true,
-        can_rename: true,
-        can_trash: true,
-        can_copy_out: true,
-        knows_sizes: true,
-        knows_counts: false,
-        searchable: false,
-        has_thumbnails: true,
-        // Drive checks the name first, then renames.
-        rename_atomic: false,
-        replace: Replace::Trash,
-        names_unique: false,
-        put_is_whole: true,
-        refused: refusals(&[(Operation::LocalOnly, local_only_refusal(path))]),
-    }
-}
-
-impl<C: DriveCalls> Provider for Drive<C> {
-    fn scheme(&self) -> &'static str {
-        "gdrive"
-    }
-    fn capabilities(&self, path: &str) -> Capabilities {
-        drive_capabilities(path)
-    }
-    fn list(&self, dir: &str, opts: &ListOptions, _: &Cx) -> Result<Vec<Entry>> {
-        self.calls.list(dir, opts.show_hidden).map_err(words)
-    }
-    fn exists(&self, path: &str, _: &Cx) -> bool {
-        self.calls.exists(path)
-    }
-    fn path_info(&self, paths: &[String], _: &Cx) -> Vec<Option<PathInfo>> {
-        paths.iter().map(|path| self.calls.path_info(path).ok()).collect()
-    }
-    /// A file's snapshot in the app cache, or a Google Docs file's page.
-    fn fetch(&self, path: &str, purpose: Fetch, cx: &Cx) -> Result<Fetched> {
-        if purpose == Fetch::Preview {
-            return not_previewed(path);
-        }
-        let cache = self.cache.clone().map_err(words)?;
-        self.calls.open(path, &cache, &cx.progress).map(fetched).map_err(words)
-    }
-    not_wired_yet!();
-    fn extensions(&self) -> Extensions<'_> {
-        Extensions { thumbnails: Some(self), ..Extensions::default() }
-    }
-}
-
-impl<C: DriveCalls> ext::Thumbnails for Drive<C> {
-    /// Drive's own thumbnail; a request, once sent, isn't stopped.
-    fn thumbnail(&self, path: &str, size: u32, _stop: &dyn Fn() -> bool) -> Vec<u8> {
-        self.calls.thumbnail(path, size)
+impl<S: Reach<CloudState>> places_gdrive::Reach for DriveState<S> {
+    fn reach(&self) -> &CloudState {
+        self.0.reach()
     }
 }
 
@@ -439,6 +349,7 @@ impl Provider for Share {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
+    use places::{OpenTarget, Progress};
 
     /// A test's answer for one path.
     pub type Answer<T> = Box<dyn Fn(&str) -> T + Send + Sync>;
@@ -478,6 +389,9 @@ pub(crate) mod testing {
         fn thumbnail(&self, path: &str, _: u32) -> Vec<u8> {
             unexpected("Drive")(path)
         }
+        fn with<T>(&self, _: &Progress, _: impl FnOnce(&places_gdrive::Ctx) -> T) -> T {
+            unexpected("Drive")("a transfer")
+        }
     }
 
     /// No SSH server: the tests never reach one.
@@ -502,7 +416,7 @@ pub(crate) mod testing {
     pub fn registry(drive: StubDrive) -> Registry {
         registry_with(
             Local { thumbnails: None, shared_thumbnails: None },
-            Drive { calls: drive, cache: Err("No app cache in tests.".into()) },
+            Drive::new(drive, Err("No app cache in tests.".into())),
             arbesk(),
             Sftp { states: NoServer },
         )
@@ -518,6 +432,7 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::StubDrive;
     use super::*;
+    use places::OpenTarget;
     use crate::place::Kind;
 
     const ARBESK: &str = "arbesk://0x00000000000000000000000000000000000000ab/12~Set";
@@ -689,14 +604,6 @@ mod tests {
     }
 
     #[test]
-    fn a_fetched_target_keeps_its_path_or_url() {
-        let file = fetched(OpenTarget::File { path: "/cache/x/a.pdf".into() });
-        assert_eq!(file, Fetched::File("/cache/x/a.pdf".into()));
-        let url = fetched(OpenTarget::Url { url: "https://docs.google.com/d".into() });
-        assert_eq!(url, Fetched::Url("https://docs.google.com/d".into()));
-    }
-
-    #[test]
     fn remote_items_are_not_previewed_but_arbesk_assets() {
         let registry = testing::plain();
         for (path, words) in [
@@ -799,8 +706,8 @@ mod tests {
         assert!(extensions.thumbnails.is_some() && extensions.versions.is_some() && extensions.preview.is_some());
         assert!(extensions.sharing.is_some() && extensions.accounts.is_some());
         assert!(extensions.accounts.unwrap().accounts().is_empty());
-        let transfer = provider.transfer().unwrap();
-        assert_eq!(transfer.export(ASSET, &cx).unwrap_err(), unknown);
+        let exported = places::with_transfer(provider, &cx, |t| t.export(ASSET, &cx)).unwrap();
+        assert_eq!(exported.unwrap_err(), unknown);
     }
 
     /// The app's own states, as `lib.rs`' managed state holds them.
@@ -823,7 +730,7 @@ mod tests {
 
     /// The app's registry, over its real states: each kind reaches its
     /// provider, and a malformed Drive or Arbesk path is answered without
-    /// a server, as `cloud::service` and the `arbesk` client answer it.
+    /// a server, as `places_gdrive::service` and the `arbesk` client answer it.
     #[test]
     fn the_apps_registry_reaches_each_kinds_state() {
         let dir = tempfile::tempdir().unwrap();

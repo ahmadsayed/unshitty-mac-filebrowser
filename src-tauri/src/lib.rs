@@ -1,7 +1,7 @@
 mod archive;
-mod cloud;
 mod config_store;
 mod downloads;
+mod engine;
 mod file_icons;
 mod fs_ops;
 mod place;
@@ -28,8 +28,8 @@ use progress::ProgressUpdate;
 use tauri::ipc::Channel;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-use cloud::CloudState;
-use cloud::service::OpenTarget;
+use places_gdrive::CloudState;
+use places_gdrive::service::OpenTarget;
 use place::{Kind, Route};
 use versions::history::History;
 use versions::state::{Transfer, VersionedTrash, VersionsState};
@@ -241,7 +241,7 @@ fn cancel_operation(registry: tauri::State<progress::Registry>, op: String) {
 #[tauri::command]
 async fn measure(app: tauri::AppHandle, paths: Vec<String>) -> Result<fs_ops::Measure, String> {
     blocking(move || {
-        measure_paths(paths, |drive| cloud::transfer::measure(&app.state::<CloudState>(), drive))
+        measure_paths(paths, |drive| places_gdrive::transfer::measure(&app.state::<CloudState>(), drive))
     })
     .await?
 }
@@ -778,7 +778,7 @@ async fn file_properties(
     if place::kind(&path) == Kind::Drive {
         return blocking(move || {
             let state = app.state::<CloudState>();
-            cloud::service::file_properties(&state, &path, show_hidden)
+            places_gdrive::service::file_properties(&state, &path, show_hidden)
         })
         .await?;
     }
@@ -800,7 +800,7 @@ fn folder_size_refusal(path: &str) -> Result<(), String> {
         Kind::Sftp => Err("Folder sizes aren't available for SSH servers yet.".into()),
         Kind::Arbesk => Err("Folder sizes aren't available for Arbesk yet.".into()),
         Kind::Share => Err("Folder sizes aren't available for shared folders yet.".into()),
-        Kind::Drive => Err(cloud::service::unsupported()),
+        Kind::Drive => Err(places_gdrive::service::unsupported()),
         Kind::Local => place::local(path).map(|_| ()),
     }
 }
@@ -822,7 +822,7 @@ fn cancel_folder_size(walk: u64) {
 #[tauri::command]
 async fn make_dir(app: tauri::AppHandle, path: String) -> Result<String, String> {
     if place::kind(&path) == Kind::Drive {
-        return blocking(move || cloud::write::make_dir(&app.state::<CloudState>(), &path)).await?;
+        return blocking(move || places_gdrive::write::make_dir(&app.state::<CloudState>(), &path)).await?;
     }
     make_local_dir(path)
 }
@@ -835,8 +835,11 @@ fn make_local_dir(path: String) -> Result<String, String> {
     Ok(path)
 }
 
-/// Copy or move when either side is in Drive. A local source of a move goes
-/// to the Trash the way Move to Trash sends it, after the upload succeeded.
+/// Copy or move when either side is in Drive, by the transfer engine
+/// (`engine.rs`) over the Drive provider's transfer session, taken from the
+/// registry like any provider's: one session for the whole transfer, so
+/// its steps share what it learnt. A local source of a move goes to the
+/// Trash the way Move to Trash sends it, after the upload succeeded.
 async fn drive_transfer(
     app: tauri::AppHandle,
     from: String,
@@ -848,16 +851,15 @@ async fn drive_transfer(
     blocking(move || {
         let versions = app.state::<VersionsState>();
         let trash_local = VersionedTrash::new(&versions, AppTrash { app: &app });
-        let state = app.state::<CloudState>();
-        cloud::transfer::dispatch(
-            &state,
-            &from,
-            &to,
-            overwrite,
-            moving,
-            &progress,
-            &trash_local,
-        )
+        let cx = places_cx(&app, progress);
+        // The far side: whichever end isn't on this computer.
+        let remote = if place::kind(&from) == Kind::Local { &to } else { &from };
+        let registry = app.state::<places::Registry>();
+        let caps = registry.provider_for(remote).capabilities(remote);
+        in_transfer(&registry, remote, &cx, |transfer| {
+            let remote = engine::Remote { transfer, caps };
+            engine::dispatch(&remote, &cx, &from, &to, overwrite, moving, &trash_local)
+        })
     })
     .await?
 }
@@ -922,7 +924,7 @@ async fn copied_file(
 /// The file Arbesk's provider exports for the asset `from`, by its
 /// `Transfer` (`copy_source` for a source in Arbesk).
 fn exported_source(registry: &places::Registry, from: String, cx: &places::Cx) -> Result<String, String> {
-    copy_source(from, true, |path| Ok(transfer_of(registry, path)?.export(path, cx)?))
+    copy_source(from, true, |path| in_transfer(registry, path, cx, |t| Ok(t.export(path, cx)?)))
 }
 
 /// The local file `from` saved at the pending name `to` in an Arbesk
@@ -935,15 +937,20 @@ fn write_into_place(
     overwrite: bool,
     cx: &places::Cx,
 ) -> Result<String, String> {
-    Ok(transfer_of(registry, to)?.write(Path::new(from), to, overwrite, cx)?.path)
+    in_transfer(registry, to, cx, |t| Ok(t.write(Path::new(from), to, overwrite, cx)?.path))
 }
 
-/// The transfer primitives of `path`'s provider: the route table
-/// (`place::copy`) already said this copy may run, so a place without them
-/// is refused as not writable.
-fn transfer_of<'a>(registry: &'a places::Registry, path: &str) -> Result<&'a dyn places::Transfer, String> {
-    let provider = registry.provider_for(path);
-    provider.transfer().ok_or_else(|| place::writable(path).err().unwrap_or_else(|| format!("“{path}” can't be copied.")))
+/// `work` on the transfer session of `path`'s provider: the route table
+/// (`place::copy`) already said this copy may run, so a place without
+/// transfer primitives is refused as not writable.
+fn in_transfer<T>(
+    registry: &places::Registry,
+    path: &str,
+    cx: &places::Cx,
+    work: impl FnOnce(&dyn places::Transfer) -> Result<T, String>,
+) -> Result<T, String> {
+    places::with_transfer(registry.provider_for(path), cx, work)
+        .unwrap_or_else(|| Err(place::writable(path).err().unwrap_or_else(|| format!("“{path}” can't be copied."))))
 }
 
 /// The file a copy reads: `from` itself, or the file `export` builds for
@@ -1028,7 +1035,7 @@ async fn move_entry(
 async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result<String, String> {
     // write::rename refuses a local path on either side.
     if place::transfer(&from, &to)? == Route::Drive {
-        return blocking(move || cloud::write::rename(&app.state::<CloudState>(), &from, &to))
+        return blocking(move || places_gdrive::write::rename(&app.state::<CloudState>(), &from, &to))
             .await?;
     }
     blocking(move || {
@@ -1138,7 +1145,7 @@ fn trash_elsewhere(
     }
     let result = progress
         .check()
-        .and_then(|()| cloud::write::trash(&app.state::<CloudState>(), path));
+        .and_then(|()| places_gdrive::write::trash(&app.state::<CloudState>(), path));
     if result.is_ok() {
         progress.add_item();
     }
@@ -1186,7 +1193,7 @@ fn trash_infos(trash: &trash_ops::Trash, paths: &[String]) -> Vec<Option<trash_o
 #[tauri::command]
 async fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, String> {
     if place::kind(&path) == Kind::Drive {
-        return blocking(move || cloud::write::restore(&app.state::<CloudState>(), &path)).await?;
+        return blocking(move || places_gdrive::write::restore(&app.state::<CloudState>(), &path)).await?;
     }
     let trashed = place::local(&path)?.to_path_buf();
     blocking(move || {
@@ -1846,14 +1853,14 @@ struct DriveConnectStart {
 #[tauri::command]
 fn drive_accounts(
     state: tauri::State<CloudState>,
-) -> Result<Vec<cloud::accounts::DriveAccount>, String> {
+) -> Result<Vec<places_gdrive::accounts::DriveAccount>, String> {
     Ok(lock_state(&state.accounts)?.items().to_vec())
 }
 
 #[tauri::command]
 fn drive_disconnect(state: tauri::State<CloudState>, account: String) -> Result<(), String> {
     if let Ok(Some(token)) = state.token(&account) {
-        cloud::oauth::revoke(token.refresh_token().unwrap_or(&token.access_token));
+        places_gdrive::oauth::revoke(token.refresh_token().unwrap_or(&token.access_token));
     }
     state.delete_token(&account)?;
     lock_state(&state.accounts)?.remove(&account)?;
@@ -1897,7 +1904,7 @@ fn drive_client_clear(state: tauri::State<CloudState>) -> Result<(), String> {
 
 #[tauri::command]
 fn drive_connect_start(state: tauri::State<CloudState>) -> Result<DriveConnectStart, String> {
-    let flow = cloud::oauth::start(&state.require_oauth_client()?, &[cloud::oauth::SCOPE_FULL])?;
+    let flow = places_gdrive::oauth::start(&state.require_oauth_client()?, &[places_gdrive::oauth::SCOPE_FULL])?;
     let start = DriveConnectStart {
         flow_id: flow.id.clone(),
         auth_url: flow.auth_url.clone(),
@@ -1916,7 +1923,7 @@ async fn drive_connect_finish(
     app: tauri::AppHandle,
     flow_id: String,
     account: Option<String>,
-) -> Result<cloud::accounts::DriveAccount, String> {
+) -> Result<places_gdrive::accounts::DriveAccount, String> {
     blocking(move || {
         let state = app.state::<CloudState>();
         let flow = lock_state(&state.flows)?
@@ -1925,13 +1932,13 @@ async fn drive_connect_finish(
             .ok_or_else(|| "This sign-in attempt is no longer active.".to_string())?;
         flow.claim()?;
 
-        let result = (|| -> Result<cloud::accounts::DriveAccount, String> {
-            let token = cloud::oauth::finish(
+        let result = (|| -> Result<places_gdrive::accounts::DriveAccount, String> {
+            let token = places_gdrive::oauth::finish(
                 &flow,
-                &cloud::oauth::GoogleExchange::new(&state.require_oauth_client()?),
-                cloud::oauth::CALLBACK_TIMEOUT,
+                &places_gdrive::oauth::GoogleExchange::new(&state.require_oauth_client()?),
+                places_gdrive::oauth::CALLBACK_TIMEOUT,
             )?;
-            let about = cloud::service::about(&state, &token.access_token)?;
+            let about = places_gdrive::service::about(&state, &token.access_token)?;
             // Signing in for an account that lost its session keeps its id.
             state.record_sign_in(about, &token, account.as_deref())
         })();
@@ -3073,9 +3080,10 @@ mod read_gate_tests {
         assert_eq!(write_into_place(&registry, model, PENDING, false, &cx), Err(unknown.clone()));
         // A local path has no transfer through the registry yet.
         let local = "/Users/me/Box.gltf";
-        assert_eq!(transfer_of(&registry, local).err(), Some(format!("“{local}” can't be copied.")));
+        let none = |_: &dyn places::Transfer| -> Result<(), String> { unreachable!("no transfer here") };
+        assert_eq!(in_transfer(&registry, local, &cx, none).err(), Some(format!("“{local}” can't be copied.")));
         assert_eq!(
-            transfer_of(&registry, "share://r1/a").err().as_deref(),
+            in_transfer(&registry, "share://r1/a", &cx, none).err().as_deref(),
             Some("Shared folders are read only.")
         );
         let in_account = "Create collections in the account's folder.".to_string();

@@ -201,15 +201,89 @@ pub trait Provider: Send + Sync {
     /// returns where it went.
     fn restore(&self, trashed: &str, cx: &Cx) -> Result<String>;
 
-    /// The transfer primitives the engine builds copy and move from. `None`
-    /// when this provider can't be a transfer target (read only).
-    fn transfer(&self) -> Option<&dyn Transfer> {
-        None
-    }
+    /// Run `work` once on the transfer primitives the engine builds copy
+    /// and move from, for one whole transfer: every step runs on the same
+    /// session, so what an early step learnt serves the later ones (Drive:
+    /// one context, so the steps after `landing` ask the server nothing
+    /// again). A provider that can't be a transfer target (read only) never
+    /// runs `work`. Callers use [`with_transfer`], which hands back what
+    /// `work` returned.
+    fn transfer(&self, _cx: &Cx, _work: &mut dyn FnMut(&dyn Transfer)) {}
     /// Optional, non-POSIX parts.
     fn extensions(&self) -> Extensions<'_> {
         Extensions::default()
     }
+}
+
+/// `work` on `provider`'s transfer session ([`Provider::transfer`]): its
+/// answer, or `None` when the provider has no transfer primitives.
+pub fn with_transfer<T>(provider: &dyn Provider, cx: &Cx, work: impl FnOnce(&dyn Transfer) -> T) -> Option<T> {
+    let mut work = Some(work);
+    let mut out = None;
+    provider.transfer(cx, &mut |t| {
+        if let Some(work) = work.take() {
+            out = Some(work(t));
+        }
+    });
+    out
+}
+
+/// What is at a transfer's pending target in a place, as [`Transfer::landing`]
+/// found it: the target's folder and name, the items already there under
+/// that name, and the source when it is this place's own item. The engine
+/// decides from it: a taken name without `overwrite`, an ambiguous one
+/// where names aren't unique, a folder replaced by its own child.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Landing {
+    /// The target's folder, as a path of this place.
+    pub parent: String,
+    /// The new name.
+    pub name: String,
+    /// The items already called `name` in `parent`, the source excepted.
+    pub existing: Vec<Existing>,
+    /// The source, for a transfer inside this place.
+    pub source: Option<Source>,
+}
+
+/// An item already at a transfer's target name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Existing {
+    pub path: String,
+    /// The source is inside it: replacing it would replace a folder with
+    /// its own child.
+    pub holds_source: bool,
+}
+
+/// The source of a transfer inside one place, as the place sees it now.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Source {
+    pub path: String,
+    pub is_dir: bool,
+    /// Where a move puts it back, as it was, when a Replace fails after it
+    /// moved: a pending path in its old folder under its own name. `None`
+    /// at the top of a place, where nothing moves.
+    pub home: Option<String>,
+}
+
+/// An item [`Transfer::read`] is reading, handed to the engine once the
+/// place knows what it is, so the engine can pick the local target (a new
+/// folder fills in place, a file is staged) before any byte is read.
+pub trait Reading {
+    fn is_dir(&self) -> bool;
+    /// Write the item at `dest`, which the call creates (a file, or a
+    /// folder with everything in it). Returns the items it skipped, each as
+    /// the message the transfer fails with.
+    fn fill(&self, dest: &Path, cx: &Cx) -> std::result::Result<Vec<String>, Unread>;
+}
+
+/// A [`Reading::fill`] that failed, and whether it left anything at its
+/// path for the engine to clean up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unread {
+    /// Nothing of the read is there (a folder that could not be created).
+    Nothing(Error),
+    /// A partial copy is there.
+    Partial(Error),
 }
 
 /// The primitives a provider offers the transfer engine (D6), each as safely
@@ -220,7 +294,27 @@ pub trait Provider: Send + Sync {
 /// a read fills a local target); a copy inside one provider is
 /// [`Transfer::copy_within`], so it never leaves the place (Drive copies on
 /// the server).
-pub trait Transfer: Send + Sync {
+///
+/// Not `Send + Sync`: the engine uses one on the blocking thread that runs
+/// the transfer (Drive's is the context of that one transfer).
+pub trait Transfer {
+    /// The place's own refusals for a transfer, before any request: of a
+    /// source this place must later move away (`from` alone: a move to
+    /// another place), of a target in it (`to` alone: a copy in), or of a
+    /// transfer inside it (both: its ids decide what is the same item or
+    /// inside another), in the order the user meets them.
+    fn check(&self, from: Option<&str>, to: Option<&str>, cx: &Cx) -> Result<()>;
+    /// What is at the pending target `to`, for a copy in (`from` is `None`)
+    /// or a transfer of this place's own `from` (which must still be there).
+    fn landing(&self, from: Option<&str>, to: &str, cx: &Cx) -> Result<Landing>;
+    /// The pending path of `name` in this place's folder `parent`.
+    fn pending(&self, parent: &str, name: &str) -> Result<String>;
+    /// Read this provider's item at `path` into a local target the engine
+    /// picks: `place` gets the item once the place knows what it is, and
+    /// fills the target through it ([`Reading::fill`]), streaming straight
+    /// into it (no copy in the app cache). What `place` returns is the
+    /// read's result.
+    fn read(&self, path: &str, place: &mut dyn FnMut(&dyn Reading) -> Result<()>, cx: &Cx) -> Result<()>;
     /// Write the local file or folder `source` to `target`, a path in this
     /// provider the engine chose (a staging name, or the final name where a
     /// file appears only whole). `replace` says the engine decided to
@@ -230,10 +324,10 @@ pub trait Transfer: Send + Sync {
     /// away itself and passes `false`. Skipped items are named in the
     /// result.
     fn write(&self, source: &Path, target: &str, replace: bool, cx: &Cx) -> Result<Put>;
-    /// Read this provider's item at `path` into the local `target` the
-    /// engine chose, streaming straight into it (no copy in the app cache).
-    /// A provider that can only [`Transfer::export`] returns
-    /// [`Error::Unsupported`].
+    /// Read this provider's item at `path` into the local `target` as it
+    /// is, without staging: [`Transfer::read`] with `target` filled
+    /// whatever the item is. A provider that can only [`Transfer::export`]
+    /// returns [`Error::Unsupported`].
     fn read_into(&self, path: &str, target: &Path, cx: &Cx) -> Result<Put>;
     /// A local file with the item's bytes that the engine copies from as a
     /// local source, where the place builds the file before anything can
@@ -256,8 +350,9 @@ pub trait Transfer: Send + Sync {
     /// Move this provider's own item to any path in it, never replacing;
     /// moving back is the same call the other way. Returns the final path.
     fn move_to(&self, from: &str, to: &str, cx: &Cx) -> Result<String>;
-    /// Send the item a Replace replaces to this provider's Trash; returns
-    /// what [`Transfer::take_back`] needs to bring it back.
+    /// Send an item to this provider's Trash for the engine: the item a
+    /// Replace replaces, or a source a move to another place has copied
+    /// away. Returns what [`Transfer::take_back`] needs to bring it back.
     fn trash_for_replace(&self, path: &str, cx: &Cx) -> Result<String>;
     /// Bring an item [`Transfer::trash_for_replace`] trashed back to
     /// `original`, without making parent folders, unless something took

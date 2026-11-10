@@ -295,4 +295,11 @@ mod tests {
     fn a_remote_provider_needs_a_scheme() {
         let _ = registry().register(Arc::new(Named("")));
     }
+
+    /// A provider without transfer primitives never runs a transfer's work.
+    #[test]
+    fn a_provider_without_a_transfer_runs_no_work() {
+        let ran = crate::with_transfer(&Named("x"), &Cx::default(), |_| unreachable!("no transfer"));
+        assert_eq!(ran, None::<()>);
+    }
 }

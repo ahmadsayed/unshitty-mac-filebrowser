@@ -642,8 +642,8 @@ mod tests {
         const ALLOWED: [&str; 10] = [
             "placement.rs",       // rename_new's fallback, after its check
             "config_store.rs",    // pins.json, starred.json, flags.json saves
-            "cloud/token.rs",     // Drive settings save
-            "cloud/service.rs",   // Drive's open cache (#204)
+            "crates/places-gdrive/src/token.rs",   // Drive settings save
+            "crates/places-gdrive/src/service.rs", // Drive's open cache (#204)
             "thumbnails.rs",      // the thumbnail cache
             "versions/mod.rs",    // .versions/meta.json save
             "versions/store.rs",  // an object is its bytes' hash

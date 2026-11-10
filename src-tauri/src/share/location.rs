@@ -1,7 +1,7 @@
 //! Recipient paths (spec D10): `share://<received-id>/<name>/<name>…`, with
 //! names percent-encoded like `gdrive://` names.
 
-use crate::cloud::location::{NAME_SET, valid_percent};
+use places_gdrive::location::{NAME_SET, valid_percent};
 use percent_encoding::{percent_decode_str, utf8_percent_encode};
 
 pub const PREFIX: &str = "share://";

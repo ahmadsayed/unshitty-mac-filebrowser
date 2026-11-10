@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cloud::location::DriveLocation;
+use crate::location::DriveLocation;
 
 /// One connected account. `root_path` is the `gdrive://` location the sidebar
 /// opens and is derived from the account and root ids.
@@ -96,7 +96,7 @@ impl Accounts {
 }
 
 fn config_write(path: &Path, accounts: &[DriveAccount]) -> Result<(), String> {
-    crate::config_store::write_json(path, &accounts)
+    places::write_json(path, &accounts)
 }
 
 /// A short random account id. It only has to be unique on this machine; the

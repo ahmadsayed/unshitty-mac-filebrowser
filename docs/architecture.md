@@ -53,16 +53,27 @@ receives goes through `place.rs` first: its kind, whether it is a local path
 the place may be written. Then:
 
 - copies, moves and Drive downloads go through `placement.rs`: the refusals
-  and their wording, staging under a hidden name, and Replace;
+  and their wording, staging under a hidden name, and Replace; a copy or
+  move to, from or inside Google Drive is `engine.rs`'s: `lib.rs` takes
+  the Drive provider from the registry, and the engine builds the transfer
+  from that provider's transfer session (its `places::Transfer`
+  primitives: what is at the target, write, read, a copy on the server,
+  rename, move, Trash and take back) and its declared `Capabilities`, runs
+  Drive's Replace the same way, and places what lands here through
+  `placement.rs`;
 - Move to Trash, Restore, Delete Permanently and Empty Trash go through
   `trash_ops::Trash`: the trash log, where an item came from (sidecar, log,
   Finder's Put Back), and both Trash layouts;
 - listing, whether an item exists, path info, thumbnails and opening ask
   the place's provider in the `places::Registry`, picked by the path's
   scheme (`providers.rs`: one thin adapter per kind over the modules below,
-  and Arbesk's own crate's provider, registered as it is);
-- listing, counts, opening and reading go to `fs_ops.rs`, `cloud/` (Google
-  Drive), `share/` (iroh shares), `sftp.rs` (SSH, read only) and the
+  and Google Drive's and Arbesk's own crates' providers, registered as they
+  are);
+- listing, counts, opening and reading go to `fs_ops.rs`, the
+  `crates/places-gdrive` workspace crate (Google Drive: accounts and
+  sign-in without the window, the REST client, listing, opening,
+  thumbnails, its own writes and its transfer primitives; no Tauri),
+  `share/` (iroh shares), `sftp.rs` (SSH, read only) and the
   `crates/arbesk` workspace crate (Arbesk: its read path rebuilt from public
   sources, assets built into the app cache to open, preview and copy out,
   each asset's saved thumbnail kept on disk, manifests and thumbnails in a
@@ -98,7 +109,8 @@ between macOS and Linux too: XDG paths and volumes.
 | A new kind of location (SMB, WebDAV) | a row in `paths.ts`, a kind in `locations.ts`, a `Kind` in `place.rs`, a provider in `providers.rs` and its registry line |
 | A new online account provider (OneDrive, Dropbox) | a row in `providers.ts` and in `PROVIDER_ACTIONS` (`main.ts`), plus the location rows above |
 | Arbesk's listings, builds, versions or uploads | the private modules of `src-tauri/crates/arbesk`, answered through its provider (`provider.rs`: `places::Provider`, `Transfer` and the extensions); a new kind of answer is a method on a `places` extension, not a new type on the facade |
-| How copy, move or Replace behaves | `placement.rs` |
+| How copy, move or Replace behaves | `placement.rs`, and `engine.rs` for the routes to, from and inside Google Drive |
+| What Google Drive is asked, its sign-in, its paths | `src-tauri/crates/places-gdrive`; a step of a Drive copy or move is one of its `places::Transfer` primitives, and their order is `engine.rs`'s |
 | The trash log, Put Back, Restore, Empty Trash | `trash_ops::Trash` |
 | Something new that remembers paths | one holder in `path-refs.ts` |
 | What a folder that can't be listed shows | a row in `listing-failure.ts` |

@@ -7,7 +7,7 @@ use std::io::Cursor;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::progress::{CANCELLED, Progress, copy_counted, is_cancel};
+use places::{CANCELLED, Progress, copy_counted, is_cancel};
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -708,8 +708,8 @@ pub fn thumbnail_url(link: &str, size: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::progress::Progress;
-    use crate::cloud::test_server::{json, serve};
+    use places::Progress;
+    use crate::test_server::{json, serve};
 
     fn client(base: &str) -> DriveClient<'_> {
         let mut client = DriveClient::new(http_client().unwrap(), base, "token".into());
@@ -965,7 +965,7 @@ mod tests {
         server.join().unwrap();
     }
 
-    use crate::cloud::test_server::{Reply, serve_replies};
+    use crate::test_server::{Reply, serve_replies};
 
     const FILE: &str = r#"{"id":"new","name":"n","mimeType":"text/plain","size":"5"}"#;
 

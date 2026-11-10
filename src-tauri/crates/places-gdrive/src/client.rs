@@ -93,7 +93,7 @@ impl ClientStore {
                 .map_err(|error| format!("Could not save the OAuth client: {error}"))?;
         }
         let json = serde_json::to_vec_pretty(client).map_err(|error| error.to_string())?;
-        crate::cloud::token::write_private(&self.path, &json)
+        crate::token::write_private(&self.path, &json)
     }
 
     pub fn delete(&self) -> Result<(), String> {
