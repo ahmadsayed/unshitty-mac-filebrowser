@@ -758,4 +758,22 @@ mod tests {
         assert_eq!(schemes, ["", "gdrive", "share", "sftp", "arbesk", "arbesk", "arbesk"]);
         assert_eq!([KINDS[4].1, KINDS[5].1, KINDS[6].1], [ACCOUNT, ARBESK, ASSET]);
     }
+
+    /// The frontend picks an Arbesk path's row by its number of segments
+    /// (`locations.ts`' `capabilityRow`): the root, a single segment that
+    /// isn't an address and four or more segments get the account's row,
+    /// and it reads a path's row for its copy flags only (`copiesOf`).
+    /// Those agree with what the provider says for such a path; New
+    /// Collection doesn't (the account allows it, these paths refuse it).
+    #[test]
+    fn the_arbesk_root_and_a_malformed_path_copy_as_the_account() {
+        let registry = testing::plain();
+        let account = KindCapabilities::of(&registry.provider_for(ACCOUNT).capabilities(ACCOUNT));
+        for path in ["arbesk://", "arbesk://not-an-address", "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf/x"] {
+            assert_eq!(registry.provider_for(path).scheme(), "arbesk", "{path}");
+            let caps = KindCapabilities::of(&registry.provider_for(path).capabilities(path));
+            assert_eq!((caps.can_copy_in, caps.can_copy_out), (account.can_copy_in, account.can_copy_out), "{path}");
+            assert!(!caps.can_create && account.can_create, "{path}");
+        }
+    }
 }

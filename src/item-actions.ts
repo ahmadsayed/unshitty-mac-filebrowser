@@ -10,14 +10,14 @@
 // marked "Kept:" and waits for a decision rather than being changed here.
 //
 // Where a place's capabilities answer a rule (design D5: rename, Move to
-// Trash, copy out, paste, cut), it reads them, through `locations.ts` or
+// Trash, copy out, paste through `can_copy_in`, cut), it reads them, through `locations.ts` or
 // `byPlace`, and keeps cells only for the frontend's own views (Recent,
 // Starred, Network, the Trash). Delete Permanently, Star, Add to Bookmarks,
 // Properties and Open Item Location have no matching capability and keep
 // their tables. The toasts are the frontend's own either way.
 
 import { capabilitiesOf, type PlaceCapabilities } from "./capabilities";
-import { arbeskPasteRefusal, capabilityRow, copyOutRefusalOf, isPseudoKind, isReadOnlyKind, isTrashKind, kindAcceptsNewItems, type LocationKind, type ViewKind } from "./locations";
+import { arbeskPasteRefusal, capabilityRow, copyOutRefusalOf, isPseudoKind, isReadOnlyKind, isTrashKind, kindTakesPastes, type LocationKind, type ViewKind } from "./locations";
 
 export type SharedAction =
   | "cut"
@@ -73,11 +73,13 @@ function byPlace(flag: keyof PlaceCapabilities, views: Record<ViewKind, Verdict>
   };
 }
 
-/** Paste, by the kind of folder it pastes into: wherever New Folder can add
- *  (`kindAcceptsNewItems`, which keeps the Trash out); shares, servers and
- *  Arbesk say why not (Arbesk takes copies of model files into a collection). Kept: an SSH server says "Shared folders are read only." */
+/** Paste, by the kind of folder it pastes into: wherever the place takes
+ *  copies as it is (`kindTakesPastes`: `can_copy_in`, not read only, which
+ *  keeps the Trash out); shares, servers and Arbesk say why not (Arbesk
+ *  takes copies of model files into a collection). Kept: an SSH server says
+ *  "Shared folders are read only." */
 const paste = (here: Here): Verdict => {
-  if (kindAcceptsNewItems(here.kind)) return OK;
+  if (kindTakesPastes(here.kind)) return OK;
   if (here.kind === "arbesk") return arbeskPasteRefusal(here.dir ?? "", here.paths ?? [], here.moving ?? false, here.dirs);
   return isReadOnlyKind(here.kind) ? READ_ONLY : QUIET;
 };
@@ -148,10 +150,18 @@ function firstItemVerdict(grid: Grid, here: Here): Verdict {
 
 const copyOut = (here: Here): Verdict => copyOutRefusalOf(here.items, here.paths);
 
+/** Cut's toast for an item of a read-only `kind`: Arbesk's own words, a
+ *  share's otherwise. The frontend's own wording, by kind. */
+const cutRefusalOf = (kind: LocationKind): Verdict => (kind === "arbesk" ? ARBESK_READ_ONLY : READ_ONLY);
+
 /** Cut: as copy, and never out of a read-only place: Arbesk, whose assets
- *  can only be copied (shares and servers give nothing out, refused above). */
-const cut = (here: Here): Verdict =>
-  copyOut(here) ?? (here.items.some(isReadOnlyKind) ? ARBESK_READ_ONLY : OK);
+ *  can only be copied (shares and servers give nothing out today, refused
+ *  above; the toast is picked by the item's kind, so it stays right if
+ *  they ever do). */
+const cut = (here: Here): Verdict => {
+  const stuck = here.items.find(isReadOnlyKind);
+  return copyOut(here) ?? (stuck === undefined ? OK : cutRefusalOf(stuck));
+};
 
 const RULES: Record<SharedAction, (here: Here) => Verdict> = {
   cut,

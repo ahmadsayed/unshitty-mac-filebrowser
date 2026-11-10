@@ -539,12 +539,17 @@ next starts only after the human merged the last.
    table and `loadCapabilities`, which `main.ts` starts at startup without
    waiting. `locations.ts` picks a row per kind (`capabilityRow`; an Arbesk
    item with no path counts as a collection, anything but a collection or an
-   asset as the account) and reads `read_only` (`isReadOnlyKind`),
-   `knows_sizes`, `searchable` (recursive search), `can_create` with
-   `read_only` (new items and Paste), `can_copy_out` (the copy-out refusal)
-   and `can_copy_in` (Arbesk's "Paste into a collection."); `item-actions.ts`
-   reads `can_rename` and `can_trash` (`byPlace`) and cut's read-only check
-   through `isReadOnlyKind`. Kept as the frontend's own: the answers for its
+   asset as the account; a path's row is read for its copy flags only,
+   `copiesOf`, since the provider refuses New Collection at the Arbesk root
+   and on a malformed path, where the account row allows it, a Rust test
+   pinning that) and reads `read_only` (`isReadOnlyKind`), `knows_sizes`,
+   `searchable` (recursive search), `can_create` with `read_only` (New
+   Folder and New Document), `can_copy_in` with `read_only` (Paste and
+   drops, `kindTakesPastes`) and `can_copy_in` alone (Arbesk's "Paste into a
+   collection."), and `can_copy_out` (the copy-out refusal);
+   `item-actions.ts` reads `can_rename` and `can_trash` (`byPlace`) and
+   cut's read-only check through `isReadOnlyKind`, its toast picked by the
+   item's kind (Arbesk's words for Arbesk, a share's otherwise). Kept as the frontend's own: the answers for its
    views (Recent, Starred, Network, the Trash, `ViewKind`), and the rules no
    capability matches: a local location and local files, versions, the
    remote preview, an Arbesk asset's own thumbnail (`has_thumbnails` says a

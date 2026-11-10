@@ -45,19 +45,22 @@ export function locationKind(path: string, trashPath: string): LocationKind {
  *  keeps its own answer for them. */
 export type ViewKind = "recent" | "starred" | "network" | "trash" | "in-trash";
 
-/** The kinds a provider answers for. */
-export type PlaceKind = Exclude<LocationKind, ViewKind>;
-
 const VIEW_KINDS: readonly LocationKind[] = ["recent", "starred", "network", "trash", "in-trash"];
 
 /** Whether `kind` is one of the frontend's own views (`ViewKind`). */
-export function isViewKind(kind: LocationKind): kind is ViewKind {
+function isViewKind(kind: LocationKind): kind is ViewKind {
   return VIEW_KINDS.includes(kind);
 }
 
-/** The backend's row for an Arbesk path: its asset or collection row, and
- *  its account's for anything else (an account, the root, a malformed or
- *  non-Arbesk path), which neither takes copies in nor gives them out. */
+/** The backend's row for an Arbesk path's copies, by its number of
+ *  segments: its asset or collection row, and its account's for anything
+ *  else (an account, the root, a malformed or non-Arbesk path), which
+ *  neither takes copies in nor gives them out. Only the copy flags hold for
+ *  the root and a malformed path the account's row answers (a Rust test in
+ *  `providers.rs` pins it): the provider refuses New Collection there,
+ *  where the account row allows it (`copiesOf`). A malformed path shaped
+ *  like a collection or an asset gets that row, as before step 7: the
+ *  backend refuses its copy itself. */
 function arbeskRow(path: string): CapabilityRow {
   if (isArbeskAsset(path)) return "arbesk-asset";
   return isArbeskCollection(path) ? "arbesk-collection" : "arbesk-account";
@@ -66,18 +69,32 @@ function arbeskRow(path: string): CapabilityRow {
 /** Which row of the backend's capability table answers for `kind`, at
  *  `path` where Arbesk's account, collection and asset differ (an Arbesk
  *  item whose path isn't known counts as a collection); null for the
- *  frontend's own views (`ViewKind`). */
+ *  frontend's own views (`ViewKind`). With a path, the row is right for the
+ *  copy flags only (`can_copy_in`, `can_copy_out`): the Arbesk root and a
+ *  malformed path get the account's row, though their provider refuses New
+ *  Collection, so read a path's row through `copiesOf`. */
 export function capabilityRow(kind: LocationKind, path?: string): CapabilityRow | null {
   if (isViewKind(kind)) return null;
   if (kind === "arbesk") return path === undefined ? "arbesk-collection" : arbeskRow(path);
   return kind;
 }
 
-/** What the place of `kind` (at `path`) allows, as its provider says;
- *  null for the frontend's own views. */
-function capsOf(kind: LocationKind, path?: string): PlaceCapabilities | null {
-  const row = capabilityRow(kind, path);
+/** What the place of `kind` allows, as its provider says (the same for
+ *  all its paths: for Arbesk, a collection's); null for the frontend's own
+ *  views. */
+function capsOf(kind: LocationKind): PlaceCapabilities | null {
+  const row = capabilityRow(kind);
   return row ? capabilitiesOf(row) : null;
+}
+
+/** The copy flags of the place of `kind` at `path`, the only flags a
+ *  path's row answers right for every Arbesk path (`capabilityRow`); null
+ *  for the frontend's own views. */
+function copiesOf(kind: LocationKind, path?: string): Pick<PlaceCapabilities, "can_copy_in" | "can_copy_out"> | null {
+  const row = capabilityRow(kind, path);
+  if (row === null) return null;
+  const { can_copy_in, can_copy_out } = capabilitiesOf(row);
+  return { can_copy_in, can_copy_out };
 }
 
 /** Whether `path` is one of `kinds`. */
@@ -161,9 +178,10 @@ export function mayHaveVersions(path: string, trashPath: string): boolean {
 }
 
 /**
- * Whether New Folder, New Document and Paste can add to a place of this
- * kind: one that creates and isn't read only (the provider's `can_create`
- * and `read_only`), a folder or Drive. An Arbesk account creates only
+ * Whether New Folder and New Document can add to a place of this kind: one
+ * that creates and isn't read only (the provider's `can_create` and
+ * `read_only`), a folder or Drive. Paste reads `can_copy_in` instead
+ * (`kindTakesPastes`). An Arbesk account creates only
  * collections, through New Collection, and stays read only. Never the Trash
  * or a folder in it (a view of the frontend's own): an item put there has
  * no record of where it came from, so it couldn't be restored and Empty
@@ -179,6 +197,16 @@ export function acceptsNewItems(path: string, trashPath: string): boolean {
   return kindAcceptsNewItems(locationKind(path, trashPath));
 }
 
+/** Whether Paste (and a drop) can put anything into a place of this kind
+ *  as it is: one that takes copies and isn't read only (the provider's
+ *  `can_copy_in` and `read_only`), a folder or Drive. An Arbesk collection
+ *  takes copies but is read only: what it takes is `arbeskPasteRefusal`'s
+ *  rule. Never the Trash or a folder in it, as `kindAcceptsNewItems`. */
+export function kindTakesPastes(kind: LocationKind): boolean {
+  const caps = capsOf(kind);
+  return caps !== null && caps.can_copy_in && !caps.read_only;
+}
+
 /** The copy-out refusal's words, by the first item's kind; a share's
  *  otherwise. The frontend's own (D5): the backend's differ. */
 const COPY_OUT_WORDS: Partial<Record<LocationKind, string>> = {
@@ -192,7 +220,7 @@ const COPY_OUT_WORDS: Partial<Record<LocationKind, string>> = {
  *  file is built first); one whose path isn't known counts as a collection.
  *  Items in the frontend's own views are their places' items. */
 function staysPut(kind: LocationKind, path: string | undefined): boolean {
-  const caps = capsOf(kind, path);
+  const caps = copiesOf(kind, path);
   return caps !== null && !caps.can_copy_out;
 }
 
@@ -228,7 +256,7 @@ export function isArbeskModelFile(path: string): boolean {
  *  name). Null when only copies of model files go into a collection. */
 export function arbeskPasteRefusal(dir: string, paths: readonly string[], moving: boolean, dirs: ReadonlySet<string> = new Set()): string | null {
   if (moving) return "Arbesk is read only.";
-  if (!capabilitiesOf(arbeskRow(dir)).can_copy_in) return "Paste into a collection.";
+  if (!copiesOf("arbesk", dir)?.can_copy_in) return "Paste into a collection.";
   if (!paths.every((path) => !dirs.has(path) && isArbeskModelFile(path))) return "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.";
   return null;
 }

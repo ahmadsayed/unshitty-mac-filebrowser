@@ -15,7 +15,7 @@ import {
   type CapabilityRow,
   type CapabilityTable,
 } from "../src/capabilities";
-import { capabilityRow, isReadOnlyKind, kindAcceptsNewItems, knowsSizes, locationKind, searchesRecursively } from "../src/locations";
+import { capabilityRow, isReadOnlyKind, kindAcceptsNewItems, kindTakesPastes, knowsSizes, locationKind, searchesRecursively } from "../src/locations";
 import { refusal } from "../src/item-actions";
 
 afterEach(resetCapabilities);
@@ -69,4 +69,25 @@ test("the rules read the table the backend gave", async () => {
   expect(refusal("rename", { kind: "folder", items: ["drive"] })).toBe("");
   resetCapabilities();
   expect(refusal("trash", { kind: "drive", items: [] })).toBeNull();
+});
+
+test("paste reads can_copy_in, New Folder can_create", async () => {
+  const changed: CapabilityTable = structuredClone(table);
+  changed.drive = { ...changed.drive, can_copy_in: false };
+  changed.folder = { ...changed.folder, can_create: false };
+  await loadCapabilities(async () => changed);
+  expect(refusal("paste", { kind: "drive", items: [] })).toBe("");
+  expect(kindTakesPastes("drive")).toBe(false);
+  expect(kindAcceptsNewItems("drive")).toBe(true);
+  expect(refusal("paste", { kind: "folder", items: [] })).toBeNull();
+  expect(kindAcceptsNewItems("folder")).toBe(false);
+});
+
+test("cut's read-only toast is picked by the item's kind", async () => {
+  const changed: CapabilityTable = structuredClone(table);
+  changed.sftp = { ...changed.sftp, can_copy_out: true };
+  await loadCapabilities(async () => changed);
+  expect(refusal("cut", { kind: "sftp", items: ["sftp"], paths: ["sftp://me@host/home/a"] })).toBe("Shared folders are read only.");
+  const asset = "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf";
+  expect(refusal("cut", { kind: "arbesk", items: ["arbesk"], paths: [asset] })).toBe("Arbesk is read only.");
 });
