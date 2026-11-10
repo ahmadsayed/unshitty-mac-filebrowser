@@ -185,8 +185,8 @@
         <text class="n" x="886.8" y="385">share/</text>
         <text class="s" x="886.8" y="401">iroh shares</text>
         <rect class="box" x="975.2" y="366" width="86.4" height="44" rx="7"/>
-        <text class="n" x="985.2" y="385">sftp.rs</text>
-        <text class="s" x="985.2" y="401">SSH</text>
+        <text class="n" x="985.2" y="385">sftp</text>
+        <text class="s" x="985.2" y="401">SSH crate</text>
         <rect class="box" x="1073.6" y="366" width="86.4" height="44" rx="7"/>
         <text class="n" x="1083.6" y="385">arbesk</text>
         <text class="s" x="1083.6" y="401">Arbesk crate</text>
