@@ -245,7 +245,9 @@ impl places::Transfer for Client {
     fn pending(&self, parent: &str, name: &str) -> Result<String> {
         match location::parse(parent) {
             Ok(ArbeskPath::Collection { .. }) => Ok(location::asset_path_named(parent, "", name)),
-            _ => Err(words(location::parse_target(parent).unwrap_err())),
+            // A name pending in a collection reads as a target, not a
+            // collection: it is refused like any other non-collection.
+            _ => Err(words(location::parse_target(parent).err().unwrap_or_else(|| INTO_COLLECTION.to_string()))),
         }
     }
     fn export(&self, path: &str, cx: &Cx) -> Result<PathBuf> {
@@ -560,6 +562,7 @@ mod tests {
         let into = Error::Other("Paste into a collection.".into());
         assert_eq!(places::Transfer::pending(&client, ACCOUNT, "x.glb"), Err(into.clone()));
         assert_eq!(places::Transfer::pending(&client, ASSET, "x.glb"), Err(into.clone()));
+        assert_eq!(places::Transfer::pending(&client, &pending, "y.glb"), Err(into.clone()));
         assert_eq!(places::Transfer::check(&client, None, Some(&format!("{ACCOUNT}/~x.glb")), &cx), Err(into));
         let read_only = || Err(Error::ReadOnly(READ_ONLY.into()));
         assert_eq!(places::Transfer::check(&client, Some(ASSET), Some(&pending), &cx), read_only());
