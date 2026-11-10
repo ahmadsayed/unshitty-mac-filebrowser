@@ -223,11 +223,25 @@ pub trait Provider: Send + Sync {
 pub trait Transfer: Send + Sync {
     /// Write the local file or folder `source` to `target`, a path in this
     /// provider the engine chose (a staging name, or the final name where a
-    /// file appears only whole). Skipped items are named in the result.
-    fn write(&self, source: &Path, target: &str, cx: &Cx) -> Result<Put>;
+    /// file appears only whole). `replace` says the engine decided to
+    /// replace an item at `target`: where [`Capabilities::replace`] is
+    /// [`Replace::NewVersion`] (Arbesk) the write saves a new version of it;
+    /// where it is [`Replace::Trash`] the engine has moved the old item
+    /// away itself and passes `false`. Skipped items are named in the
+    /// result.
+    fn write(&self, source: &Path, target: &str, replace: bool, cx: &Cx) -> Result<Put>;
     /// Read this provider's item at `path` into the local `target` the
     /// engine chose, streaming straight into it (no copy in the app cache).
+    /// A provider that can only [`Transfer::export`] returns
+    /// [`Error::Unsupported`].
     fn read_into(&self, path: &str, target: &Path, cx: &Cx) -> Result<Put>;
+    /// A local file with the item's bytes that the engine copies from as a
+    /// local source, where the place builds the file before anything can
+    /// be read (Arbesk: the asset's own `.gltf`/`.3mf`, built in the app
+    /// cache and reused while unchanged). A provider that reads straight
+    /// into a target ([`Transfer::read_into`]) returns
+    /// [`Error::Unsupported`].
+    fn export(&self, path: &str, cx: &Cx) -> Result<PathBuf>;
     /// Copy this provider's own item at `from` to `to`, a path in this
     /// provider the engine chose (a staging name for a folder or a Replace,
     /// as for [`Transfer::write`]), without its bytes passing through this
@@ -266,12 +280,17 @@ pub trait Transfer: Send + Sync {
 ///
 /// Each trait gets its methods in the migration step that first implements
 /// it, shaped like the command it replaces so nothing visible changes:
-/// thumbnails as PNG bytes with the per-window cancel ticket (step 2), item
-/// counts as `FolderSummary` (with the
-/// version badges), search with `show_hidden`, its limit, the per-window
-/// stop and its summary, a folder size as bytes cancelled by walk id,
-/// sharing with Arbesk's numeric role and its `Shared` result.
+/// thumbnails as PNG bytes with the per-window cancel ticket (step 2);
+/// Arbesk's versions, accounts, sharing (its numeric role and its
+/// [`Shared`](crate::Shared) result) and preview (step 3); item counts as
+/// `FolderSummary` (with the version badges), search with `show_hidden`,
+/// its limit, the per-window stop and its summary, a folder size as bytes
+/// cancelled by walk id.
 pub mod ext {
+    use std::path::PathBuf;
+
+    use crate::{Cx, Json, Result, Shared, SignIn, Version};
+
     /// Thumbnails of items (`thumbnail`'s per-kind arms).
     pub trait Thumbnails: Send + Sync {
         /// PNG bytes of a thumbnail of `path`, at most `size` pixels square;
@@ -297,18 +316,49 @@ pub mod ext {
     pub trait Measure: Send + Sync {}
 
     /// The saves of an item, oldest first (`arbesk_versions`).
-    pub trait Versions: Send + Sync {}
+    pub trait Versions: Send + Sync {
+        /// The saves of the item at `path`, oldest first.
+        fn versions(&self, path: &str) -> Result<Vec<Version>>;
+    }
 
-    /// Accounts a person signs in to (each provider keeps its own sign-in
-    /// step).
-    pub trait Accounts: Send + Sync {}
+    /// Accounts a person signs in to (`arbesk_accounts`,
+    /// `arbesk_connect_*`, `arbesk_signed_in`, `arbesk_disconnect`). Each
+    /// provider keeps its own sign-in step and its own account record,
+    /// handed on as it serialises it. Shaped as Arbesk signs in (an email,
+    /// then the browser); the next provider to implement it widens it.
+    pub trait Accounts: Send + Sync {
+        /// The connected accounts.
+        fn accounts(&self) -> Vec<Json>;
+        /// Start a sign-in for `email`.
+        fn sign_in_start(&self, email: &str) -> Result<SignIn>;
+        /// Wait for the browser, then connect the account it signed in.
+        fn sign_in_finish(&self, flow_id: &str) -> Result<Json>;
+        /// Stop a sign-in; nothing is connected.
+        fn sign_in_cancel(&self, flow_id: &str);
+        /// Whether writing to the account `path` belongs to can start
+        /// without a new sign-in.
+        fn signed_in(&self, path: &str) -> bool;
+        /// Forget the account `account` (its id) and end its session.
+        fn disconnect(&self, account: &str) -> Result<()>;
+    }
 
     /// Sharing an item with someone by email (`arbesk_share_collection`).
-    pub trait Sharing: Send + Sync {}
+    pub trait Sharing: Send + Sync {
+        /// Add the account behind `email` to the item at `path` with
+        /// `role` (Arbesk: `1` viewer, `2` editor), or change its role.
+        fn share(&self, path: &str, email: &str, role: u8) -> Result<Shared>;
+    }
 
     /// The parts of a preview a provider builds itself (`arbesk_scene`,
     /// `arbesk_part`).
-    pub trait Preview: Send + Sync {}
+    pub trait Preview: Send + Sync {
+        /// The scene of the item at `path` (at the save `version`, the
+        /// newest without one): its parts and where each goes, as the
+        /// provider describes it.
+        fn scene(&self, path: &str, version: Option<&str>) -> Result<Json>;
+        /// The file of the scene's part `key`, built on this computer.
+        fn part(&self, path: &str, version: Option<&str>, key: &str, cx: &Cx) -> Result<PathBuf>;
+    }
 
     /// Features that only make sense for items on this computer (Make Link,
     /// permissions, Batch Rename, archives, Open With, drag out, OS icons,

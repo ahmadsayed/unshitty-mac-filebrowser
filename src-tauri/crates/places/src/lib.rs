@@ -4,14 +4,15 @@
 //! one or into the app for them.
 //!
 //! The interface, wired into the app's read side (listing, existence, path
-//! info, thumbnails, opening) since step 2: a [`Provider`]
+//! info, thumbnails, opening) since step 2, and Arbesk's commands and
+//! copies since step 3: a [`Provider`]
 //! per kind of place (blocking, POSIX-like verbs on path strings), the
 //! [`Transfer`] primitives the app's transfer engine builds copy and move
 //! from, the optional [`ext`] traits, typed [`Error`]s worded as today, and
 //! the [`Registry`] that picks a provider by its path's `<scheme>://`.
 //!
 //! See `docs/superpowers/specs/2026-11-10-provider-crates-design.md`. This
-//! crate depends on nothing but `serde`; no crate but the app depends on
+//! crate depends on nothing but `serde` and `serde_json`; no crate but the app depends on
 //! Tauri.
 
 mod entry;
@@ -20,6 +21,7 @@ mod files;
 mod info;
 mod progress;
 mod provider;
+mod records;
 mod refusal;
 mod registry;
 
@@ -34,5 +36,6 @@ pub use provider::{
     Capabilities, Cx, Extensions, Fetch, Fetched, ListOptions, NewKind, Operation, Provider, Put,
     Refused, Replace, Transfer, Trashed, ext,
 };
+pub use records::{Json, Shared, SignIn, Version};
 pub use refusal::Refusal;
 pub use registry::Registry;
