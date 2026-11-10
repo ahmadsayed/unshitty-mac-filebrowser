@@ -70,8 +70,9 @@ the place may be written. Then:
   `placement.rs`;
 - New Folder, New File, Rename, Batch Rename, Move to Trash and Put Back
   on this computer ask its provider in the registry (Keep Versions'
-  decorator around `places_local::Local`), and Restore, Delete
-  Permanently and Empty Trash go through
+  decorator around `places_local::Local`; Put Back reaches
+  `Trash::restore` through it), and Delete Permanently and Empty Trash go
+  through
   `trash_ops::Trash` (in the `places-local` crate): the trash log, where an item came from (sidecar, log,
   Finder's Put Back), and both Trash layouts;
 - listing, whether an item exists, path info, thumbnails and opening ask

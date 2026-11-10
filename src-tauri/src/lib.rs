@@ -264,15 +264,17 @@ impl share::provider::Shares for tauri::AppHandle {
     }
 }
 
-/// This computer's provider reaches the app's Trash and its log, and the
-/// home folder Move to Trash uses, through the app's handle, in the words
-/// the commands answered with.
-impl providers::TrashState for tauri::AppHandle {
+/// The app's handle as this computer's provider reaches the app's Trash
+/// and its log, and the home folder Move to Trash uses
+/// (`places_local::TrashReach`), in the words the commands answered with.
+struct AppTrash(tauri::AppHandle);
+
+impl places_local::TrashReach for AppTrash {
     fn trash(&self) -> Result<&trash_ops::Trash, String> {
-        Ok(trash_of(self)?.inner())
+        Ok(trash_of(&self.0)?.inner())
     }
     fn home(&self) -> Result<PathBuf, String> {
-        home_dir(self)
+        home_dir(&self.0)
     }
 }
 
@@ -287,7 +289,7 @@ fn places_registry(app: &tauri::AppHandle, held: providers::Held) -> places::Reg
         shared_thumbnails: shared_thumbnail_dir(app),
     };
     let runtime = tauri::async_runtime::handle().inner().clone();
-    providers::registry(app.clone(), folders, held, runtime)
+    providers::registry(app.clone(), Box::new(AppTrash(app.clone())), folders, held, runtime)
 }
 
 /// Arbesk's provider, for the `arbesk_*` commands: they are Arbesk's own,
@@ -690,7 +692,6 @@ async fn create_symlink(path: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn create_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    place::local_write(&path)?;
     blocking(move || new_item_in(&app.state::<places::Registry>(), path, places::NewKind::EmptyFile).map(drop)).await?
 }
 
@@ -1023,19 +1024,19 @@ async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result
     blocking(move || {
         let cx = places_cx(&app, progress::Progress::default());
         let registry = app.state::<places::Registry>();
-        Ok(registry.provider_for(&from).rename(&from, rename_name(&from, &to), &cx)?)
+        Ok(registry.provider_for(&from).rename(&from, rename_name(&from, &to)?, &cx)?)
     })
     .await?
 }
 
-/// The name a Rename from `from` to `to` gives its provider: `to`'s name
-/// when it stays in `from`'s folder (as the frontend always asks), else
-/// `to` itself, which this computer's provider takes as the new path, as
-/// the rename did before.
-fn rename_name<'a>(from: &str, to: &'a str) -> &'a str {
+/// The name a Rename from `from` to `to` gives its provider: `to`'s name,
+/// when it stays in `from`'s folder (as the frontend always asks). A `to`
+/// in another folder is refused in Drive's words: a move goes through the
+/// transfer's refusals, never through Rename.
+fn rename_name<'a>(from: &str, to: &'a str) -> Result<&'a str, String> {
     match (from.rsplit_once('/'), to.rsplit_once('/')) {
-        (Some((folder, _)), Some((to_folder, name))) if folder == to_folder => name,
-        _ => to,
+        (Some((folder, _)), Some((to_folder, name))) if folder == to_folder => Ok(name),
+        _ => Err(places_local::provider::RENAME_STAYS.to_string()),
     }
 }
 
@@ -1097,8 +1098,7 @@ fn trash_batch(
         let trashed = this_computer(&registry).trash(&origins, &cx);
         trashed.into_iter().map(|t| t.result.map(|at| at.map(PathBuf::from)).map_err(String::from)).collect()
     };
-    let (results, _logged) =
-        trash_ops::trash_routed(paths, |path| trash_elsewhere(app, path, progress), local);
+    let results = trash_ops::trash_routed(paths, |path| trash_elsewhere(app, path, progress), local);
     results.into_iter().map(TrashOutcome::from).collect()
 }
 
@@ -2768,9 +2768,7 @@ mod write_guard_tests {
     // holds clients that may not be dropped on an async runtime.
 
     fn create_file(path: String) -> std::future::Ready<Result<(), String>> {
-        let gate = place::local_write(&path).map(drop);
-        let made = gate.and_then(|()| new_item_in(&providers::testing::plain(), path, places::NewKind::EmptyFile));
-        std::future::ready(made.map(drop))
+        std::future::ready(new_item_in(&providers::testing::plain(), path, places::NewKind::EmptyFile).map(drop))
     }
 
     fn make_local_dir(path: String) -> Result<String, String> {
@@ -2837,11 +2835,10 @@ mod write_guard_tests {
         let others: Vec<(&str, String)> = refused().into_iter().filter(|(p, _)| place::kind(p) != Kind::Drive).collect();
         paths.extend(others.iter().map(|(path, _)| path.to_string()));
         paths.push("src".into());
-        let (results, moves) = trash_ops::trash_routed(&paths, local_trash_refusal, |origins| {
+        let results = trash_ops::trash_routed(&paths, local_trash_refusal, |origins| {
             assert_eq!(origins, [PathBuf::from("/Users/me/a.txt")]);
             vec![Ok(None)]
         });
-        assert!(moves.is_empty());
         let errors: Vec<Option<String>> = results.into_iter().map(Result::err).collect();
         let mut expected = vec![None];
         expected.extend(others.into_iter().map(|(_, refusal)| Some(refusal)));

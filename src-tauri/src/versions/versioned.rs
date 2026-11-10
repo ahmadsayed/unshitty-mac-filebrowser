@@ -19,6 +19,9 @@
 //!   takes it back.
 //!
 //! New folders and files and Put Back touch no history and pass through.
+//! Batch Rename (the `LocalOnly` extension, `rename_many`) passes through
+//! untouched too, as the command did before the registry: a history
+//! inside a folder it renames is not moved with it, unlike Rename's.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -88,7 +91,7 @@ impl Provider for Versioned {
     }
     /// The histories inside the item move with it.
     fn rename(&self, path: &str, new_name: &str, cx: &Cx) -> Result<String> {
-        let to = places_local::provider::renamed_path(path, new_name);
+        let to = places_local::provider::renamed_path(path, new_name).map_err(Error::Other)?;
         let mut renamed = None;
         self.versions()
             .transfer(Path::new(path), Path::new(&to), Mode::Move, || {
@@ -269,6 +272,78 @@ mod tests {
         assert_eq!(read(state.registry_path()), vec![moved]);
         let taken = provider.rename(&renamed, "Renamed", &Cx::default());
         assert!(taken.is_err());
+    }
+
+    /// A refused rename reopens the history where it was; a name with a
+    /// slash is refused before anything is closed.
+    #[test]
+    fn a_refused_rename_keeps_the_history_where_it_was() {
+        let (dir, root, state, provider) = setup();
+        std::fs::create_dir(dir.path().join("Taken")).unwrap();
+        let taken = provider.rename(&text(&root), "Taken", &Cx::default());
+        let words = format!("Target already exists: {}", text(&root.parent().unwrap().join("Taken")));
+        assert_eq!(taken, Err(Error::Other(words)));
+        assert!(state.is_open(&root) && root.is_dir());
+        assert_eq!(read(state.registry_path()), vec![root.clone()]);
+        let elsewhere = provider.rename(&text(&root), &text(&dir.path().join("Taken/Projects")), &Cx::default());
+        assert_eq!(elsewhere, Err(Error::Other(places_local::provider::RENAME_STAYS.into())));
+        assert!(state.is_open(&root) && root.is_dir());
+    }
+
+    /// A move on this computer runs inside the decorator's `within` as a
+    /// move: the history goes with the folder, keeping its identity, and
+    /// is registered where it went only.
+    #[test]
+    fn a_move_on_this_computer_takes_the_history_with_it() {
+        let (dir, root, state, provider) = setup();
+        let folder_id = state.open(&root).unwrap().folder_id.clone();
+        let into = dir.path().join("Into");
+        std::fs::create_dir(&into).unwrap();
+        let dest = into.join("Projects");
+        let cx = Cx::default();
+        let moved = places::with_transfer(&provider, &cx, |t| {
+            crate::engine::local(t, &cx, &text(&root), &text(&dest), false, true)
+        });
+        assert_eq!(moved, Some(Ok(text(&dest))));
+        let dest = std::fs::canonicalize(&dest).unwrap();
+        assert!(state.is_open(&dest) && !state.is_open(&root) && !root.exists());
+        assert_eq!(read(state.registry_path()), vec![dest.clone()]);
+        assert_eq!(state.open(&dest).unwrap().folder_id, folder_id, "a move, not a copy");
+    }
+
+    /// The Trash at a temp home with its log, as `lib.rs` hands it over.
+    struct HomeTrash(places_local::trash_ops::Trash, PathBuf);
+
+    impl places_local::TrashReach for HomeTrash {
+        fn trash(&self) -> std::result::Result<&places_local::trash_ops::Trash, String> {
+            Ok(&self.0)
+        }
+        fn home(&self) -> std::result::Result<PathBuf, String> {
+            Ok(self.1.clone())
+        }
+    }
+
+    /// Move to Trash closes and unregisters the history inside the item
+    /// before it goes (`VersionsState::trash_many`); Put Back returns it.
+    /// The real Trash of the home folder, as `places-local`'s own Trash
+    /// tests use; macOS without Full Disk Access may not say where it went.
+    #[test]
+    fn a_trashed_folder_takes_its_history_out_of_the_registry() {
+        let (dir, root, state, _) = setup();
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| dir.path().to_path_buf());
+        let trash = places_local::trash_ops::Trash::new(home.clone(), Some(dir.path().join("trash_log.json")));
+        let local = Local::new(Box::new(NoThumbnails), Box::new(HomeTrash(trash, home)));
+        let provider = Versioned::new(local, Box::new(Shared(state.clone())));
+        let cx = Cx::default();
+        let trashed = provider.trash(&[&text(&root)], &cx);
+        assert!(trashed[0].result.is_ok(), "{:?}", trashed[0].result);
+        assert!(!root.exists() && !state.is_open(&root));
+        assert!(read(state.registry_path()).is_empty());
+        match trashed[0].result.clone().unwrap() {
+            Some(at) => assert_eq!(provider.restore(&at, &cx), Ok(text(&root))),
+            None if cfg!(target_os = "macos") => {}
+            None => panic!("only macOS may not say where it went"),
+        }
     }
 
     /// A copy on this computer runs inside the decorator's `within`: the

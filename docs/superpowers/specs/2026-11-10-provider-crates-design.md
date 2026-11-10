@@ -473,7 +473,8 @@ next starts only after the human merged the last.
    wraps the provider (capture before a write, `VersionedTrash` around the
    Trash step), registered in its place; `engine.rs` then runs local↔local
    routes from the primitives as it runs Drive's, and `placement.rs` keeps
-   only what the engine doesn't (downloads' `Target::place`). Each moved
+   the refusals (`check_transfer`), `Target::place` and `Stage::by_kind`,
+   which the engine's local route and downloads share. Each moved
    sequence keeps its tests unchanged in body; the not-yet answers and their
    test go. Steps 7 and 8 come after it. As done: the decorator is
    `versions/versioned.rs`'s `Versioned`, which the registry holds for this
@@ -482,7 +483,11 @@ next starts only after the human merged the last.
    is the commands': the histories inside the items it touches are closed,
    the capture in progress finishing first, then reopened and scanned
    again where the items are; "capture before a write" above means that),
-   and New Folder, New File and Put Back pass through, as before. The local `Transfer` is
+   and New Folder, New File, Put Back and Batch Rename pass through, as
+   before (Batch Rename never moved the histories in the folders it
+   renames, and still doesn't). Rename takes a name in the item's folder
+   only: a name with a slash, or a `to` in another folder, is refused in
+   Drive's words rather than moved past the transfer's refusals. The local `Transfer` is
    `places-local`'s `transfer.rs` (`LocalTransfer`): `read` hands the
    engine the item itself, whose fill copies a file whole at the path the
    engine gives and makes a folder there and fills it in place; `move_to`
@@ -509,7 +514,10 @@ next starts only after the human merged the last.
    `placement.rs` serves the engine's local route as well as downloads.
    `local_transfer.rs` is gone; its tests are `engine::local_tests`, bodies
    unchanged. Batch Rename is the `LocalOnly` extension's first method
-   (`rename_many`), and `Trashed.result` became
+   (`rename_many`); Move to Trash's log is written by this computer's
+   provider (`Local::trash`, `Trash::record`), `trash_routed` only routes
+   the batch; the app hands the provider its Trash as a
+   `places_local::TrashReach` (`lib.rs`' `AppTrash`); and `Trashed.result` became
    `Result<Option<String>>`, since this computer can't always say where an
    item went. Copying a 10,000-file folder (release build, on tmpfs) takes
    about 92 ms before and 91 ms after.

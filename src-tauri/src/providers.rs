@@ -52,26 +52,6 @@ pub trait Reach<T>: Send + Sync + 'static {
     fn reach(&self) -> &T;
 }
 
-/// Where this computer's provider finds the app's Trash and the home folder
-/// Move to Trash uses: `lib.rs` answers it for the app handle, in the
-/// commands' words when either is unknown.
-pub trait TrashState: Send + Sync + 'static {
-    fn trash(&self) -> std::result::Result<&places_local::trash_ops::Trash, String>;
-    fn home(&self) -> std::result::Result<PathBuf, String>;
-}
-
-/// The app's `TrashState`, as this computer's provider reaches it.
-struct LocalTrash<S>(S);
-
-impl<S: TrashState> TrashReach for LocalTrash<S> {
-    fn trash(&self) -> std::result::Result<&places_local::trash_ops::Trash, String> {
-        self.0.trash()
-    }
-    fn home(&self) -> std::result::Result<PathBuf, String> {
-        self.0.home()
-    }
-}
-
 /// The folders the providers keep files in, from the app's paths.
 pub struct Folders {
     /// The app cache, where Drive puts the copies it opens; the OS's error
@@ -92,15 +72,23 @@ pub struct Held {
 }
 
 /// The registry of every place the app shows, its providers reaching their
-/// state through `states` (this computer: the Trash and Keep Versions'
-/// histories); received shares wait on `runtime`, the app's async runtime.
-pub fn registry<S>(states: S, folders: Folders, held: Held, runtime: tokio::runtime::Handle) -> Registry
+/// state through `states` (this computer: Keep Versions' histories), this
+/// computer's provider the app's Trash through `trash` (`lib.rs` answers
+/// `places_local::TrashReach` for the app handle); received shares wait on
+/// `runtime`, the app's async runtime.
+pub fn registry<S>(
+    states: S,
+    trash: Box<dyn TrashReach>,
+    folders: Folders,
+    held: Held,
+    runtime: tokio::runtime::Handle,
+) -> Registry
 where
-    S: Reach<CloudState> + Reach<VersionsState> + TrashState + Shares + Clone,
+    S: Reach<CloudState> + Reach<VersionsState> + Shares + Clone,
 {
     let Folders { cache, thumbnails, shared_thumbnails } = folders;
     registry_with(
-        local(thumbnails, shared_thumbnails, Box::new(LocalTrash(states.clone())), Box::new(states.clone())),
+        local(thumbnails, shared_thumbnails, trash, Box::new(states.clone())),
         Drive::new(Live(DriveState(states.clone())), cache),
         held,
         ReceivedShares::new(states, runtime),
@@ -643,17 +631,7 @@ mod tests {
         }
     }
 
-    /// This computer's Trash and Keep Versions, as `lib.rs` answers them;
-    /// the test asks neither.
-    impl TrashState for Arc<States> {
-        fn trash(&self) -> std::result::Result<&places_local::trash_ops::Trash, String> {
-            Err("The home folder is unknown".into())
-        }
-        fn home(&self) -> std::result::Result<PathBuf, String> {
-            Err("No home folder in tests.".into())
-        }
-    }
-
+    /// Keep Versions, as `lib.rs` answers it; the test asks none.
     impl Reach<VersionsState> for Arc<States> {
         fn reach(&self) -> &VersionsState {
             panic!("no history in this test")
@@ -682,7 +660,7 @@ mod tests {
         let sftp = Arc::new(SftpState::new(dir.path().join("known_hosts"), dir.path().into(), dir.path().join("sftp")));
         let folders = Folders { cache: Ok(dir.path().join("cache")), thumbnails: None, shared_thumbnails: None };
         let arbesk = Arc::new(arbesk::Client::new(dir.path().join("cache"), dir.path().join("a.json"), dir.path().join("s")));
-        let registry = registry(states, folders, Held { arbesk, sftp }, testing::runtime());
+        let registry = registry(states, Box::new(testing::NoTrash), folders, Held { arbesk, sftp }, testing::runtime());
         for path in PATHS {
             assert_eq!(registry.provider_for(path).scheme(), scheme_of(place::kind(path)), "{path}");
         }

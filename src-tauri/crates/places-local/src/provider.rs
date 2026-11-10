@@ -85,15 +85,19 @@ pub fn child_path(parent: &str, name: &str) -> String {
     format!("{parent}/{name}")
 }
 
-/// Where Rename puts `path` given `new_name`: the name in `path`'s folder;
-/// an absolute `new_name` (no name starts with a slash) is the new path as
-/// it is, so a rename the frontend never sends across folders still lands
-/// where it was asked to, as before.
-pub fn renamed_path(path: &str, new_name: &str) -> String {
-    if new_name.starts_with('/') {
-        return new_name.to_string();
+/// Why Rename refuses to take an item out of its folder: a name with a
+/// slash, or a new path in another folder. Google Drive's words.
+pub const RENAME_STAYS: &str = "Rename keeps an item in its folder; use Move instead.";
+
+/// Where Rename puts `path` given `new_name`: the name in `path`'s folder.
+/// A `new_name` with a slash in it isn't a name, and would take the item
+/// to another folder past the move's refusals, so it is refused
+/// ([`RENAME_STAYS`]).
+pub fn renamed_path(path: &str, new_name: &str) -> std::result::Result<String, String> {
+    if new_name.contains('/') {
+        return Err(RENAME_STAYS.to_string());
     }
-    child_path(path.rsplit_once('/').map_or("", |(parent, _)| parent), new_name)
+    Ok(child_path(path.rsplit_once('/').map_or("", |(parent, _)| parent), new_name))
 }
 
 /// What the provider needs of the app for the Trash: the app's Trash and
@@ -257,7 +261,7 @@ impl Provider for Local {
     /// `fs_ops::rename_entry` (`rename_in_place`), to [`renamed_path`].
     fn rename(&self, path: &str, new_name: &str, _: &Cx) -> Result<String> {
         local(path).map_err(words)?;
-        let to = renamed_path(path, new_name);
+        let to = renamed_path(path, new_name).map_err(words)?;
         fs_ops::rename_entry(path.to_string(), to.clone()).map_err(words)?;
         Ok(to)
     }
@@ -403,16 +407,18 @@ mod tests {
     }
 
     /// A path splits at its last slash and joins back exactly; Rename puts
-    /// a name in the item's folder, and an absolute one where it says.
+    /// a name in the item's folder, and refuses anything with a slash.
     #[test]
     fn names_join_their_folder_as_paths_split() {
         for path in ["/a/b", "/x", "/a/b/", "//x"] {
             let (parent, name) = path.rsplit_once('/').unwrap();
             assert_eq!(child_path(parent, name), path);
         }
-        assert_eq!(renamed_path("/a/b.txt", "c.txt"), "/a/c.txt");
-        assert_eq!(renamed_path("/b.txt", "c.txt"), "/c.txt");
-        assert_eq!(renamed_path("/a/b.txt", "/elsewhere/c.txt"), "/elsewhere/c.txt");
+        assert_eq!(renamed_path("/a/b.txt", "c.txt"), Ok("/a/c.txt".into()));
+        assert_eq!(renamed_path("/b.txt", "c.txt"), Ok("/c.txt".into()));
+        for name in ["/elsewhere/c.txt", "sub/c.txt"] {
+            assert_eq!(renamed_path("/a/b.txt", name), Err(RENAME_STAYS.into()), "{name}");
+        }
     }
 
     /// New folders and files are made at their name and never over an
@@ -449,6 +455,9 @@ mod tests {
         assert_eq!(provider.rename(&text_of(&a), "b.txt", &cx), taken);
         assert_eq!(provider.rename(&text_of(&a), "c.txt", &cx), Ok(text_of(&dir.path().join("c.txt"))));
         assert_eq!(provider.rename("rel", "c.txt", &cx), Err(Error::Other("“rel” is not a local file.".into())));
+        let elsewhere = text_of(&dir.path().join("sub/e.txt"));
+        assert_eq!(provider.rename(&text_of(&dir.path().join("c.txt")), &elsewhere, &cx), Err(Error::Other(RENAME_STAYS.into())));
+        assert!(dir.path().join("c.txt").exists());
         let batch = provider.extensions().local_only.unwrap();
         let c = text_of(&dir.path().join("c.txt"));
         let d = text_of(&dir.path().join("d.txt"));
@@ -499,6 +508,46 @@ mod tests {
         let old = text_of(&items.join("old.txt"));
         assert_eq!(provider.restore(&old, &cx), Err(Error::Other("The original location is unknown".into())));
         assert!(provider.trash(&[], &cx).is_empty());
+    }
+
+    /// Move to Trash through the provider logs where each item came from
+    /// (`Trash::record`), and Put Back then returns it there. Runs on the
+    /// host's layout (`.trashinfo` on Linux, the app's log beside Finder's
+    /// on macOS), with the real Trash of the home folder; macOS without Full
+    /// Disk Access can't list `~/.Trash`, so there the item may go
+    /// unlocated, and is then neither logged nor put back.
+    #[test]
+    fn trash_logs_where_each_item_came_from_and_put_back_returns_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| dir.path().to_path_buf());
+        let log = dir.path().join("config/trash_log.json");
+        let trash = Trash::new(home.clone(), Some(log.clone()));
+        let provider = Local::new(Box::new(Recorded::default()), Box::new(Reached { trash: Some(trash), home: Some(home) }));
+        let (a, b, cx) = (dir.path().join("a.txt"), dir.path().join("b.txt"), Cx::default());
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        let (a, b) = (text_of(&a), text_of(&b));
+        let gone = text_of(&dir.path().join("gone.txt"));
+        let trashed = provider.trash(&[&a, "rel", &gone, &b], &cx);
+        assert_eq!(trashed.iter().map(|t| t.path.as_str()).collect::<Vec<_>>(), [&*a, "rel", &*gone, &*b]);
+        assert_eq!(trashed[2].result, Err(Error::Other(format!("“{gone}” no longer exists"))));
+        assert!(!Path::new(&a).exists() && !Path::new(&b).exists());
+        let logged = std::fs::read_to_string(&log)
+            .map(|text| serde_json::from_str::<trash_ops::TrashLog>(&text).unwrap().items)
+            .unwrap_or_default();
+        for (index, origin, bytes) in [(0, &a, "a"), (3, &b, "b")] {
+            match trashed[index].result.clone().unwrap() {
+                Some(at) => {
+                    assert_eq!(logged.get(&at).map(|item| &item.origin), Some(origin), "{at}");
+                    assert_eq!(std::fs::read_to_string(&at).unwrap(), bytes);
+                    assert_eq!(provider.restore(&at, &cx), Ok(origin.clone()));
+                    assert!(Path::new(origin).exists() && !Path::new(&at).exists());
+                }
+                None if cfg!(target_os = "macos") => {}
+                None => panic!("only macOS may not say where {origin} went"),
+            }
+        }
+        assert_eq!(logged.len(), trashed.iter().filter(|t| matches!(t.result, Ok(Some(_)))).count());
     }
 
     /// This computer hands the engine its transfer session, with the logged
