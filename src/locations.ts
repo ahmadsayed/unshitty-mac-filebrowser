@@ -3,7 +3,15 @@
 // Google Drive, received shares, SSH servers and the Trash live in one place.
 // Kept free of DOM and app state so every branch can be tested directly
 // (tests/locations.test.ts).
+//
+// What a place allows comes from the backend's providers (design D5): each
+// rule that a place's capabilities answer reads them (`capabilitiesOf`,
+// through `capabilityRow`) rather than restating them per kind. Rules about
+// the frontend's own views (Recent, Starred, Network, the Trash and folders
+// in it, which are no provider's) and those no capability matches stay here,
+// each saying so.
 
+import { capabilitiesOf, type CapabilityRow, type PlaceCapabilities } from "./capabilities";
 import { isArbeskAsset, isArbeskCollection, isWithin, placeOf, PSEUDO_PREFIX, type Place, type Pseudo } from "./paths";
 
 /** Every pseudo location starts with this, and Recent, Starred and Network
@@ -31,6 +39,47 @@ export function locationKind(path: string, trashPath: string): LocationKind {
   return PLACE_KINDS[placeOf(path)];
 }
 
+/** The frontend's own views: Recent, Starred, Network, the Trash and a
+ *  folder in it. No provider answers for them (the Trash's items are this
+ *  computer's, but what the view allows is the frontend's), so each rule
+ *  keeps its own answer for them. */
+export type ViewKind = "recent" | "starred" | "network" | "trash" | "in-trash";
+
+/** The kinds a provider answers for. */
+export type PlaceKind = Exclude<LocationKind, ViewKind>;
+
+const VIEW_KINDS: readonly LocationKind[] = ["recent", "starred", "network", "trash", "in-trash"];
+
+/** Whether `kind` is one of the frontend's own views (`ViewKind`). */
+export function isViewKind(kind: LocationKind): kind is ViewKind {
+  return VIEW_KINDS.includes(kind);
+}
+
+/** The backend's row for an Arbesk path: its asset or collection row, and
+ *  its account's for anything else (an account, the root, a malformed or
+ *  non-Arbesk path), which neither takes copies in nor gives them out. */
+function arbeskRow(path: string): CapabilityRow {
+  if (isArbeskAsset(path)) return "arbesk-asset";
+  return isArbeskCollection(path) ? "arbesk-collection" : "arbesk-account";
+}
+
+/** Which row of the backend's capability table answers for `kind`, at
+ *  `path` where Arbesk's account, collection and asset differ (an Arbesk
+ *  item whose path isn't known counts as a collection); null for the
+ *  frontend's own views (`ViewKind`). */
+export function capabilityRow(kind: LocationKind, path?: string): CapabilityRow | null {
+  if (isViewKind(kind)) return null;
+  if (kind === "arbesk") return path === undefined ? "arbesk-collection" : arbeskRow(path);
+  return kind;
+}
+
+/** What the place of `kind` (at `path`) allows, as its provider says;
+ *  null for the frontend's own views. */
+function capsOf(kind: LocationKind, path?: string): PlaceCapabilities | null {
+  const row = capabilityRow(kind, path);
+  return row ? capabilitiesOf(row) : null;
+}
+
 /** Whether `path` is one of `kinds`. */
 function kindIn(path: string, trashPath: string, kinds: readonly LocationKind[]): boolean {
   return kinds.includes(locationKind(path, trashPath));
@@ -50,19 +99,23 @@ export function isTrashKind(kind: LocationKind): boolean {
   return kind === "trash" || kind === "in-trash";
 }
 
-/** Shared folders, SSH servers and Arbesk are read only: no New Folder, Paste, Rename, Trash or drops. */
+/** Whether a place is read only (the provider's `read_only`): shared
+ *  folders, SSH servers and Arbesk. No New Folder, Paste, Rename, Trash or
+ *  drops. The frontend's own views aren't. */
 export function isReadOnlyKind(kind: LocationKind): boolean {
-  return kind === "share" || kind === "sftp" || kind === "arbesk";
+  return capsOf(kind)?.read_only ?? false;
 }
 
-/** Whether a place's files have known sizes and dates: Arbesk's are known
- *  only once an asset is built, so its size column stays empty. */
+/** Whether a place's files have known sizes and dates (the provider's
+ *  `knows_sizes`): Arbesk's are known only once an asset is built, so its
+ *  size column stays empty. The frontend's own views list items that do. */
 export function knowsSizes(kind: LocationKind): boolean {
-  return kind !== "arbesk";
+  return capsOf(kind)?.knows_sizes ?? true;
 }
 
 /** The remote places whose files Space previews: Arbesk's 3D models, built
- *  into the app cache. Drive, shares and SSH servers have no preview yet. */
+ *  into the app cache. Drive, shares and SSH servers have no preview yet.
+ *  Stays here: the preview is an extension, not one of the capabilities. */
 export function previewsRemotely(kind: LocationKind): boolean {
   return kind === "arbesk";
 }
@@ -70,7 +123,9 @@ export function previewsRemotely(kind: LocationKind): boolean {
 /** Whether `path`'s place hands over its own thumbnails, whatever kind of
  *  file an item is: Arbesk, the one each asset was saved with. Elsewhere
  *  only pictures and documents get one (`THUMB_KINDS`, item-icons.ts). The
- *  Trash holds only local files, so it plays no part. */
+ *  Trash holds only local files, so it plays no part. Stays here: the
+ *  capabilities' `has_thumbnails` says a place has thumbnails at all
+ *  (this computer and Drive too), not that it has one for every file. */
 export function providesThumbnails(path: string): boolean {
   return locationKind(path, "") === "arbesk";
 }
@@ -80,7 +135,8 @@ export function isReadOnlyLocation(path: string): boolean {
   return isReadOnlyKind(locationKind(path, ""));
 }
 
-/** A path on this machine or a mounted volume, not a place or a remote. */
+/** A path on this machine or a mounted volume, not a place or a remote.
+ *  Where a path is, not what it allows: no capability. */
 export function isLocalLocation(path: string): boolean {
   return kindIn(path, "", ["folder"]);
 }
@@ -90,24 +146,32 @@ export function isInTrash(path: string, trashPath: string): boolean {
   return isTrashKind(locationKind(path, trashPath));
 }
 
-/** Recursive name search is for local folders; the others filter in place. */
+/** Recursive name search is for places that search (the provider's
+ *  `searchable`: this computer's folders); the others filter in place, and
+ *  so do the frontend's own views, the Trash included. */
 export function searchesRecursively(path: string, trashPath: string): boolean {
-  return kindIn(path, trashPath, ["folder"]);
+  return capsOf(locationKind(path, trashPath))?.searchable ?? false;
 }
 
-/** Whether to look for a versioned folder holding `path`: never for the Trash or a remote. */
+/** Whether to look for a versioned folder holding `path`: never for the
+ *  Trash or a remote. Stays here: Keep Versions is the app's, not a
+ *  place's capability. */
 export function mayHaveVersions(path: string, trashPath: string): boolean {
   return kindIn(path, trashPath, ["folder", "in-trash"]);
 }
 
 /**
  * Whether New Folder, New Document and Paste can add to a place of this
- * kind: a folder or Drive. Never the Trash or a folder in it: an item put
- * there has no record of where it came from, so it couldn't be restored and
- * Empty Trash would delete it for good.
+ * kind: one that creates and isn't read only (the provider's `can_create`
+ * and `read_only`), a folder or Drive. An Arbesk account creates only
+ * collections, through New Collection, and stays read only. Never the Trash
+ * or a folder in it (a view of the frontend's own): an item put there has
+ * no record of where it came from, so it couldn't be restored and Empty
+ * Trash would delete it for good.
  */
 export function kindAcceptsNewItems(kind: LocationKind): boolean {
-  return kind === "folder" || kind === "drive";
+  const caps = capsOf(kind);
+  return caps !== null && caps.can_create && !caps.read_only;
 }
 
 /** `kindAcceptsNewItems` for `path`. */
@@ -115,19 +179,21 @@ export function acceptsNewItems(path: string, trashPath: string): boolean {
   return kindAcceptsNewItems(locationKind(path, trashPath));
 }
 
-/** The copy-out refusal's words, by the first item's kind; a share's otherwise. */
+/** The copy-out refusal's words, by the first item's kind; a share's
+ *  otherwise. The frontend's own (D5): the backend's differ. */
 const COPY_OUT_WORDS: Partial<Record<LocationKind, string>> = {
   sftp: "Copying from SSH servers comes next.",
   arbesk: "Copying Arbesk collections comes next.",
 };
 
-/** Whether the item at `path`, of `kind`, can't be copied out of where it is:
- *  anything in a share or on an SSH server, and an Arbesk account or
- *  collection. An Arbesk asset can be (its file is built first); one whose
- *  path isn't known counts as a collection. */
+/** Whether the item at `path`, of `kind`, can't be copied out of where it
+ *  is (the provider's `can_copy_out`): anything in a share or on an SSH
+ *  server, and an Arbesk account or collection. An Arbesk asset can be (its
+ *  file is built first); one whose path isn't known counts as a collection.
+ *  Items in the frontend's own views are their places' items. */
 function staysPut(kind: LocationKind, path: string | undefined): boolean {
-  if (kind === "arbesk") return path === undefined || !isArbeskAsset(path);
-  return isReadOnlyKind(kind);
+  const caps = capsOf(kind, path);
+  return caps !== null && !caps.can_copy_out;
 }
 
 /**
@@ -149,18 +215,20 @@ export function copyOutRefusal(paths: readonly string[]): string | null {
 
 const ARBESK_MODEL = /\.(gltf|glb|3mf)$/i;
 
-/** Whether `path` is a file Arbesk takes: a local `.gltf`, `.glb` or `.3mf`. */
+/** Whether `path` is a file Arbesk takes: a local `.gltf`, `.glb` or `.3mf`.
+ *  Stays here: the capabilities say where copies go in, not which files. */
 export function isArbeskModelFile(path: string): boolean {
   return placeOf(path) === "local" && ARBESK_MODEL.test(path);
 }
 
 /** Why `paths` can't be pasted or dropped into `dir` in Arbesk, in order:
- *  a cut or move, a folder that isn't a collection, an item that isn't a model
- *  file on this computer (any of `dirs`, the folders among `paths`, whatever
- *  its name). Null when only copies of model files go into a collection. */
+ *  a cut or move, a folder that takes no copies (the provider's
+ *  `can_copy_in`: only a collection does), an item that isn't a model file
+ *  on this computer (any of `dirs`, the folders among `paths`, whatever its
+ *  name). Null when only copies of model files go into a collection. */
 export function arbeskPasteRefusal(dir: string, paths: readonly string[], moving: boolean, dirs: ReadonlySet<string> = new Set()): string | null {
   if (moving) return "Arbesk is read only.";
-  if (!isArbeskCollection(dir)) return "Paste into a collection.";
+  if (!capabilitiesOf(arbeskRow(dir)).can_copy_in) return "Paste into a collection.";
   if (!paths.every((path) => !dirs.has(path) && isArbeskModelFile(path))) return "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.";
   return null;
 }

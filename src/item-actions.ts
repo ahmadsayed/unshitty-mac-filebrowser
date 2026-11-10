@@ -8,8 +8,16 @@
 //
 // A few cells keep a difference between surfaces exactly as it was; each is
 // marked "Kept:" and waits for a decision rather than being changed here.
+//
+// Where a place's capabilities answer a rule (design D5: rename, Move to
+// Trash, copy out, paste, cut), it reads them, through `locations.ts` or
+// `byPlace`, and keeps cells only for the frontend's own views (Recent,
+// Starred, Network, the Trash). Delete Permanently, Star, Add to Bookmarks,
+// Properties and Open Item Location have no matching capability and keep
+// their tables. The toasts are the frontend's own either way.
 
-import { arbeskPasteRefusal, copyOutRefusalOf, isPseudoKind, isReadOnlyKind, isTrashKind, kindAcceptsNewItems, type LocationKind } from "./locations";
+import { capabilitiesOf, type PlaceCapabilities } from "./capabilities";
+import { arbeskPasteRefusal, capabilityRow, copyOutRefusalOf, isPseudoKind, isReadOnlyKind, isTrashKind, kindAcceptsNewItems, type LocationKind, type ViewKind } from "./locations";
 
 export type SharedAction =
   | "cut"
@@ -49,6 +57,22 @@ const QUIET: Verdict = "";
 const READ_ONLY: Verdict = "Shared folders are read only.";
 const ARBESK_READ_ONLY: Verdict = "Arbesk is read only.";
 
+/** A rule over kinds: what an action is allowed in each. */
+type Grid = (kind: LocationKind) => Verdict;
+
+/** `cells` as a grid. */
+const table = (cells: Record<LocationKind, Verdict>): Grid => (kind) => cells[kind];
+
+/** A grid from a place's capability `flag` (allowed when it holds, refused
+ *  quietly when not), with `views`' cells for the frontend's own views. */
+function byPlace(flag: keyof PlaceCapabilities, views: Record<ViewKind, Verdict>): Grid {
+  return (kind) => {
+    const row = capabilityRow(kind);
+    if (row === null) return views[kind as ViewKind];
+    return capabilitiesOf(row)[flag] ? OK : QUIET;
+  };
+}
+
 /** Paste, by the kind of folder it pastes into: wherever New Folder can add
  *  (`kindAcceptsNewItems`, which keeps the Trash out); shares, servers and
  *  Arbesk say why not (Arbesk takes copies of model files into a collection). Kept: an SSH server says "Shared folders are read only." */
@@ -58,22 +82,26 @@ const paste = (here: Here): Verdict => {
   return isReadOnlyKind(here.kind) ? READ_ONLY : QUIET;
 };
 
-/** Move to Trash, by the location on screen. In the Trash, Delete deletes permanently instead. */
-const TRASH: Record<LocationKind, Verdict> = {
-  folder: OK, drive: OK, recent: OK, starred: OK,
+/** Move to Trash, by the location on screen: where the place trashes
+ *  (`can_trash`: a folder, Drive; not shares, servers or Arbesk). In the
+ *  Trash, Delete deletes permanently instead. */
+const TRASH = byPlace("can_trash", {
+  recent: OK, starred: OK,
   // Kept: Delete in Network reaches Move to Trash, and only the backend refuses
   // shares and servers (its menu has no Move to Trash).
   network: OK,
-  share: QUIET, sftp: QUIET, arbesk: QUIET, trash: QUIET, "in-trash": QUIET,
-};
+  trash: QUIET, "in-trash": QUIET,
+});
 
-/** Delete Permanently, by the location on screen: only inside the Trash. */
+/** Delete Permanently, by the location on screen: only inside the Trash, a
+ *  view of the frontend's own (no capability). */
 const DELETE_PERMANENTLY: Record<LocationKind, Verdict> = {
   trash: OK, "in-trash": OK,
   folder: QUIET, drive: QUIET, recent: QUIET, starred: QUIET, network: QUIET, share: QUIET, sftp: QUIET, arbesk: QUIET,
 };
 
-/** Star and Unstar, by the location on screen. */
+/** Star and Unstar, by the location on screen. Stars are the frontend's
+ *  own (no capability). */
 const STAR: Record<LocationKind, Verdict> = {
   folder: OK, recent: OK, starred: OK,
   // Kept: the list row's star shows on Drive, share and SSH rows, whose menus have no Star.
@@ -83,7 +111,8 @@ const STAR: Record<LocationKind, Verdict> = {
   trash: QUIET, "in-trash": QUIET, network: QUIET,
 };
 
-/** Add to Bookmarks, by the folder it bookmarks: anything but Recent, Starred and Network. */
+/** Add to Bookmarks, by the folder it bookmarks: anything but Recent,
+ *  Starred and Network. Bookmarks are the frontend's own (no capability). */
 const BOOKMARK: Record<LocationKind, Verdict> = {
   folder: OK,
   // Kept: ⌘D bookmarks a Drive folder, a share, an SSH folder or a folder in
@@ -94,13 +123,17 @@ const BOOKMARK: Record<LocationKind, Verdict> = {
   recent: QUIET, starred: QUIET, network: QUIET,
 };
 
-/** Rename, by each item's kind: its record names a trashed item, and shares and servers are read only. */
-const RENAME_ITEM: Record<LocationKind, Verdict> = {
-  folder: OK, drive: OK, recent: OK, starred: OK, network: OK,
-  share: QUIET, sftp: QUIET, arbesk: QUIET, trash: QUIET, "in-trash": QUIET,
-};
+/** Rename, by each item's kind: where the place renames (`can_rename`: a
+ *  folder, Drive; shares, servers and Arbesk are read only); its record
+ *  names a trashed item. */
+const RENAME_ITEM = byPlace("can_rename", {
+  recent: OK, starred: OK, network: OK,
+  trash: QUIET, "in-trash": QUIET,
+});
 
-/** Properties, by each item's kind: the backend can't read shares or SSH servers yet. */
+/** Properties, by each item's kind: the backend can't read shares or SSH
+ *  servers yet. Properties is an extension, not a capability: no row
+ *  answers it. */
 const PROPERTIES_ITEM: Record<LocationKind, Verdict> = {
   folder: OK, drive: OK, trash: OK, "in-trash": OK,
   share: QUIET, sftp: QUIET, arbesk: QUIET,
@@ -108,16 +141,17 @@ const PROPERTIES_ITEM: Record<LocationKind, Verdict> = {
 };
 
 /** The first refusal among the items, by `grid`. */
-function firstItemVerdict(grid: Record<LocationKind, Verdict>, here: Here): Verdict {
-  for (const kind of here.items) if (grid[kind] !== OK) return grid[kind];
+function firstItemVerdict(grid: Grid, here: Here): Verdict {
+  for (const kind of here.items) if (grid(kind) !== OK) return grid(kind);
   return OK;
 }
 
 const copyOut = (here: Here): Verdict => copyOutRefusalOf(here.items, here.paths);
 
-/** Cut: as copy, and never out of Arbesk, whose assets can only be copied. */
+/** Cut: as copy, and never out of a read-only place: Arbesk, whose assets
+ *  can only be copied (shares and servers give nothing out, refused above). */
 const cut = (here: Here): Verdict =>
-  copyOut(here) ?? (here.items.includes("arbesk") ? ARBESK_READ_ONLY : OK);
+  copyOut(here) ?? (here.items.some(isReadOnlyKind) ? ARBESK_READ_ONLY : OK);
 
 const RULES: Record<SharedAction, (here: Here) => Verdict> = {
   cut,
@@ -125,11 +159,11 @@ const RULES: Record<SharedAction, (here: Here) => Verdict> = {
   paste,
   // Recent and Starred mix folders, so the name-clash check wouldn't work there.
   rename: (here) => (isPseudoKind(here.kind) ? QUIET : firstItemVerdict(RENAME_ITEM, here)),
-  trash: (here) => TRASH[here.kind],
+  trash: (here) => TRASH(here.kind),
   deletePermanently: (here) => DELETE_PERMANENTLY[here.kind],
   star: (here) => STAR[here.kind],
   bookmark: (here) => BOOKMARK[here.kind],
-  properties: (here) => firstItemVerdict(PROPERTIES_ITEM, here),
+  properties: (here) => firstItemVerdict(table(PROPERTIES_ITEM), here),
   // Only for an item shown away from its folder, and never in the Trash,
   // where Restore From Trash is the way back.
   openLocation: (here) =>

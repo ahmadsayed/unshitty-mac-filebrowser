@@ -30,6 +30,8 @@ import {
   type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
+import { capabilities } from "./api";
+import { loadCapabilities } from "./capabilities";
 import { entryIcon, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { appIconKey } from "./native-icons";
 import { GRID_SIZES, ItemIcons, LIST_SIZES, THUMB_KINDS } from "./item-icons";
@@ -6314,6 +6316,9 @@ async function init(): Promise<void> {
   window.addEventListener("blur", closePopover);
   $(".sidebar").addEventListener("contextmenu", onSidebarContextMenu);
 
+  // What each kind of place allows, from the backend's places; nothing
+  // waits for it: until it lands the built-in table says the same.
+  void loadCapabilities(capabilities);
   // Tauri keeps $HOME as written: HOME=/Users/me/ would hold none of its
   // folders (isWithin), so trim the slash once, here (#170).
   home = homeFolder(await homeDir().catch(() => ""));

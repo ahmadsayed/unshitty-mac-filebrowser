@@ -1,5 +1,6 @@
 import { encodeCloudName, isUnder, placeOf, type Place } from "../../src/paths";
 import { fold } from "../../src/search";
+import { BUILT_IN_CAPABILITIES } from "../../src/capabilities";
 import { sample3mf, sampleGlb, sampleModelBytes } from "./models";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
@@ -2562,6 +2563,9 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
       const entry = driveNode(path);
       return entry ? { is_dir: entry.is_dir, device: 0 } : null;
     }),
+  // The backend's table is its providers' own answers; the frontend's
+  // built-in copy is pinned to it by tests/capabilities.json.
+  capabilities: () => structuredClone(BUILT_IN_CAPABILITIES),
   path_exists: (a) => {
     const path = str(a, "path");
     if (placeOf(path) === "drive") return drivePathExists(path);

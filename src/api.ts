@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { CapabilityTable } from "./capabilities";
 import type { ProgressUpdate } from "./operations";
 
 export interface Entry {
@@ -449,6 +450,12 @@ export async function makeDir(path: string): Promise<string> {
 /** Rename/move `from` to `to`. Errors if `to` already exists. */
 export async function renameEntry(from: string, to: string): Promise<string> {
   return invoke<string>("rename_entry", { from, to });
+}
+
+/** What each kind of place allows (`capabilities.ts`): the backend's
+ *  providers' own booleans, one row per kind. Asks no server. */
+export async function capabilities(): Promise<CapabilityTable> {
+  return invoke<CapabilityTable>("capabilities");
 }
 
 /** True if anything (even a broken symlink) exists at `path`. */
