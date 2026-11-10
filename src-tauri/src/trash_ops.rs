@@ -2680,20 +2680,26 @@ mod tests {
 
     /// Every item the app trashes goes through this module, so the log
     /// knows where it came from: no other module calls the `trash` crate
-    /// (`Trash::send` for single items, `send_to_trash` in lib.rs).
+    /// (`Trash::send` for single items, `send_to_trash` in lib.rs). The
+    /// app's sources and every crate under `crates/` are scanned.
     #[test]
     fn only_this_module_calls_the_trash_crate() {
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let roots = crate::test_support::source_roots();
+        assert!(roots.iter().any(|(_, prefix)| prefix == "crates/arbesk/src/"));
         let mut callers = Vec::new();
-        let mut folders = vec![src.clone()];
-        while let Some(folder) = folders.pop() {
-            for path in fs::read_dir(&folder).unwrap().flatten().map(|e| e.path()) {
-                if path.is_dir() {
-                    folders.push(path);
-                } else if path != src.join("trash_ops.rs")
-                    && names_the_trash_crate(&fs::read_to_string(&path).unwrap_or_default())
-                {
-                    callers.push(path.strip_prefix(&src).unwrap().to_string_lossy().to_string());
+        for (root, prefix) in roots {
+            let mut folders = vec![root.clone()];
+            while let Some(folder) = folders.pop() {
+                for path in fs::read_dir(&folder).unwrap().flatten().map(|e| e.path()) {
+                    let name =
+                        format!("{prefix}{}", path.strip_prefix(&root).unwrap().to_string_lossy());
+                    if path.is_dir() {
+                        folders.push(path);
+                    } else if name != "trash_ops.rs"
+                        && names_the_trash_crate(&fs::read_to_string(&path).unwrap_or_default())
+                    {
+                        callers.push(name);
+                    }
                 }
             }
         }

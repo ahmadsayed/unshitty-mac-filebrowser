@@ -635,10 +635,11 @@ mod tests {
     /// user's items are placed with `rename_new` / `rename_in_place` (#192).
     /// The modules left rename only what the app itself made, over its own
     /// files: saves written to a temporary name first, caches, and
-    /// content-addressed version objects. Test code is not scanned.
+    /// content-addressed version objects. Test code is not scanned. The
+    /// app's sources and every crate under `crates/` are.
     #[test]
     fn only_listed_modules_call_std_fs_rename() {
-        const ALLOWED: [&str; 9] = [
+        const ALLOWED: [&str; 10] = [
             "placement.rs",       // rename_new's fallback, after its check
             "config_store.rs",    // pins.json, starred.json, flags.json saves
             "cloud/token.rs",     // Drive settings save
@@ -647,15 +648,11 @@ mod tests {
             "versions/mod.rs",    // .versions/meta.json save
             "versions/store.rs",  // an object is its bytes' hash
             "crates/arbesk/src/cache.rs", // an asset's `.part`, renamed whole
-            "crates/arbesk/src/store.rs", // accounts and session saves
+            "crates/arbesk/src/store.rs", // the session's 0600 save
+            "crates/places/src/files.rs", // write_json: settings and account lists
         ];
-        let roots = [
-            (Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), String::new()),
-            (
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/arbesk/src"),
-                "crates/arbesk/src/".to_string(),
-            ),
-        ];
+        let roots = crate::test_support::source_roots();
+        assert!(roots.iter().any(|(_, prefix)| prefix == "crates/places/src/"));
         let mut callers = Vec::new();
         for (root, prefix) in roots {
             let mut folders = vec![root.clone()];

@@ -12,6 +12,8 @@ mod properties;
 mod recent;
 mod sftp;
 mod share;
+#[cfg(test)]
+mod test_support;
 mod thumbnails;
 mod trash_ops;
 mod updates;
