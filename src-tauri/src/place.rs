@@ -254,6 +254,27 @@ mod tests {
         }
     }
 
+    /// The local-only gate's words are what each provider will give as its
+    /// `Operation::LocalOnly` refusal (D10), unchanged.
+    #[test]
+    fn the_local_only_gate_fits_each_providers_refusal() {
+        let cases = [
+            ("gdrive://acct/root~x", DRIVE_UNSUPPORTED),
+            ("share://r1/Photos", SHARE_LOCAL),
+            ("sftp://me@host/home", SFTP_LOCAL),
+            (ARBESK, ARBESK_LOCAL),
+        ];
+        for (path, words) in cases {
+            let refused = places::Refused {
+                operation: places::Operation::LocalOnly,
+                message: local(path).unwrap_err(),
+            };
+            assert_eq!(refused.message, words, "{path}");
+            let json = serde_json::to_value(&refused).unwrap();
+            assert_eq!(json["operation"], "local_only", "{path}");
+        }
+    }
+
     #[test]
     fn malformed_remote_paths_are_refused_by_their_own_parser() {
         // `local` keeps them from std::fs; the handler they go to refuses them.

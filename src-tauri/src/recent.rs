@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -44,12 +44,8 @@ pub struct RecentEntry {
     pub used: i64,
 }
 
-pub fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+/// Now in unix seconds; Google Drive's tokens use the same clock.
+pub use places::now;
 
 pub fn read_store(path: &Path) -> RecentStore {
     fs::read_to_string(path)

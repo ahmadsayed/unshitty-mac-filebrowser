@@ -29,20 +29,8 @@ pub fn rename_entry(from: String, to: String) -> Result<(), String> {
     })
 }
 
-#[derive(Debug, Serialize)]
-pub struct Entry {
-    pub name: String,
-    pub path: String,
-    pub is_dir: bool,
-    pub size: u64,
-    pub modified: i64,
-    pub is_hidden: bool,
-    pub is_symlink: bool,
-    /// Present only for an entry from a cloud location. Local entries omit the
-    /// key entirely, so existing consumers see exactly the same JSON.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cloud: Option<crate::cloud::CloudEntry>,
-}
+/// A listing row; shared by every place through the `places` crate.
+pub use places::Entry;
 
 pub fn read_entries(path: &Path, show_hidden: bool) -> Result<Vec<Entry>, String> {
     let read_dir =
@@ -529,12 +517,7 @@ pub fn path_exists(path: String) -> bool {
     std::fs::symlink_metadata(&path).is_ok()
 }
 
-#[derive(Debug, Serialize, PartialEq)]
-pub struct PathInfo {
-    pub is_dir: bool,
-    /// Filesystem the path lives on; equal ids mean a move is a cheap rename.
-    pub device: u64,
-}
+pub use places::PathInfo;
 
 #[cfg(unix)]
 fn device_id(meta: &std::fs::Metadata) -> u64 {
@@ -694,12 +677,7 @@ fn copy_file_progress(from: &Path, to: &Path, progress: &Progress) -> std::io::R
     Ok(())
 }
 
-/// Sizes and item counts of `paths` before a copy, for the progress total.
-#[derive(Serialize, Default, PartialEq, Eq, Debug, Clone, Copy)]
-pub struct Measure {
-    pub bytes: u64,
-    pub items: u64,
-}
+pub use places::Measure;
 
 /// Apparent sizes of everything under `paths`. Symlinks are counted, not
 /// followed; folders that can't be read are skipped, not reported.

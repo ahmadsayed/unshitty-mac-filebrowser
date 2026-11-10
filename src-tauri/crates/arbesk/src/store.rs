@@ -5,19 +5,9 @@
 use std::fs;
 use std::path::Path;
 
-use serde::Serialize;
-
 /// Write `value` as JSON to `path`, through a temporary file so a failed save
-/// leaves the old one whole.
-pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| format!("Failed to create config directory: {}", e))?;
-    }
-    let json = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, json).map_err(|e| format!("Failed to save settings: {}", e))?;
-    fs::rename(&tmp, path).map_err(|e| format!("Failed to save settings: {}", e))
-}
+/// leaves the old one whole; the same save the app's settings use.
+pub(crate) use places::write_json;
 
 /// Write a file only the user can read (`0600`), atomically. Used for the
 /// session files that stand in for the OS keychain.

@@ -4,8 +4,8 @@
 //! copies that are still exactly as downloaded and sends the rest to the Trash.
 
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 /// Where each source keeps its downloads, under the app cache folder.
 pub const DIRS: [&str; 4] = ["sftp/sftp-open", "drive", "share-open", "arbesk"];
@@ -13,37 +13,11 @@ pub const DIRS: [&str; 4] = ["sftp/sftp-open", "drive", "share-open", "arbesk"];
 /// How long a download may go untouched before it is pruned.
 pub const MAX_AGE: Duration = Duration::from_secs(7 * 86_400);
 
-// The Arbesk crate's `cache.rs` writes these marks too (asset builds), so the
-// suffix and the fingerprint must stay identical here.
-const MARK_SUFFIX: &str = ".downloaded";
-
-/// The hidden file beside `copy` that remembers it as downloaded.
-fn mark_path(copy: &Path) -> Option<PathBuf> {
-    let name = copy.file_name()?.to_string_lossy();
-    Some(copy.with_file_name(format!(".{name}{MARK_SUFFIX}")))
-}
-
-/// Size and modification time: enough to notice an edit, in place or by an
-/// editor that saves a new file over the old one.
-fn fingerprint(meta: &fs::Metadata) -> Option<String> {
-    let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
-    Some(format!("{} {}", meta.len(), modified.as_nanos()))
-}
-
-/// Remember `copy` as it was just downloaded.
-pub fn mark(copy: &Path) {
-    let print = fs::metadata(copy).ok().as_ref().and_then(fingerprint);
-    if let (Some(mark), Some(print)) = (mark_path(copy), print) {
-        let _ = fs::write(mark, print);
-    }
-}
-
-/// Whether `copy` is still exactly as downloaded. Copies without a mark
-/// (downloaded before marks existed) count as changed.
-fn unchanged(copy: &Path, meta: &fs::Metadata) -> bool {
-    let saved = mark_path(copy).and_then(|mark| fs::read_to_string(mark).ok());
-    saved.is_some() && saved == fingerprint(meta)
-}
+/// The `.downloaded` mark beside a copy, in the `places` crate: every
+/// provider that leaves a copy here (SFTP, Drive, shares, Arbesk builds)
+/// writes the same suffix and fingerprint.
+pub use places::mark;
+use places::{MARK_SUFFIX, mark_path, unchanged};
 
 /// Prune the downloads under `base` that nobody has touched for `max_age`:
 /// unchanged copies and unfinished `.part` files are deleted, other copies go
@@ -105,6 +79,7 @@ fn prune_file(path: &Path, meta: &fs::Metadata, trash: &dyn Fn(&Path) -> Result<
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     const WEEK: Duration = MAX_AGE;

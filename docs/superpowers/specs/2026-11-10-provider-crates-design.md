@@ -69,7 +69,7 @@ do. A pending name (a target that doesn't exist yet) keeps today's form
 
 | Crate | Holds | Depends on (illustrative) |
 |---|---|---|
-| `places` | the interface: `Provider`, the extension traits, `Entry`, `Capabilities`, `Error`, `Progress`/`Phase`/`Snapshot`/`CANCELLED`, `OpenTarget`, `Registry`, and the shared helpers providers use today from the app: `PathInfo`, `Measure`, `FileProperties`, `Refusal`'s wording, `copy_counted`/`is_cancel`, a clock, an atomic private JSON save, the `.downloaded` mark | `serde`, `serde_json` |
+| `places` | the interface: `Provider`, the extension traits, `Entry`, `Capabilities`, `Error`, `Progress`/`Phase`/`Snapshot`/`CANCELLED`, `OpenTarget`, `Registry`, and the shared helpers providers use today from the app: `PathInfo`, `Measure`, `FileProperties`, `Refusal`'s wording, `copy_counted`/`is_cancel`, a clock, an atomic JSON save (`write_json`; the 0600 `write_json_private` stays in `config_store`), the `.downloaded` mark (one copy, which `downloads.rs` and Drive both use) | `serde`, `serde_json` |
 | `places-local` | this computer: listing, stat, mkdir, the exclusive rename, the Trash (both layouts) and its log, properties, local thumbnail sources; `cfg` per OS (Linux, macOS; Windows later) | `places`, `trash`, `libc`, `gio` (Linux), `objc2`/`xattr` (macOS), `image` |
 | `places-gdrive` | Google Drive (today's `src/cloud/`, minus the local↔Drive half of `transfer.rs`, which joins the engine: D6) | `places`, `reqwest`, `oauth2`, `keyring` |
 | `arbesk` | stays its own crate; gains a `places::Provider` impl beside its `Client` | `places` |
@@ -124,6 +124,10 @@ pub trait Provider: Send + Sync {
 }
 ```
 
+`Cx` is the context of one call: the `Progress` it reports into (and whose
+cancel flag `check()` reads between chunks and items) and the app cache
+folder (`cache_dir`) where a provider may leave downloads and builds.
+
 `rename_entry` keeps its `(from, to)` arguments: the command checks that
 `to`'s parent is `from`'s, keeping Drive's wording ("Rename keeps an item in
 its folder; use Move instead.") for Drive and today's for the others (pinned
@@ -152,6 +156,14 @@ come from the provider that owns them.
 
 An extension a provider lacks is simply absent; the app checks for it instead
 of matching on a kind.
+
+Step 1 declares only the slots: each trait gets its methods in the step that
+first implements it, shaped like the command it replaces so nothing visible
+changes. Those shapes are: thumbnails as PNG bytes with the per-window cancel
+ticket; item counts as `FolderSummary`, version badges included; search with
+`show_hidden`, its result limit, the per-window stop and `SearchSummary`;
+a folder size as bytes, cancelled by walk id; sharing with Arbesk's numeric
+role and its `Shared` result.
 
 **D5. Capabilities are data, and the frontend reads them.** `Capabilities`
 answers per path, without the network:
@@ -207,10 +219,17 @@ and declares how in `Capabilities`:
 | rename that never replaces | `renameat2`/`renamex_np` | check-then-act; the final rename of a staged copy doesn't check first, as today | — |
 | move the provider's own item to any path in it, never replacing, and move it back | `rename_new` | PATCH name + parents, after checking the name; put back on failure | — |
 | send to its Trash for Replace, and take it back | `Trash::send` / `Trash::untrash` (no parent folders made, log entry forgotten) — not `restore` | `trashed=true` / `false` | — (Replace = new version) |
-| discard a staged or partial copy the engine made | removed for good; a Drive download's partial local folder goes to the logged local Trash | `trashed=true`, never deleted | — |
+| copy the provider's own item inside it, its bytes never passing through this computer (`copy_within`) | — (Unsupported: a local copy is the engine's staged copy) | server-side `files.copy` (Docs and shortcuts too), a folder staged then renamed in, as `copy_in` and `finish_staged` do today | — |
+| discard a staged or partial copy the engine made with this provider's own primitives | removed for good | `trashed=true`, never deleted | — |
 
-The policies that differ by route stay per route, as `DiscardFn` is today:
-moving a local source away after a local→local copy across volumes removes
+A transfer between two different providers meets at a local path (a write
+reads a local source, a read fills a local target); a copy inside one
+provider (Drive↔Drive, same account) is `copy_within`, so its requests stay
+the ones Drive's tests assert today.
+
+The policies that differ by route stay per route, as `DiscardFn` is today,
+and never go through a provider's `discard`: a Drive download's partial local
+folder goes to the logged local Trash (step 4 adds a test for it); moving a local source away after a local→local copy across volumes removes
 it for good (`remove_any`, as `fs_ops` does); after a local→Drive upload it
 goes to the logged Trash through Keep Versions' decorator; a Drive source
 after a download goes to Drive's Trash. A staged **original** (the user's own
@@ -260,7 +279,8 @@ today's “{path}” is not a local file., so `file://`, `smb://`, `GDRIVE://`,
 relative paths and a remote prefix inside a local path behave as now. A
 malformed path with a registered prefix (`gdrive://`, `share://r1/%2E%2E`)
 still reaches its provider, whose parser refuses it. Each provider also gives
-its "This action is not available for …" text for the local-only gate.
+its "This action is not available for …" text for the local-only gate, as
+its `Capabilities::refused` entry for `Operation::LocalOnly`.
 `place.rs` shrinks to the registry's lookup plus that gate; its table test
 keeps every row. Each command becomes one lookup and one call; the frontend's
 `Record<LocationKind, …>` tables keep their compile-time check.
@@ -306,10 +326,10 @@ next starts only after the human merged the last.
 
 **Guard tests move with the code.** The tests that enforce "only
 `trash_ops` calls the `trash` crate" and "only listed modules call
-`std::fs::rename`" scan `src-tauri/src` (and `crates/arbesk`) today. Steps 4,
-5 and 6 extend both to every crate under `src-tauri/crates/`, update their
-allowed paths in the same PR, and move the trash-crate exemption with
-`trash_ops` to `places-local`.
+`std::fs::rename`" scan `src-tauri/src` and every crate under
+`src-tauri/crates/` (extended in step 1). Later steps only add allowed
+entries for code that moves, in the same PR, and step 6 moves the
+trash-crate exemption with `trash_ops` to `places-local`.
 
 After the migration, a new provider is: a crate and a registry line; a row in
 `paths.ts`' SCHEMES and a `Place`; a `LocationKind` and a cell in each

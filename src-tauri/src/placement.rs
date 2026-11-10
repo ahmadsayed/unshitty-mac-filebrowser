@@ -7,53 +7,14 @@
 //! Plain functions, no Tauri. Callers only say how to fill a path
 //! (`Target::place`'s `fill`): a rename, a recursive copy, a download.
 
-use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
 // ---- Refusals ----------------------------------------------------------------
 
-/// Why a copy, move or download was refused before anything was written.
-/// `Display` is the message the user sees.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Refusal {
-    /// The source is gone; it holds the source as shown (a path, or a
-    /// Google Drive name).
-    Vanished(String),
-    SamePath,
-    IntoItself,
-    /// Something is at the target and Replace wasn't asked for; it holds the
-    /// target as shown.
-    Exists(String),
-    /// Replace would send the source's own folder to the Trash.
-    ReplaceWithChild,
-    /// The target's last component is empty, `.` or `..`, so Replace would
-    /// act on its folder instead.
-    NotAName(PathBuf),
-}
-
-impl fmt::Display for Refusal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Refusal::Vanished(shown) => write!(f, "“{shown}” no longer exists"),
-            Refusal::SamePath => f.write_str("The source and destination are the same"),
-            Refusal::IntoItself => f.write_str("Cannot copy or move a folder into itself"),
-            Refusal::Exists(shown) => write!(f, "Target already exists: {shown}"),
-            Refusal::ReplaceWithChild => {
-                f.write_str("Cannot replace a folder with an item inside it")
-            }
-            Refusal::NotAName(to) => {
-                write!(f, "“{}” is not a valid name for a local item.", to.display())
-            }
-        }
-    }
-}
-
-impl From<Refusal> for String {
-    fn from(refusal: Refusal) -> String {
-        refusal.to_string()
-    }
-}
+/// Why a copy, move or download was refused before anything was written,
+/// in the user's words; shared with Google Drive through the `places` crate.
+pub use places::Refusal;
 
 /// A destination that passed the refusals: where the item goes, and whether
 /// it replaces one that is there.
@@ -674,10 +635,11 @@ mod tests {
     /// user's items are placed with `rename_new` / `rename_in_place` (#192).
     /// The modules left rename only what the app itself made, over its own
     /// files: saves written to a temporary name first, caches, and
-    /// content-addressed version objects. Test code is not scanned.
+    /// content-addressed version objects. Test code is not scanned. The
+    /// app's sources and every crate under `crates/` are.
     #[test]
     fn only_listed_modules_call_std_fs_rename() {
-        const ALLOWED: [&str; 9] = [
+        const ALLOWED: [&str; 10] = [
             "placement.rs",       // rename_new's fallback, after its check
             "config_store.rs",    // pins.json, starred.json, flags.json saves
             "cloud/token.rs",     // Drive settings save
@@ -686,15 +648,11 @@ mod tests {
             "versions/mod.rs",    // .versions/meta.json save
             "versions/store.rs",  // an object is its bytes' hash
             "crates/arbesk/src/cache.rs", // an asset's `.part`, renamed whole
-            "crates/arbesk/src/store.rs", // accounts and session saves
+            "crates/arbesk/src/store.rs", // the session's 0600 save
+            "crates/places/src/files.rs", // write_json: settings and account lists
         ];
-        let roots = [
-            (Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), String::new()),
-            (
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/arbesk/src"),
-                "crates/arbesk/src/".to_string(),
-            ),
-        ];
+        let roots = crate::test_support::source_roots();
+        assert!(roots.iter().any(|(_, prefix)| prefix == "crates/places/src/"));
         let mut callers = Vec::new();
         for (root, prefix) in roots {
             let mut folders = vec![root.clone()];

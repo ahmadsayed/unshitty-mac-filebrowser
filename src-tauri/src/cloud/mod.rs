@@ -258,19 +258,9 @@ impl CloudState {
 
 pub use location::{DriveLocation, Location, Segment, is_cloud, parse};
 
-/// Fields that only exist on an entry from a cloud provider. Omitted from the
-/// serialized entry for local files, so existing frontend code is unchanged.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct CloudEntry {
-    pub account: String,
-    pub id: String,
-    pub mime_type: String,
-    pub is_google_doc: bool,
-    pub is_shortcut: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub web_url: Option<String>,
-    pub can_download: bool,
-}
+/// Fields that only exist on an entry from Google Drive, in the `places`
+/// crate with the entry that carries them.
+pub use places::CloudEntry;
 
 #[cfg(test)]
 mod tests {
