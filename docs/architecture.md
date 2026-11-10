@@ -5,7 +5,7 @@ which module owns which rule, how a call travels from the window to the
 filesystem, and where a change lands. The module list itself, with one line
 per file, is the Layout table in [AGENTS.md](../AGENTS.md).
 
-![Block diagram of the app: the frontend's main.ts asks four groups of rule and state modules and calls typed commands in api.ts; Tauri IPC carries them to lib.rs, where every path goes through the place.rs gate before reaching placement.rs, trash_ops::Trash, fs_ops, Drive, shares or SSH; placement uses the Trash for Replace and platform.rs for renames that never replace.](architecture.svg)
+![Block diagram of the app: the frontend's main.ts asks four groups of rule and state modules and calls typed commands in api.ts; Tauri IPC carries them to lib.rs, where every path goes through the place.rs gate before reaching placement.rs, trash_ops::Trash, this computer's places-local crate, Drive, shares, SSH or Arbesk; placement uses the Trash (in places-local) for Replace and places-local's rename.rs and platform.rs for renames that never replace.](architecture.svg)
 
 Teal boxes are the modules the refactors added or deepened, with their PR
 numbers. Dashed boxes are outside the app (the operating system) or stand in
@@ -53,7 +53,8 @@ receives goes through `place.rs` first: its kind, whether it is a local path
 the place may be written. Then:
 
 - copies, moves and Drive downloads go through `placement.rs`: the refusals
-  and their wording, staging under a hidden name, and Replace; a copy or
+  and their wording, staging under a hidden name, and Replace (a local copy
+  or move is `local_transfer.rs`, over `places-local`'s file primitives); a copy or
   move to, from or inside Google Drive is `engine.rs`'s: `lib.rs` takes
   the Drive provider from the registry, and the engine builds the transfer
   from that provider's transfer session (its `places::Transfer`
@@ -62,16 +63,20 @@ the place may be written. Then:
   Drive's Replace the same way, and places what lands here through
   `placement.rs`;
 - Move to Trash, Restore, Delete Permanently and Empty Trash go through
-  `trash_ops::Trash`: the trash log, where an item came from (sidecar, log,
+  `trash_ops::Trash` (in the `places-local` crate): the trash log, where an item came from (sidecar, log,
   Finder's Put Back), and both Trash layouts;
 - listing, whether an item exists, path info, thumbnails and opening ask
   the place's provider in the `places::Registry`, picked by the path's
-  scheme (`providers.rs`: this computer's thin adapter over the modules
-  below, Google Drive's, Arbesk's and SSH's own crates' providers, and
+  scheme (`providers.rs`: this computer's provider from the `places-local`
+  crate, handed the app's thumbnails, Google Drive's, Arbesk's and SSH's own crates' providers, and
   received shares' provider in `share/provider.rs`, registered as they
   are), one lookup and one call per command, on a blocking thread (a
   share's provider waits on the async runtime from there);
-- listing, counts, opening and reading go to `fs_ops.rs`, the
+- listing, counts, opening and reading go to the `crates/places-local`
+  workspace crate (this computer: `fs_ops.rs`, the renames that never
+  replace, the Trash and the platform's file pieces; no Tauri, never
+  depending on the app, which hands it the version badge's ownership check
+  and its thumbnailer), the
   `crates/places-gdrive` workspace crate (Google Drive: accounts and
   sign-in without the window, the REST client, listing, opening,
   thumbnails, its own writes and its transfer primitives; no Tauri),
@@ -100,10 +105,12 @@ the place may be written. Then:
 
 Replace sends the old item to the Trash through `trash_ops::Trash` and, if
 the last rename fails, takes it back out and forgets its log entry. Every
-final rename goes through `platform.rs`'s `rename_exclusive`
-(`renameat2` on Linux, `renamex_np` on macOS), so it never replaces an item
-that took the name meanwhile. `platform.rs` holds the other differences
-between macOS and Linux too: XDG paths and volumes.
+final rename goes through `places-local`'s `rename_new` and its
+`platform.rs`'s `rename_exclusive` (`renameat2` on Linux, `renamex_np` on
+macOS), so it never replaces an item that took the name meanwhile. That
+`platform.rs` holds this computer's other file differences between macOS
+and Linux too (XDG paths and volumes); the app's own `platform.rs` keeps
+opening files, windows, dragging out and installs.
 
 ## Where a change lands
 
@@ -113,9 +120,10 @@ between macOS and Linux too: XDG paths and volumes.
 | A new kind of location (SMB, WebDAV) | a row in `paths.ts`, a kind in `locations.ts`, a `Kind` in `place.rs`, a provider in `providers.rs` and its registry line |
 | A new online account provider (OneDrive, Dropbox) | a row in `providers.ts` and in `PROVIDER_ACTIONS` (`main.ts`), plus the location rows above |
 | Arbesk's listings, builds, versions or uploads | the private modules of `src-tauri/crates/arbesk`, answered through its provider (`provider.rs`: `places::Provider`, `Transfer` and the extensions); a new kind of answer is a method on a `places` extension, not a new type on the facade |
-| How copy, move or Replace behaves | `placement.rs`, and `engine.rs` for the routes to, from and inside Google Drive |
+| How copy, move or Replace behaves | `placement.rs` and `local_transfer.rs`, and `engine.rs` for the routes to, from and inside Google Drive |
+| Listing, search, counts, renames or path info on this computer | `src-tauri/crates/places-local` (`fs_ops.rs`, `rename.rs`), its provider in `provider.rs` |
 | What Google Drive is asked, its sign-in, its paths | `src-tauri/crates/places-gdrive`; a step of a Drive copy or move is one of its `places::Transfer` primitives, and their order is `engine.rs`'s |
-| The trash log, Put Back, Restore, Empty Trash | `trash_ops::Trash` |
+| The trash log, Put Back, Restore, Empty Trash | `trash_ops::Trash`, in `src-tauri/crates/places-local` (a test on each layout) |
 | Something new that remembers paths | one holder in `path-refs.ts` |
 | What a folder that can't be listed shows | a row in `listing-failure.ts` |
 | Folder counts and version badges | `folder-summaries.ts` |

@@ -11,7 +11,7 @@ use serde::Serialize;
 /// The counters, cancel flag, phases and the counted copy live in the
 /// `places` crate, so every provider reports into the same [`Progress`] the
 /// app shows.
-pub use places::{CANCELLED, Phase, Progress, cancelled_io, copy_counted, is_cancel};
+pub use places::{CANCELLED, Phase, Progress};
 /// Kept at its old path like the rest, for code written against it; no
 /// module here reads it today.
 #[allow(unused_imports)]

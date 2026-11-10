@@ -3,7 +3,7 @@ mod config_store;
 mod downloads;
 mod engine;
 mod file_icons;
-mod fs_ops;
+mod local_transfer;
 mod place;
 mod placement;
 mod platform;
@@ -12,13 +12,12 @@ mod properties;
 mod providers;
 mod recent;
 mod share;
-#[cfg(test)]
-mod test_support;
 mod thumbnails;
-mod trash_ops;
 mod updates;
 mod versions;
 
+// This computer's files: listing, renames, path info and the Trash.
+use places_local::{fs_ops, trash_ops};
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -688,7 +687,7 @@ async fn item_counts(
 ) -> Result<Vec<Option<fs_ops::FolderSummary>>, String> {
     blocking(move || {
         // Remote and relative paths have no summary.
-        Ok(place::local_only(&paths, |local| fs_ops::item_counts(local, show_hidden)))
+        Ok(place::local_only(&paths, |local| fs_ops::item_counts(local, show_hidden, versions::owns_history)))
     })
     .await?
 }
@@ -947,7 +946,7 @@ async fn copy_routed(
         let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
         state.transfer(&from_path, &to_path, Transfer::Copy, || {
             let trash = AppTrash { app: &app };
-            fs_ops::copy_entry_with(from, to.clone(), overwrite, &progress, &trash)
+            local_transfer::copy_entry_with(from, to.clone(), overwrite, &progress, &trash)
         })?;
         Ok(to_path.to_string_lossy().to_string())
     })
@@ -976,7 +975,7 @@ async fn move_entry(
             let (from_path, to_path) = (PathBuf::from(&from), PathBuf::from(&to));
             state.transfer(&from_path, &to_path, Transfer::Move, || {
                 let trash = AppTrash { app: &app };
-                fs_ops::move_entry_with(from, to.clone(), overwrite, &progress, &trash)
+                local_transfer::move_entry_with(from, to.clone(), overwrite, &progress, &trash)
             })?;
             Ok(to_path.to_string_lossy().to_string())
         })

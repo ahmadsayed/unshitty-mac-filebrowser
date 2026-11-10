@@ -1,8 +1,8 @@
 //! One `places::Provider` per kind of place, and the registry that holds
 //! them (design `2026-11-10-provider-crates-design.md`, step 2).
 //!
-//! This computer's provider is a thin adapter over today's code, where it
-//! is (`fs_ops` and `thumbnails`). Google Drive (`places_gdrive::Drive`,
+//! This computer's provider is its crate's (`places_local::Local`, step 6),
+//! handed the app's thumbnails (`LocalThumbnails`). Google Drive (`places_gdrive::Drive`,
 //! step 4), Arbesk (`arbesk::Client`, step 3) and SSH servers
 //! (`places_sftp::SftpState`, step 5) are their own crates' providers, and
 //! received shares the app's own (`share::provider::ReceivedShares`, step
@@ -31,15 +31,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use places::{
-    Capabilities, Cx, Entry, Error, Extensions, Fetch, Fetched, ListOptions, NewKind,
-    Operation, PathInfo, Provider, Refused, Registry, Replace, Result, Trashed, ext,
-};
+use places::{Registry, ext};
 
 use places_gdrive::{Calls as DriveCalls, CloudState, Drive, Live};
+use places_local::Local;
 use places_sftp::SftpState;
 use crate::share::provider::{ReceivedShares, Shares};
-use crate::{fs_ops, place, thumbnails};
+use crate::thumbnails;
 
 /// Where an adapter finds the state it wraps: `lib.rs` answers it for the
 /// app handle with the managed state, as the commands did.
@@ -75,7 +73,7 @@ where
 {
     let Folders { cache, thumbnails, shared_thumbnails } = folders;
     registry_with(
-        Local { thumbnails, shared_thumbnails },
+        local(thumbnails, shared_thumbnails),
         Drive::new(Live(DriveState(states.clone())), cache),
         held,
         ReceivedShares::new(states, runtime),
@@ -96,140 +94,25 @@ fn registry_with(
         .register(Arc::new(shares))
 }
 
-// ---- What every adapter shares ---------------------------------------------------
-
-/// Today's errors from the wrapped services are words; they keep them, as
-/// `Other`, so a command returns exactly the same text. A refusal the
-/// provider makes itself is `Unsupported` (D3), with the same words.
-fn words(message: String) -> Error {
-    Error::Other(message)
-}
-
-/// A write, or a read no command routes here yet: each still goes through
-/// its command's own dispatch until the step that moves it.
-fn not_yet<T>(what: &str) -> Result<T> {
-    Err(Error::Unsupported(format!("{what} doesn't go through the places registry yet.")))
-}
-
-/// The methods no command routes through a provider yet (see [`not_yet`]).
-macro_rules! not_wired_yet {
-    () => {
-        fn stat(&self, _: &str, _: &Cx) -> Result<Option<Entry>> {
-            not_yet("Looking up an item")
-        }
-        fn lookup(&self, _: &str, _: &Cx) -> Result<Vec<Entry>> {
-            not_yet("Looking up a name")
-        }
-        fn create(&self, _: &str, _: &str, _: NewKind, _: &Cx) -> Result<String> {
-            not_yet("Creating an item")
-        }
-        fn rename(&self, _: &str, _: &str, _: &Cx) -> Result<String> {
-            not_yet("Renaming")
-        }
-        fn trash(&self, paths: &[&str], _: &Cx) -> Vec<Trashed> {
-            let unrouted = |path: &&str| Trashed { path: path.to_string(), result: not_yet("Move to Trash") };
-            paths.iter().map(unrouted).collect()
-        }
-        fn restore(&self, _: &str, _: &Cx) -> Result<String> {
-            not_yet("Restoring")
-        }
-    };
-}
-
-/// The local-only gate's words for `path` (`place::local`), which every
-/// place but this computer refuses Make Link, permissions and the like with.
-fn local_only_refusal(path: &str) -> Option<String> {
-    place::local(path).err()
-}
-
-/// `refused` with each operation that has words.
-fn refusals(each: &[(Operation, Option<String>)]) -> Vec<Refused> {
-    each.iter()
-        .filter_map(|(operation, message)| {
-            message.clone().map(|message| Refused { operation: *operation, message })
-        })
-        .collect()
-}
-
 // ---- This computer ---------------------------------------------------------------
 
-/// Files on this computer and mounted volumes. A path no other provider
-/// claims comes here, so anything that isn't an absolute path is refused
-/// with `place::local`'s words.
-pub struct Local {
+/// This computer's provider is its crate's (`places_local::Local`); its
+/// thumbnails are the app's: the desktop's own thumbnail (Linux), Quick Look
+/// or the image decoder, through the disk cache.
+pub struct LocalThumbnails {
     thumbnails: Option<PathBuf>,
     shared_thumbnails: Option<PathBuf>,
 }
 
-/// What a path on this computer allows: everything, unless it isn't an
-/// absolute path, which every operation refuses with the same words.
-fn local_capabilities(path: &str) -> Capabilities {
-    let not_local = local_only_refusal(path);
-    Capabilities {
-        read_only: false,
-        can_create: true,
-        can_rename: true,
-        can_trash: true,
-        can_copy_out: true,
-        knows_sizes: true,
-        knows_counts: true,
-        searchable: true,
-        has_thumbnails: true,
-        rename_atomic: true,
-        replace: Replace::Trash,
-        names_unique: true,
-        // A copy is staged by the transfer engine, not written whole.
-        put_is_whole: false,
-        refused: refusals(&[
-            (Operation::Create, not_local.clone()),
-            (Operation::Rename, not_local.clone()),
-            (Operation::Trash, not_local.clone()),
-            (Operation::CopyIn, not_local.clone()),
-            (Operation::CopyOut, not_local.clone()),
-            (Operation::LocalOnly, not_local),
-        ]),
-    }
+/// This computer's provider, with the app's thumbnails in these folders.
+fn local(thumbnails: Option<PathBuf>, shared_thumbnails: Option<PathBuf>) -> Local {
+    Local::new(Box::new(LocalThumbnails { thumbnails, shared_thumbnails }))
 }
 
-impl Provider for Local {
-    fn scheme(&self) -> &'static str {
-        ""
-    }
-    fn capabilities(&self, path: &str) -> Capabilities {
-        local_capabilities(path)
-    }
-    fn list(&self, dir: &str, opts: &ListOptions, _: &Cx) -> Result<Vec<Entry>> {
-        place::local(dir).map_err(words)?;
-        fs_ops::list_dir(dir.to_string(), opts.show_hidden).map_err(words)
-    }
-    fn exists(&self, path: &str, _: &Cx) -> bool {
-        place::local(path).is_ok_and(|path| fs_ops::path_exists(path.to_string_lossy().into()))
-    }
-    fn path_info(&self, paths: &[String], _: &Cx) -> Vec<Option<PathInfo>> {
-        place::local_only(paths, fs_ops::path_info)
-    }
-    /// The file itself, for opening and for the preview.
-    fn fetch(&self, path: &str, _: Fetch, _: &Cx) -> Result<Fetched> {
-        place::local(path).map_err(words)?;
-        Ok(Fetched::File(PathBuf::from(path)))
-    }
-    /// The file itself: nothing to download, so no progress to report.
-    fn fetch_reports_progress(&self) -> bool {
-        false
-    }
-    not_wired_yet!();
-    fn extensions(&self) -> Extensions<'_> {
-        Extensions { thumbnails: Some(self), ..Extensions::default() }
-    }
-}
-
-impl ext::Thumbnails for Local {
-    /// The desktop's own thumbnail (Linux), Quick Look or the image
-    /// decoder, through the disk cache; none for a path that isn't local.
+impl ext::Thumbnails for LocalThumbnails {
+    /// Asked only for an absolute path: `places_local::Local` refuses any
+    /// other before it asks.
     fn thumbnail(&self, path: &str, size: u32, stop: &dyn Fn() -> bool) -> Vec<u8> {
-        if place::local(path).is_err() {
-            return Vec::new();
-        }
         let shared = self.shared_thumbnails.as_deref();
         self.thumbnails
             .as_deref()
@@ -260,7 +143,7 @@ impl<S: Reach<CloudState>> places_gdrive::Reach for DriveState<S> {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
-    use places::{OpenTarget, Progress};
+    use places::{Entry, OpenTarget, PathInfo, Progress};
 
     /// A test's answer for one path.
     pub type Answer<T> = Box<dyn Fn(&str) -> T + Send + Sync>;
@@ -345,7 +228,7 @@ pub(crate) mod testing {
     /// provider with no account and the real SSH provider with no server.
     pub fn registry(drive: StubDrive) -> Registry {
         registry_with(
-            Local { thumbnails: None, shared_thumbnails: None },
+            local(None, None),
             Drive::new(drive, Err("No app cache in tests.".into())),
             Held { arbesk: arbesk(), sftp: sftp() },
             ReceivedShares::new(NoShares, runtime()),
@@ -356,7 +239,7 @@ pub(crate) mod testing {
     /// other server expected to be asked anything.
     pub fn registry_with_shares(shares: ReceivedShares<impl Shares>) -> Registry {
         registry_with(
-            Local { thumbnails: None, shared_thumbnails: None },
+            local(None, None),
             Drive::new(StubDrive::default(), Err("No app cache in tests.".into())),
             Held { arbesk: arbesk(), sftp: sftp() },
             shares,
@@ -373,8 +256,11 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::StubDrive;
     use super::*;
-    use places::OpenTarget;
-    use crate::place::Kind;
+    use places::{
+        Capabilities, Cx, Entry, Error, Fetch, Fetched, ListOptions, NewKind, OpenTarget, Operation,
+        PathInfo, Replace, Result, Trashed,
+    };
+    use crate::place::{self, Kind};
 
     const ARBESK: &str = "arbesk://0x00000000000000000000000000000000000000ab/12~Set";
     const ACCOUNT: &str = "arbesk://0x00000000000000000000000000000000000000ab";

@@ -39,8 +39,10 @@ pub const MAX_DELTA_DEPTH: i64 = 19;
 /// A delta at least this fraction of the raw size is stored as a full copy (D6).
 pub const FULL_COPY_RATIO_PERCENT: u64 = 90;
 
-/// The hidden directory that holds a folder's history.
-pub const VERSIONS_DIR: &str = ".versions";
+/// The hidden directory that holds a folder's history, and whether a path
+/// is inside one (D10): this computer's listings leave it out, so they are
+/// named in `places_local::fs_ops`.
+pub use places_local::fs_ops::{VERSIONS_DIR, is_internal_path};
 pub const INDEX_FILE: &str = "index.sqlite";
 pub const META_FILE: &str = "meta.json";
 pub const LOCK_FILE: &str = "lock";
@@ -320,12 +322,6 @@ pub fn rel_path(rel: &[u8]) -> PathBuf {
     }
 }
 
-/// True when any component is the reserved `.versions` directory (D10).
-pub fn is_internal_path(path: &Path) -> bool {
-    path.components()
-        .any(|part| part.as_os_str().to_string_lossy() == VERSIONS_DIR)
-}
-
 /// Raw bytes of a relative path, for storing in `versions.path`.
 #[cfg(unix)]
 pub fn path_bytes(rel: &Path) -> Vec<u8> {
@@ -376,6 +372,13 @@ pub struct OwnerMarker {
     pub app: String,
     pub folder_id: String,
     pub schema_version: i64,
+}
+
+/// Whether the `.versions` in `root` is this app's own (its marker reads):
+/// the version badge of this computer's item counts
+/// (`places_local::fs_ops::OwnsHistory`).
+pub fn owns_history(root: &Path) -> bool {
+    read_marker(root).is_ok()
 }
 
 pub fn read_marker(root: &Path) -> Result<OwnerMarker> {
@@ -471,6 +474,53 @@ pub fn mtime_nanos(meta: &std::fs::Metadata) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This computer's item counts (`places_local::fs_ops`) badge a folder
+    /// whose `.versions` this app owns, through `owns_history`.
+    mod item_counts {
+        use super::*;
+        use places_local::fs_ops::{FolderSummary, folder_summary};
+        use std::fs;
+        use tempfile::tempdir;
+
+        #[test]
+        fn a_folder_with_an_owned_history_is_versioned() {
+            let dir = tempdir().unwrap();
+            let owned = dir.path().join("Owned");
+            fs::create_dir(&owned).unwrap();
+            drop(history::History::create(&owned).unwrap());
+            fs::write(owned.join("a.txt"), "a").unwrap();
+            // A `.versions` another tool made doesn't count (D14).
+            let foreign = dir.path().join("Foreign");
+            fs::create_dir_all(foreign.join(".versions")).unwrap();
+            fs::write(foreign.join(".versions/meta.json"), r#"{"app":"other"}"#).unwrap();
+            let plain = dir.path().join("Plain");
+            fs::create_dir(&plain).unwrap();
+
+            let summary = |p: &Path, hidden| folder_summary(p, hidden, owns_history).unwrap();
+            assert_eq!(
+                summary(&owned, true),
+                FolderSummary {
+                    count: 1,
+                    versioned: true
+                }
+            );
+            assert_eq!(
+                summary(&foreign, true),
+                FolderSummary {
+                    count: 0,
+                    versioned: false
+                }
+            );
+            assert_eq!(
+                summary(&plain, false),
+                FolderSummary {
+                    count: 0,
+                    versioned: false
+                }
+            );
+        }
+    }
 
     #[test]
     fn every_error_has_a_user_facing_message() {

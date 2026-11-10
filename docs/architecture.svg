@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720" role="img" aria-label="The frontend's main.ts asks four groups of rule and state modules and calls typed commands in api.ts; Tauri IPC carries them to lib.rs, where every path goes through the place.rs gate before reaching placement.rs, trash_ops::Trash, fs_ops, Drive, shares, SSH or Arbesk; placement uses the Trash for Replace and platform.rs for renames that never replace.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720" role="img" aria-label="The frontend's main.ts asks four groups of rule and state modules and calls typed commands in api.ts; Tauri IPC carries them to lib.rs, where every path goes through the place.rs gate before reaching placement.rs, trash_ops::Trash, this computer's places-local crate, Drive, shares, SSH or Arbesk; placement uses the Trash (in places-local) for Replace and places-local's rename and platform.rs for renames that never replace.">
   <title>File Browser architecture</title>
   <style>
     svg { --bg:#f5f7fa; --ink:#1c2430; --muted:#5a6575; --line:#b7c0cd; --box:#ffffff;
@@ -164,7 +164,7 @@
         <rect class="deep" x="950" y="272" width="210" height="56" rx="8"/>
         <text class="n" x="966" y="293">trash_ops::Trash</text>
         <text class="tag" x="1150" y="293" text-anchor="end">#161 #183</text>
-        <text class="s" x="966" y="311">log · Put Back · send · untrash</text>
+        <text class="s" x="966" y="311">places-local · log · Put Back · untrash</text>
 
         <!-- place.rs to the readers -->
         <polyline class="edge" points="1160,201 1170,201 1170,352 723,352"/>
@@ -176,8 +176,8 @@
         <line class="edge" x1="1117.5" y1="352" x2="1117.5" y2="365" marker-end="url(#ah)"/>
 
         <rect class="box" x="680.0" y="366" width="86.4" height="44" rx="7"/>
-        <text class="n" x="690.0" y="385">fs_ops.rs</text>
-        <text class="s" x="690.0" y="401">local files</text>
+        <text class="n" x="690.0" y="385">local</text>
+        <text class="s" x="690.0" y="401">places-local</text>
         <rect class="box" x="778.4" y="366" width="86.4" height="44" rx="7"/>
         <text class="n" x="788.4" y="385">gdrive</text>
         <text class="s" x="788.4" y="401">Drive crate</text>
@@ -194,13 +194,13 @@
         <rect class="box" x="680" y="424" width="480" height="34" rx="7"/>
         <text class="row3" x="696" y="446">versions/ · properties · thumbnails · file_icons · recent · config_store</text>
 
-        <!-- placement renames through platform.rs -->
+        <!-- placement renames through places-local (rename.rs, platform.rs) -->
         <polyline class="edge" points="680,300 670,300 670,521 679,521" marker-end="url(#ah)"/>
         <text class="e" x="690" y="486">rename that never replaces</text>
 
         <rect class="box" x="680" y="496" width="480" height="50" rx="8"/>
-        <text class="n" x="696" y="517">platform.rs</text>
-        <text class="s" x="696" y="535">OS differences: rename_exclusive · XDG paths · volumes</text>
+        <text class="n" x="696" y="517">places-local: rename.rs · platform.rs</text>
+        <text class="s" x="696" y="535">rename_new · rename_exclusive · XDG paths · volumes</text>
 
         <line class="edge" x1="920" y1="546" x2="920" y2="589" marker-end="url(#ah)"/>
         <text class="e" x="928" y="572">renameat2 · renamex_np</text>

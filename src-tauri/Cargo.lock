@@ -1599,7 +1599,6 @@ dependencies = [
  "image",
  "iroh",
  "iroh-blobs",
- "libc",
  "md-5",
  "minisign-verify",
  "n0-future",
@@ -1610,6 +1609,7 @@ dependencies = [
  "percent-encoding",
  "places",
  "places-gdrive",
+ "places-local",
  "places-sftp",
  "plist",
  "png",
@@ -1627,8 +1627,6 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "tokio",
- "trash",
- "unicode-normalization",
  "url",
  "xattr",
  "xz2",
@@ -4677,6 +4675,19 @@ dependencies = [
  "serde_json",
  "tempfile",
  "url",
+]
+
+[[package]]
+name = "places-local"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "places",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "trash",
+ "unicode-normalization",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 [workspace]
-members = ["crates/arbesk", "crates/places", "crates/places-gdrive", "crates/places-sftp"]
+members = ["crates/arbesk", "crates/places", "crates/places-gdrive", "crates/places-local", "crates/places-sftp"]
 # `cargo test` from src-tauri keeps covering the app and its crates.
-default-members = [".", "crates/arbesk", "crates/places", "crates/places-gdrive", "crates/places-sftp"]
+default-members = [".", "crates/arbesk", "crates/places", "crates/places-gdrive", "crates/places-local", "crates/places-sftp"]
 resolver = "3"
 
 [package]
@@ -28,6 +28,7 @@ tauri-build = { version = "2", features = [] }
 arbesk = { version = "0.1.0", path = "crates/arbesk" }
 places = { version = "0.1.0", path = "crates/places" }
 places-gdrive = { version = "0.1.0", path = "crates/places-gdrive" }
+places-local = { version = "0.1.0", path = "crates/places-local" }
 places-sftp = { version = "0.1.0", path = "crates/places-sftp" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -39,7 +40,6 @@ plist = "1"
 percent-encoding = "2"
 url = "2"
 getrandom = "0.4"
-trash = "5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # The text a desktop thumbnail carries (Thumb::URI, Thumb::MTime), read without decoding it.
 png = "0.18"
@@ -69,13 +69,14 @@ argon2 = { version = "0.6", default-features = false, features = ["alloc", "zero
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
 zeroize = "1"
 tokio = { version = "1", features = ["sync", "rt", "time"] }
-unicode-normalization = "0.1.26"
 
 
 [dev-dependencies]
 tempfile = "3"
 # Drive's fake server and test context, for the engine's tests.
 places-gdrive = { version = "0.1.0", path = "crates/places-gdrive", features = ["testing"] }
+# The Trash fixtures, for the tests of Replace through the logged Trash.
+places-local = { version = "0.1.0", path = "crates/places-local", features = ["testing"] }
 # tests/release_signing.rs checks release signatures as tauri-plugin-updater
 # does; both are already in Cargo.lock through tauri.
 base64 = "0.23"
@@ -94,9 +95,6 @@ strip = true
 # Already linked through Tauri; used for the icon theme and file icons.
 gio = "0.18"
 gtk = "0.18"
-# Already linked through Tauri; used for renames that never replace
-# (renameat2 with RENAME_NOREPLACE).
-libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 xattr = "1"
@@ -104,6 +102,3 @@ xattr = "1"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSData", "NSDictionary", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphicsContext", "NSGraphics", "objc2-core-foundation"] }
-# Already linked through Tauri; used for renames that never replace
-# (renamex_np with RENAME_EXCL).
-libc = "0.2"
