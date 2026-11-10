@@ -2,6 +2,7 @@ mod archive;
 mod cloud;
 mod config_store;
 mod downloads;
+mod engine;
 mod file_icons;
 mod fs_ops;
 mod place;
@@ -835,8 +836,9 @@ fn make_local_dir(path: String) -> Result<String, String> {
     Ok(path)
 }
 
-/// Copy or move when either side is in Drive. A local source of a move goes
-/// to the Trash the way Move to Trash sends it, after the upload succeeded.
+/// Copy or move when either side is in Drive, by the transfer engine
+/// (`engine.rs`) over Drive's primitives. A local source of a move goes to
+/// the Trash the way Move to Trash sends it, after the upload succeeded.
 async fn drive_transfer(
     app: tauri::AppHandle,
     from: String,
@@ -849,15 +851,11 @@ async fn drive_transfer(
         let versions = app.state::<VersionsState>();
         let trash_local = VersionedTrash::new(&versions, AppTrash { app: &app });
         let state = app.state::<CloudState>();
-        cloud::transfer::dispatch(
-            &state,
-            &from,
-            &to,
-            overwrite,
-            moving,
-            &progress,
-            &trash_local,
-        )
+        let cx = places_cx(&app, progress.clone());
+        // One context for the whole transfer: Drive's primitives run on it.
+        cloud::write::live_with(&state, &progress, |drive| {
+            engine::dispatch(drive, &cx, &from, &to, overwrite, moving, &trash_local)
+        })
     })
     .await?
 }

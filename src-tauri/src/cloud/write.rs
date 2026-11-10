@@ -1,25 +1,38 @@
-//! Changes inside Google Drive: New Folder, Rename, Copy, Move, Move to Trash
-//! and Undo. Destinations are pending paths (`…/~name`, see `location.rs`);
-//! each operation returns the item's final URI.
+//! Changes inside Google Drive: New Folder, Rename, Move to Trash and Undo.
+//! Destinations are pending paths (`…/~name`, see `location.rs`); each
+//! operation returns the item's final URI. Copies and moves are the app's
+//! transfer engine's, built from the primitives in `transfer.rs`.
 //!
-//! Data safety (spec D17): nothing is ever deleted. Replace and Undo use
-//! Drive's Trash; a folder copy is built under a staging name and renamed
-//! only when complete, and trashed if it fails.
+//! Data safety (spec D17): nothing is ever deleted. Undo uses Drive's Trash.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::cloud::CloudState;
 use crate::cloud::drive::{API_BASE, DriveClient, DriveError, DriveFile, FileChange};
 use crate::cloud::location::DriveLocation;
 use crate::cloud::service::{self, Refresh};
-use crate::placement::Refusal;
 use crate::progress::Progress;
 
 /// Where requests go and how tokens refresh; tests point it at a fake server.
+/// One transfer runs on one context (`transfer.rs`): its primitives are
+/// Drive's `places::Transfer`.
 pub(crate) struct Ctx<'a> {
     pub(crate) state: &'a CloudState,
     pub(crate) base: &'a str,
     pub(crate) refresh: Refresh<'a>,
     /// Where copies count bytes and items, and check for a cancel.
     pub(crate) progress: Progress,
+    /// What this transfer learnt of its items, by id, so a later step asks
+    /// Drive nothing again (the source `landing` fetched, an item as a move
+    /// left it).
+    pub(crate) seen: RefCell<HashMap<String, DriveFile>>,
+}
+
+impl<'a> Ctx<'a> {
+    pub(crate) fn new(state: &'a CloudState, base: &'a str, refresh: Refresh<'a>, progress: Progress) -> Self {
+        Ctx { state, base, refresh, progress, seen: RefCell::default() }
+    }
 }
 
 /// Run `work` with a production context.
@@ -34,12 +47,7 @@ pub(crate) fn live_with<T>(
     work: impl FnOnce(&Ctx) -> T,
 ) -> T {
     let refresh = service::google_refresh(state);
-    work(&Ctx {
-        state,
-        base: API_BASE,
-        refresh: &refresh,
-        progress: progress.clone(),
-    })
+    work(&Ctx::new(state, API_BASE, &refresh, progress.clone()))
 }
 
 pub fn make_dir(state: &CloudState, path: &str) -> Result<String, String> {
@@ -48,19 +56,6 @@ pub fn make_dir(state: &CloudState, path: &str) -> Result<String, String> {
 
 pub fn rename(state: &CloudState, from: &str, to: &str) -> Result<String, String> {
     live(state, |c| rename_in(c, from, to))
-}
-
-pub fn copy(state: &CloudState, from: &str, to: &str, overwrite: bool) -> Result<String, String> {
-    live(state, |c| copy_in(c, from, to, overwrite))
-}
-
-pub fn move_item(
-    state: &CloudState,
-    from: &str,
-    to: &str,
-    overwrite: bool,
-) -> Result<String, String> {
-    live(state, |c| move_in(c, from, to, overwrite))
 }
 
 /// Move to Drive's Trash. The URI stays valid (the id survives), so it is
@@ -81,7 +76,7 @@ pub(crate) fn client<'a>(c: &Ctx<'a>, account: &str) -> Result<DriveClient<'a>, 
     service::client_with(c.state, account, c.base, c.refresh)
 }
 
-fn id_of(location: &DriveLocation) -> Result<String, String> {
+pub(crate) fn id_of(location: &DriveLocation) -> Result<String, String> {
     location
         .file_id()
         .filter(|id| !id.is_empty())
@@ -101,10 +96,6 @@ pub(crate) fn pending_target(path: &str) -> Result<(DriveLocation, String, Strin
     let parent_id = id_of(&parent)?;
     let name = target.name().unwrap_or_default().to_string();
     Ok((parent, parent_id, name))
-}
-
-fn staging_name(name: &str) -> String {
-    format!(".{name}.filebrowser-copy")
 }
 
 pub(crate) fn make_dir_in(c: &Ctx, path: &str) -> Result<String, String> {
@@ -166,231 +157,6 @@ pub(crate) fn restore_in(c: &Ctx, path: &str) -> Result<String, String> {
     Ok(path.to_string())
 }
 
-/// What a checked copy or move works with.
-struct Transfer<'a> {
-    client: DriveClient<'a>,
-    source: DriveFile,
-    source_parent_id: Option<String>,
-    target_parent: DriveLocation,
-    target_parent_id: String,
-    name: String,
-    /// The existing item a Replace sends to the Trash.
-    replaced: Option<DriveFile>,
-}
-
-/// The refusals of `placement::check_transfer`, for Drive. Path-only checks run
-/// before any request.
-fn check<'a>(c: &Ctx<'a>, from: &str, to: &str, overwrite: bool) -> Result<Transfer<'a>, String> {
-    let (source_location, account) = service::writable(c.state, from)?;
-    let source_id = id_of(&source_location)?;
-    let target = service::drive_location(to)?;
-    if target.account != source_location.account {
-        return Err("Copying between Google accounts is not supported.".into());
-    }
-    let (target_parent, target_parent_id, name) = pending_target(to)?;
-    if target_parent.segments.iter().any(|s| s.id == source_id) {
-        return Err(Refusal::IntoItself.into());
-    }
-    let source_parent_id = source_location
-        .parent()
-        .and_then(|p| p.file_id().map(str::to_string));
-    if source_parent_id.as_deref() == Some(target_parent_id.as_str())
-        && source_location.name() == Some(name.as_str())
-    {
-        return Err(Refusal::SamePath.into());
-    }
-
-    let client = client(c, &account.id)?;
-    let shown = source_location.name().unwrap_or_default().to_string();
-    let source = match client.get(&source_id) {
-        Ok(file) if !file.trashed => file,
-        Ok(_) | Err(DriveError::NotFound) => return Err(Refusal::Vanished(shown).into()),
-        Err(error) => return Err(message(error)),
-    };
-    let existing: Vec<DriveFile> = client
-        .find_children(&target_parent_id, &name)
-        .map_err(message)?
-        .into_iter()
-        .filter(|other| other.id != source_id)
-        .collect();
-    let replaced = match existing.len() {
-        0 => None,
-        _ if !overwrite => return Err(Refusal::Exists(name).into()),
-        1 => Some(existing.into_iter().next().unwrap()),
-        _ => {
-            return Err(format!(
-                "Several items in this folder are named “{name}”. Rename or remove the extra ones in Google Drive first."
-            ));
-        }
-    };
-    if let Some(old) = &replaced {
-        if source_location.segments.iter().any(|s| s.id == old.id) {
-            return Err(Refusal::ReplaceWithChild.into());
-        }
-    }
-    Ok(Transfer {
-        client,
-        source,
-        source_parent_id,
-        target_parent,
-        target_parent_id,
-        name,
-        replaced,
-    })
-}
-
-pub(crate) fn copy_in(c: &Ctx, from: &str, to: &str, overwrite: bool) -> Result<String, String> {
-    let t = check(c, from, to, overwrite)?;
-    let staged_name = if t.source.is_dir() || t.replaced.is_some() {
-        staging_name(&t.name)
-    } else {
-        t.name.clone()
-    };
-    let staged = if t.source.is_dir() {
-        let staged = t
-            .client
-            .create_folder(&t.target_parent_id, &staged_name)
-            .map_err(message)?;
-        let copied = copy_children(&t.client, &t.source.id, &staged.id, &staged.id, &c.progress);
-        if let Err(error) = copied {
-            let _ = t.client.update(&staged.id, &FileChange::trash(true));
-            return Err(message(error));
-        }
-        staged
-    } else {
-        c.progress.check()?;
-        t.client
-            .copy_file(&t.source.id, &t.target_parent_id, &staged_name)
-            .map_err(message)?
-    };
-    c.progress.add_item();
-    if staged_name == t.name {
-        return Ok(t.target_parent.child(&staged.id, &staged.name).to_uri());
-    }
-    finish_staged(
-        &t.client,
-        &t.target_parent,
-        &t.name,
-        t.replaced.as_ref(),
-        &staged,
-        true,
-    )
-}
-
-/// Swap a complete staged item into place: trash what it replaces, then
-/// give it the final name. If the rename fails, the replaced item comes back
-/// out of the Trash. A staged *copy* (`ours`) is trashed on failure; a staged
-/// move is the user's own item, so the caller puts it back instead.
-pub(crate) fn finish_staged(
-    client: &DriveClient,
-    parent: &DriveLocation,
-    name: &str,
-    replaced: Option<&DriveFile>,
-    staged: &DriveFile,
-    ours: bool,
-) -> Result<String, String> {
-    let discard = || {
-        if ours {
-            let _ = client.update(&staged.id, &FileChange::trash(true));
-        }
-    };
-    if let Some(old) = replaced {
-        if let Err(error) = client.update(&old.id, &FileChange::trash(true)) {
-            discard();
-            return Err(format!(
-                "Could not move the existing item to the Trash: {}",
-                message(error)
-            ));
-        }
-    }
-    match client.update(&staged.id, &FileChange::rename(name)) {
-        Ok(done) => Ok(parent.child(&done.id, &done.name).to_uri()),
-        Err(error) => {
-            if let Some(old) = replaced {
-                let _ = client.update(&old.id, &FileChange::trash(false));
-            }
-            discard();
-            Err(message(error))
-        }
-    }
-}
-
-/// Copy a folder's contents into another folder, recursively. Drive copies
-/// only files, so folders are recreated. `staged` (the copy being built) is
-/// skipped: when the target lies inside the source, the walk meets it, and
-/// copying it would never end.
-/// Copy a folder's contents server-side, counting each item and stopping
-/// before the next one when cancelled.
-fn copy_children(
-    client: &DriveClient,
-    from: &str,
-    to: &str,
-    staged: &str,
-    progress: &Progress,
-) -> Result<(), DriveError> {
-    for child in client.list_all(from)? {
-        if child.id == staged {
-            continue;
-        }
-        if progress.is_cancelled() {
-            return Err(DriveError::Cancelled);
-        }
-        if child.is_dir() {
-            let folder = client.create_folder(to, &child.name)?;
-            copy_children(client, &child.id, &folder.id, staged, progress)?;
-        } else {
-            client.copy_file(&child.id, to, &child.name)?;
-        }
-        progress.add_item();
-    }
-    Ok(())
-}
-
-pub(crate) fn move_in(c: &Ctx, from: &str, to: &str, overwrite: bool) -> Result<String, String> {
-    let t = check(c, from, to, overwrite)?;
-    let source_parent_id = t
-        .source_parent_id
-        .clone()
-        .ok_or_else(|| "My Drive itself cannot be moved.".to_string())?;
-    // With Replace, move in under a staging name first (AGENTS.md: stage,
-    // trash the old item, then rename into place).
-    let staged_name = match t.replaced {
-        Some(_) => format!(".{}.filebrowser-move", t.name),
-        None => t.name.clone(),
-    };
-    let crosses = t.target_parent_id != source_parent_id;
-    let mut change = FileChange::default();
-    if staged_name != t.source.name {
-        change.name = Some(staged_name);
-    }
-    if crosses {
-        change.add_parent = Some(t.target_parent_id.clone());
-        change.remove_parent = Some(source_parent_id.clone());
-    }
-    let moved = t.client.update(&t.source.id, &change).map_err(message)?;
-    if t.replaced.is_none() {
-        return Ok(t.target_parent.child(&moved.id, &moved.name).to_uri());
-    }
-    let finished = finish_staged(
-        &t.client,
-        &t.target_parent,
-        &t.name,
-        t.replaced.as_ref(),
-        &moved,
-        false,
-    );
-    if finished.is_err() {
-        // Put the item back where and as it was.
-        let mut back = FileChange::rename(&t.source.name);
-        if crosses {
-            back.add_parent = Some(source_parent_id);
-            back.remove_parent = Some(t.target_parent_id.clone());
-        }
-        let _ = t.client.update(&t.source.id, &back);
-    }
-    finished
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -432,12 +198,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn ctx<'a>(state: &'a CloudState, base: &'a str) -> Ctx<'a> {
-        Ctx {
-            state,
-            base,
-            refresh: &no_refresh,
-            progress: Progress::default(),
-        }
+        Ctx::new(state, base, &no_refresh, Progress::default())
     }
 
     pub(crate) fn file(id: &str, name: &str) -> String {
@@ -473,32 +234,6 @@ pub(crate) mod tests {
         let result = work(&c);
         server.join().unwrap();
         (result, log)
-    }
-
-    #[test]
-    fn drive_copy_counts_items() {
-        let progress = Progress::default();
-        let (result, _) = run_with(
-            vec![
-                ok(folder("d1", "Docs")),
-                found(&[]),
-                ok(folder("s1", ".Docs.filebrowser-copy")),
-                found(&[file("c", "x.txt")]),
-                ok(file("c2", "x.txt")),
-                ok(folder("s1", "Docs")),
-            ],
-            &progress,
-            |c| {
-                copy_in(
-                    c,
-                    &format!("{ROOT}/d1~Docs"),
-                    &format!("{ROOT}/p2~Other/~Docs"),
-                    false,
-                )
-            },
-        );
-        result.unwrap();
-        assert_eq!(progress.snapshot().items, 2);
     }
 
     pub(crate) fn heads(log: &Log) -> Vec<String> {
@@ -564,341 +299,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn copy_of_a_file_is_server_side_and_gets_a_new_id() {
-        let (result, log) = run(
-            vec![ok(file("f1", "a.txt")), found(&[]), ok(file("c1", "a.txt"))],
-            |c| {
-                copy_in(
-                    c,
-                    &format!("{ROOT}/f1~a.txt"),
-                    &format!("{ROOT}/p2~Other/~a.txt"),
-                    false,
-                )
-            },
-        );
-        assert_eq!(result.unwrap(), format!("{ROOT}/p2~Other/c1~a.txt"));
-        assert!(heads(&log)[2].starts_with("POST /files/f1/copy?"));
-    }
-
-    #[test]
-    fn copy_of_a_folder_is_staged_then_renamed() {
-        let (result, log) = run(
-            vec![
-                ok(folder("d1", "Docs")),
-                found(&[]),
-                ok(folder("s1", ".Docs.filebrowser-copy")),
-                found(&[file("c", "x.txt")]),
-                ok(file("c2", "x.txt")),
-                ok(folder("s1", "Docs")),
-            ],
-            |c| {
-                copy_in(
-                    c,
-                    &format!("{ROOT}/d1~Docs"),
-                    &format!("{ROOT}/p2~Other/~Docs"),
-                    false,
-                )
-            },
-        );
-        assert_eq!(result.unwrap(), format!("{ROOT}/p2~Other/s1~Docs"));
-        let log = log.lock().unwrap();
-        assert!(
-            log[2]
-                .body_text()
-                .contains(r#""name":".Docs.filebrowser-copy""#)
-        );
-        assert!(log[4].head.starts_with("POST /files/c/copy?"));
-        assert!(log[4].body_text().contains(r#""parents":["s1"]"#));
-        assert!(log[5].head.starts_with("PATCH /files/s1?"));
-        assert_eq!(log[5].body_text(), r#"{"name":"Docs"}"#);
-    }
-
-    #[test]
-    fn copying_a_folder_into_its_own_subfolder_does_not_copy_the_copy() {
-        // The target "sub" really is inside d1, but a pasted Drive link
-        // gives a one-segment path, so only the tree walk can notice.
-        let (result, log) = run(
-            vec![
-                ok(folder("d1", "Docs")),
-                found(&[]),
-                ok(folder("s1", ".Docs.filebrowser-copy")),
-                found(&[folder("sub", "Sub")]),
-                ok(folder("n1", "Sub")),
-                found(&[folder("s1", ".Docs.filebrowser-copy")]),
-                ok(folder("s1", "Docs")),
-            ],
-            |c| {
-                copy_in(
-                    c,
-                    &format!("{ROOT}/d1~Docs"),
-                    "gdrive://acct/sub~Sub/~Docs",
-                    false,
-                )
-            },
-        );
-        assert_eq!(result.unwrap(), "gdrive://acct/sub~Sub/s1~Docs");
-        let log = log.lock().unwrap();
-        assert_eq!(log.len(), 7);
-        assert_eq!(log[6].body_text(), r#"{"name":"Docs"}"#);
-    }
-
-    #[test]
-    fn a_failed_folder_copy_trashes_the_staged_folder() {
-        let (result, log) = run(
-            vec![
-                ok(folder("d1", "Docs")),
-                found(&[]),
-                ok(folder("s1", ".Docs.filebrowser-copy")),
-                found(&[file("c", "x.txt")]),
-                Reply::json(403, r#"{"error":{"message":"nope"}}"#),
-                ok(folder("s1", ".Docs.filebrowser-copy")),
-            ],
-            |c| {
-                copy_in(
-                    c,
-                    &format!("{ROOT}/d1~Docs"),
-                    &format!("{ROOT}/p2~Other/~Docs"),
-                    false,
-                )
-            },
-        );
-        assert!(result.unwrap_err().contains("nope"));
-        let log = log.lock().unwrap();
-        let last = log.last().unwrap();
-        assert!(last.head.starts_with("PATCH /files/s1?"), "{}", last.head);
-        assert_eq!(last.body_text(), r#"{"trashed":true}"#);
-    }
-
-    #[test]
-    fn move_updates_parents_in_one_call() {
-        let (result, log) = run(
-            vec![ok(file("f1", "a.txt")), found(&[]), ok(file("f1", "a.txt"))],
-            |c| {
-                move_in(
-                    c,
-                    &format!("{ROOT}/f1~a.txt"),
-                    &format!("{ROOT}/p2~Other/~a.txt"),
-                    false,
-                )
-            },
-        );
-        assert_eq!(result.unwrap(), format!("{ROOT}/p2~Other/f1~a.txt"));
-        let head = heads(&log)[2].clone();
-        assert!(head.starts_with("PATCH /files/f1?"), "{head}");
-        assert!(head.contains("addParents=p2") && head.contains("removeParents=root"));
-    }
-
-    #[test]
-    fn moving_into_its_own_subfolder_is_refused() {
-        let (result, log) = run(vec![], |c| {
-            move_in(
-                c,
-                &format!("{ROOT}/d1~Docs"),
-                &format!("{ROOT}/d1~Docs/s~Sub/~Docs"),
-                false,
-            )
-        });
-        assert_eq!(
-            result.unwrap_err(),
-            "Cannot copy or move a folder into itself"
-        );
-        assert!(heads(&log).is_empty());
-    }
-
-    #[test]
-    fn the_same_path_is_refused() {
-        let (result, log) = run(vec![], |c| {
-            move_in(
-                c,
-                &format!("{ROOT}/f1~a.txt"),
-                &format!("{ROOT}/~a.txt"),
-                false,
-            )
-        });
-        assert_eq!(
-            result.unwrap_err(),
-            "The source and destination are the same"
-        );
-        assert!(heads(&log).is_empty());
-    }
-
-    #[test]
-    fn an_existing_target_without_overwrite_is_refused() {
-        let (result, _) = run(
-            vec![ok(file("f1", "a.txt")), found(&[file("x", "a.txt")])],
-            |c| {
-                copy_in(
-                    c,
-                    &format!("{ROOT}/f1~a.txt"),
-                    &format!("{ROOT}/p2~Other/~a.txt"),
-                    false,
-                )
-            },
-        );
-        assert_eq!(result.unwrap_err(), "Target already exists: a.txt");
-    }
-
-    #[test]
-    fn replacing_a_folder_with_its_own_child_is_refused() {
-        let (result, _) = run(
-            vec![ok(file("f1", "Docs")), found(&[folder("d1", "Docs")])],
-            |c| {
-                move_in(
-                    c,
-                    &format!("{ROOT}/d1~Docs/f1~Docs"),
-                    &format!("{ROOT}/~Docs"),
-                    true,
-                )
-            },
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            "Cannot replace a folder with an item inside it"
-        );
-    }
-
-    #[test]
-    fn replace_refuses_an_ambiguous_name() {
-        let (result, _) = run(
-            vec![
-                ok(file("f1", "a.txt")),
-                found(&[file("x", "a.txt"), file("y", "a.txt")]),
-            ],
-            |c| {
-                copy_in(
-                    c,
-                    &format!("{ROOT}/f1~a.txt"),
-                    &format!("{ROOT}/p2~Other/~a.txt"),
-                    true,
-                )
-            },
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            "Several items in this folder are named “a.txt”. Rename or remove the extra ones in Google Drive first."
-        );
-    }
-
-    #[test]
-    fn replace_trashes_the_old_item_and_never_deletes() {
-        let (result, log) = run(
-            vec![
-                ok(file("f1", "a.txt")),
-                found(&[file("old", "a.txt")]),
-                ok(file("c1", ".a.txt.filebrowser-copy")),
-                ok(file("old", "a.txt")),
-                ok(file("c1", "a.txt")),
-            ],
-            |c| {
-                copy_in(
-                    c,
-                    &format!("{ROOT}/f1~a.txt"),
-                    &format!("{ROOT}/p2~Other/~a.txt"),
-                    true,
-                )
-            },
-        );
-        assert_eq!(result.unwrap(), format!("{ROOT}/p2~Other/c1~a.txt"));
-        let log = log.lock().unwrap();
-        assert!(log.iter().all(|r| !r.head.starts_with("DELETE")));
-        assert!(log[3].head.starts_with("PATCH /files/old?"));
-        assert_eq!(log[3].body_text(), r#"{"trashed":true}"#);
-        assert_eq!(log[4].body_text(), r#"{"name":"a.txt"}"#);
-    }
-
-    #[test]
-    fn a_move_with_replace_is_staged_before_the_old_item_goes() {
-        let (result, log) = run(
-            vec![
-                ok(file("f1", "a.txt")),
-                found(&[file("old", "a.txt")]),
-                ok(file("f1", ".a.txt.filebrowser-move")),
-                ok(file("old", "a.txt")),
-                ok(file("f1", "a.txt")),
-            ],
-            |c| {
-                move_in(
-                    c,
-                    &format!("{ROOT}/f1~a.txt"),
-                    &format!("{ROOT}/p2~Other/~a.txt"),
-                    true,
-                )
-            },
-        );
-        assert_eq!(result.unwrap(), format!("{ROOT}/p2~Other/f1~a.txt"));
-        let log = log.lock().unwrap();
-        assert!(
-            log[2].head.starts_with("PATCH /files/f1?") && log[2].head.contains("addParents=p2")
-        );
-        assert_eq!(log[2].body_text(), r#"{"name":".a.txt.filebrowser-move"}"#);
-        assert!(log[3].head.starts_with("PATCH /files/old?"));
-        assert_eq!(log[3].body_text(), r#"{"trashed":true}"#);
-        assert_eq!(log[4].body_text(), r#"{"name":"a.txt"}"#);
-    }
-
-    #[test]
-    fn a_failed_rename_after_replace_restores_the_old_item() {
-        let (result, log) = run(
-            vec![
-                ok(file("f1", "a.txt")),
-                found(&[file("old", "a.txt")]),
-                ok(file("c1", ".a.txt.filebrowser-copy")),
-                ok(file("old", "a.txt")),
-                Reply::json(403, r#"{"error":{"message":"nope"}}"#),
-                ok(file("old", "a.txt")),
-                ok(file("c1", ".a.txt.filebrowser-copy")),
-            ],
-            |c| {
-                copy_in(
-                    c,
-                    &format!("{ROOT}/f1~a.txt"),
-                    &format!("{ROOT}/p2~Other/~a.txt"),
-                    true,
-                )
-            },
-        );
-        assert!(result.unwrap_err().contains("nope"));
-        let log = log.lock().unwrap();
-        assert!(log[5].head.starts_with("PATCH /files/old?"));
-        assert_eq!(log[5].body_text(), r#"{"trashed":false}"#);
-        assert!(log[6].head.starts_with("PATCH /files/c1?"));
-        assert_eq!(log[6].body_text(), r#"{"trashed":true}"#);
-    }
-
-    #[test]
-    fn a_failed_move_with_replace_puts_everything_back() {
-        let (result, log) = run(
-            vec![
-                ok(file("f1", "a.txt")),
-                found(&[file("old", "a.txt")]),
-                ok(file("f1", ".a.txt.filebrowser-move")),
-                ok(file("old", "a.txt")),
-                Reply::json(403, r#"{"error":{"message":"nope"}}"#),
-                ok(file("old", "a.txt")),
-                ok(file("f1", "a.txt")),
-            ],
-            |c| {
-                move_in(
-                    c,
-                    &format!("{ROOT}/f1~a.txt"),
-                    &format!("{ROOT}/p2~Other/~a.txt"),
-                    true,
-                )
-            },
-        );
-        assert!(result.unwrap_err().contains("nope"));
-        let log = log.lock().unwrap();
-        assert_eq!(log[5].body_text(), r#"{"trashed":false}"#);
-        let back = &log[6];
-        assert!(back.head.starts_with("PATCH /files/f1?"), "{}", back.head);
-        assert!(back.head.contains("addParents=root") && back.head.contains("removeParents=p2"));
-        assert_eq!(back.body_text(), r#"{"name":"a.txt"}"#);
-        assert!(log.iter().all(
-            |r| !(r.head.starts_with("PATCH /files/f1?") && r.body_text().contains("trashed"))
-        ));
-    }
-
-    #[test]
     fn trash_and_restore_flip_the_trashed_flag() {
         let path = format!("{ROOT}/f1~a.txt");
         let (result, log) = run(
@@ -910,46 +310,5 @@ pub(crate) mod tests {
         let log = log.lock().unwrap();
         assert_eq!(log[0].body_text(), r#"{"trashed":true}"#);
         assert_eq!(log[1].body_text(), r#"{"trashed":false}"#);
-    }
-
-    #[test]
-    fn a_vanished_source_is_refused() {
-        let (result, _) = run(vec![Reply::json(404, "{}")], |c| {
-            copy_in(
-                c,
-                &format!("{ROOT}/f1~a.txt"),
-                &format!("{ROOT}/p2~Other/~a.txt"),
-                false,
-            )
-        });
-        assert_eq!(result.unwrap_err(), "“a.txt” no longer exists");
-
-        let trashed = r#"{"id":"f1","name":"a.txt","mimeType":"text/plain","trashed":true}"#;
-        let (result, _) = run(vec![Reply::json(200, trashed)], |c| {
-            copy_in(
-                c,
-                &format!("{ROOT}/f1~a.txt"),
-                &format!("{ROOT}/p2~Other/~a.txt"),
-                false,
-            )
-        });
-        assert_eq!(result.unwrap_err(), "“a.txt” no longer exists");
-    }
-
-    #[test]
-    fn copying_between_accounts_is_refused() {
-        let (result, log) = run(vec![], |c| {
-            copy_in(
-                c,
-                &format!("{ROOT}/f1~a.txt"),
-                "gdrive://other/root~My%20Drive/~a.txt",
-                false,
-            )
-        });
-        assert_eq!(
-            result.unwrap_err(),
-            "Copying between Google accounts is not supported."
-        );
-        assert!(heads(&log).is_empty());
     }
 }

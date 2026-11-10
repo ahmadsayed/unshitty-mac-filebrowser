@@ -33,8 +33,8 @@ pub use progress::{
     CANCELLED, Phase, Progress, SLICE, Snapshot, cancelled_io, copy_counted, is_cancel,
 };
 pub use provider::{
-    Capabilities, Cx, Extensions, Fetch, Fetched, ListOptions, NewKind, Operation, Provider, Put,
-    Refused, Replace, Transfer, Trashed, ext,
+    Capabilities, Cx, Existing, Extensions, Fetch, Fetched, Landing, ListOptions, NewKind, Operation,
+    Provider, Put, Reading, Refused, Replace, Source, Transfer, Trashed, Unread, ext,
 };
 pub use records::{Json, Shared, SignIn, Version};
 pub use refusal::Refusal;

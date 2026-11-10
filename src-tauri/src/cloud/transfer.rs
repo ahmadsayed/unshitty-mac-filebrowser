@@ -1,53 +1,40 @@
-//! Copying and moving between local folders and Google Drive (spec D17).
+//! Google Drive's transfer primitives (design D6, spec D17): what the app's
+//! transfer engine (`engine.rs`) builds a copy or move to, from or inside
+//! Drive from. The engine decides the staging names, the Replace order
+//! (trash the old item, rename the new one in, take the old one back if
+//! that fails) and what a failure undoes; the primitives here only do one
+//! step each, as safely as Drive allows, and never delete anything.
 //!
-//! Uploads: a file goes straight to its final name, since Drive creates it
-//! only when the last chunk arrives, and is checked against the local size.
-//! A folder (or a Replace) is built under a staging name and renamed once
-//! complete; on failure the staged item goes to Drive's Trash.
+//! - `write` uploads a local file or folder: a file appears only once its
+//!   upload is whole and is checked against the local size; a folder is
+//!   created and filled. Whatever a failed write made goes to Drive's Trash.
+//! - `read` downloads into a local target the engine picks once it knows
+//!   the item's kind: Google Docs and shortcuts are skipped and named,
+//!   Drive's duplicate names become unique local ones, every file is
+//!   checked against Drive's size.
+//! - `copy_within` copies on the server (`files.copy`; folders are made
+//!   again, since Drive copies only files); a failed folder copy goes to
+//!   Drive's Trash.
+//! - `rename_new`, `move_to`, `trash_for_replace`, `take_back` and
+//!   `discard` are one PATCH each; the names they take were looked up by
+//!   `landing` just before (check, then act: Drive has no rename that
+//!   refuses a taken name).
 //!
-//! Downloads: a file, or a folder replacing an existing one, lands in a
-//! hidden staging path next to the target, is checked against Drive's sizes,
-//! then renamed into place; on failure the staging path is removed. A new
-//! folder downloads straight under its name so it fills as you watch (as in
-//! GNOME Files); each file in it is still checked, and if the download fails
-//! or is cancelled the partial folder goes to the Trash. `placement` does the
-//! staging and the Replace, as for local copies.
-//!
-//! A move removes its source only after the copy succeeded: a local source
-//! goes to the Trash, a Drive source to Drive's Trash.
+//! A [`Ctx`] is the context of one transfer: the primitives run on it, and
+//! it remembers what `landing` learnt of the source, so the steps after it
+//! ask Drive nothing again.
 
 use std::path::{Path, PathBuf};
 
+use places::{Cx, Error, Existing, Landing, Put, Reading, Refusal, Source, Unread};
+
 use crate::cloud::CloudState;
 use crate::cloud::drive::{DriveClient, DriveError, DriveFile, FileChange};
+use crate::cloud::location::DriveLocation;
 use crate::cloud::service;
-use crate::cloud::write::{self, Ctx, message};
+use crate::cloud::write::{self, Ctx, id_of, message, pending_target};
 use crate::fs_ops::Measure;
-use crate::placement::{self, DiscardFn, Refusal, Stage, Staged, TrashFn, Unfilled};
 use crate::progress::Progress;
-
-const UPLOAD_SUFFIX: &str = ".filebrowser-upload";
-
-pub fn upload(
-    state: &CloudState,
-    from: &Path,
-    to: &str,
-    overwrite: bool,
-    progress: &Progress,
-) -> Result<String, String> {
-    write::live_with(state, progress, |c| upload_in(c, from, to, overwrite))
-}
-
-pub fn download(
-    state: &CloudState,
-    from: &str,
-    to: &Path,
-    overwrite: bool,
-    progress: &Progress,
-    trash: TrashFn,
-) -> Result<String, String> {
-    write::live_with(state, progress, |c| download_in(c, from, to, overwrite, trash))
-}
 
 /// Total size and item count of Drive items, for an operation's progress.
 pub fn measure(state: &CloudState, paths: &[String]) -> Result<Measure, String> {
@@ -82,102 +69,290 @@ fn measure_file(client: &DriveClient, file: &DriveFile, total: &mut Measure) -> 
     Ok(())
 }
 
-/// Copy or move between any two locations where at least one is in Drive.
-/// `trash_local` is the local Trash: for a local source after a move, a
-/// partial folder a download leaves and the local item a download replaces.
-pub fn dispatch(
-    state: &CloudState,
-    from: &str,
-    to: &str,
-    overwrite: bool,
-    moving: bool,
-    progress: &Progress,
-    trash_local: TrashFn,
-) -> Result<String, String> {
-    write::live_with(state, progress, |c| {
-        dispatch_in(c, from, to, overwrite, moving, trash_local)
-    })
+// ---- The primitives ----------------------------------------------------------
+
+/// Today's errors are words; they keep them, so the engine's error is the
+/// same text.
+fn words(message: String) -> Error {
+    Error::Other(message)
 }
 
-pub(crate) fn dispatch_in(
-    c: &Ctx,
-    from: &str,
-    to: &str,
-    overwrite: bool,
-    moving: bool,
-    trash_local: TrashFn,
-) -> Result<String, String> {
-    let (from_cloud, to_cloud) = (crate::cloud::is_cloud(from), crate::cloud::is_cloud(to));
-    match (from_cloud, to_cloud, moving) {
-        (true, true, true) => write::move_in(c, from, to, overwrite),
-        (true, true, false) => write::copy_in(c, from, to, overwrite),
-        (false, true, true) => move_up_in(c, Path::new(from), to, overwrite, discard_to(trash_local)),
-        (false, true, false) => upload_in(c, Path::new(from), to, overwrite),
-        (true, false, true) => move_down_in(c, from, Path::new(to), overwrite, trash_local),
-        (true, false, false) => {
-            download_into(c, from, Path::new(to), overwrite, &discard_to(trash_local), trash_local)
+fn drive_words(error: DriveError) -> Error {
+    words(message(error))
+}
+
+/// The account's client. Its failures are the credential's (not connected,
+/// no token, a refused refresh): `AuthRequired`, so the engine can tell
+/// them from a failed request.
+fn client_of<'a>(c: &Ctx<'a>, account: &str) -> places::Result<DriveClient<'a>> {
+    write::client(c, account).map_err(Error::AuthRequired)
+}
+
+/// What the path-only refusals of a transfer inside Drive found: the
+/// refusals of `placement::check_transfer`, for Drive, by id.
+struct Within {
+    source: DriveLocation,
+    source_id: String,
+    target_parent: DriveLocation,
+    target_parent_id: String,
+    name: String,
+}
+
+fn within(c: &Ctx, from: &str, to: &str) -> Result<Within, String> {
+    let (source, _) = service::writable(c.state, from)?;
+    let source_id = id_of(&source)?;
+    let target = service::drive_location(to)?;
+    if target.account != source.account {
+        return Err("Copying between Google accounts is not supported.".into());
+    }
+    let (target_parent, target_parent_id, name) = pending_target(to)?;
+    if target_parent.segments.iter().any(|s| s.id == source_id) {
+        return Err(Refusal::IntoItself.into());
+    }
+    let source_parent_id = source.parent().and_then(|p| p.file_id().map(str::to_string));
+    if source_parent_id.as_deref() == Some(target_parent_id.as_str()) && source.name() == Some(name.as_str()) {
+        return Err(Refusal::SamePath.into());
+    }
+    Ok(Within { source, source_id, target_parent, target_parent_id, name })
+}
+
+/// The pending path of `name` in `parent`, when a path can say it (a
+/// name with a `/` can't).
+fn pending_child(parent: &DriveLocation, name: &str) -> Option<String> {
+    let uri = parent.child("", name).to_uri();
+    DriveLocation::parse(&uri).ok().map(|_| uri)
+}
+
+/// Where a moved item goes back to: its old folder, under the name Drive
+/// gave it, or the name its path gave it where a path can't say Drive's.
+fn home_of(source: &DriveLocation, name: &str) -> Option<String> {
+    let parent = source.parent()?;
+    pending_child(&parent, name).or_else(|| pending_child(&parent, source.name().unwrap_or_default()))
+}
+
+impl Ctx<'_> {
+    /// The source `landing` fetched, by id, or Drive's answer now.
+    fn file(&self, client: &DriveClient, id: &str) -> places::Result<DriveFile> {
+        if let Some(file) = self.seen.borrow().get(id) {
+            return Ok(file.clone());
         }
-        (false, false, _) => Err("Neither location is in Google Drive.".into()),
+        client.get(id).map_err(drive_words)
+    }
+
+    fn remember(&self, file: &DriveFile) {
+        self.seen.borrow_mut().insert(file.id.clone(), file.clone());
+    }
+
+    /// One PATCH of the item at `path`.
+    fn patch(&self, path: &str, change: &FileChange) -> places::Result<DriveFile> {
+        let location = service::drive_location(path).map_err(words)?;
+        let id = id_of(&location).map_err(words)?;
+        client_of(self, &location.account)?.update(&id, change).map_err(drive_words)
     }
 }
 
-/// `trash` for an item that needn't come back: a moved source, a partial
-/// folder.
-fn discard_to<'a>(trash: TrashFn<'a>) -> impl Fn(&Path) -> Result<(), String> + 'a {
-    move |path| trash.send(path).map(|_| ())
-}
+impl places::Transfer for Ctx<'_> {
+    fn check(&self, from: Option<&str>, to: Option<&str>, _: &Cx) -> places::Result<()> {
+        let checked = match (from, to) {
+            (Some(from), Some(to)) => within(self, from, to).map(|_| ()),
+            (None, Some(to)) => service::writable(self.state, to).and_then(|_| pending_target(to)).map(|_| ()),
+            (Some(from), None) => service::writable(self.state, from).map(|_| ()),
+            (None, None) => Ok(()),
+        };
+        checked.map_err(words)
+    }
 
-pub(crate) fn upload_in(c: &Ctx, from: &Path, to: &str, overwrite: bool) -> Result<String, String> {
-    let (_, account) = service::writable(c.state, to)?;
-    let (parent, parent_id, name) = write::pending_target(to)?;
-    let meta = std::fs::symlink_metadata(from)
-        .map_err(|_| String::from(Refusal::Vanished(from.display().to_string())))?;
-    let client = write::client(c, &account.id)?;
-    let existing = client.find_children(&parent_id, &name).map_err(message)?;
-    let replaced = match existing.len() {
-        0 => None,
-        _ if !overwrite => return Err(Refusal::Exists(name).into()),
-        1 => existing.into_iter().next(),
-        _ => {
-            return Err(format!(
-                "Several items in this folder are named “{name}”. Rename or remove the extra ones in Google Drive first."
-            ));
+    fn landing(&self, from: Option<&str>, to: &str, _: &Cx) -> places::Result<Landing> {
+        let Some(from) = from else {
+            let (parent, parent_id, name) = pending_target(to).map_err(words)?;
+            let client = client_of(self, &parent.account)?;
+            let found = client.find_children(&parent_id, &name).map_err(drive_words)?;
+            let existing = found
+                .iter()
+                .map(|other| Existing { path: parent.child(&other.id, &other.name).to_uri(), holds_source: false })
+                .collect();
+            return Ok(Landing { parent: parent.to_uri(), name, existing, source: None });
+        };
+        let w = within(self, from, to).map_err(words)?;
+        let client = client_of(self, &w.source.account)?;
+        let shown = w.source.name().unwrap_or_default().to_string();
+        let source = match client.get(&w.source_id) {
+            Ok(file) if !file.trashed => file,
+            Ok(_) | Err(DriveError::NotFound) => return Err(Refusal::Vanished(shown).into()),
+            Err(error) => return Err(drive_words(error)),
+        };
+        self.remember(&source);
+        let existing = client
+            .find_children(&w.target_parent_id, &w.name)
+            .map_err(drive_words)?
+            .into_iter()
+            .filter(|other| other.id != w.source_id)
+            .map(|other| Existing {
+                path: w.target_parent.child(&other.id, &other.name).to_uri(),
+                holds_source: w.source.segments.iter().any(|s| s.id == other.id),
+            })
+            .collect();
+        Ok(Landing {
+            parent: w.target_parent.to_uri(),
+            name: w.name,
+            existing,
+            source: Some(Source {
+                path: w.source.to_uri(),
+                is_dir: source.is_dir(),
+                home: home_of(&w.source, &source.name),
+            }),
+        })
+    }
+
+    fn pending(&self, parent: &str, name: &str) -> places::Result<String> {
+        let parent = service::drive_location(parent).map_err(words)?;
+        pending_child(&parent, name).ok_or_else(|| words("Google Drive name contains an invalid character".into()))
+    }
+
+    /// Upload `source` under the pending `target`; a folder is created and
+    /// filled, and goes to Drive's Trash if that fails.
+    fn write(&self, source: &Path, target: &str, _replace: bool, cx: &Cx) -> places::Result<Put> {
+        let (parent, parent_id, name) = pending_target(target).map_err(words)?;
+        let meta = std::fs::symlink_metadata(source)
+            .map_err(|_| Error::from(Refusal::Vanished(source.display().to_string())))?;
+        let client = client_of(self, &parent.account)?;
+        let mut skipped = Vec::new();
+        let made = if meta.is_dir() {
+            let folder = client.create_folder(&parent_id, &name).map_err(drive_words)?;
+            let uploaded = upload_children(&client, source, &folder.id, &mut skipped, &cx.progress);
+            if let Err(error) = uploaded {
+                let _ = client.update(&folder.id, &FileChange::trash(true));
+                return Err(words(error));
+            }
+            cx.progress.add_item();
+            folder
+        } else {
+            upload_verified(&client, &parent_id, &name, source, &cx.progress).map_err(words)?
+        };
+        // The rest was uploaded; each skipped item fails the transfer with
+        // its name, so a move keeps its source.
+        let skipped = skipped
+            .iter()
+            .map(|name| format!("“{name}” was not copied to Google Drive: only files and folders can be."))
+            .collect();
+        Ok(Put { path: parent.child(&made.id, &made.name).to_uri(), skipped })
+    }
+
+    /// The item read whole into `target`, without staging.
+    fn read_into(&self, path: &str, target: &Path, cx: &Cx) -> places::Result<Put> {
+        let mut skipped = Vec::new();
+        self.read(
+            path,
+            &mut |item| {
+                skipped = item.fill(target, cx).map_err(|(Unread::Nothing(e) | Unread::Partial(e))| e)?;
+                Ok(())
+            },
+            cx,
+        )?;
+        Ok(Put { path: target.to_string_lossy().into_owned(), skipped })
+    }
+
+    fn read(&self, path: &str, place: &mut dyn FnMut(&dyn Reading) -> places::Result<()>, _: &Cx) -> places::Result<()> {
+        let location = service::drive_location(path).map_err(words)?;
+        let id = location
+            .file_id()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| words("This Google Drive item has no id.".into()))?
+            .to_string();
+        let client = client_of(self, &location.account)?;
+        let shown = location.name().unwrap_or_default().to_string();
+        let file = match client.get(&id) {
+            Ok(file) if !file.trashed => file,
+            Ok(_) | Err(DriveError::NotFound) => return Err(Refusal::Vanished(shown).into()),
+            Err(error) => return Err(drive_words(error)),
+        };
+        if !file.is_dir() && !file.can_download() {
+            return Err(words(not_downloadable(&file)));
         }
-    };
-    let staged_name = if meta.is_dir() || replaced.is_some() {
-        format!(".{name}{UPLOAD_SUFFIX}")
-    } else {
-        name.clone()
-    };
-    let mut skipped = Vec::new();
-    let staged = if meta.is_dir() {
-        let folder = client
-            .create_folder(&parent_id, &staged_name)
-            .map_err(message)?;
-        let uploaded = upload_children(&client, from, &folder.id, &mut skipped, &c.progress);
-        if let Err(error) = uploaded {
-            let _ = client.update(&folder.id, &FileChange::trash(true));
-            return Err(error);
+        place(&Download { client: &client, file: &file })
+    }
+
+    fn export(&self, _: &str, _: &Cx) -> places::Result<PathBuf> {
+        Err(Error::Unsupported("A Google Drive item is read straight into its target.".into()))
+    }
+
+    /// A server-side copy of `from` under the pending `to`; a folder is
+    /// made again and filled, and goes to Drive's Trash if that fails.
+    fn copy_within(&self, from: &str, to: &str, cx: &Cx) -> places::Result<Put> {
+        let source = service::drive_location(from).map_err(words)?;
+        let id = id_of(&source).map_err(words)?;
+        let (parent, parent_id, name) = pending_target(to).map_err(words)?;
+        let client = client_of(self, &source.account)?;
+        let file = self.file(&client, &id)?;
+        let made = if file.is_dir() {
+            let staged = client.create_folder(&parent_id, &name).map_err(drive_words)?;
+            let copied = copy_children(&client, &file.id, &staged.id, &staged.id, &cx.progress);
+            if let Err(error) = copied {
+                let _ = client.update(&staged.id, &FileChange::trash(true));
+                return Err(drive_words(error));
+            }
+            staged
+        } else {
+            cx.progress.check().map_err(words)?;
+            client.copy_file(&file.id, &parent_id, &name).map_err(drive_words)?
+        };
+        cx.progress.add_item();
+        Ok(Put { path: parent.child(&made.id, &made.name).to_uri(), skipped: Vec::new() })
+    }
+
+    /// Give `from` the pending `to`'s name, without asking first.
+    fn rename_new(&self, from: &str, to: &str, _: &Cx) -> places::Result<String> {
+        let (parent, _, name) = pending_target(to).map_err(words)?;
+        let done = self.patch(from, &FileChange::rename(&name))?;
+        Ok(parent.child(&done.id, &done.name).to_uri())
+    }
+
+    /// One PATCH: the name when it changes, the parents when the folder
+    /// does. The top of My Drive can't move.
+    fn move_to(&self, from: &str, to: &str, _: &Cx) -> places::Result<String> {
+        let item = service::drive_location(from).map_err(words)?;
+        let id = id_of(&item).map_err(words)?;
+        let from_parent_id = item
+            .parent()
+            .and_then(|p| p.file_id().map(str::to_string))
+            .ok_or_else(|| words("My Drive itself cannot be moved.".into()))?;
+        let (parent, parent_id, name) = pending_target(to).map_err(words)?;
+        let client = client_of(self, &item.account)?;
+        let current = match self.seen.borrow().get(&id) {
+            Some(file) => file.name.clone(),
+            None => item.name().unwrap_or_default().to_string(),
+        };
+        let mut change = FileChange::default();
+        if name != current {
+            change.name = Some(name);
         }
-        c.progress.add_item();
-        folder
-    } else {
-        upload_verified(&client, &parent_id, &staged_name, from, &c.progress)?
-    };
-    let uploaded = if staged_name == name {
-        parent.child(&staged.id, &staged.name).to_uri()
-    } else {
-        write::finish_staged(&client, &parent, &name, replaced.as_ref(), &staged, true)?
-    };
-    match skipped.first() {
-        // The rest was uploaded; the error names what was left out, so a
-        // move keeps its source.
-        Some(name) => Err(format!(
-            "“{name}” was not copied to Google Drive: only files and folders can be."
-        )),
-        None => Ok(uploaded),
+        if parent_id != from_parent_id {
+            change.add_parent = Some(parent_id);
+            change.remove_parent = Some(from_parent_id);
+        }
+        let moved = client.update(&id, &change).map_err(drive_words)?;
+        self.remember(&moved);
+        Ok(parent.child(&moved.id, &moved.name).to_uri())
+    }
+
+    /// `trashed=true`; the path stays valid (the id survives).
+    fn trash_for_replace(&self, path: &str, _: &Cx) -> places::Result<String> {
+        self.patch(path, &FileChange::trash(true))?;
+        Ok(path.to_string())
+    }
+
+    /// `trashed=false`: back in the folder it was trashed from.
+    fn take_back(&self, trashed: &str, _original: &str, _: &Cx) -> places::Result<()> {
+        self.patch(trashed, &FileChange::trash(false)).map(|_| ())
+    }
+
+    /// `trashed=true`, never deleted.
+    fn discard(&self, staged: &str, _: &Cx) -> places::Result<()> {
+        self.patch(staged, &FileChange::trash(true)).map(|_| ())
     }
 }
+
+// ---- Uploads -----------------------------------------------------------------
 
 /// Upload one file and check Drive kept every byte; a short file is trashed.
 fn upload_verified(
@@ -244,6 +419,40 @@ fn drive_size(file: &DriveFile) -> Option<u64> {
     file.size.as_deref().and_then(|size| size.parse().ok())
 }
 
+// ---- Server-side copies --------------------------------------------------------
+
+/// Copy a folder's contents into another folder, recursively. Drive copies
+/// only files, so folders are recreated. `staged` (the copy being built) is
+/// skipped: when the target lies inside the source, the walk meets it, and
+/// copying it would never end. Each item is counted, and a cancel stops the
+/// walk before the next one.
+fn copy_children(
+    client: &DriveClient,
+    from: &str,
+    to: &str,
+    staged: &str,
+    progress: &Progress,
+) -> Result<(), DriveError> {
+    for child in client.list_all(from)? {
+        if child.id == staged {
+            continue;
+        }
+        if progress.is_cancelled() {
+            return Err(DriveError::Cancelled);
+        }
+        if child.is_dir() {
+            let folder = client.create_folder(to, &child.name)?;
+            copy_children(client, &child.id, &folder.id, staged, progress)?;
+        } else {
+            client.copy_file(&child.id, to, &child.name)?;
+        }
+        progress.add_item();
+    }
+    Ok(())
+}
+
+// ---- Downloads -----------------------------------------------------------------
+
 /// Why a Drive item has no bytes to download.
 fn not_downloadable(file: &DriveFile) -> String {
     let name = &file.name;
@@ -256,56 +465,23 @@ fn not_downloadable(file: &DriveFile) -> String {
     }
 }
 
-/// `download_into` that removes a partial folder instead of trashing it; an
-/// item it replaces still goes to `trash`.
-pub(crate) fn download_in(
-    c: &Ctx,
-    from: &str,
-    to: &Path,
-    overwrite: bool,
-    trash: TrashFn,
-) -> Result<String, String> {
-    download_into(c, from, to, overwrite, &placement::remove, trash)
+/// A Drive item being read into a local target.
+struct Download<'a, 'c> {
+    client: &'a DriveClient<'c>,
+    file: &'a DriveFile,
 }
 
-/// Download a Drive item to `to`. A new folder downloads straight under its
-/// name, so it fills as you watch; if that fails, the partial folder goes to
-/// `discard` (the Trash). Files and replacements stage under a hidden name
-/// and appear only when complete; the item a Replace sends away goes to
-/// `trash` (the app's logged Trash, so Restore knows where it was), which
-/// takes it back if the Replace fails.
-pub(crate) fn download_into(
-    c: &Ctx,
-    from: &str,
-    to: &Path,
-    overwrite: bool,
-    discard: DiscardFn,
-    trash: TrashFn,
-) -> Result<String, String> {
-    let target = placement::check_new(to, overwrite)?;
-    let location = service::drive_location(from)?;
-    let id = location
-        .file_id()
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| "This Google Drive item has no id.".to_string())?
-        .to_string();
-    let client = write::client(c, &location.account)?;
-    let shown = location.name().unwrap_or_default().to_string();
-    let file = match client.get(&id) {
-        Ok(file) if !file.trashed => file,
-        Ok(_) | Err(DriveError::NotFound) => return Err(Refusal::Vanished(shown).into()),
-        Err(error) => return Err(message(error)),
-    };
-    if !file.is_dir() && !file.can_download() {
-        return Err(not_downloadable(&file));
+impl Reading for Download<'_, '_> {
+    fn is_dir(&self) -> bool {
+        self.file.is_dir()
     }
-    let mut skipped = Vec::new();
-    let fill = |dest: &Path| download_to(&client, &file, dest, &mut skipped, &c.progress);
-    target.place(Stage::by_kind(file.is_dir(), discard), fill, trash)?;
-    match skipped.first() {
-        // Everything else was copied; the error names what was left out.
-        Some(reason) => Err(reason.clone()),
-        None => Ok(to.to_string_lossy().into_owned()),
+
+    /// A file whole, a folder with everything in it that has bytes (the
+    /// others are named in the result).
+    fn fill(&self, dest: &Path, cx: &Cx) -> Result<Vec<String>, Unread> {
+        let mut skipped = Vec::new();
+        download_to(self.client, self.file, dest, &mut skipped, &cx.progress)?;
+        Ok(skipped)
     }
 }
 
@@ -317,17 +493,16 @@ fn download_to(
     dest: &Path,
     skipped: &mut Vec<String>,
     progress: &Progress,
-) -> Result<Staged<'static>, Unfilled> {
+) -> Result<(), Unread> {
+    let partial = |error: String| Unread::Partial(words(error));
     if !file.is_dir() {
-        return download_verified(client, file, dest, progress)
-            .map(|()| Staged::Copy)
-            .map_err(Unfilled::Partial);
+        return download_verified(client, file, dest, progress).map_err(partial);
     }
     // Only a folder this call created may be discarded on failure.
-    std::fs::create_dir(dest).map_err(|error| Unfilled::Nothing(error.to_string()))?;
-    download_children(client, &file.id, dest, skipped, progress).map_err(Unfilled::Partial)?;
+    std::fs::create_dir(dest).map_err(|error| Unread::Nothing(words(error.to_string())))?;
+    download_children(client, &file.id, dest, skipped, progress).map_err(partial)?;
     progress.add_item();
-    Ok(Staged::Copy)
+    Ok(())
 }
 
 /// Download one file to `dest` and check its size against Drive's.
@@ -390,82 +565,12 @@ fn unique_child(dir: &Path, name: &str) -> PathBuf {
         .unwrap()
 }
 
-/// Upload, then hand the local source to `trash_source`.
-pub(crate) fn move_up_in(
-    c: &Ctx,
-    from: &Path,
-    to: &str,
-    overwrite: bool,
-    trash_source: impl FnOnce(&Path) -> Result<(), String>,
-) -> Result<String, String> {
-    let uploaded = upload_in(c, from, to, overwrite)?;
-    trash_source(from)
-        .map_err(|error| format!("Moved, but could not move the original to the Trash: {error}"))?;
-    Ok(uploaded)
-}
-
-/// Download, then move the Drive item to Drive's Trash. A partial folder
-/// and a replaced local item go to `trash`.
-pub(crate) fn move_down_in(
-    c: &Ctx,
-    from: &str,
-    to: &Path,
-    overwrite: bool,
-    trash: TrashFn,
-) -> Result<String, String> {
-    // Checked first: a read-only connection must not leave a copy behind
-    // and then fail to remove the original.
-    let (location, account) = service::writable(c.state, from)?;
-    let downloaded = download_into(c, from, to, overwrite, &discard_to(trash), trash)?;
-    let id = location.file_id().unwrap_or_default().to_string();
-    write::client(c, &account.id)?
-        .update(&id, &FileChange::trash(true))
-        .map_err(|error| {
-            format!(
-                "Moved, but could not move the original to the Trash: {}",
-                message(error)
-            )
-        })?;
-    Ok(downloaded)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cloud::test_server::Reply;
-    use crate::cloud::write::tests::{ROOT, file, folder, found, heads, ok, run, run_with};
-    use crate::progress::Progress;
-
-    fn cancelled() -> Progress {
-        let progress = Progress::default();
-        progress.cancel();
-        progress
-    }
-
-    #[test]
-    fn cancelled_download_leaves_no_staging_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("a.txt");
-        let (result, _) = run_with(
-            vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")],
-            &cancelled(),
-            |c| download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash),
-        );
-        assert_eq!(result.unwrap_err(), "Cancelled.");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn cancelled_upload_creates_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = local(&dir, "a.txt", b"hello");
-        let (result, log) = run_with(vec![found(&[]), session()], &cancelled(), |c| {
-            upload_in(c, &source, &format!("{ROOT}/~a.txt"), false)
-        });
-        assert_eq!(result.unwrap_err(), "Cancelled.");
-        assert!(heads(&log).iter().all(|head| !head.starts_with("PUT ")));
-        assert_eq!(std::fs::read(&source).unwrap(), b"hello");
-    }
+    use crate::cloud::write::tests::{ROOT, file, folder, found, heads, ok, run};
+    use places::Transfer;
 
     #[test]
     fn measure_sums_drive_sizes_and_counts_docs() {
@@ -485,597 +590,208 @@ mod tests {
 
     const DOC: &str = "application/vnd.google-apps.document";
 
-    fn session() -> Reply {
-        Reply::json(200, "").header("Location", "{base}/session/1")
-    }
-
-    fn bytes(body: &[u8]) -> Reply {
-        Reply {
-            status: 200,
-            body: body.to_vec(),
-            content_type: "application/octet-stream",
-            headers: Vec::new(),
-        }
-    }
-
     fn sized(id: &str, name: &str, size: u64) -> String {
         format!(r#"{{"id":"{id}","name":"{name}","mimeType":"text/plain","size":"{size}"}}"#)
     }
 
-    fn local(dir: &tempfile::TempDir, name: &str, body: &[u8]) -> PathBuf {
-        let path = dir.path().join(name);
-        std::fs::write(&path, body).unwrap();
-        path
+    // ---- Each primitive on its own: the requests it sends --------------------------
+
+    fn cx() -> Cx {
+        Cx::default()
+    }
+
+    fn bodies(log: &crate::cloud::test_server::Log) -> Vec<String> {
+        log.lock().unwrap().iter().map(|r| r.body_text()).collect()
     }
 
     #[test]
-    fn dispatch_refuses_two_local_paths() {
+    fn check_refuses_by_path_without_a_request() {
         let (result, log) = run(vec![], |c| {
-            dispatch_in(c, "/a", "/b", false, false, &no_trash)
+            (
+                c.check(Some(&format!("{ROOT}/d1~Docs")), Some(&format!("{ROOT}/d1~Docs/s~Sub/~Docs")), &cx()),
+                c.check(None, Some(&format!("{ROOT}/f1~a.txt")), &cx()),
+                c.check(Some("gdrive://"), None, &cx()),
+                c.check(Some(&format!("{ROOT}/f1~a.txt")), None, &cx()),
+            )
         });
-        assert!(result.is_err());
+        assert_eq!(result.0.unwrap_err().to_string(), "Cannot copy or move a folder into itself");
+        assert_eq!(
+            result.1.unwrap_err().to_string(),
+            "The destination must be a new name in a Google Drive folder."
+        );
+        assert!(result.2.is_err());
+        assert_eq!(result.3, Ok(()));
         assert!(heads(&log).is_empty());
     }
 
     #[test]
-    fn dispatch_routes_each_direction() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = local(&dir, "a.txt", b"hello");
-        let src = source.to_string_lossy().into_owned();
-        // local → Drive copy: an upload
-        let (result, _) = run(
-            vec![found(&[]), session(), ok(sized("u1", "a.txt", 5))],
-            |c| dispatch_in(c, &src, &format!("{ROOT}/~a.txt"), false, false, &no_trash),
-        );
-        assert_eq!(result.unwrap(), format!("{ROOT}/u1~a.txt"));
-        // Drive → Drive move: one PATCH after the checks
+    fn landing_looks_the_name_up_and_says_what_is_there() {
+        let (result, log) = run(vec![found(&[file("x", "a.txt")])], |c| c.landing(None, &format!("{ROOT}/~a.txt"), &cx()));
+        let landing = result.unwrap();
+        assert_eq!(landing.parent, ROOT);
+        assert_eq!(landing.name, "a.txt");
+        assert_eq!(landing.existing, [Existing { path: format!("{ROOT}/x~a.txt"), holds_source: false }]);
+        assert_eq!(landing.source, None);
+        assert!(heads(&log)[0].starts_with("GET /files?"));
+
+        let from = format!("{ROOT}/d1~Docs/f1~Docs");
+        let (result, log) = run(vec![ok(file("f1", "Renamed")), found(&[folder("d1", "Docs")])], |c| {
+            let landing = c.landing(Some(&from), &format!("{ROOT}/~Docs"), &cx());
+            (landing, c.seen.borrow().contains_key("f1"))
+        });
+        let (landing, remembered) = result;
+        let landing = landing.unwrap();
+        assert!(remembered, "the source is remembered for the steps after");
+        assert_eq!(landing.existing, [Existing { path: format!("{ROOT}/d1~Docs"), holds_source: true }]);
+        let source = landing.source.unwrap();
+        assert_eq!((source.path, source.is_dir), (from, false));
+        assert_eq!(source.home.as_deref(), Some(format!("{ROOT}/d1~Docs/~Renamed").as_str()));
+        assert!(heads(&log)[0].starts_with("GET /files/f1?"));
+    }
+
+    #[test]
+    fn a_vanished_or_trashed_source_lands_nowhere() {
+        let trashed = r#"{"id":"f1","name":"a.txt","mimeType":"text/plain","trashed":true}"#;
+        for reply in [Reply::json(404, "{}"), Reply::json(200, trashed)] {
+            let (result, log) =
+                run(vec![reply], |c| c.landing(Some(&format!("{ROOT}/f1~a.txt")), &format!("{ROOT}/p~P/~a.txt"), &cx()));
+            assert_eq!(result.unwrap_err().to_string(), "“a.txt” no longer exists");
+            assert_eq!(heads(&log).len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_pending_path_is_one_a_path_can_say() {
+        let (result, log) = run(vec![], |c| (c.pending(ROOT, "a b~c.txt"), c.pending(ROOT, "a/b")));
+        assert_eq!(result.0.unwrap(), format!("{ROOT}/~a%20b%7Ec.txt"));
+        assert!(result.1.is_err());
+        assert!(heads(&log).is_empty());
+    }
+
+    #[test]
+    fn rename_trash_take_back_and_discard_are_one_patch_each() {
+        let staged = format!("{ROOT}/s1~.a.txt.filebrowser-copy");
         let (result, log) = run(
-            vec![ok(file("f1", "a.txt")), found(&[]), ok(file("f1", "a.txt"))],
+            vec![ok(file("s1", "a.txt")), ok(file("o1", "a.txt")), ok(file("o1", "a.txt")), ok(file("s1", "x"))],
             |c| {
-                dispatch_in(
-                    c,
-                    &format!("{ROOT}/f1~a.txt"),
-                    &format!("{ROOT}/p2~Other/~a.txt"),
-                    false,
-                    true,
-                    &no_trash,
+                (
+                    c.rename_new(&staged, &format!("{ROOT}/~a.txt"), &cx()),
+                    c.trash_for_replace(&format!("{ROOT}/o1~a.txt"), &cx()),
+                    c.take_back(&format!("{ROOT}/o1~a.txt"), &format!("{ROOT}/o1~a.txt"), &cx()),
+                    c.discard(&staged, &cx()),
                 )
             },
         );
-        assert_eq!(result.unwrap(), format!("{ROOT}/p2~Other/f1~a.txt"));
-        assert!(heads(&log)[2].starts_with("PATCH /files/f1?"));
-        // Drive → local copy: a download
-        let target = dir.path().join("b.txt");
-        let (result, _) = run(vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")], |c| {
-            dispatch_in(
-                c,
-                &format!("{ROOT}/f1~a.txt"),
-                &target.to_string_lossy(),
-                false,
-                false,
-                &no_trash,
-            )
-        });
-        assert_eq!(result.unwrap(), target.to_string_lossy());
-    }
-
-    #[test]
-    fn uploading_a_file_returns_its_drive_uri() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = local(&dir, "a.txt", b"hello");
-        let (result, _) = run(
-            vec![found(&[]), session(), ok(sized("u1", "a.txt", 5))],
-            |c| upload_in(c, &source, &format!("{ROOT}/~a.txt"), false),
-        );
-        assert_eq!(result.unwrap(), format!("{ROOT}/u1~a.txt"));
-    }
-
-    #[test]
-    fn a_short_upload_is_trashed_and_reported() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = local(&dir, "a.txt", b"hello");
-        let (result, log) = run(
-            vec![
-                found(&[]),
-                session(),
-                ok(sized("u1", "a.txt", 3)),
-                ok(file("u1", "a.txt")),
-            ],
-            |c| upload_in(c, &source, &format!("{ROOT}/~a.txt"), false),
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            "The upload to Google Drive was incomplete."
-        );
-        let log = log.lock().unwrap();
-        assert!(log[3].head.starts_with("PATCH /files/u1?"));
-        assert_eq!(log[3].body_text(), r#"{"trashed":true}"#);
-    }
-
-    #[test]
-    fn uploading_a_folder_is_staged_then_renamed() {
-        let dir = tempfile::tempdir().unwrap();
-        let tree = dir.path().join("Docs");
-        std::fs::create_dir(&tree).unwrap();
-        std::fs::write(tree.join("x.txt"), b"hi").unwrap();
-        let (result, log) = run(
-            vec![
-                found(&[]),
-                ok(folder("s1", ".Docs.filebrowser-upload")),
-                session(),
-                ok(sized("x1", "x.txt", 2)),
-                ok(folder("s1", "Docs")),
-            ],
-            |c| upload_in(c, &tree, &format!("{ROOT}/~Docs"), false),
-        );
-        assert_eq!(result.unwrap(), format!("{ROOT}/s1~Docs"));
-        let log = log.lock().unwrap();
-        assert!(log[1].body_text().contains(".Docs.filebrowser-upload"));
-        assert!(log[2].body_text().contains(r#""parents":["s1"]"#));
-        assert_eq!(log[4].body_text(), r#"{"name":"Docs"}"#);
-    }
-
-    #[test]
-    fn a_failed_upload_trashes_the_partial_folder() {
-        let dir = tempfile::tempdir().unwrap();
-        let tree = dir.path().join("Docs");
-        std::fs::create_dir(&tree).unwrap();
-        std::fs::write(tree.join("x.txt"), b"hi").unwrap();
-        let (result, log) = run(
-            vec![
-                found(&[]),
-                ok(folder("s1", ".Docs.filebrowser-upload")),
-                Reply::json(403, r#"{"error":{"message":"quota"}}"#),
-                ok(folder("s1", ".Docs.filebrowser-upload")),
-            ],
-            |c| upload_in(c, &tree, &format!("{ROOT}/~Docs"), false),
-        );
-        assert!(result.unwrap_err().contains("quota"));
-        let log = log.lock().unwrap();
-        assert!(log[3].head.starts_with("PATCH /files/s1?"));
-        assert_eq!(log[3].body_text(), r#"{"trashed":true}"#);
-    }
-
-    #[test]
-    fn downloading_a_file_stages_and_verifies_its_size() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("a.txt");
-        let (result, _) = run(vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")], |c| {
-            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash)
-        });
-        assert_eq!(result.unwrap(), target.to_string_lossy());
-        assert_eq!(std::fs::read(&target).unwrap(), b"hello");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn a_short_download_leaves_no_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("a.txt");
-        let (result, _) = run(vec![ok(sized("f1", "a.txt", 5)), bytes(b"hel")], |c| {
-            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash)
-        });
-        assert_eq!(
-            result.unwrap_err(),
-            "The download from Google Drive was incomplete."
-        );
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-    }
-
-    /// A folder downloads straight under its name so it fills as you watch;
-    /// a failed one is handed to `discard` (the Trash), never left looking whole.
-    #[test]
-    fn a_failed_folder_download_is_filled_in_place_then_discarded() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("Docs");
-        let discarded = std::cell::RefCell::new(Vec::new());
-        let discard = |path: &Path| {
-            discarded.borrow_mut().push(path.to_path_buf());
-            Ok(())
-        };
-        let (result, _) = run(
-            vec![
-                ok(folder("d1", "Docs")),
-                found(&[sized("x1", "x.txt", 2), sized("y1", "y.txt", 5)]),
-                bytes(b"hi"),
-                bytes(b"yy"),
-            ],
-            |c| download_into(c, &format!("{ROOT}/d1~Docs"), &target, false, &discard, &no_trash),
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            "The download from Google Drive was incomplete."
-        );
-        assert_eq!(*discarded.borrow(), vec![target.clone()]);
-        assert_eq!(std::fs::read(target.join("x.txt")).unwrap(), b"hi");
-    }
-
-    /// Replace still stages: the old folder stays until the new one is whole.
-    #[test]
-    fn a_failed_replacing_folder_download_keeps_the_old_folder() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("Docs");
-        std::fs::create_dir(&target).unwrap();
-        std::fs::write(target.join("old.txt"), b"old").unwrap();
-        let discard = |_: &Path| -> Result<(), String> { panic!("nothing to discard") };
-        let (result, _) = run(
-            vec![
-                ok(folder("d1", "Docs")),
-                found(&[sized("y1", "y.txt", 5)]),
-                bytes(b"yy"),
-            ],
-            |c| download_into(c, &format!("{ROOT}/d1~Docs"), &target, true, &discard, &no_trash),
-        );
-        assert!(result.is_err());
-        assert_eq!(std::fs::read(target.join("old.txt")).unwrap(), b"old");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn downloading_a_folder_copies_the_tree() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("Docs");
-        let (result, _) = run(
-            vec![
-                ok(folder("d1", "Docs")),
-                found(&[sized("x1", "x.txt", 2), folder("s", "Sub")]),
-                bytes(b"hi"),
-                found(&[sized("y1", "y.txt", 1)]),
-                bytes(b"y"),
-            ],
-            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false, &no_trash),
-        );
-        result.unwrap();
-        assert_eq!(std::fs::read(target.join("x.txt")).unwrap(), b"hi");
-        assert_eq!(std::fs::read(target.join("Sub/y.txt")).unwrap(), b"y");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn a_google_doc_cannot_be_downloaded() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("Plan");
-        let doc = format!(r#"{{"id":"g1","name":"Plan","mimeType":"{DOC}"}}"#);
-        let (result, _) = run(vec![ok(doc)], |c| {
-            download_in(c, &format!("{ROOT}/g1~Plan"), &target, false, &no_trash)
-        });
-        assert_eq!(
-            result.unwrap_err(),
-            "“Plan” is a Google Docs file and can only be copied within Google Drive."
-        );
-        assert!(!target.exists());
-    }
-
-    #[test]
-    fn a_folder_with_a_google_doc_reports_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("Docs");
-        let doc = format!(r#"{{"id":"g1","name":"Plan","mimeType":"{DOC}"}}"#);
-        let (result, _) = run(
-            vec![
-                ok(folder("d1", "Docs")),
-                found(&[doc, sized("x1", "x.txt", 2)]),
-                bytes(b"hi"),
-            ],
-            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false, &no_trash),
-        );
-        assert!(result.unwrap_err().contains("“Plan” is a Google Docs file"));
-        assert_eq!(std::fs::read(target.join("x.txt")).unwrap(), b"hi");
-    }
-
-    #[test]
-    fn a_folder_with_a_shortcut_skips_it_and_says_so() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("Docs");
-        let shortcut =
-            r#"{"id":"k1","name":"Link","mimeType":"application/vnd.google-apps.shortcut"}"#;
-        let (result, log) = run(
-            vec![
-                ok(folder("d1", "Docs")),
-                found(&[shortcut.to_string(), sized("x1", "x.txt", 2)]),
-                bytes(b"hi"),
-            ],
-            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false, &no_trash),
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            "“Link” is a Google Drive shortcut and can only be copied within Google Drive."
-        );
-        assert_eq!(std::fs::read(target.join("x.txt")).unwrap(), b"hi");
-        assert!(heads(&log).iter().all(|h| !h.contains("/files/k1")));
-    }
-
-    #[test]
-    fn downloaded_names_are_made_safe() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("Docs");
-        let (result, _) = run(
-            vec![
-                ok(folder("d1", "Docs")),
-                found(&[sized("x1", "a/b", 1), sized("x2", "..", 1)]),
-                bytes(b"1"),
-                bytes(b"2"),
-            ],
-            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false, &no_trash),
-        );
-        result.unwrap();
-        let mut names: Vec<String> = std::fs::read_dir(&target)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        assert_eq!(names, vec!["a_b", "item"]);
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn duplicate_drive_names_do_not_overwrite_each_other() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("Docs");
-        let (result, _) = run(
-            vec![
-                ok(folder("d1", "Docs")),
-                found(&[sized("x1", "a.txt", 1), sized("x2", "a.txt", 1)]),
-                bytes(b"1"),
-                bytes(b"2"),
-            ],
-            |c| download_in(c, &format!("{ROOT}/d1~Docs"), &target, false, &no_trash),
-        );
-        result.unwrap();
-        assert_eq!(std::fs::read(target.join("a.txt")).unwrap(), b"1");
-        assert_eq!(std::fs::read(target.join("a (2).txt")).unwrap(), b"2");
-    }
-
-    #[test]
-    fn a_download_target_that_is_not_a_plain_name_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let inner = dir.path().join("Downloads");
-        std::fs::create_dir(&inner).unwrap();
-        std::fs::write(inner.join("keep.txt"), b"mine").unwrap();
-        for target in [inner.join(".."), inner.join("."), inner.join("x/..")] {
-            // A 404 stops an unguarded download before it touches the disk,
-            // so this test stays harmless while it fails.
-            // Not joined: when the guard holds, the reply is never asked for.
-            let (base, log, _server) =
-                crate::cloud::test_server::serve_replies(vec![Reply::json(404, "{}")]);
-            let (state, _dir) = crate::cloud::write::tests::state();
-            let result = download_in(
-                &crate::cloud::write::tests::ctx(&state, &base),
-                &format!("{ROOT}/f1~a.txt"),
-                &target,
-                true,
-                &no_trash,
-            );
-            assert!(result.is_err(), "{}", target.display());
-            assert!(heads(&log).is_empty(), "{} reached Drive", target.display());
+        assert_eq!(result.0.unwrap(), format!("{ROOT}/s1~a.txt"));
+        assert_eq!(result.1.unwrap(), format!("{ROOT}/o1~a.txt"));
+        assert_eq!((result.2, result.3), (Ok(()), Ok(())));
+        let heads = heads(&log);
+        for (head, id) in heads.iter().zip(["s1", "o1", "o1", "s1"]) {
+            assert!(head.starts_with(&format!("PATCH /files/{id}?")), "{head}");
         }
-        assert_eq!(std::fs::read(inner.join("keep.txt")).unwrap(), b"mine");
+        assert_eq!(
+            bodies(&log),
+            [r#"{"name":"a.txt"}"#, r#"{"trashed":true}"#, r#"{"trashed":false}"#, r#"{"trashed":true}"#]
+        );
     }
 
     #[test]
-    fn an_existing_local_target_without_overwrite_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = local(&dir, "a.txt", b"mine");
-        let (result, log) = run(vec![], |c| {
-            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash)
+    fn a_failed_patch_is_the_primitives_error() {
+        let (result, _) = run(vec![Reply::json(403, r#"{"error":{"message":"nope"}}"#)], |c| {
+            c.trash_for_replace(&format!("{ROOT}/o1~a.txt"), &cx())
         });
-        assert!(result.unwrap_err().starts_with("Target already exists"));
-        assert_eq!(std::fs::read(&target).unwrap(), b"mine");
+        assert!(result.unwrap_err().to_string().contains("nope"));
+    }
+
+    #[test]
+    fn move_to_names_and_reparents_only_what_changes() {
+        // Same folder, new name: the name only.
+        let (result, log) =
+            run(vec![ok(file("f1", "b.txt"))], |c| c.move_to(&format!("{ROOT}/p~P/f1~a.txt"), &format!("{ROOT}/p~P/~b.txt"), &cx()));
+        assert_eq!(result.unwrap(), format!("{ROOT}/p~P/f1~b.txt"));
+        assert!(!heads(&log)[0].contains("Parents"));
+        assert_eq!(bodies(&log), [r#"{"name":"b.txt"}"#]);
+        // Another folder, same name: the parents only.
+        let (result, log) =
+            run(vec![ok(file("f1", "a.txt"))], |c| c.move_to(&format!("{ROOT}/p~P/f1~a.txt"), &format!("{ROOT}/~a.txt"), &cx()));
+        assert_eq!(result.unwrap(), format!("{ROOT}/f1~a.txt"));
+        assert!(heads(&log)[0].contains("addParents=root") && heads(&log)[0].contains("removeParents=p"));
+        assert_eq!(bodies(&log), ["{}"]);
+        // The top of My Drive doesn't move, and nothing is asked.
+        let (result, log) = run(vec![], |c| c.move_to("gdrive://acct/f1~a.txt", &format!("{ROOT}/~a.txt"), &cx()));
+        assert_eq!(result.unwrap_err().to_string(), "My Drive itself cannot be moved.");
         assert!(heads(&log).is_empty());
     }
 
-    fn names_in(dir: &Path) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
-    }
-
-    fn no_discard(_: &Path) -> Result<(), String> {
-        panic!("nothing to discard")
-    }
-
-    fn no_trash(_: &Path) -> Result<Option<PathBuf>, String> {
-        panic!("nothing is replaced")
-    }
-
-    /// Replace downloads under a hidden name next to the old item, sends the
-    /// old one to the Trash once the new one is whole, then renames it in.
+    /// The name Drive gave the item, when this transfer learnt it, decides
+    /// whether the move renames, not the name its path still shows.
     #[test]
-    fn a_replacing_download_stages_then_trashes_then_renames_into_place() {
-        for is_folder in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let bin = dir.path().join("bin");
-            std::fs::create_dir(&bin).unwrap();
-            let (target, replies, from) = if is_folder {
-                let target = dir.path().join("Docs");
-                std::fs::create_dir(&target).unwrap();
-                std::fs::write(target.join("old.txt"), b"old").unwrap();
-                let replies = vec![ok(folder("d1", "Docs")), found(&[sized("x1", "x.txt", 2)]), bytes(b"hi")];
-                (target, replies, format!("{ROOT}/d1~Docs"))
-            } else {
-                let target = local(&dir, "a.txt", b"old");
-                (target, vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")], format!("{ROOT}/f1~a.txt"))
-            };
-            let seen = std::cell::RefCell::new(Vec::new());
-            let trash = |p: &Path| {
-                seen.borrow_mut().push((p.to_path_buf(), names_in(dir.path())));
-                std::fs::rename(p, bin.join("old")).map_err(|e| e.to_string())?;
-                Ok(Some(bin.join("old")))
-            };
-            let (result, _) = run(replies, |c| {
-                download_into(c, &from, &target, true, &no_discard, &trash)
-            });
-            assert_eq!(result.unwrap(), target.to_string_lossy());
-            let seen = seen.into_inner();
-            assert_eq!(seen.len(), 1);
-            assert_eq!(seen[0].0, target);
-            let name = target.file_name().unwrap().to_string_lossy().into_owned();
-            let staged = format!(".{name}.filebrowser-{}-0", std::process::id());
-            let mut want = vec![staged, name.clone(), "bin".to_string()];
-            want.sort();
-            assert_eq!(seen[0].1, want);
-            let mut left = vec!["bin".to_string(), name];
-            left.sort();
-            assert_eq!(names_in(dir.path()), left);
-            if is_folder {
-                assert_eq!(std::fs::read(target.join("x.txt")).unwrap(), b"hi");
-                assert_eq!(std::fs::read(bin.join("old/old.txt")).unwrap(), b"old");
-            } else {
-                assert_eq!(std::fs::read(&target).unwrap(), b"hello");
-                assert_eq!(std::fs::read(bin.join("old")).unwrap(), b"old");
-            }
-        }
-    }
-
-    #[test]
-    fn a_replacing_download_whose_trash_fails_keeps_the_old_item() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = local(&dir, "a.txt", b"old");
-        let refuse = |_: &Path| Err("no Trash on this volume".to_string());
-        let (result, _) = run(vec![ok(sized("f1", "a.txt", 5)), bytes(b"hello")], |c| {
-            download_into(c, &format!("{ROOT}/f1~a.txt"), &target, true, &no_discard, &refuse)
+    fn move_to_compares_with_the_name_drive_has() {
+        let (result, log) = run(vec![ok(file("f1", "a.txt"))], |c| {
+            c.remember(&serde_json::from_str(&file("f1", "renamed.txt")).unwrap());
+            c.move_to(&format!("{ROOT}/f1~a.txt"), &format!("{ROOT}/~a.txt"), &cx())
         });
-        assert_eq!(
-            result.unwrap_err(),
-            "Could not move the existing item to the Trash: no Trash on this volume"
-        );
-        assert_eq!(std::fs::read(&target).unwrap(), b"old");
-        assert_eq!(names_in(dir.path()), ["a.txt"]);
-    }
-
-    /// The local refusals' words, and that the name check comes first.
-    #[test]
-    fn download_refusals_keep_their_wording_and_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = local(&dir, "a.txt", b"mine");
-        let dotdot = dir.path().join("sub/..");
-        std::fs::create_dir(dir.path().join("sub")).unwrap();
-        let cases = [
-            (target.clone(), format!("Target already exists: {}", target.display())),
-            // `sub/..` exists too, but isn't a name.
-            (dotdot.clone(), format!("“{}” is not a valid name for a local item.", dotdot.display())),
-        ];
-        for (to, want) in cases {
-            let (result, log) = run(vec![], |c| {
-                download_in(c, &format!("{ROOT}/f1~a.txt"), &to, false, &no_trash)
-            });
-            assert_eq!(result.unwrap_err(), want);
-            assert!(heads(&log).is_empty());
-        }
-        assert_eq!(std::fs::read(&target).unwrap(), b"mine");
+        result.unwrap();
+        assert_eq!(bodies(&log), [r#"{"name":"a.txt"}"#]);
     }
 
     #[test]
-    fn a_vanished_drive_source_is_named() {
+    fn copy_within_asks_for_the_source_only_when_it_wasnt_seen() {
+        let (result, log) = run(vec![ok(file("f1", "a.txt")), ok(file("c1", "a.txt"))], |c| {
+            c.copy_within(&format!("{ROOT}/f1~a.txt"), &format!("{ROOT}/p~P/~a.txt"), &cx())
+        });
+        assert_eq!(result.unwrap().path, format!("{ROOT}/p~P/c1~a.txt"));
+        let heads = heads(&log);
+        assert!(heads[0].starts_with("GET /files/f1?") && heads[1].starts_with("POST /files/f1/copy?"));
+    }
+
+    #[test]
+    fn a_google_doc_is_refused_before_the_engine_places_anything() {
+        let doc = format!(r#"{{"id":"g1","name":"Plan","mimeType":"{DOC}"}}"#);
+        let mut placed = false;
+        let (result, _) = run(vec![ok(doc)], |c| {
+            c.read(&format!("{ROOT}/g1~Plan"), &mut |_| {
+                placed = true;
+                Ok(())
+            }, &cx())
+        });
+        assert_eq!(result.unwrap_err().to_string(), "“Plan” is a Google Docs file and can only be copied within Google Drive.");
+        assert!(!placed);
+    }
+
+    #[test]
+    fn read_into_fills_the_target_as_it_is() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("a.txt");
-        let (result, _) = run(vec![Reply::json(404, "{}")], |c| {
-            download_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash)
-        });
-        assert_eq!(result.unwrap_err(), "“a.txt” no longer exists");
-        assert_eq!(names_in(dir.path()), Vec::<String>::new());
+        let bytes = Reply { status: 200, body: b"hello".to_vec(), content_type: "application/octet-stream", headers: Vec::new() };
+        let (result, _) = run(vec![ok(sized("f1", "a.txt", 5)), bytes], |c| c.read_into(&format!("{ROOT}/f1~a.txt"), &target, &cx()));
+        assert_eq!(result.unwrap(), Put { path: target.to_string_lossy().into_owned(), skipped: Vec::new() });
+        assert_eq!(std::fs::read(&target).unwrap(), b"hello");
     }
 
     #[test]
-    fn an_existing_drive_target_without_overwrite_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = local(&dir, "a.txt", b"hello");
-        let (result, _) = run(vec![found(&[file("x", "a.txt")])], |c| {
-            upload_in(c, &source, &format!("{ROOT}/~a.txt"), false)
-        });
-        assert_eq!(result.unwrap_err(), "Target already exists: a.txt");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_folder_with_items_that_cannot_be_uploaded_keeps_its_source_on_a_move() {
+    fn a_folder_write_that_fails_trashes_what_it_made() {
         let dir = tempfile::tempdir().unwrap();
         let tree = dir.path().join("Docs");
         std::fs::create_dir(&tree).unwrap();
         std::fs::write(tree.join("x.txt"), b"hi").unwrap();
-        std::os::unix::fs::symlink("/etc/hosts", tree.join("link")).unwrap();
-        let mut trashed = Vec::new();
-        let (result, _) = run(
-            vec![
-                found(&[]),
-                ok(folder("s1", ".Docs.filebrowser-upload")),
-                session(),
-                ok(sized("x1", "x.txt", 2)),
-                ok(folder("s1", "Docs")),
-            ],
-            |c| {
-                move_up_in(c, &tree, &format!("{ROOT}/~Docs"), false, |p| {
-                    trashed.push(p.to_path_buf());
-                    Ok(())
-                })
-            },
-        );
-        let error = result.unwrap_err();
-        assert!(error.contains("“link”"), "{error}");
-        assert!(trashed.is_empty());
-        assert!(tree.join("x.txt").exists());
-    }
-
-    #[test]
-    fn a_failed_move_keeps_the_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = local(&dir, "a.txt", b"hello");
-        let mut trashed = Vec::new();
-        let (result, _) = run(
-            vec![
-                found(&[]),
-                Reply::json(403, r#"{"error":{"message":"quota"}}"#),
-            ],
-            |c| {
-                move_up_in(c, &source, &format!("{ROOT}/~a.txt"), false, |p| {
-                    trashed.push(p.to_path_buf());
-                    Ok(())
-                })
-            },
-        );
-        assert!(result.is_err());
-        assert!(trashed.is_empty());
-        assert_eq!(std::fs::read(&source).unwrap(), b"hello");
-    }
-
-    #[test]
-    fn a_local_to_drive_move_trashes_the_source_after_the_upload() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = local(&dir, "a.txt", b"hello");
-        let mut trashed = Vec::new();
-        let (result, _) = run(
-            vec![found(&[]), session(), ok(sized("u1", "a.txt", 5))],
-            |c| {
-                move_up_in(c, &source, &format!("{ROOT}/~a.txt"), false, |p| {
-                    trashed.push(p.to_path_buf());
-                    Ok(())
-                })
-            },
-        );
-        assert_eq!(result.unwrap(), format!("{ROOT}/u1~a.txt"));
-        assert_eq!(trashed, vec![source.clone()]);
-    }
-
-    #[test]
-    fn a_drive_to_local_move_trashes_the_drive_item_last() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("a.txt");
         let (result, log) = run(
             vec![
-                ok(sized("f1", "a.txt", 5)),
-                bytes(b"hello"),
-                ok(file("f1", "a.txt")),
+                ok(folder("s1", "Docs")),
+                Reply::json(403, r#"{"error":{"message":"quota"}}"#),
+                ok(folder("s1", "Docs")),
             ],
-            |c| move_down_in(c, &format!("{ROOT}/f1~a.txt"), &target, false, &no_trash),
+            |c| c.write(&tree, &format!("{ROOT}/~Docs"), false, &cx()),
         );
-        result.unwrap();
-        assert_eq!(std::fs::read(&target).unwrap(), b"hello");
-        let log = log.lock().unwrap();
-        let last = log.last().unwrap();
-        assert!(last.head.starts_with("PATCH /files/f1?"));
-        assert_eq!(last.body_text(), r#"{"trashed":true}"#);
+        assert!(result.unwrap_err().to_string().contains("quota"));
+        assert!(heads(&log)[2].starts_with("PATCH /files/s1?"));
+        assert_eq!(bodies(&log)[2], r#"{"trashed":true}"#);
+    }
+
+    #[test]
+    fn drive_reads_straight_into_targets_and_exports_nothing() {
+        let (result, log) = run(vec![], |c| c.export(&format!("{ROOT}/f1~a.txt"), &cx()));
+        assert!(matches!(result, Err(Error::Unsupported(_))));
+        assert!(heads(&log).is_empty());
     }
 }

@@ -208,6 +208,9 @@ impl places::Provider for Client {
 /// A copy in is `add` (a new asset, or a new version of the one it
 /// replaces); a copy out reads the asset's own file, built in the app
 /// cache (`export`). Nothing else is written on Arbesk.
+/// Why an asset isn't read into a target: a copy out reads its export.
+const EXPORTED: &str = "An Arbesk asset is copied from its exported file.";
+
 impl places::Transfer for Client {
     /// The local model file `source` saved at the pending name `target` in
     /// a collection: the new asset's path.
@@ -216,7 +219,20 @@ impl places::Transfer for Client {
         Ok(Put { path, skipped: Vec::new() })
     }
     fn read_into(&self, _: &str, _: &Path, _: &Cx) -> Result<Put> {
-        Err(Error::Unsupported("An Arbesk asset is copied from its exported file.".into()))
+        Err(Error::Unsupported(EXPORTED.into()))
+    }
+    fn read(&self, _: &str, _: &mut dyn FnMut(&dyn places::Reading) -> Result<()>, _: &Cx) -> Result<()> {
+        Err(Error::Unsupported(EXPORTED.into()))
+    }
+    /// A copy in is checked by the route table and `add` itself.
+    fn check(&self, _: Option<&str>, _: Option<&str>, _: &Cx) -> Result<()> {
+        read_only()
+    }
+    fn landing(&self, _: Option<&str>, _: &str, _: &Cx) -> Result<places::Landing> {
+        read_only()
+    }
+    fn pending(&self, _: &str, _: &str) -> Result<String> {
+        read_only()
     }
     fn export(&self, path: &str, cx: &Cx) -> Result<PathBuf> {
         Client::export(self, path, &cx.progress).map_err(words)
