@@ -454,10 +454,28 @@ next starts only after the human merged the last.
    re-exports it) and the version badge's ownership check is passed in
    (`fs_ops::OwnsHistory`), and its `Local` provider gets the app's
    thumbnailer. The provider keeps step 2's read side; its writes, and a
-   local `Transfer`, wait for the step that wraps it in Keep Versions'
-   decorator (D7), since the engine's local routes still go through
-   `placement.rs` directly. The Trash fixtures are the crate's `testing`
-   feature, for the app's Replace-through-the-logged-Trash test.
+   local `Transfer`, are step 6b, since the engine's local routes still go
+   through `placement.rs` directly. Until then its write methods answer
+   `Unsupported` (“… doesn't go through the places registry yet.”), and
+   its capabilities describe what the app's commands allow on this
+   computer, not what the provider itself does. The Trash fixtures and the
+   source guards' walker (`test_support::source_roots`, one for every
+   guard) are the crate's `testing` feature, which the app's tests enable;
+   the batch scatter behind every local-only answer is the crate's
+   `provider::answer_kept`, which `place::local_only` calls with its gate.
+6b. **Keep Versions' decorator wraps `places_local::Local`; local writes and
+   the local `Transfer` go through the registry** (D6, D7). The local
+   provider's `create`, `rename`, `trash` and `restore` act (through
+   `rename_new`/`rename_in_place`, `Trash::send`, `Trash::restore`), and its
+   `Transfer` gives the engine `rename_new` as the atomic rename, `Trash::send`
+   and `Trash::untrash` as Replace's send and take back, and the staged write
+   (`Stage::by_kind`). Keep Versions becomes the decorator in the app that
+   wraps the provider (capture before a write, `VersionedTrash` around the
+   Trash step), registered in its place; `engine.rs` then runs local↔local
+   routes from the primitives as it runs Drive's, and `placement.rs` keeps
+   only what the engine doesn't (downloads' `Target::place`). Each moved
+   sequence keeps its tests unchanged in body; the not-yet answers and their
+   test go. Steps 7 and 8 come after it.
 7. **Capabilities reach the frontend** (D5): the command, its mock and
    mock-core case, the startup cache, the shared fixture; `locations.ts` and
    `item-actions.ts` read the booleans rule by rule.

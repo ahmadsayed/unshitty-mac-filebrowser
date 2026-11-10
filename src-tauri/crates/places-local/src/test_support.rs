@@ -2,11 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
-/// Where the source guards look, as the app's `test_support` sees them: the
-/// app's `src`, and the `src` of every crate under `crates/`, each with the
-/// prefix its files are named by in the guards' allowed lists (`""`,
-/// `"crates/<name>/src/"`). This crate lives in `src-tauri/crates/`, so the
-/// app is two folders up.
+/// Where the source guards look: the app's `src`, and the `src` of every
+/// crate under `crates/`, each with the prefix its files are named by in
+/// the guards' allowed lists (`""`, `"crates/<name>/src/"`). The one walker
+/// for every guard: this crate's (the `trash` crate) and the app's
+/// (`std::fs::rename`). This crate lives in `src-tauri/crates/`, so the app
+/// is two folders up, whichever crate calls it.
 pub fn source_roots() -> Vec<(PathBuf, String)> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut crates: Vec<String> = std::fs::read_dir(manifest.join("crates"))

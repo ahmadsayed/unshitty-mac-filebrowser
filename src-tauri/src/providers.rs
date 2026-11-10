@@ -37,7 +37,7 @@ use places_gdrive::{Calls as DriveCalls, CloudState, Drive, Live};
 use places_local::Local;
 use places_sftp::SftpState;
 use crate::share::provider::{ReceivedShares, Shares};
-use crate::{place, thumbnails};
+use crate::thumbnails;
 
 /// Where an adapter finds the state it wraps: `lib.rs` answers it for the
 /// app handle with the managed state, as the commands did.
@@ -110,11 +110,9 @@ fn local(thumbnails: Option<PathBuf>, shared_thumbnails: Option<PathBuf>) -> Loc
 }
 
 impl ext::Thumbnails for LocalThumbnails {
-    /// None for a path that isn't local (the provider doesn't ask then).
+    /// Asked only for an absolute path: `places_local::Local` refuses any
+    /// other before it asks.
     fn thumbnail(&self, path: &str, size: u32, stop: &dyn Fn() -> bool) -> Vec<u8> {
-        if place::local(path).is_err() {
-            return Vec::new();
-        }
         let shared = self.shared_thumbnails.as_deref();
         self.thumbnails
             .as_deref()
@@ -262,7 +260,7 @@ mod tests {
         Capabilities, Cx, Entry, Error, Fetch, Fetched, ListOptions, NewKind, OpenTarget, Operation,
         PathInfo, Replace, Result, Trashed,
     };
-    use crate::place::Kind;
+    use crate::place::{self, Kind};
 
     const ARBESK: &str = "arbesk://0x00000000000000000000000000000000000000ab/12~Set";
     const ACCOUNT: &str = "arbesk://0x00000000000000000000000000000000000000ab";

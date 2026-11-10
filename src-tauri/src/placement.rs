@@ -469,7 +469,7 @@ mod tests {
             "crates/arbesk/src/store.rs", // the session's 0600 save
             "crates/places/src/files.rs", // write_json: settings and account lists
         ];
-        let roots = crate::test_support::source_roots();
+        let roots = places_local::test_support::source_roots();
         assert!(roots.iter().any(|(_, prefix)| prefix == "crates/places/src/"));
         let mut callers = Vec::new();
         for (root, prefix) in roots {

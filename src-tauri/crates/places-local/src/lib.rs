@@ -19,7 +19,9 @@ pub mod provider;
 pub mod rename;
 pub mod trash_ops;
 
-#[cfg(test)]
-mod test_support;
+/// The source guards' walker, shared with the app's guard tests (its
+/// `testing` feature), so both scan the same tree.
+#[cfg(any(test, feature = "testing"))]
+pub mod test_support;
 
 pub use provider::{Local, local};

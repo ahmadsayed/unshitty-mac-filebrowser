@@ -176,22 +176,13 @@ pub fn all_local(paths: &[String]) -> Result<Vec<PathBuf>, String> {
 
 /// One answer per path where only local paths can have one: `answer` gets
 /// the local paths, in order, in a single call; every other path gets
-/// `None`.
+/// `None`. This gate decides which paths are local; the scatter is the
+/// local provider's (`places_local::provider::answer_kept`).
 pub fn local_only<T>(
     paths: &[String],
     answer: impl FnOnce(Vec<String>) -> Vec<Option<T>>,
 ) -> Vec<Option<T>> {
-    let (positions, local): (Vec<usize>, Vec<String>) = paths
-        .iter()
-        .enumerate()
-        .filter(|(_, path)| local(path).is_ok())
-        .map(|(index, path)| (index, path.clone()))
-        .unzip();
-    let mut out: Vec<Option<T>> = paths.iter().map(|_| None).collect();
-    for (index, value) in positions.into_iter().zip(answer(local)) {
-        out[index] = value;
-    }
-    out
+    places_local::provider::answer_kept(paths, |path| local(path).is_ok(), answer)
 }
 
 #[cfg(test)]

@@ -12,8 +12,6 @@ mod properties;
 mod providers;
 mod recent;
 mod share;
-#[cfg(test)]
-mod test_support;
 mod thumbnails;
 mod updates;
 mod versions;

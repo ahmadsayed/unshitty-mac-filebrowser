@@ -9,7 +9,9 @@
 //! the thumbnailer the app hands over (its disk cache, the desktop's shared
 //! one and Quick Look stay in the app). The writes (new folders, rename,
 //! copy, move, Trash, restore) stay on the app's commands, where Keep
-//! Versions wraps them (D7), so the write methods say so instead of acting.
+//! Versions wraps them (D7), so the write methods say so instead of acting;
+//! migration step 6b moves them here, with a local `Transfer`, behind Keep
+//! Versions' decorator.
 
 use std::path::{Path, PathBuf};
 
@@ -32,6 +34,28 @@ pub fn local(path: &str) -> std::result::Result<&Path, String> {
     }
 }
 
+/// One answer per path where only some paths can have one: `answer` gets
+/// the paths `keep` accepts, in order, in a single call; every other path
+/// gets `None`. The one batch splitter: this provider's [`local_only`] and
+/// the app's local-only gate (`place::local_only`) both scatter through it.
+pub fn answer_kept<T>(
+    paths: &[String],
+    keep: impl Fn(&str) -> bool,
+    answer: impl FnOnce(Vec<String>) -> Vec<Option<T>>,
+) -> Vec<Option<T>> {
+    let (positions, kept): (Vec<usize>, Vec<String>) = paths
+        .iter()
+        .enumerate()
+        .filter(|(_, path)| keep(path))
+        .map(|(index, path)| (index, path.clone()))
+        .unzip();
+    let mut out: Vec<Option<T>> = paths.iter().map(|_| None).collect();
+    for (index, value) in positions.into_iter().zip(answer(kept)) {
+        out[index] = value;
+    }
+    out
+}
+
 /// One answer per path where only local paths can have one: `answer` gets
 /// the local paths, in order, in a single call; every other path gets
 /// `None`.
@@ -39,17 +63,7 @@ fn local_only<T>(
     paths: &[String],
     answer: impl FnOnce(Vec<String>) -> Vec<Option<T>>,
 ) -> Vec<Option<T>> {
-    let (positions, local): (Vec<usize>, Vec<String>) = paths
-        .iter()
-        .enumerate()
-        .filter(|(_, path)| local(path).is_ok())
-        .map(|(index, path)| (index, path.clone()))
-        .unzip();
-    let mut out: Vec<Option<T>> = paths.iter().map(|_| None).collect();
-    for (index, value) in positions.into_iter().zip(answer(local)) {
-        out[index] = value;
-    }
-    out
+    answer_kept(paths, |path| local(path).is_ok(), answer)
 }
 
 /// Today's errors from the file operations are words; they keep them, as
@@ -59,7 +73,8 @@ fn words(message: String) -> Error {
 }
 
 /// A write, or a lookup no command routes here yet: each still goes through
-/// its command's own dispatch, where Keep Versions wraps it (D7).
+/// its command's own dispatch, where Keep Versions wraps it (D7), until
+/// migration step 6b routes them here through Keep Versions' decorator.
 fn not_yet<T>(what: &str) -> Result<T> {
     Err(Error::Unsupported(format!("{what} doesn't go through the places registry yet.")))
 }
