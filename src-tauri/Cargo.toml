@@ -44,7 +44,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # The text a desktop thumbnail carries (Thumb::URI, Thumb::MTime), read without decoding it.
 png = "0.18"
 # Names in the desktop's shared thumbnail cache are the MD5 of the file's URI.
-md-5 = "0.10"
+md-5 = "0.11"
 rusqlite = { version = "0.41.0", default-features = false, features = ["bundled", "backup"] }
 zstd = "0.14.3"
 zip = { version = "9", default-features = false, features = ["deflate"] }
