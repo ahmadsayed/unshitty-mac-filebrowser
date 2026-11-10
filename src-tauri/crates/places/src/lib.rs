@@ -4,8 +4,9 @@
 //! one or into the app for them.
 //!
 //! The interface, wired into the app's read side (listing, existence, path
-//! info, thumbnails, opening) since step 2, and Arbesk's commands and
-//! copies since step 3: a [`Provider`]
+//! info, thumbnails, opening) since step 2, Arbesk's commands and copies
+//! since step 3, and Google Drive's copies and moves since step 4: a
+//! [`Provider`]
 //! per kind of place (blocking, POSIX-like verbs on path strings), the
 //! [`Transfer`] primitives the app's transfer engine builds copy and move
 //! from, the optional [`ext`] traits, typed [`Error`]s worded as today, and

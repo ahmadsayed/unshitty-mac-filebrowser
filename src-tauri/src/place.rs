@@ -13,14 +13,14 @@
 //! the place's provider in the `places::Registry` (`providers.rs`), whose
 //! prefix rule matches [`kind`]'s; the write commands that serve remote
 //! paths (Drive's copies, say) still pick their handler with [`kind`]. Each
-//! handler parses its own scheme (`cloud::location`, `share::location`,
+//! handler parses its own scheme (`places_gdrive::location`, `share::location`,
 //! `sftp`) and refuses a malformed path.
 //!
 //! Plain functions, no Tauri.
 
 use std::path::{Path, PathBuf};
 
-use crate::{cloud, share, sftp};
+use crate::{share, sftp};
 
 // ---- Kinds -------------------------------------------------------------------
 
@@ -44,7 +44,7 @@ pub enum Kind {
 pub fn kind(path: &str) -> Kind {
     if arbesk::is_arbesk(path) {
         Kind::Arbesk
-    } else if cloud::is_cloud(path) {
+    } else if places_gdrive::is_cloud(path) {
         Kind::Drive
     } else if share::location::is_share(path) {
         Kind::Share
@@ -63,7 +63,7 @@ pub fn local(path: &str) -> Result<&Path, String> {
     match kind(path) {
         Kind::Local if local.is_absolute() => Ok(local),
         Kind::Local => Err(format!("“{path}” is not a local file.")),
-        Kind::Drive => Err(cloud::service::unsupported()),
+        Kind::Drive => Err(places_gdrive::service::unsupported()),
         Kind::Share => Err("This action is not available for shared folders.".into()),
         Kind::Sftp => Err("This action is not available for SSH servers.".into()),
         Kind::Arbesk => Err("This action is not available for Arbesk.".into()),
@@ -282,7 +282,7 @@ mod tests {
         // `local` keeps them from std::fs; the handler they go to refuses them.
         for path in ["gdrive://", "gdrive://../root~x", "gdrive://acct/root~bad%zz"] {
             assert_eq!(kind(path), Kind::Drive);
-            assert!(cloud::parse(path).is_err(), "{path}");
+            assert!(places_gdrive::parse(path).is_err(), "{path}");
         }
         for path in ["share://", "share://r1/%2E%2E", "share://r1//x"] {
             assert_eq!(kind(path), Kind::Share);

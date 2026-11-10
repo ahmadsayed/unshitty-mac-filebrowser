@@ -33,7 +33,7 @@ use std::path::Path;
 
 use places::{Cx, Error, Landing, Transfer, Unread};
 
-use crate::cloud::is_cloud;
+use places_gdrive::is_cloud;
 use crate::placement::{self, DiscardFn, Refusal, Stage, Staged, TrashFn, Unfilled};
 
 /// The staging names of each route, next to the target.
@@ -318,9 +318,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use crate::cloud::test_server::Reply;
-    use crate::cloud::write::Ctx;
-    use crate::cloud::write::tests::{ROOT, file, folder, found, heads, ok, run, run_with};
+    use places_gdrive::test_server::Reply;
+    use places_gdrive::Ctx;
+    use places_gdrive::testing::{ROOT, file, folder, found, heads, ok, run, run_with};
     use crate::progress::Progress;
 
     // ---- Drive's own tests, through the engine -------------------------------
@@ -773,10 +773,10 @@ mod tests {
             // so this test stays harmless while it fails.
             // Not joined: when the guard holds, the reply is never asked for.
             let (base, log, _server) =
-                crate::cloud::test_server::serve_replies(vec![Reply::json(404, "{}")]);
-            let (state, _dir) = crate::cloud::write::tests::state();
+                places_gdrive::test_server::serve_replies(vec![Reply::json(404, "{}")]);
+            let (state, _dir) = places_gdrive::testing::state();
             let result = download_in(
-                &crate::cloud::write::tests::ctx(&state, &base),
+                &places_gdrive::testing::ctx(&state, &base),
                 &format!("{ROOT}/f1~a.txt"),
                 &target,
                 true,

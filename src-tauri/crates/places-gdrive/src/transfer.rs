@@ -28,13 +28,13 @@ use std::path::{Path, PathBuf};
 
 use places::{Cx, Error, Existing, Landing, Put, Reading, Refusal, Source, Unread};
 
-use crate::cloud::CloudState;
-use crate::cloud::drive::{DriveClient, DriveError, DriveFile, FileChange};
-use crate::cloud::location::DriveLocation;
-use crate::cloud::service;
-use crate::cloud::write::{self, Ctx, id_of, message, pending_target};
-use crate::fs_ops::Measure;
-use crate::progress::Progress;
+use crate::CloudState;
+use crate::drive::{DriveClient, DriveError, DriveFile, FileChange};
+use crate::location::DriveLocation;
+use crate::service;
+use crate::write::{self, Ctx, id_of, message, pending_target};
+use places::Measure;
+use places::Progress;
 
 /// Total size and item count of Drive items, for an operation's progress.
 pub fn measure(state: &CloudState, paths: &[String]) -> Result<Measure, String> {
@@ -568,8 +568,8 @@ fn unique_child(dir: &Path, name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud::test_server::Reply;
-    use crate::cloud::write::tests::{ROOT, file, folder, found, heads, ok, run};
+    use crate::test_server::Reply;
+    use crate::testing::{ROOT, file, folder, found, heads, ok, run};
     use places::Transfer;
 
     #[test]
@@ -581,7 +581,7 @@ mod tests {
         );
         assert_eq!(
             result.unwrap(),
-            crate::fs_ops::Measure {
+            places::Measure {
                 bytes: 100,
                 items: 3
             }
@@ -600,7 +600,7 @@ mod tests {
         Cx::default()
     }
 
-    fn bodies(log: &crate::cloud::test_server::Log) -> Vec<String> {
+    fn bodies(log: &crate::test_server::Log) -> Vec<String> {
         log.lock().unwrap().iter().map(|r| r.body_text()).collect()
     }
 

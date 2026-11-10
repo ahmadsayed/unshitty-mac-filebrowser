@@ -71,7 +71,7 @@ do. A pending name (a target that doesn't exist yet) keeps today's form
 |---|---|---|
 | `places` | the interface: `Provider`, the extension traits, `Entry`, `Capabilities`, `Error`, `Progress`/`Phase`/`Snapshot`/`CANCELLED`, `OpenTarget`, `Registry`, and the shared helpers providers use today from the app: `PathInfo`, `Measure`, `FileProperties`, `Refusal`'s wording, `copy_counted`/`is_cancel`, a clock, an atomic JSON save (`write_json`; the 0600 `write_json_private` stays in `config_store`), the `.downloaded` mark (one copy, which `downloads.rs` and Drive both use) | `serde`, `serde_json` |
 | `places-local` | this computer: listing, stat, mkdir, the exclusive rename, the Trash (both layouts) and its log, properties, local thumbnail sources; `cfg` per OS (Linux, macOS; Windows later) | `places`, `trash`, `libc`, `gio` (Linux), `objc2`/`xattr` (macOS), `image` |
-| `places-gdrive` | Google Drive (today's `src/cloud/`, minus the local↔Drive half of `transfer.rs`, which joins the engine: D6) | `places`, `reqwest`, `oauth2`, `keyring` |
+| `places-gdrive` | Google Drive (what was `src/cloud/`, minus the local↔Drive half of `transfer.rs` and `finish_staged`, which joined the engine: D6) | `places`, `reqwest`, `oauth2`, `keyring`, `chrono`, `image` |
 | `arbesk` | stays its own crate; its `Client` implements `places::Provider` itself (`provider.rs`) | `places` |
 | `places-sftp` | SSH servers (today's `sftp.rs`) | `places`, `ssh2` |
 | app (`src-tauri`) | commands, Tauri state, **the transfer engine** (D6), Keep Versions, shares (iroh stays in the app for now), the frontend | all of the above |
@@ -228,10 +228,10 @@ and declares how in `Capabilities`:
 | Primitive | Local | Drive | Arbesk |
 |---|---|---|---|
 | write a file or a whole folder from a source into a target path the engine chose, reporting skipped items | staged file, folder filled in place (`Stage::by_kind`) | resumable upload; a file whose upload is whole goes straight to its final name, folders and Replace staged as `.<name>.filebrowser-upload`; size checked after each file | `put` of a local model file (`write`, whose `replace` flag asks for a new version); Replace saves a new version |
-| read an item into that writer | the file or tree itself | download streamed into the target, Docs and shortcuts skipped and named, duplicate names made unique, size checked | the built `.gltf`/`.3mf` (`export`, a primitive of its own: a local file in the app cache the engine copies from as a local source, as today; `read_into` is unsupported) |
-| rename that never replaces | `renameat2`/`renamex_np` | check-then-act; the final rename of a staged copy doesn't check first, as today | — |
-| move the provider's own item to any path in it, never replacing, and move it back | `rename_new` | PATCH name + parents, after checking the name; put back on failure | — |
-| send to its Trash for Replace, and take it back | `Trash::send` / `Trash::untrash` (no parent folders made, log entry forgotten) — not `restore` | `trashed=true` / `false` | — (Replace = new version) |
+| read an item into that writer | the file or tree itself | in two steps (`read`): the item is fetched and refused if it has no bytes, then handed to the engine (`Reading`), which picks the local target by its kind and has it filled: download streamed into the target, Docs and shortcuts skipped and named, duplicate names made unique, size checked | the built `.gltf`/`.3mf` (`export`, a primitive of its own: a local file in the app cache the engine copies from as a local source, as today; `read_into` is unsupported) |
+| rename that never replaces | `renameat2`/`renamex_np` | check-then-act: one PATCH of the name, the engine having looked it up (`landing`) just before; the final rename of a staged copy doesn't check again, as before | — |
+| move the provider's own item to any path in it, never replacing, and move it back | `rename_new` | one PATCH, the name when it changes from the one Drive last gave the item, the parents when the folder changes, after the engine's lookup; put back the same way, to the item's old folder and name (`Source::home`) | — |
+| send to its Trash for Replace (or a source a move to another place copied away), and take it back | `Trash::send` / `Trash::untrash` (no parent folders made, log entry forgotten) — not `restore` | `trashed=true` / `false`; Drive's take-back is best effort, as before: if it fails, the rename's error is the transfer's | — (Replace = new version) |
 | copy the provider's own item inside it, its bytes never passing through this computer (`copy_within`) | — (Unsupported: a local copy is the engine's staged copy) | server-side `files.copy` (Docs and shortcuts too), a folder staged then renamed in, as `copy_in` and `finish_staged` do today | — |
 | discard a staged or partial copy the engine made with this provider's own primitives | removed for good | `trashed=true`, never deleted | — |
 
@@ -239,6 +239,20 @@ A transfer between two different providers meets at a local path (a write
 reads a local source, a read fills a local target); a copy inside one
 provider (Drive↔Drive, same account) is `copy_within`, so its requests stay
 the ones Drive's tests assert today.
+
+Three more primitives let the engine decide without knowing a provider's
+ids (added in step 4): `check`, the place's own refusals before any
+request (Drive's, by id: into itself, the same path, between accounts, a
+read-only connection; for a source a move must later send away, for a
+target, or both); `landing`, what is at the pending target (the items
+already called that, each saying whether the source is inside it, and the
+source itself for a transfer inside the place, with where a move puts it
+back); and `pending`, the pending path of a name in a folder, encoded as
+the place's parser reads it. The engine then makes the name-clash
+refusals itself, in today's order: a taken name without `overwrite`, an
+ambiguous one where names aren't unique, a folder replaced by its own
+child. Drive's primitives run on one context per transfer (`Ctx`), which
+remembers what `landing` fetched, so no step asks Drive twice.
 
 The policies that differ by route stay per route, as `DiscardFn` is today,
 and never go through a provider's `discard`: a Drive download's partial local
@@ -362,9 +376,24 @@ next starts only after the human merged the last.
    against its fake Arbesk.
 4. **The transfer engine takes the local↔Drive half of `cloud/transfer.rs`
    and Drive's `finish_staged`**, then Drive becomes `places-gdrive`. The
-   riskiest step, reviewed on its own: Drive's 169 tests come along, the
-   request sequences they assert stay identical, and the engine gains a
-   fake-Drive suite for every primitive in D6's table.
+   riskiest step, reviewed on its own, in two commits. First the engine
+   (`src-tauri/src/engine.rs`, beside `placement.rs`) runs every route to,
+   from and inside Drive from Drive's `places::Transfer` primitives (D6,
+   with `check`, `landing`, `pending` and the two-step `read`), Replace in
+   Drive included (`swap_in`: trash the old item, rename the staged one in,
+   take the old one back, discard a staged copy or move a staged original
+   back); downloads keep `placement::Target::place` and `VersionedTrash`.
+   Then `src/cloud/` moves into the `places-gdrive` crate with Drive's
+   `places::Provider` (`Calls`, `Live`, `Drive`), which replaces step 2's
+   adapter; the sign-in window, the `drive_*` commands and the managed
+   `CloudState` stay in `lib.rs`, which runs a copy or move on one Drive
+   context (`live_with`) for all its steps. Drive's tests came along
+   unchanged in body (the 46 that copy or move now run the engine, from
+   `engine.rs`, through wrappers named as the routes were), the request
+   sequences they assert are identical, and the engine has a fake-Drive
+   suite for every primitive in D6's table, plus each Drive primitive's
+   requests on its own. `Transfer` is no longer `Send + Sync`: the engine
+   uses one on the thread that runs the transfer.
 5. **SSH becomes `places-sftp`**; shares implement `Provider` in the app, and
    their arms move into `blocking(…)` (D3) with a test that a share listing
    runs through the registry from a blocking thread; `in_share` and

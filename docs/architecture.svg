@@ -155,7 +155,7 @@
         <rect class="deep" x="680" y="272" width="210" height="56" rx="8"/>
         <text class="n" x="696" y="293">placement.rs</text>
         <text class="tag" x="880" y="293" text-anchor="end">#146 #181</text>
-        <text class="s" x="696" y="311">refusals · staging · Replace</text>
+        <text class="s" x="696" y="311">refusals · Replace · engine.rs</text>
 
         <line class="edge" x1="890" y1="300" x2="949" y2="300" marker-end="url(#ah)"/>
         <text class="e" x="920" y="292" text-anchor="middle">send</text>
@@ -179,8 +179,8 @@
         <text class="n" x="690.0" y="385">fs_ops.rs</text>
         <text class="s" x="690.0" y="401">local files</text>
         <rect class="box" x="778.4" y="366" width="86.4" height="44" rx="7"/>
-        <text class="n" x="788.4" y="385">cloud/</text>
-        <text class="s" x="788.4" y="401">Google Drive</text>
+        <text class="n" x="788.4" y="385">gdrive</text>
+        <text class="s" x="788.4" y="401">Drive crate</text>
         <rect class="box" x="876.8" y="366" width="86.4" height="44" rx="7"/>
         <text class="n" x="886.8" y="385">share/</text>
         <text class="s" x="886.8" y="401">iroh shares</text>

@@ -1,0 +1,30 @@
+[package]
+name = "places-gdrive"
+version = "0.1.0"
+description = "Google Drive for File Browser: sign-in, listing, opening, thumbnails and the transfer primitives the app's engine copies and moves with"
+authors = ["you"]
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[features]
+# The fake Drive server and the test context, for the app's engine tests.
+testing = ["dep:tempfile"]
+
+[dependencies]
+places = { version = "0.1.0", path = "../places" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+percent-encoding = "2"
+oauth2 = { version = "5", features = ["reqwest-blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+keyring = "4"
+url = "2"
+getrandom = "0.4"
+chrono = "0.4"
+# Drive's thumbnails come as any image; they are handed on as PNG.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+tempfile = { version = "3", optional = true }
+
+[dev-dependencies]
+tempfile = "3"

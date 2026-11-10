@@ -1,7 +1,7 @@
 [workspace]
-members = ["crates/arbesk", "crates/places"]
+members = ["crates/arbesk", "crates/places", "crates/places-gdrive"]
 # `cargo test` from src-tauri keeps covering the app and its crates.
-default-members = [".", "crates/arbesk", "crates/places"]
+default-members = [".", "crates/arbesk", "crates/places", "crates/places-gdrive"]
 resolver = "3"
 
 [package]
@@ -27,6 +27,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 arbesk = { version = "0.1.0", path = "crates/arbesk" }
 places = { version = "0.1.0", path = "crates/places" }
+places-gdrive = { version = "0.1.0", path = "crates/places-gdrive" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
@@ -35,12 +36,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 plist = "1"
 percent-encoding = "2"
-oauth2 = { version = "5", features = ["reqwest-blocking"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-keyring = "4"
 url = "2"
 getrandom = "0.4"
-chrono = "0.4"
 trash = "5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # The text a desktop thumbnail carries (Thumb::URI, Thumb::MTime), read without decoding it.
@@ -76,6 +73,8 @@ unicode-normalization = "0.1.26"
 
 [dev-dependencies]
 tempfile = "3"
+# Drive's fake server and test context, for the engine's tests.
+places-gdrive = { version = "0.1.0", path = "crates/places-gdrive", features = ["testing"] }
 # tests/release_signing.rs checks release signatures as tauri-plugin-updater
 # does; both are already in Cargo.lock through tauri.
 base64 = "0.23"

@@ -5,8 +5,7 @@
 //! shows its own wait/cancel dialog. The token exchange is behind
 //! [`TokenExchange`] so tests never open a socket to Google.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -20,9 +19,9 @@ use oauth2::{
 };
 use url::Url;
 
-use crate::cloud::client::OAuthClient;
-use crate::cloud::loopback::{self, Waited};
-use crate::cloud::token::Token;
+use crate::client::OAuthClient;
+use crate::loopback::{self, Waited};
+use crate::token::Token;
 
 pub const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -99,7 +98,7 @@ pub fn start(client: &OAuthClient, scopes: &[&str]) -> Result<PendingFlow, Strin
     let (auth_url, csrf) = request.url();
 
     Ok(PendingFlow {
-        id: format!("flow-{}", crate::cloud::accounts::new_account_id()),
+        id: format!("flow-{}", crate::accounts::new_account_id()),
         auth_url: auth_url.to_string(),
         listener,
         redirect_uri,
@@ -222,7 +221,7 @@ fn http_client() -> Result<HttpClient, String> {
 }
 
 fn to_token(response: impl TokenResponse) -> Token {
-    let now = crate::recent::now();
+    let now = places::now();
     let lifetime = response
         .expires_in()
         .map(|duration| duration.as_secs() as i64)
@@ -270,7 +269,9 @@ fn parse_callback(url: &Url) -> Option<Callback> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud::client::test_client;
+    use crate::client::test_client;
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
     use std::sync::Mutex;
     use std::thread;
 
@@ -300,7 +301,7 @@ mod tests {
             Ok(Token::new(
                 "access".into(),
                 Some("refresh".into()),
-                crate::recent::now() + 3600,
+                places::now() + 3600,
                 vec![SCOPE_READONLY.into()],
             ))
         }

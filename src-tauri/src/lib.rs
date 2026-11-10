@@ -1,5 +1,4 @@
 mod archive;
-mod cloud;
 mod config_store;
 mod downloads;
 mod engine;
@@ -29,8 +28,8 @@ use progress::ProgressUpdate;
 use tauri::ipc::Channel;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
-use cloud::CloudState;
-use cloud::service::OpenTarget;
+use places_gdrive::CloudState;
+use places_gdrive::service::OpenTarget;
 use place::{Kind, Route};
 use versions::history::History;
 use versions::state::{Transfer, VersionedTrash, VersionsState};
@@ -242,7 +241,7 @@ fn cancel_operation(registry: tauri::State<progress::Registry>, op: String) {
 #[tauri::command]
 async fn measure(app: tauri::AppHandle, paths: Vec<String>) -> Result<fs_ops::Measure, String> {
     blocking(move || {
-        measure_paths(paths, |drive| cloud::transfer::measure(&app.state::<CloudState>(), drive))
+        measure_paths(paths, |drive| places_gdrive::transfer::measure(&app.state::<CloudState>(), drive))
     })
     .await?
 }
@@ -779,7 +778,7 @@ async fn file_properties(
     if place::kind(&path) == Kind::Drive {
         return blocking(move || {
             let state = app.state::<CloudState>();
-            cloud::service::file_properties(&state, &path, show_hidden)
+            places_gdrive::service::file_properties(&state, &path, show_hidden)
         })
         .await?;
     }
@@ -801,7 +800,7 @@ fn folder_size_refusal(path: &str) -> Result<(), String> {
         Kind::Sftp => Err("Folder sizes aren't available for SSH servers yet.".into()),
         Kind::Arbesk => Err("Folder sizes aren't available for Arbesk yet.".into()),
         Kind::Share => Err("Folder sizes aren't available for shared folders yet.".into()),
-        Kind::Drive => Err(cloud::service::unsupported()),
+        Kind::Drive => Err(places_gdrive::service::unsupported()),
         Kind::Local => place::local(path).map(|_| ()),
     }
 }
@@ -823,7 +822,7 @@ fn cancel_folder_size(walk: u64) {
 #[tauri::command]
 async fn make_dir(app: tauri::AppHandle, path: String) -> Result<String, String> {
     if place::kind(&path) == Kind::Drive {
-        return blocking(move || cloud::write::make_dir(&app.state::<CloudState>(), &path)).await?;
+        return blocking(move || places_gdrive::write::make_dir(&app.state::<CloudState>(), &path)).await?;
     }
     make_local_dir(path)
 }
@@ -853,7 +852,7 @@ async fn drive_transfer(
         let state = app.state::<CloudState>();
         let cx = places_cx(&app, progress.clone());
         // One context for the whole transfer: Drive's primitives run on it.
-        cloud::write::live_with(&state, &progress, |drive| {
+        places_gdrive::write::live_with(&state, &progress, |drive| {
             engine::dispatch(drive, &cx, &from, &to, overwrite, moving, &trash_local)
         })
     })
@@ -1026,7 +1025,7 @@ async fn move_entry(
 async fn rename_entry(app: tauri::AppHandle, from: String, to: String) -> Result<String, String> {
     // write::rename refuses a local path on either side.
     if place::transfer(&from, &to)? == Route::Drive {
-        return blocking(move || cloud::write::rename(&app.state::<CloudState>(), &from, &to))
+        return blocking(move || places_gdrive::write::rename(&app.state::<CloudState>(), &from, &to))
             .await?;
     }
     blocking(move || {
@@ -1136,7 +1135,7 @@ fn trash_elsewhere(
     }
     let result = progress
         .check()
-        .and_then(|()| cloud::write::trash(&app.state::<CloudState>(), path));
+        .and_then(|()| places_gdrive::write::trash(&app.state::<CloudState>(), path));
     if result.is_ok() {
         progress.add_item();
     }
@@ -1184,7 +1183,7 @@ fn trash_infos(trash: &trash_ops::Trash, paths: &[String]) -> Vec<Option<trash_o
 #[tauri::command]
 async fn restore_entry(app: tauri::AppHandle, path: String) -> Result<String, String> {
     if place::kind(&path) == Kind::Drive {
-        return blocking(move || cloud::write::restore(&app.state::<CloudState>(), &path)).await?;
+        return blocking(move || places_gdrive::write::restore(&app.state::<CloudState>(), &path)).await?;
     }
     let trashed = place::local(&path)?.to_path_buf();
     blocking(move || {
@@ -1844,14 +1843,14 @@ struct DriveConnectStart {
 #[tauri::command]
 fn drive_accounts(
     state: tauri::State<CloudState>,
-) -> Result<Vec<cloud::accounts::DriveAccount>, String> {
+) -> Result<Vec<places_gdrive::accounts::DriveAccount>, String> {
     Ok(lock_state(&state.accounts)?.items().to_vec())
 }
 
 #[tauri::command]
 fn drive_disconnect(state: tauri::State<CloudState>, account: String) -> Result<(), String> {
     if let Ok(Some(token)) = state.token(&account) {
-        cloud::oauth::revoke(token.refresh_token().unwrap_or(&token.access_token));
+        places_gdrive::oauth::revoke(token.refresh_token().unwrap_or(&token.access_token));
     }
     state.delete_token(&account)?;
     lock_state(&state.accounts)?.remove(&account)?;
@@ -1895,7 +1894,7 @@ fn drive_client_clear(state: tauri::State<CloudState>) -> Result<(), String> {
 
 #[tauri::command]
 fn drive_connect_start(state: tauri::State<CloudState>) -> Result<DriveConnectStart, String> {
-    let flow = cloud::oauth::start(&state.require_oauth_client()?, &[cloud::oauth::SCOPE_FULL])?;
+    let flow = places_gdrive::oauth::start(&state.require_oauth_client()?, &[places_gdrive::oauth::SCOPE_FULL])?;
     let start = DriveConnectStart {
         flow_id: flow.id.clone(),
         auth_url: flow.auth_url.clone(),
@@ -1914,7 +1913,7 @@ async fn drive_connect_finish(
     app: tauri::AppHandle,
     flow_id: String,
     account: Option<String>,
-) -> Result<cloud::accounts::DriveAccount, String> {
+) -> Result<places_gdrive::accounts::DriveAccount, String> {
     blocking(move || {
         let state = app.state::<CloudState>();
         let flow = lock_state(&state.flows)?
@@ -1923,13 +1922,13 @@ async fn drive_connect_finish(
             .ok_or_else(|| "This sign-in attempt is no longer active.".to_string())?;
         flow.claim()?;
 
-        let result = (|| -> Result<cloud::accounts::DriveAccount, String> {
-            let token = cloud::oauth::finish(
+        let result = (|| -> Result<places_gdrive::accounts::DriveAccount, String> {
+            let token = places_gdrive::oauth::finish(
                 &flow,
-                &cloud::oauth::GoogleExchange::new(&state.require_oauth_client()?),
-                cloud::oauth::CALLBACK_TIMEOUT,
+                &places_gdrive::oauth::GoogleExchange::new(&state.require_oauth_client()?),
+                places_gdrive::oauth::CALLBACK_TIMEOUT,
             )?;
-            let about = cloud::service::about(&state, &token.access_token)?;
+            let about = places_gdrive::service::about(&state, &token.access_token)?;
             // Signing in for an account that lost its session keeps its id.
             state.record_sign_in(about, &token, account.as_deref())
         })();
