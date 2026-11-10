@@ -9,6 +9,7 @@ mod placement;
 mod platform;
 mod progress;
 mod properties;
+mod providers;
 mod recent;
 mod sftp;
 mod share;
@@ -265,39 +266,67 @@ fn measure_paths(
     Ok(total)
 }
 
+// ---------------------------------------------------------------------------
+// Places: one provider per kind of place (`providers.rs`), picked by the
+// path's scheme. The read side asks them; writes keep their own dispatch.
+// ---------------------------------------------------------------------------
+
+/// The context of one provider call: `progress`, and the app cache folder.
+fn places_cx(app: &tauri::AppHandle, progress: progress::Progress) -> places::Cx {
+    let cache_dir = app.path().app_cache_dir().unwrap_or_default();
+    places::Cx { progress, cache_dir }
+}
+
+/// The providers reach the app's managed state through its handle, as the
+/// commands do.
+impl<T: Send + Sync + 'static> providers::Reach<T> for tauri::AppHandle {
+    fn reach(&self) -> &T {
+        self.state::<T>().inner()
+    }
+}
+
+/// The registry over the app's managed state and folders.
+fn places_registry(app: &tauri::AppHandle) -> places::Registry {
+    let folders = providers::Folders {
+        cache: app.path().app_cache_dir().map_err(|error| error.to_string()),
+        thumbnails: thumbnail_dir(app),
+        shared_thumbnails: shared_thumbnail_dir(app),
+    };
+    providers::registry(app.clone(), folders)
+}
+
+/// Whether `path` is in a received share, whose listing and download are
+/// still awaited here rather than run by its provider (D3, until step 5).
+fn in_share(app: &tauri::AppHandle, path: &str) -> bool {
+    app.state::<places::Registry>().provider_for(path).scheme() == providers::SHARE
+}
+
 #[tauri::command]
 async fn list_dir(
     app: tauri::AppHandle,
     path: String,
     show_hidden: bool,
 ) -> Result<Vec<fs_ops::Entry>, String> {
-    match place::kind(&path) {
-        Kind::Share => {
-            let state = app.state::<share::state::ShareState>();
-            let hint = share_versions_hint(&app);
-            state.list_dir(&path, show_hidden, hint).await
-        }
-        Kind::Local => list_local(path, show_hidden).await,
-        kind => blocking(move || list_remote(&app, kind, &path, show_hidden)).await?,
+    if in_share(&app, &path) {
+        return share_listing(&app, &path, show_hidden).await;
     }
+    blocking(move || {
+        let options = places::ListOptions { show_hidden };
+        let cx = places_cx(&app, progress::Progress::default());
+        let registry = app.state::<places::Registry>();
+        registry.provider_for(&path).list(&path, &options, &cx).map_err(String::from)
+    })
+    .await?
 }
 
-/// `list_dir` for the remote kinds whose listing blocks: SSH, Drive, Arbesk.
-fn list_remote(
+/// A received share's folder, listed on the async runtime.
+async fn share_listing(
     app: &tauri::AppHandle,
-    kind: Kind,
     path: &str,
     show_hidden: bool,
 ) -> Result<Vec<fs_ops::Entry>, String> {
-    match kind {
-        Kind::Sftp => app.state::<sftp::SftpState>().list(path, show_hidden),
-        Kind::Drive => cloud::service::list_dir(&app.state::<CloudState>(), path, show_hidden),
-        Kind::Arbesk => app
-            .state::<arbesk::Client>()
-            .list(path)
-            .map(|entries| entries.into_iter().map(arbesk_entry).collect()),
-        other => Err(format!("{other:?} paths are not handled here.")),
-    }
+    let state = app.state::<share::state::ShareState>();
+    state.list_dir(path, show_hidden, share_versions_hint(app)).await
 }
 
 /// An Arbesk listing row as one of the app's own entries.
@@ -312,12 +341,6 @@ fn arbesk_entry(entry: arbesk::Entry) -> fs_ops::Entry {
         is_symlink: entry.is_symlink,
         cloud: None,
     }
-}
-
-/// `list_dir` for a folder on this computer.
-async fn list_local(path: String, show_hidden: bool) -> Result<Vec<fs_ops::Entry>, String> {
-    place::local(&path)?;
-    blocking(move || fs_ops::list_dir(path, show_hidden)).await?
 }
 
 #[tauri::command]
@@ -520,8 +543,13 @@ async fn open_target(
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<OpenTarget, String> {
-    if place::kind(&path) == Kind::Local {
-        return open_local_target(path);
+    {
+        let registry = app.state::<places::Registry>();
+        let provider = registry.provider_for(&path);
+        if provider.scheme().is_empty() {
+            // The file itself: nothing to download, so no progress to report.
+            return fetch_to_open(provider, &path, &places::Cx::default());
+        }
     }
     let tracking = Tracking::start(&app, &op, on_progress);
     let result = download_to_open(&app, path, &tracking.progress).await;
@@ -529,63 +557,28 @@ async fn open_target(
     result
 }
 
-/// `open_target` for a path on this computer: the file itself.
-fn open_local_target(path: String) -> Result<OpenTarget, String> {
-    place::local(&path)?;
-    Ok(OpenTarget::File { path })
+/// What `provider` opens for `path`.
+fn fetch_to_open(provider: &dyn places::Provider, path: &str, cx: &places::Cx) -> Result<OpenTarget, String> {
+    provider.fetch(path, places::Fetch::Open, cx).map(OpenTarget::from).map_err(String::from)
 }
 
-/// A remote file's copy to open, downloaded by its kind's handler (each
-/// parses its own scheme and refuses a malformed path).
+/// A remote file's copy to open, or the page to open instead, fetched by
+/// its place's provider (each parses its own scheme and refuses a
+/// malformed path); a received share's, on the async runtime.
 async fn download_to_open(
     app: &tauri::AppHandle,
     path: String,
     progress: &progress::Progress,
 ) -> Result<OpenTarget, String> {
-    match place::kind(&path) {
-        Kind::Share => share_target(app, &path, progress).await,
-        Kind::Local => open_local_target(path),
-        kind => {
-            let (app, progress) = (app.clone(), progress.clone());
-            blocking(move || cached_target(&app, kind, &path, &progress)).await?
-        }
+    if in_share(app, &path) {
+        return share_target(app, &path, progress).await;
     }
-}
-
-/// A copy in the app cache for the remote kinds whose download blocks: a
-/// Drive file's snapshot (or a Google Docs file's page), an SSH server's
-/// file, an Arbesk asset.
-fn cached_target(
-    app: &tauri::AppHandle,
-    kind: Kind,
-    path: &str,
-    progress: &progress::Progress,
-) -> Result<OpenTarget, String> {
-    match kind {
-        Kind::Drive => drive_target(app, path, progress),
-        Kind::Sftp => sftp_target(app, path, progress),
-        Kind::Arbesk => arbesk_target(app, path, progress),
-        other => Err(format!("{other:?} paths are not handled here.")),
-    }
-}
-
-/// A Drive file's snapshot in the app cache, or a Google Docs file's page.
-fn drive_target(app: &tauri::AppHandle, path: &str, progress: &progress::Progress) -> Result<OpenTarget, String> {
-    let cache = app.path().app_cache_dir().map_err(|error| error.to_string())?;
-    cloud::service::open(&app.state::<CloudState>(), path, &cache, progress)
-}
-
-/// An Arbesk asset opens in Arbesk's Studio, in the browser; the preview
-/// still builds its file (`preview_bytes`).
-fn arbesk_target(app: &tauri::AppHandle, path: &str, _progress: &progress::Progress) -> Result<OpenTarget, String> {
-    let url = app.state::<arbesk::Client>().studio_url(path)?;
-    Ok(OpenTarget::Url { url })
-}
-
-/// An SSH server's file, downloaded into the app cache.
-fn sftp_target(app: &tauri::AppHandle, path: &str, progress: &progress::Progress) -> Result<OpenTarget, String> {
-    let path = app.state::<sftp::SftpState>().open(path, progress)?;
-    Ok(OpenTarget::File { path })
+    let (app, progress) = (app.clone(), progress.clone());
+    blocking(move || {
+        let cx = places_cx(&app, progress);
+        fetch_to_open(app.state::<places::Registry>().provider_for(&path), &path, &cx)
+    })
+    .await?
 }
 
 /// A received share's file, fetched into the app cache.
@@ -629,7 +622,11 @@ async fn preview_text(path: String, limit: usize) -> Result<fs_ops::TextPreview,
 #[tauri::command]
 async fn preview_bytes(app: tauri::AppHandle, path: String, limit: u64) -> Result<tauri::ipc::Response, String> {
     let limit = limit.clamp(1, 512 * 1024 * 1024);
-    let bytes = blocking(move || fs_ops::preview_bytes(preview_file(&app, &path)?, limit)).await??;
+    let bytes = blocking(move || {
+        let cx = places_cx(&app, progress::Progress::default());
+        fs_ops::preview_bytes(preview_file(&app.state::<places::Registry>(), &path, &cx)?, limit)
+    })
+    .await??;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -664,19 +661,15 @@ async fn arbesk_part(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-/// `preview_file_with` the app's Arbesk builds.
-fn preview_file(app: &tauri::AppHandle, path: &str) -> Result<String, String> {
-    preview_file_with(path, |path| app.state::<arbesk::Client>().build(path, &progress::Progress::default()))
-}
-
-/// The file on this computer whose bytes preview `path`: the file itself, or
-/// an Arbesk asset's copy in the app cache, made by `build`. Every other
-/// path is refused.
-fn preview_file_with(path: &str, build: impl FnOnce(&str) -> Result<PathBuf, String>) -> Result<String, String> {
-    if place::kind(path) == Kind::Arbesk {
-        return build(path).map(|file| file.to_string_lossy().into_owned());
+/// The file on this computer whose bytes preview `path`, as its place's
+/// provider fetches it: the file itself, or an Arbesk asset's copy built in
+/// the app cache. Every other place refuses with its local-only words.
+fn preview_file(registry: &places::Registry, path: &str, cx: &places::Cx) -> Result<String, String> {
+    match registry.provider_for(path).fetch(path, places::Fetch::Preview, cx)? {
+        places::Fetched::File(file) => Ok(file.to_string_lossy().into_owned()),
+        // No provider previews a page; refused as anything else not local.
+        places::Fetched::Url(_) => Err(place::local(path).err().unwrap_or_else(|| format!("“{path}” is not a local file."))),
     }
-    place::local(path).map(|_| path.to_string())
 }
 
 #[tauri::command]
@@ -735,27 +728,17 @@ async fn path_info(
     paths: Vec<String>,
 ) -> Result<Vec<Option<fs_ops::PathInfo>>, String> {
     blocking(move || {
-        let state = app.state::<CloudState>();
-        Ok(path_infos(&paths, |path| cloud::service::path_info(&state, path).ok()))
+        let cx = places_cx(&app, progress::Progress::default());
+        Ok(path_infos(&app.state::<places::Registry>(), &paths, &cx))
     })
     .await?
 }
 
-/// `path_info` for a batch: Drive paths through `drive`, shares and SSH
-/// servers have none.
-fn path_infos(
-    paths: &[String],
-    drive: impl Fn(&str) -> Option<fs_ops::PathInfo>,
-) -> Vec<Option<fs_ops::PathInfo>> {
-    let mut out = place::local_only(paths, fs_ops::path_info);
-    for (info, path) in out.iter_mut().zip(paths) {
-        match place::kind(path) {
-            Kind::Drive => *info = drive(path),
-            Kind::Arbesk => *info = arbesk::is_folder(path).map(|is_dir| fs_ops::PathInfo { is_dir, device: 0 }),
-            _ => {}
-        }
-    }
-    out
+/// `path_info` for a batch: each place's provider answers its own paths in
+/// one call (this computer asks the disk once; shares and SSH servers have
+/// nothing to say).
+fn path_infos(registry: &places::Registry, paths: &[String], cx: &places::Cx) -> Vec<Option<fs_ops::PathInfo>> {
+    registry.answer_each(paths, |provider, batch| provider.path_info(batch, cx))
 }
 
 /// Why the Properties dialog can't describe `path` yet, if it can't.
@@ -864,27 +847,22 @@ async fn drive_transfer(
     .await?
 }
 
+/// Whether an item is at `path`, as its place's provider sees it: Drive and
+/// Arbesk (a name pending in a collection) ask their servers, this computer
+/// its disk, and shares and SSH servers have none.
 #[tauri::command]
 async fn path_exists(app: tauri::AppHandle, path: String) -> bool {
     blocking(move || {
-        exists_at(
-            &path,
-            |path| cloud::service::path_exists(&app.state::<CloudState>(), path),
-            |path| app.state::<arbesk::Client>().exists(path),
-        )
+        let cx = places_cx(&app, progress::Progress::default());
+        exists_in(&app.state::<places::Registry>(), &path, &cx)
     })
     .await
     .unwrap_or(false)
 }
 
-/// `path_exists`: Drive paths through `drive`, Arbesk's (a name pending in a
-/// collection) through `arbesk`, the others on disk.
-fn exists_at(path: &str, drive: impl FnOnce(&str) -> bool, arbesk: impl FnOnce(&str) -> bool) -> bool {
-    match place::kind(path) {
-        Kind::Drive => drive(path),
-        Kind::Arbesk => arbesk(path),
-        _ => place::local(path).is_ok_and(|path| fs_ops::path_exists(path.to_string_lossy().into())),
-    }
+/// `path_exists` for `path`: its place's provider answers.
+fn exists_in(registry: &places::Registry, path: &str, cx: &places::Cx) -> bool {
+    registry.provider_for(path).exists(path, cx)
 }
 
 #[tauri::command]
@@ -1582,25 +1560,17 @@ async fn thumbnail(
     ticket: Option<u64>,
 ) -> tauri::ipc::Response {
     let size = size.clamp(32, 1024);
-    let png = match place::kind(&path) {
-        Kind::Drive => blocking(move || cloud::service::thumbnail(&app.state::<CloudState>(), &path, size))
-            .await
-            .unwrap_or_default(),
-        // The thumbnail the asset was saved with, if any.
-        Kind::Arbesk => {
-            let handle = app.clone();
-            cancellable(&app, &window, ticket, move |stop| {
-                handle.state::<arbesk::Client>().thumbnail(&path, size, stop)
-            })
-            .await
-        }
-        _ if place::local(&path).is_err() => Vec::new(),
-        _ => {
-            let handle = app.clone();
-            cancellable(&app, &window, ticket, move |stop| local_thumbnail(&handle, &path, size, stop))
-                .await
-        }
-    };
+    if app.state::<places::Registry>().provider_for(&path).extensions().thumbnails.is_none() {
+        // Shares and SSH servers have none.
+        return tauri::ipc::Response::new(Vec::new());
+    }
+    let handle = app.clone();
+    let png = cancellable(&app, &window, ticket, move |stop| {
+        let registry = handle.state::<places::Registry>();
+        let thumbnails = registry.provider_for(&path).extensions().thumbnails;
+        thumbnails.map(|place| place.thumbnail(&path, size, stop)).unwrap_or_default()
+    })
+    .await;
     tauri::ipc::Response::new(png)
 }
 
@@ -1620,20 +1590,6 @@ async fn cancellable(
     })
     .await
     .unwrap_or_default()
-}
-
-/// `thumbnail` for a local file: the desktop's own thumbnail (Linux), Quick
-/// Look or the image decoder, through the disk cache.
-fn local_thumbnail(app: &tauri::AppHandle, path: &str, size: u32, stop: &dyn Fn() -> bool) -> Vec<u8> {
-    let shared = shared_thumbnail_dir(app);
-    thumbnail_dir(app)
-        .and_then(|dir| {
-            thumbnails::thumbnail_unless(Path::new(path), size, &dir, shared.as_deref(), stop)
-                .ok()
-                .flatten()
-        })
-        .and_then(|p| std::fs::read(p).ok())
-        .unwrap_or_default()
 }
 
 /// Start sharing local files with a QR code; the id names the share for
@@ -2341,6 +2297,8 @@ pub fn run() {
                 config_dir.clone(),
                 cache_dir,
             ));
+            // One provider per kind of place, over the states above.
+            app.manage(places_registry(app.handle()));
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 handle.state::<VersionsState>().startup();
@@ -2564,6 +2522,43 @@ mod dispatch_tests {
         assert_eq!(counts(strings(&[RELATIVE])), vec![None]);
     }
 
+    // `list_dir`, `path_info` and `path_exists` ask the registry. Drive
+    // and Arbesk need a server, so stand-ins answer their calls where a
+    // test says so (`providers::testing`); the registry, every adapter and
+    // the commands' own code run as in the app.
+
+    /// `list_dir` for a path the registry sends to this computer.
+    async fn list_local(path: String, show_hidden: bool) -> Result<Vec<fs_ops::Entry>, String> {
+        let options = places::ListOptions { show_hidden };
+        let registry = providers::testing::plain();
+        registry.provider_for(&path).list(&path, &options, &places::Cx::default()).map_err(String::from)
+    }
+
+    /// `path_info`'s answer, with Drive's server answering from `drive`.
+    fn path_infos_with(
+        paths: &[String],
+        drive: impl Fn(&str) -> Option<fs_ops::PathInfo> + Send + Sync + 'static,
+    ) -> Vec<Option<fs_ops::PathInfo>> {
+        let drive = providers::testing::StubDrive {
+            path_info: Box::new(move |path| drive(path).ok_or_else(|| "File not found.".into())),
+            ..Default::default()
+        };
+        let registry = providers::testing::registry(drive, Default::default());
+        path_infos(&registry, paths, &places::Cx::default())
+    }
+
+    /// `path_exists`' answer, with Drive's and Arbesk's servers answering
+    /// from `drive` and `arbesk`.
+    fn exists_at(
+        path: &str,
+        drive: impl Fn(&str) -> bool + Send + Sync + 'static,
+        arbesk: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) -> bool {
+        let drive = providers::testing::StubDrive { exists: Box::new(drive), ..Default::default() };
+        let arbesk = providers::testing::StubArbesk { exists: Box::new(arbesk), ..Default::default() };
+        exists_in(&providers::testing::registry(drive, arbesk), path, &places::Cx::default())
+    }
+
     #[test]
     fn list_dir_lists_local_folders_and_refuses_relative_ones() {
         // list_dir sends the remote kinds to their own handlers; the rest
@@ -2581,26 +2576,27 @@ mod dispatch_tests {
         let f = fixture();
         let mut paths = vec![f.folder.clone(), f.file.clone()];
         paths.extend(remote());
-        let asked = RefCell::new(Vec::new());
-        let out = path_infos(&paths, |path| {
-            asked.borrow_mut().push(path.to_string());
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let asking = asked.clone();
+        let out = path_infos_with(&paths, move |path| {
+            asking.lock().unwrap().push(path.to_string());
             Some(fs_ops::PathInfo { is_dir: true, device: 7 })
         });
-        assert_eq!(asked.into_inner(), strings(&[DRIVE, BAD_DRIVE]));
+        assert_eq!(*asked.lock().unwrap(), strings(&[DRIVE, BAD_DRIVE]));
         let kinds: Vec<Option<(bool, bool)>> =
             out.iter().map(|o| o.as_ref().map(|i| (i.is_dir, i.device == 7))).collect();
         assert_eq!(
             kinds,
             vec![Some((true, false)), Some((false, false)), Some((true, true)), Some((true, true)), None, None, None, None]
         );
-        assert_eq!(path_infos(&strings(&[RELATIVE]), |_| panic!("not Drive")), vec![None]);
+        assert_eq!(path_infos_with(&strings(&[RELATIVE]), |_| panic!("not Drive")), vec![None]);
     }
 
     #[test]
     fn path_info_knows_arbesk_folders_and_files() {
         let account = "arbesk://0x00000000000000000000000000000000000000ab";
         let paths = strings(&[account, &format!("{account}/1~Set"), &format!("{account}/1~Set/a1~Box.gltf"), "arbesk://bad"]);
-        let out = path_infos(&paths, |_| panic!("not Drive"));
+        let out = path_infos_with(&paths, |_| panic!("not Drive"));
         let kinds: Vec<Option<bool>> = out.iter().map(|o| o.as_ref().map(|i| i.is_dir)).collect();
         assert_eq!(kinds, vec![Some(true), Some(true), Some(false), None]);
     }
@@ -2662,7 +2658,7 @@ mod dispatch_tests {
         }
         assert!(!exists_at(RELATIVE, no, no));
         let pending = "arbesk://0x00000000000000000000000000000000000000ab/1~Set/~Box.gltf";
-        assert!(exists_at(pending, no, |path| path == pending));
+        assert!(exists_at(pending, no, move |path| path == pending));
         assert!(!exists_at(pending, no, |_| false));
     }
 
@@ -2963,6 +2959,17 @@ mod read_gate_tests {
     use super::*;
     use tauri::async_runtime::block_on;
 
+    /// `preview_bytes`' file for `path`, through the registry, with
+    /// Arbesk's builds from `build`.
+    fn preview_file_with(
+        path: &str,
+        build: impl Fn(&str) -> Result<PathBuf, String> + Send + Sync + 'static,
+    ) -> Result<String, String> {
+        let arbesk = providers::testing::StubArbesk { build: Box::new(build), ..Default::default() };
+        let registry = providers::testing::registry(Default::default(), arbesk);
+        preview_file(&registry, path, &places::Cx::default())
+    }
+
     /// Each refused path with its refusal, with `relative` as the relative one.
     fn refused(relative: &'static str) -> Vec<(&'static str, String)> {
         vec![
@@ -2982,7 +2989,7 @@ mod read_gate_tests {
             assert_eq!(preview_file_with(path, |_| panic!("not Arbesk")).err(), Some(refusal), "{path}");
         }
         let asset = "arbesk://0x00000000000000000000000000000000000000ab/1~Set/a1~Box.gltf";
-        let built = preview_file_with(asset, |path| {
+        let built = preview_file_with(asset, move |path| {
             assert_eq!(path, asset);
             Ok(PathBuf::from("/cache/arbesk/bafyA/Box.gltf"))
         });
@@ -3008,6 +3015,12 @@ mod read_gate_tests {
         let root = dir.path().to_string_lossy().to_string();
         search_local(&root, "notes", false, 10, &mut |batch| found.extend(batch), &|| false).unwrap();
         assert_eq!(found.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["notes.txt"]);
+    }
+
+    /// `open_target` for a path the registry sends to this computer.
+    fn open_local_target(path: String) -> Result<OpenTarget, String> {
+        let registry = providers::testing::plain();
+        fetch_to_open(registry.provider_for(&path), &path, &places::Cx::default())
     }
 
     #[test]

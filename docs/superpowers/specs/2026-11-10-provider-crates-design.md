@@ -100,6 +100,10 @@ pub trait Provider: Send + Sync {
     /// Every item at a pending `parent/~name`: more than one where names
     /// aren't unique (Drive), so Replace can refuse instead of guessing.
     fn lookup(&self, pending: &str, cx: &Cx) -> Result<Vec<Entry>>;
+    /// `path_exists` as today: false where the place can't tell.
+    fn exists(&self, path: &str, cx: &Cx) -> bool;
+    /// `path_info` for this provider's paths of a batch, one call per batch.
+    fn path_info(&self, paths: &[String], cx: &Cx) -> Vec<Option<PathInfo>>;
 
     /// For open and preview only: a local file with this item's bytes (the
     /// file itself here, a download or a build in the app cache elsewhere),
@@ -127,6 +131,15 @@ pub trait Provider: Send + Sync {
 `Cx` is the context of one call: the `Progress` it reports into (and whose
 cancel flag `check()` reads between chunks and items) and the app cache
 folder (`cache_dir`) where a provider may leave downloads and builds.
+
+`exists` and `path_info` are methods of their own, not answers built from
+`stat` and `lookup` (found in step 2): an `Entry` has no device number,
+which drag and drop needs, and Drive answers the two differently today
+(existence ignores trashed items and looks a pending `…/~name` up by name;
+path info asks for the item, trashed or not), so building them from `stat`
+would change what Drive is asked and answers. A batch across places goes
+through `Registry::answer_each`: each provider gets its own paths, in order,
+in one call, so this computer still asks the disk once.
 
 `rename_entry` keeps its `(from, to)` arguments: the command checks that
 `to`'s parent is `from`'s, keeping Drive's wording ("Rename keeps an item in
@@ -300,10 +313,26 @@ next starts only after the human merged the last.
 1. **`places` crate with the types and shared helpers** (D2's list, D8).
    `arbesk` and the app re-export them; nothing else changes. `Entry.cloud`
    stays typed, so Drive's tests don't change.
-2. **Registry and read-side dispatch:** `list`, `stat`, `exists`,
-   `path_info`, `thumbnail`, `fetch`/open, through providers that wrap
-   today's code in place. The `_ =>` fallthroughs go away; the registry's
-   prefix rule (D10) keeps `place.rs`' table test passing unchanged.
+2. **Registry and read-side dispatch:** `list`, `exists`, `path_info`,
+   `thumbnail` (`ext::Thumbnails`), `fetch` (open, and the preview's file
+   for `preview_bytes`), through providers that
+   wrap today's code in place (`src-tauri/src/providers.rs`, Arbesk's
+   adapter too until step 3). The `_ =>` fallthroughs go away; the
+   registry's prefix rule (D10) keeps `place.rs`' table test passing
+   unchanged. `stat`, `lookup` and the writes keep their commands' own
+   dispatch until the steps that need them, and each adapter says so if
+   asked. Received shares stay async in this step: `list_dir` and
+   `open_target` still await their listing and download (D3), and their
+   provider answers the rest. So two commands still look at the provider's
+   scheme, the only exceptions to D10's one lookup and one call: `in_share`
+   sends a share's listing and download to the async code, and
+   `open_target` opens a path of this computer's provider (scheme "")
+   without registering a progress operation, as it did. Both go in step 5,
+   when shares run in `blocking(…)` and a fetch can say whether it reports
+   progress. Capabilities are filled per kind, and per
+   path where today's refusals differ by path (an Arbesk asset can be
+   copied out, a collection can't; a relative path is refused as not
+   local), with a table test against `place.rs`' refusals.
 3. **Arbesk implements `Provider`** (it is already a crate): reads, its
    `Transfer` for copy-in and copy-out, `Preview`, `Versions`, `Sharing`,
    `Accounts`.
@@ -314,7 +343,8 @@ next starts only after the human merged the last.
    fake-Drive suite for every primitive in D6's table.
 5. **SSH becomes `places-sftp`**; shares implement `Provider` in the app, and
    their arms move into `blocking(…)` (D3) with a test that a share listing
-   runs through the registry from a blocking thread.
+   runs through the registry from a blocking thread; `in_share` and
+   `open_target`'s scheme check go with them (step 2).
 6. **Local becomes `places-local`** (fs_ops' file operations, the Trash and
    its log, the exclusive rename, platform pieces). The engine stays in the
    app (D6); Keep Versions stays as its decorator (D7). `/big` (10,000
