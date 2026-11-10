@@ -197,12 +197,15 @@ answers per path, without the network:
 
 Capabilities are a **table per provider kind**, fetched once at startup by a
 new `capabilities()` command into a synchronous cache, so `locations.ts` and
-`item-actions.ts` stay synchronous pure functions; the first render waits for
-it as it waits for Home today. The mock (`dev/mock-tauri/core.ts`) serves the
-same table, with a case in `tests/mock-core.test.ts` and a shared fixture
+`item-actions.ts` stay synchronous pure functions. Nothing waits for it (as
+done in step 7): the frontend has a built-in copy of the table, which
+answers until the command's answer lands (or if it fails) and says the
+same. The mock (`dev/mock-tauri/core.ts`) serves the same table, with a case
+in `tests/mock-core.test.ts` and a shared fixture (`tests/capabilities.json`)
 pinned against the Rust table test (as `tests/fold-cases.json` does for
-`fold`). `tests/locations.test.ts`, `tests/item-actions.test.ts` and the
-three `item-actions-matrix-*.test.ts` files get the table as a fixture.
+`fold`) and against the built-in copy. `tests/locations.test.ts`,
+`tests/item-actions.test.ts` and the three `item-actions-matrix-*.test.ts`
+files run unchanged against the built-in copy, which the fixture pins.
 
 The frontend reads **only the booleans** in this migration. It keeps its own
 toast wording and every "Kept:" cell exactly as it is; moving a message to
@@ -523,7 +526,34 @@ next starts only after the human merged the last.
    about 92 ms before and 91 ms after.
 7. **Capabilities reach the frontend** (D5): the command, its mock and
    mock-core case, the startup cache, the shared fixture; `locations.ts` and
-   `item-actions.ts` read the booleans rule by rule.
+   `item-actions.ts` read the booleans rule by rule. As done: the command
+   is `capabilities` (`lib.rs`, a plain command: it asks no server and
+   touches no file), answered by `providers::capability_table`, which asks
+   each registered provider's `capabilities` for a path of each kind the
+   frontend tells apart (`providers::KINDS`: a folder, Drive, a share, an
+   SSH server, and Arbesk's account, collection and asset, which differ) and
+   keeps only the booleans (`KindCapabilities`), plus `can_copy_in`, true
+   where the place has no copy-in refusal (only an Arbesk collection takes
+   copies among Arbesk's rows). No refusal wording crosses: the frontend
+   keeps its toasts. `src/capabilities.ts` holds the cache, its built-in
+   table and `loadCapabilities`, which `main.ts` starts at startup without
+   waiting. `locations.ts` picks a row per kind (`capabilityRow`; an Arbesk
+   item with no path counts as a collection, anything but a collection or an
+   asset as the account) and reads `read_only` (`isReadOnlyKind`),
+   `knows_sizes`, `searchable` (recursive search), `can_create` with
+   `read_only` (new items and Paste), `can_copy_out` (the copy-out refusal)
+   and `can_copy_in` (Arbesk's "Paste into a collection."); `item-actions.ts`
+   reads `can_rename` and `can_trash` (`byPlace`) and cut's read-only check
+   through `isReadOnlyKind`. Kept as the frontend's own: the answers for its
+   views (Recent, Starred, Network, the Trash, `ViewKind`), and the rules no
+   capability matches: a local location and local files, versions, the
+   remote preview, an Arbesk asset's own thumbnail (`has_thumbnails` says a
+   place has thumbnails, not one per file), Arbesk's model-file check,
+   Delete Permanently, Star, Add to Bookmarks, Properties, Open Item
+   Location. `tests/capabilities.json` holds the table and each row's path;
+   `providers.rs`' test, `tests/capabilities.test.ts` (the built-in table,
+   the row each path picks, the rules reading a changed table) and
+   `tests/mock-core.test.ts` check it.
 8. **Docs:** AGENTS.md's layout, `docs/architecture.md` and its diagram.
 
 **Guard tests move with the code.** The tests that enforce "only

@@ -22,7 +22,13 @@ It owns no rules: it asks small modules that have no DOM.
   Network, the Trash, a folder in it, a share, an SSH server, Arbesk, Drive,
   a folder) and says what that kind of place allows. `item-actions.ts` holds
   one rule per action that several surfaces reach (menus, keys, the preview,
-  the row star), asked inside the action itself. `preview-actions.ts` builds
+  the row star), asked inside the action itself. What a place allows (read
+  only, creates, renames, trashes, copies in or out, knows sizes, searches)
+  is the backend's providers' own answer: `capabilities.ts` holds their
+  table, one row per kind (Arbesk's account, collection and asset apart),
+  read once at startup with nothing waiting for it, and both modules read
+  it rule by rule; only the frontend's own views (Recent, Starred, Network,
+  the Trash) and rules no capability matches keep their own cells. `preview-actions.ts` builds
   the Space preview's buttons from those rules, and `preview-versions.ts`
   its version control for a Keep Versions file or an Arbesk asset. `models.ts` says which files
   the preview shows as 3D models; `model-viewer.ts` (three.js, loaded only
@@ -45,7 +51,9 @@ It owns no rules: it asks small modules that have no DOM.
 
 **Across the boundary.** `api.ts` has one typed wrapper per Tauri command.
 In the tests, `dev/mock-tauri` answers the same commands from an in-memory
-filesystem.
+filesystem. The `capabilities` command answers from the registered
+providers (`providers::capability_table`); `tests/capabilities.json` pins it,
+and the frontend's built-in copy and the mock's answer against it.
 
 **In the backend.** `lib.rs` registers thin commands. Every path a command
 receives goes through `place.rs` first: its kind, whether it is a local path
@@ -127,8 +135,8 @@ opening files, windows, dragging out and installs.
 
 | Change | Lands in |
 | --- | --- |
-| Allow or refuse an action in a kind of place | one cell in `item-actions.ts` |
-| A new kind of location (SMB, WebDAV) | a row in `paths.ts`, a kind in `locations.ts`, a `Kind` in `place.rs`, a provider in `providers.rs` and its registry line |
+| Allow or refuse an action in a kind of place | the place's provider's `capabilities` (and `tests/capabilities.json`, `capabilities.ts`' built-in table) where a capability answers the rule; otherwise one cell in `item-actions.ts` |
+| A new kind of location (SMB, WebDAV) | a row in `paths.ts`, a kind in `locations.ts`, a `Kind` in `place.rs`, a provider in `providers.rs` and its registry line, its row in `providers::KINDS`, `capabilities.ts` and `tests/capabilities.json` |
 | A new online account provider (OneDrive, Dropbox) | a row in `providers.ts` and in `PROVIDER_ACTIONS` (`main.ts`), plus the location rows above |
 | Arbesk's listings, builds, versions or uploads | the private modules of `src-tauri/crates/arbesk`, answered through its provider (`provider.rs`: `places::Provider`, `Transfer` and the extensions); a new kind of answer is a method on a `places` extension, not a new type on the facade |
 | How copy, move or Replace behaves | `engine.rs` (every route: `local` on this computer, the routes to, from and inside Google Drive) and `placement.rs` (what lands on this computer); a step of a local copy or move is one of `places-local`'s `transfer.rs` primitives |
