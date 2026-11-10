@@ -285,14 +285,30 @@ impl<T: Send + Sync + 'static> providers::Reach<T> for tauri::AppHandle {
     }
 }
 
-/// The registry over the app's managed state and folders.
-fn places_registry(app: &tauri::AppHandle) -> places::Registry {
+/// The registry over the app's managed state and folders, with `arbesk`,
+/// the Arbesk client, as its own provider.
+fn places_registry(app: &tauri::AppHandle, arbesk: Arc<arbesk::Client>) -> places::Registry {
     let folders = providers::Folders {
         cache: app.path().app_cache_dir().map_err(|error| error.to_string()),
         thumbnails: thumbnail_dir(app),
         shared_thumbnails: shared_thumbnail_dir(app),
     };
-    providers::registry(app.clone(), folders)
+    providers::registry(app.clone(), folders, arbesk)
+}
+
+/// Arbesk's provider, for the `arbesk_*` commands: they are Arbesk's own,
+/// so every path they get goes to it and its parser answers, as the
+/// client answered before the registry.
+fn arbesk_place(registry: &places::Registry) -> Result<&dyn places::Provider, String> {
+    registry.provider(arbesk::SCHEME).ok_or_else(|| "Arbesk isn't available.".to_string())
+}
+
+/// One of Arbesk's extensions, as `pick` takes it from its provider.
+fn arbesk_ext<'a, T: ?Sized + 'a>(
+    registry: &'a places::Registry,
+    pick: impl FnOnce(places::Extensions<'a>) -> Option<&'a T>,
+) -> Result<&'a T, String> {
+    pick(arbesk_place(registry)?.extensions()).ok_or_else(|| "Arbesk isn't available.".to_string())
 }
 
 /// Whether `path` is in a received share, whose listing and download are
@@ -327,20 +343,6 @@ async fn share_listing(
 ) -> Result<Vec<fs_ops::Entry>, String> {
     let state = app.state::<share::state::ShareState>();
     state.list_dir(path, show_hidden, share_versions_hint(app)).await
-}
-
-/// An Arbesk listing row as one of the app's own entries.
-fn arbesk_entry(entry: arbesk::Entry) -> fs_ops::Entry {
-    fs_ops::Entry {
-        name: entry.name,
-        path: entry.path,
-        is_dir: entry.is_dir,
-        size: entry.size,
-        modified: entry.modified,
-        is_hidden: entry.is_hidden,
-        is_symlink: entry.is_symlink,
-        cloud: None,
-    }
 }
 
 #[tauri::command]
@@ -630,16 +632,26 @@ async fn preview_bytes(app: tauri::AppHandle, path: String, limit: u64) -> Resul
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-/// An Arbesk asset's scene for the Space preview: its parts and where each goes.
+/// An Arbesk asset's scene for the Space preview: its parts and where each
+/// goes, as Arbesk's provider describes it.
 #[tauri::command]
-async fn arbesk_scene(app: tauri::AppHandle, path: String, version: Option<String>) -> Result<arbesk::Scene, String> {
-    blocking(move || app.state::<arbesk::Client>().scene(&path, version.as_deref())).await?
+async fn arbesk_scene(app: tauri::AppHandle, path: String, version: Option<String>) -> Result<places::Json, String> {
+    blocking(move || {
+        let registry = app.state::<places::Registry>();
+        let preview = arbesk_ext(&registry, |ext| ext.preview)?;
+        preview.scene(&path, version.as_deref()).map_err(String::from)
+    })
+    .await?
 }
 
 /// An Arbesk asset's saves, oldest first, for the preview's versions.
 #[tauri::command]
-async fn arbesk_versions(app: tauri::AppHandle, path: String) -> Result<Vec<arbesk::Version>, String> {
-    blocking(move || app.state::<arbesk::Client>().versions(&path)).await?
+async fn arbesk_versions(app: tauri::AppHandle, path: String) -> Result<Vec<places::Version>, String> {
+    blocking(move || {
+        let registry = app.state::<places::Registry>();
+        arbesk_ext(&registry, |ext| ext.versions)?.versions(&path).map_err(String::from)
+    })
+    .await?
 }
 
 /// One part of an Arbesk asset's scene, as the preview loads it (a GLB or a
@@ -654,7 +666,10 @@ async fn arbesk_part(
 ) -> Result<tauri::ipc::Response, String> {
     let limit = limit.clamp(1, 512 * 1024 * 1024);
     let bytes = blocking(move || {
-        let file = app.state::<arbesk::Client>().part(&path, version.as_deref(), &key, &progress::Progress::default())?;
+        let registry = app.state::<places::Registry>();
+        let preview = arbesk_ext(&registry, |ext| ext.preview)?;
+        let cx = places_cx(&app, progress::Progress::default());
+        let file = preview.part(&path, version.as_deref(), &key, &cx)?;
         fs_ops::preview_bytes(file.to_string_lossy().into_owned(), limit)
     })
     .await??;
@@ -885,7 +900,8 @@ async fn copy_entry(
     result
 }
 
-/// `copy_source` with the app's Arbesk exports, built on a blocking thread.
+/// `copy_source` with the source's provider's export (an Arbesk asset's own
+/// file), built on a blocking thread.
 async fn copied_file(
     app: &tauri::AppHandle,
     from: String,
@@ -897,9 +913,19 @@ async fn copied_file(
     }
     let (app, progress) = (app.clone(), progress.clone());
     blocking(move || {
-        copy_source(from, true, |path| app.state::<arbesk::Client>().export(path, &progress))
+        let cx = places_cx(&app, progress);
+        let registry = app.state::<places::Registry>();
+        copy_source(from, true, |path| Ok(transfer_of(&registry, path)?.export(path, &cx)?))
     })
     .await?
+}
+
+/// The transfer primitives of `path`'s provider: the route table
+/// (`place::copy`) already said this copy may run, so a place without them
+/// is refused as not writable.
+fn transfer_of<'a>(registry: &'a places::Registry, path: &str) -> Result<&'a dyn places::Transfer, String> {
+    let provider = registry.provider_for(path);
+    provider.transfer().ok_or_else(|| place::writable(path).err().unwrap_or_else(|| format!("“{path}” can't be copied.")))
 }
 
 /// The file a copy reads: `from` itself, or the file `export` builds for
@@ -930,7 +956,10 @@ async fn copy_routed(
     }
     if route == Route::IntoArbesk {
         return blocking(move || {
-            app.state::<arbesk::Client>().add(&to, Path::new(&from), overwrite, &progress)
+            let cx = places_cx(&app, progress);
+            let registry = app.state::<places::Registry>();
+            let put = transfer_of(&registry, &to)?.write(Path::new(&from), &to, overwrite, &cx)?;
+            Ok(put.path)
         })
         .await?;
     }
@@ -1698,8 +1727,8 @@ async fn volumes() -> Result<Vec<platform::Volume>, String> {
 // ---- Arbesk ------------------------------------------------------------------
 
 #[tauri::command]
-fn arbesk_accounts(state: tauri::State<arbesk::Client>) -> Vec<arbesk::Account> {
-    state.accounts()
+fn arbesk_accounts(registry: tauri::State<places::Registry>) -> Vec<places::Json> {
+    arbesk_ext(&registry, |ext| ext.accounts).map(|accounts| accounts.accounts()).unwrap_or_default()
 }
 
 #[derive(serde::Serialize)]
@@ -1710,14 +1739,18 @@ struct ArbeskConnectStart {
 
 /// Start an Arbesk sign-in for `email`; the frontend opens `sign_in_url`.
 #[tauri::command]
-fn arbesk_connect_start(state: tauri::State<arbesk::Client>, email: String) -> Result<ArbeskConnectStart, String> {
-    let (flow_id, sign_in_url) = state.connect_start(&email)?;
-    Ok(ArbeskConnectStart { flow_id, sign_in_url })
+fn arbesk_connect_start(registry: tauri::State<places::Registry>, email: String) -> Result<ArbeskConnectStart, String> {
+    let started = arbesk_ext(&registry, |ext| ext.accounts)?.sign_in_start(&email)?;
+    Ok(ArbeskConnectStart { flow_id: started.flow_id, sign_in_url: started.url })
 }
 
 #[tauri::command]
-async fn arbesk_connect_finish(app: tauri::AppHandle, flow_id: String) -> Result<arbesk::Account, String> {
-    blocking(move || app.state::<arbesk::Client>().connect_finish(&flow_id)).await?
+async fn arbesk_connect_finish(app: tauri::AppHandle, flow_id: String) -> Result<places::Json, String> {
+    blocking(move || {
+        let registry = app.state::<places::Registry>();
+        arbesk_ext(&registry, |ext| ext.accounts)?.sign_in_finish(&flow_id).map_err(String::from)
+    })
+    .await?
 }
 
 /// Whether copying into the account `path` belongs to can start without a
@@ -1725,15 +1758,22 @@ async fn arbesk_connect_finish(app: tauri::AppHandle, flow_id: String) -> Result
 /// It reads the keychain, which can stop for an unlock prompt: off the main thread.
 #[tauri::command]
 async fn arbesk_signed_in(app: tauri::AppHandle, path: String) -> Result<bool, String> {
-    blocking(move || app.state::<arbesk::Client>().signed_in(&path)).await
+    blocking(move || {
+        let registry = app.state::<places::Registry>();
+        arbesk_ext(&registry, |ext| ext.accounts).is_ok_and(|accounts| accounts.signed_in(&path))
+    })
+    .await
 }
 
 #[tauri::command]
-fn arbesk_connect_cancel(state: tauri::State<arbesk::Client>, flow_id: String) {
-    state.connect_cancel(&flow_id);
+fn arbesk_connect_cancel(registry: tauri::State<places::Registry>, flow_id: String) {
+    if let Ok(accounts) = arbesk_ext(&registry, |ext| ext.accounts) {
+        accounts.sign_in_cancel(&flow_id);
+    }
 }
 
-/// Create a collection in an Arbesk account: its `arbesk://` path.
+/// Create a collection in an Arbesk account: its `arbesk://` path (New
+/// Collection, Arbesk's provider's `create`).
 /// It uploads to IPFS and waits on the chain: off the main thread.
 #[tauri::command]
 async fn arbesk_create_collection(
@@ -1741,7 +1781,12 @@ async fn arbesk_create_collection(
     path: String,
     name: String,
 ) -> Result<String, String> {
-    blocking(move || app.state::<arbesk::Client>().create_collection(&path, &name)).await?
+    blocking(move || {
+        let cx = places_cx(&app, progress::Progress::default());
+        let registry = app.state::<places::Registry>();
+        Ok(arbesk_place(&registry)?.create(&path, &name, places::NewKind::Folder, &cx)?)
+    })
+    .await?
 }
 
 /// Add an Arbesk account to a collection's editor list by its email, as a
@@ -1753,10 +1798,10 @@ async fn arbesk_share_collection(
     path: String,
     email: String,
     role: u8,
-) -> Result<arbesk::Shared, String> {
+) -> Result<places::Shared, String> {
     blocking(move || {
-        app.state::<arbesk::Client>()
-            .share_collection(&path, &email, role)
+        let registry = app.state::<places::Registry>();
+        arbesk_ext(&registry, |ext| ext.sharing)?.share(&path, &email, role).map_err(String::from)
     })
     .await?
 }
@@ -1764,7 +1809,11 @@ async fn arbesk_share_collection(
 /// It ends the session on Arbesk's server (up to 30 s) and clears the keychain.
 #[tauri::command]
 async fn arbesk_disconnect(app: tauri::AppHandle, account: String) -> Result<(), String> {
-    blocking(move || app.state::<arbesk::Client>().disconnect(&account)).await?
+    blocking(move || {
+        let registry = app.state::<places::Registry>();
+        arbesk_ext(&registry, |ext| ext.accounts)?.disconnect(&account).map_err(String::from)
+    })
+    .await?
 }
 
 #[derive(serde::Serialize)]
@@ -2270,7 +2319,8 @@ pub fn run() {
                 std::env::var("FILEBROWSER_RELAY").ok(),
             ));
             app.manage(CloudState::new(&config_dir));
-            app.manage(arbesk::Client::new(
+            // Arbesk's client is its own crate's provider, held by the registry.
+            let arbesk = Arc::new(arbesk::Client::new(
                 cache_dir.clone(),
                 config_dir.join("arbesk_accounts.json"),
                 config_dir.join("tokens"),
@@ -2298,7 +2348,7 @@ pub fn run() {
                 cache_dir,
             ));
             // One provider per kind of place, over the states above.
-            app.manage(places_registry(app.handle()));
+            app.manage(places_registry(app.handle(), arbesk));
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 handle.state::<VersionsState>().startup();
@@ -2523,12 +2573,15 @@ mod dispatch_tests {
     }
 
     // `list_dir`, `path_info` and `path_exists` ask the registry. Drive
-    // and Arbesk need a server, so stand-ins answer their calls where a
-    // test says so (`providers::testing`); the registry, every adapter and
-    // the commands' own code run as in the app.
+    // needs a server, so a stand-in answers its calls where a test says so
+    // (`providers::testing`); Arbesk is the real client with no account,
+    // which asks no server. The registry, every provider and the commands'
+    // own code run as in the app.
 
-    /// `list_dir` for a path the registry sends to this computer.
-    async fn list_local(path: String, show_hidden: bool) -> Result<Vec<fs_ops::Entry>, String> {
+    /// `list_dir` for a path the registry sends to this computer, on this
+    /// thread as on `list_dir`'s blocking one (the registry's Arbesk client
+    /// can't be made or dropped on the async runtime).
+    fn list_local(path: String, show_hidden: bool) -> Result<Vec<fs_ops::Entry>, String> {
         let options = places::ListOptions { show_hidden };
         let registry = providers::testing::plain();
         registry.provider_for(&path).list(&path, &options, &places::Cx::default()).map_err(String::from)
@@ -2543,32 +2596,25 @@ mod dispatch_tests {
             path_info: Box::new(move |path| drive(path).ok_or_else(|| "File not found.".into())),
             ..Default::default()
         };
-        let registry = providers::testing::registry(drive, Default::default());
+        let registry = providers::testing::registry(drive);
         path_infos(&registry, paths, &places::Cx::default())
     }
 
-    /// `path_exists`' answer, with Drive's and Arbesk's servers answering
-    /// from `drive` and `arbesk`.
-    fn exists_at(
-        path: &str,
-        drive: impl Fn(&str) -> bool + Send + Sync + 'static,
-        arbesk: impl Fn(&str) -> bool + Send + Sync + 'static,
-    ) -> bool {
+    /// `path_exists`' answer, with Drive's server answering from `drive`.
+    fn exists_at(path: &str, drive: impl Fn(&str) -> bool + Send + Sync + 'static) -> bool {
         let drive = providers::testing::StubDrive { exists: Box::new(drive), ..Default::default() };
-        let arbesk = providers::testing::StubArbesk { exists: Box::new(arbesk), ..Default::default() };
-        exists_in(&providers::testing::registry(drive, arbesk), path, &places::Cx::default())
+        exists_in(&providers::testing::registry(drive), path, &places::Cx::default())
     }
 
     #[test]
     fn list_dir_lists_local_folders_and_refuses_relative_ones() {
         // list_dir sends the remote kinds to their own handlers; the rest
         // come here. `src` exists in the tests' working directory.
-        use tauri::async_runtime::block_on;
         let f = fixture();
-        let listed = block_on(list_local(f.folder.clone(), false)).unwrap();
+        let listed = list_local(f.folder.clone(), false).unwrap();
         assert_eq!(listed.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["a.txt"]);
-        assert_eq!(block_on(list_local(RELATIVE.into(), false)).unwrap_err(), "“src” is not a local file.");
-        assert_eq!(block_on(list_local(String::new(), false)).unwrap_err(), "“” is not a local file.");
+        assert_eq!(list_local(RELATIVE.into(), false).unwrap_err(), "“src” is not a local file.");
+        assert_eq!(list_local(String::new(), false).unwrap_err(), "“” is not a local file.");
     }
 
     #[test]
@@ -2601,31 +2647,6 @@ mod dispatch_tests {
         assert_eq!(kinds, vec![Some(true), Some(true), Some(false), None]);
     }
 
-    #[test]
-    fn an_arbesk_listing_row_becomes_an_app_entry() {
-        let entry = arbesk_entry(arbesk::Entry {
-            name: "Box.gltf".into(),
-            path: "arbesk://0xab/1~Set/a1~Box.gltf".into(),
-            is_dir: false,
-            size: 0,
-            modified: 1_762_000_000,
-            is_hidden: false,
-            is_symlink: false,
-        });
-        assert_eq!(entry.name, "Box.gltf");
-        assert_eq!(entry.path, "arbesk://0xab/1~Set/a1~Box.gltf");
-        assert!(!entry.is_dir && entry.size == 0 && entry.modified == 1_762_000_000);
-        assert!(!entry.is_hidden && !entry.is_symlink && entry.cloud.is_none());
-        assert_eq!(
-            serde_json::to_string(&entry).unwrap(),
-            concat!(
-                r#"{"name":"Box.gltf","path":"arbesk://0xab/1~Set/a1~Box.gltf","is_dir":false,"#,
-                r#""size":0,"modified":1762000000,"is_hidden":false,"is_symlink":false}"#
-            ),
-            "no cloud key: the frontend reads one as a Drive item"
-        );
-    }
-
     /// The JSON the frontend gets for a row on this computer, byte for
     /// byte, with no `cloud` key.
     #[test]
@@ -2648,18 +2669,20 @@ mod dispatch_tests {
     #[test]
     fn path_exists_asks_drive_and_looks_on_disk_for_the_rest() {
         let f = fixture();
-        let no = |_: &str| -> bool { panic!("not Drive or Arbesk") };
-        assert!(exists_at(&f.file, no, no));
-        assert!(!exists_at(&format!("{}/gone", f.folder), no, no));
-        assert!(exists_at(DRIVE, |path| path == DRIVE, no));
-        assert!(!exists_at(BAD_DRIVE, |_| false, no));
+        let no = |_: &str| -> bool { panic!("not Drive") };
+        assert!(exists_at(&f.file, no));
+        assert!(!exists_at(&format!("{}/gone", f.folder), no));
+        assert!(exists_at(DRIVE, |path| path == DRIVE));
+        assert!(!exists_at(BAD_DRIVE, |_| false));
         for path in [SHARE, BAD_SHARE, SFTP, BAD_SFTP] {
-            assert!(!exists_at(path, no, no), "{path}");
+            assert!(!exists_at(path, no), "{path}");
         }
-        assert!(!exists_at(RELATIVE, no, no));
+        assert!(!exists_at(RELATIVE, no));
+        // Arbesk's own provider looks a pending name up in its collection
+        // (its crate's tests answer with a fake Arbesk); without the account
+        // connected, there is none.
         let pending = "arbesk://0x00000000000000000000000000000000000000ab/1~Set/~Box.gltf";
-        assert!(exists_at(pending, no, move |path| path == pending));
-        assert!(!exists_at(pending, no, |_| false));
+        assert!(!exists_at(pending, no));
     }
 
     #[test]
@@ -2959,15 +2982,10 @@ mod read_gate_tests {
     use super::*;
     use tauri::async_runtime::block_on;
 
-    /// `preview_bytes`' file for `path`, through the registry, with
-    /// Arbesk's builds from `build`.
-    fn preview_file_with(
-        path: &str,
-        build: impl Fn(&str) -> Result<PathBuf, String> + Send + Sync + 'static,
-    ) -> Result<String, String> {
-        let arbesk = providers::testing::StubArbesk { build: Box::new(build), ..Default::default() };
-        let registry = providers::testing::registry(Default::default(), arbesk);
-        preview_file(&registry, path, &places::Cx::default())
+    /// `preview_bytes`' file for `path`, through the registry, Arbesk being
+    /// the real client with no account.
+    fn preview_file_at(path: &str) -> Result<String, String> {
+        preview_file(&providers::testing::plain(), path, &places::Cx::default())
     }
 
     /// Each refused path with its refusal, with `relative` as the relative one.
@@ -2986,14 +3004,13 @@ mod read_gate_tests {
         // crate root), so their refusal isn't a missing file.
         for (path, refusal) in refused("Cargo.toml") {
             assert_eq!(block_on(preview_text(path.into(), 100)).unwrap_err(), refusal, "{path}");
-            assert_eq!(preview_file_with(path, |_| panic!("not Arbesk")).err(), Some(refusal), "{path}");
+            assert_eq!(preview_file_at(path).err(), Some(refusal), "{path}");
         }
+        // An Arbesk asset's file is built by Arbesk's provider (its crate's
+        // tests build one from a fake Arbesk); without the account
+        // connected, it says so.
         let asset = "arbesk://0x00000000000000000000000000000000000000ab/1~Set/a1~Box.gltf";
-        let built = preview_file_with(asset, move |path| {
-            assert_eq!(path, asset);
-            Ok(PathBuf::from("/cache/arbesk/bafyA/Box.gltf"))
-        });
-        assert_eq!(built.unwrap(), "/cache/arbesk/bafyA/Box.gltf");
+        assert_eq!(preview_file_at(asset).unwrap_err(), "Connect this Arbesk account first.");
         // A copy reads its own source, or the file built for an Arbesk asset.
         assert_eq!(copy_source("/a/b.txt".into(), false, |_| panic!("not Arbesk")).unwrap(), "/a/b.txt");
         let exported = copy_source(asset.into(), true, |path| {

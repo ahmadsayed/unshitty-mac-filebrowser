@@ -47,12 +47,7 @@ pub struct Editor {
 
 /// What sharing did: the member's address and role, and whether it was added
 /// (`false` when an existing member's role changed).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Shared {
-    pub address: String,
-    pub role: u8,
-    pub added: bool,
-}
+pub use places::Shared;
 
 fn already(role: u8) -> String {
     format!("That account is already a{}.", if role == merkle::EDITOR { "n editor" } else { " viewer" })

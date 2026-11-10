@@ -58,8 +58,9 @@ the place may be written. Then:
   `trash_ops::Trash`: the trash log, where an item came from (sidecar, log,
   Finder's Put Back), and both Trash layouts;
 - listing, whether an item exists, path info, thumbnails and opening ask
-  the place's provider in the `places::Registry` (`providers.rs`: one thin
-  adapter per kind over the modules below, picked by the path's scheme);
+  the place's provider in the `places::Registry`, picked by the path's
+  scheme (`providers.rs`: one thin adapter per kind over the modules below,
+  and Arbesk's own crate's provider, registered as it is);
 - listing, counts, opening and reading go to `fs_ops.rs`, `cloud/` (Google
   Drive), `share/` (iroh shares), `sftp.rs` (SSH, read only) and the
   `crates/arbesk` workspace crate (Arbesk: its read path rebuilt from public
@@ -71,11 +72,16 @@ the place may be written. Then:
   through the wallet relay), shared by email by adding a Viewer or Editor to
   the editor Merkle tree on IPFS and the chain, and local model files copied
   in with Arbesk's own storage protocol, uploads and the collection update
-  through Arbesk's relay, under a session kept in the keychain). `lib.rs`
-  reaches it only
-  through the crate's facade (`Client`, `Account`, `Entry`, `Scene`,
-  `Version`, `Location`, `Progress`, `Shared`); the modules behind it are private, so
-  the feature can change or move without leaking into the app.
+  through Arbesk's relay, under a session kept in the keychain). Its
+  `Client` is a `places::Provider`: the registry holds it, and the
+  `arbesk_*` commands and copies in and out reach it through it (its
+  `Transfer`'s `write` and `export`, and its `Versions`, `Preview`,
+  `Sharing` and `Accounts` extensions, whose own records reach the frontend
+  as the crate serialises them, `places::Json`). The route table stays in
+  `place.rs`. Beyond that, `lib.rs` sees only the crate's facade (`Client`,
+  `SCHEME`, `Location` and the path helpers `place.rs` parses with); the
+  modules behind it are private, so the feature can change or move without
+  leaking into the app.
 
 Replace sends the old item to the Trash through `trash_ops::Trash` and, if
 the last rename fails, takes it back out and forgets its log entry. Every
@@ -91,7 +97,7 @@ between macOS and Linux too: XDG paths and volumes.
 | Allow or refuse an action in a kind of place | one cell in `item-actions.ts` |
 | A new kind of location (SMB, WebDAV) | a row in `paths.ts`, a kind in `locations.ts`, a `Kind` in `place.rs`, a provider in `providers.rs` and its registry line |
 | A new online account provider (OneDrive, Dropbox) | a row in `providers.ts` and in `PROVIDER_ACTIONS` (`main.ts`), plus the location rows above |
-| Arbesk's listings, builds, versions or uploads | the private modules of `src-tauri/crates/arbesk`; expose a new type or method only through its `lib.rs` facade, and map it in `src-tauri/src/lib.rs` |
+| Arbesk's listings, builds, versions or uploads | the private modules of `src-tauri/crates/arbesk`, answered through its provider (`provider.rs`: `places::Provider`, `Transfer` and the extensions); a new kind of answer is a method on a `places` extension, not a new type on the facade |
 | How copy, move or Replace behaves | `placement.rs` |
 | The trash log, Put Back, Restore, Empty Trash | `trash_ops::Trash` |
 | Something new that remembers paths | one holder in `path-refs.ts` |
