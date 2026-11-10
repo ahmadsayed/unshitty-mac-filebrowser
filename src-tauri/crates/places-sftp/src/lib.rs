@@ -68,6 +68,53 @@ enum HostDecision {
     Unknown(String),
 }
 
+/// What a known-hosts check leads to: go on, ask the user, or save the key
+/// they trusted.
+#[derive(Debug, PartialEq)]
+enum KeyStep {
+    Known,
+    Ask,
+    Save,
+}
+
+/// The known-hosts answer and the user's trust decision, as the next step;
+/// a changed key or a failed check refuses the connection.
+fn key_step(result: CheckResult, trust: bool) -> Result<KeyStep, String> {
+    match result {
+        CheckResult::Match => Ok(KeyStep::Known),
+        CheckResult::Mismatch => Err(
+            "The server's host key changed. This could be an attack; connection refused.".into(),
+        ),
+        CheckResult::NotFound if !trust => Ok(KeyStep::Ask),
+        CheckResult::NotFound => Ok(KeyStep::Save),
+        CheckResult::Failure => Err("Could not check the server's host key.".into()),
+    }
+}
+
+/// The TCP connection and SSH handshake, before any host key check.
+fn open_session(target: &Target) -> Result<Session, String> {
+    let tcp = TcpStream::connect((target.host.as_str(), target.port))
+        .map_err(|e| format!("Could not reach {}: {e}", target.label))?;
+    tcp.set_read_timeout(Some(Duration::from_secs(20))).ok();
+    tcp.set_write_timeout(Some(Duration::from_secs(20))).ok();
+    let mut session = Session::new().map_err(|e| e.to_string())?;
+    session.set_tcp_stream(tcp);
+    session.handshake().map_err(|e| format!("SSH handshake failed: {e}"))?;
+    Ok(session)
+}
+
+/// The server as the app shows it, at its root until signed in.
+fn server_info(target: &Target) -> ServerInfo {
+    ServerInfo {
+        id: target.id.clone(),
+        label: target.label.clone(),
+        url: target.root_url.clone(),
+        host: target.host.clone(),
+        port: target.port,
+        user: target.user.clone(),
+    }
+}
+
 pub struct SftpState {
     known_hosts: PathBuf,
     home: PathBuf,
@@ -156,44 +203,51 @@ impl SftpState {
         trust_host: bool,
     ) -> Result<ConnectOutcome, String> {
         let target = parse_target(input)?;
-        let addr = (target.host.as_str(), target.port);
-        let tcp = TcpStream::connect(addr)
-            .map_err(|e| format!("Could not reach {}: {e}", target.label))?;
-        tcp.set_read_timeout(Some(Duration::from_secs(20))).ok();
-        tcp.set_write_timeout(Some(Duration::from_secs(20))).ok();
-        let mut session = Session::new().map_err(|e| e.to_string())?;
-        session.set_tcp_stream(tcp);
-        session.handshake().map_err(|e| format!("SSH handshake failed: {e}"))?;
+        let session = open_session(&target)?;
+        let decision = self.check_host_key(&session, &target, trust_host)?;
+        Ok(self.after_host_check(decision, session, &target, password.as_deref()))
+    }
 
-        let mut server = ServerInfo {
-            id: target.id.clone(),
-            label: target.label.clone(),
-            url: target.root_url.clone(),
-            host: target.host.clone(),
-            port: target.port,
-            user: target.user.clone(),
-        };
-        match self.check_host_key(&session, &target, trust_host)? {
+    /// An unknown host key stops here to ask; a known one goes on to sign in.
+    fn after_host_check(
+        &self,
+        decision: HostDecision,
+        session: Session,
+        target: &Target,
+        password: Option<&str>,
+    ) -> ConnectOutcome {
+        let server = server_info(target);
+        match decision {
             HostDecision::Unknown(fingerprint) => {
-                return Ok(ConnectOutcome::HostKeyUnknown { server, fingerprint });
+                ConnectOutcome::HostKeyUnknown { server, fingerprint }
             }
-            HostDecision::Known => {}
+            HostDecision::Known => self.sign_in(session, target, server, password),
         }
-        if !self.authenticate(&session, &target.user, password.as_deref()) {
-            return Ok(ConnectOutcome::AuthNeeded { server });
+    }
+
+    /// Authenticates and keeps the connection, or says a password is needed.
+    fn sign_in(
+        &self,
+        session: Session,
+        target: &Target,
+        mut server: ServerInfo,
+        password: Option<&str>,
+    ) -> ConnectOutcome {
+        if !self.authenticate(&session, &target.user, password) {
+            return ConnectOutcome::AuthNeeded { server };
         }
         // Start in the user's home folder unless the URL named a path.
-        server.url = start_url(&session, &target, &server.url);
+        server.url = start_url(&session, target, &server.url);
         let conn = Arc::new(Mutex::new(SftpConn {
             session,
             info: server.clone(),
         }));
         lock(&self.conns).insert(server.id.clone(), conn);
-        Ok(ConnectOutcome::Connected { server })
+        ConnectOutcome::Connected { server }
     }
 
-    /// `Ok(Some(fingerprint))` means the key is unknown and the caller should
-    /// ask; `Ok(None)` means the connection can proceed.
+    /// `Unknown(fingerprint)` means the key is unknown and the caller should
+    /// ask; `Known` means the connection can proceed.
     fn check_host_key(
         &self,
         session: &Session,
@@ -204,20 +258,26 @@ impl SftpState {
             .host_key()
             .ok_or_else(|| "The server didn't present a host key.".to_string())?;
         let mut known = self.known_hosts(session)?;
-        let host = known_host_name(&target.host, target.port);
-        match known.check_port(&target.host, target.port, key) {
-            CheckResult::Match => Ok(HostDecision::Known),
-            CheckResult::Mismatch => Err(
-                "The server's host key changed. This could be an attack; connection refused.".into(),
-            ),
-            CheckResult::NotFound if !trust => {
-                Ok(HostDecision::Unknown(fingerprint(session)))
-            }
-            CheckResult::NotFound => {
-                self.save_host_key(&mut known, &host, key, kind)?;
+        let step = key_step(known.check_port(&target.host, target.port, key), trust)?;
+        self.take_key_step(step, session, &mut known, target, (key, kind))
+    }
+
+    fn take_key_step(
+        &self,
+        step: KeyStep,
+        session: &Session,
+        known: &mut ssh2::KnownHosts,
+        target: &Target,
+        (key, kind): (&[u8], ssh2::HostKeyType),
+    ) -> Result<HostDecision, String> {
+        match step {
+            KeyStep::Known => Ok(HostDecision::Known),
+            KeyStep::Ask => Ok(HostDecision::Unknown(fingerprint(session))),
+            KeyStep::Save => {
+                let host = known_host_name(&target.host, target.port);
+                self.save_host_key(known, &host, key, kind)?;
                 Ok(HostDecision::Known)
             }
-            CheckResult::Failure => Err("Could not check the server's host key.".into()),
         }
     }
 
@@ -478,6 +538,34 @@ mod tests {
         assert!(parse_target("host").is_err());
         assert!(parse_target("ssh://user@host").is_err());
         assert!(parse_target("").is_err());
+    }
+
+    #[test]
+    fn host_key_answers_lead_to_the_next_step() {
+        assert_eq!(key_step(CheckResult::Match, false), Ok(KeyStep::Known));
+        assert_eq!(key_step(CheckResult::Match, true), Ok(KeyStep::Known));
+        assert_eq!(key_step(CheckResult::NotFound, false), Ok(KeyStep::Ask));
+        assert_eq!(key_step(CheckResult::NotFound, true), Ok(KeyStep::Save));
+        // Trusting never accepts a changed key or a check that failed.
+        for trust in [false, true] {
+            assert_eq!(
+                key_step(CheckResult::Mismatch, trust).unwrap_err(),
+                "The server's host key changed. This could be an attack; connection refused."
+            );
+            assert_eq!(
+                key_step(CheckResult::Failure, trust).unwrap_err(),
+                "Could not check the server's host key."
+            );
+        }
+    }
+
+    #[test]
+    fn a_server_starts_at_its_root() {
+        let server = server_info(&parse_target("sftp://me@example.com:2222/docs").unwrap());
+        assert_eq!(server.id, "me@example.com:2222");
+        assert_eq!(server.label, "me@example.com:2222");
+        assert_eq!(server.url, "sftp://me@example.com:2222/");
+        assert_eq!((server.host.as_str(), server.port, server.user.as_str()), ("example.com", 2222, "me"));
     }
 
     #[test]
