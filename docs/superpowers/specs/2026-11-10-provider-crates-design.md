@@ -590,7 +590,10 @@ trash-crate exemption with `trash_ops` to `places-local`
 After the migration, a new provider is: a crate and a registry line; its
 capabilities row (`providers::KINDS`, `tests/capabilities.json`,
 `capabilities.ts`' built-in table); a `Kind` in `place.rs` (its local-only
-and read-only words; the route table refuses it until a route is opened); a
+and read-only words; the route table refuses it until a route is opened),
+with its own words in `lib.rs`' `properties_refusal` and
+`folder_size_refusal` (both match on `Kind` exhaustively) and its scheme in
+`providers.rs`' test `scheme_of`; a
 row in `paths.ts`' SCHEMES and a `Place`; a `LocationKind` and a cell in each
 `Record<Place, …>` and `Record<LocationKind, …>` table (`locations.ts`,
 `item-actions.ts`, `main.ts`' menus), plus a row in `listing-failure.ts` or
@@ -615,9 +618,14 @@ later step.
   opening, the preview's file), this computer's writes (New Folder, New
   File, Rename, Batch Rename, Move to Trash, Put Back), every copy and move
   and the `arbesk_*` commands go through it.
-- **Engine.** `engine.rs` runs every copy and move from the two ends'
-  `places::Transfer` primitives and declared `Capabilities`; `placement.rs`
-  places what lands on this computer. `cloud/`, `sftp.rs` and
+- **Engine.** `engine.rs` runs the copies and moves on this computer and
+  to, from and inside Drive from the two ends' `places::Transfer`
+  primitives and declared `Capabilities`, on sessions `lib.rs` opens from
+  the registry (the engine never sees it); `placement.rs` places what lands
+  on this computer. Arbesk skips it: a local model file into a collection
+  (`Route::IntoArbesk`) is Arbesk's `Transfer::write`, called from
+  `lib.rs`, and an asset out is built by `Transfer::export` before the
+  engine copies the built file. `cloud/`, `sftp.rs` and
   `local_transfer.rs` are gone; `fs_ops.rs` and `trash_ops.rs` are
   `places-local`'s.
 - **Frontend.** The `capabilities` command (`providers::capability_table`)
@@ -664,11 +672,13 @@ the guard tests over every crate.
 New: `src-tauri/crates/places`, `places-local`, `places-gdrive`,
 `places-sftp`, `src-tauri/src/providers.rs`, `engine.rs`,
 `share/provider.rs`, `versions/versioned.rs`, `src/capabilities.ts`,
-`tests/capabilities.json`. Gone into the crates: `cloud/`, `sftp.rs`,
-`fs_ops.rs`, `trash_ops.rs`, and `local_transfer.rs` (step 6's, into
-`engine.rs`). Changed over the steps: `src-tauri/Cargo.toml` (workspace),
-`src-tauri/src/lib.rs`, `place.rs`, `engine.rs` and `placement.rs` (the engine), `fs_ops.rs`,
-`trash_ops.rs`, `cloud/`, `sftp.rs`, `share/`, `downloads.rs`,
+`tests/capabilities.json` (`engine.rs` in step 4, #256). Gone into the
+crates: `cloud/` (#256, into `places-gdrive`), `sftp.rs` (#257, into
+`places-sftp`), `fs_ops.rs` and `trash_ops.rs` (#258, into
+`places-local`). Added and gone again: `local_transfer.rs`, added in step 6
+(#258) and folded into the app's `engine.rs` in step 6b (#259). Changed
+over the steps: `src-tauri/Cargo.toml` (workspace), `src-tauri/src/lib.rs`,
+`place.rs`, `placement.rs` (the engine's landing on this computer), `share/`, `downloads.rs`,
 `progress.rs`, the `arbesk` crate, `src/locations.ts`, `src/item-actions.ts`,
 `src/api.ts`, `dev/mock-tauri/core.ts`, `tests/mock-core.test.ts`, AGENTS.md,
 `docs/architecture.md`.

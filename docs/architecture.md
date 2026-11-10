@@ -7,7 +7,7 @@ which module owns which rule, how a call travels from the window to the
 filesystem, and where a change lands. The module list itself, with one line
 per file, is the Layout table in [AGENTS.md](../AGENTS.md).
 
-![Block diagram of the app. Frontend: main.ts asks four groups of rule and state modules (where am I and what may run, with capabilities.ts; view state; pictures; widgets) and calls typed commands through api.ts, or dev/mock-tauri in tests. Backend: lib.rs passes every path through the place.rs gate, then asks the places::Registry in providers.rs, which holds one provider per scheme: Keep Versions' decorator around places-local for this computer, places-gdrive, arbesk, places-sftp and the app's received shares. Copies and moves go to the transfer engine (engine.rs and placement.rs), which runs them on a provider's Transfer session. Every provider implements the places crate's interface; the registry's capabilities go back to the frontend's capabilities.ts.](architecture.svg)
+![Block diagram of the app. Frontend: main.ts asks four groups of rule and state modules (where am I and what may run, with capabilities.ts; view state; pictures; widgets) and calls typed commands through api.ts, or dev/mock-tauri in tests. Backend: lib.rs asks the places::Registry in providers.rs directly for reads, and passes writes, copies and moves through the place.rs gate first; the registry holds one provider per scheme: Keep Versions' decorator around places-local for this computer, places-gdrive, arbesk, places-sftp and the app's received shares. Copies and moves go to the transfer engine (engine.rs and placement.rs), which runs them on a provider's Transfer session. Every provider implements the places crate's interface; the registry's capabilities go back to the frontend's capabilities.ts.](architecture.svg)
 
 Teal boxes are the modules the refactors added or deepened, with their PR
 numbers. Dashed boxes are outside the app (the operating system and the
@@ -74,11 +74,15 @@ providers (`providers::capability_table`); `tests/capabilities.json` pins it,
 and the frontend's built-in copy and the mock's answer against it.
 
 **In the backend.** `lib.rs` registers thin commands and runs slow work on
-Tauri's blocking pool (`blocking`). Every path a command receives goes
-through `place.rs` first: its kind, whether it is a local path (remote,
-malformed and relative paths never reach `std::fs`), whether the place may
-be written, and, for a copy, move or rename, the route table (which pairs
-may transfer). Then:
+Tauri's blocking pool (`blocking`). The read commands (listing,
+existence, path info, thumbnails, opening, the preview's file) ask the
+registry directly and never call `place.rs`. `place.rs` is a narrow gate,
+not a router: it gates the commands that work on this computer only
+(`local`, `local_write`: remote, malformed and relative paths never reach
+`std::fs`), the writes (`writable`: whether the place may be written), the
+copy, move and rename route table (`transfer`, `copy`: which pairs may
+transfer) and the batches answered for local paths only (`local_only`).
+Then:
 
 - **The registry.** `providers.rs` builds the `places::Registry` that
   `lib.rs` manages: one provider per scheme, matched as the exact
@@ -101,8 +105,9 @@ may transfer). Then:
     `Versioned`): Rename and Move to Trash close the histories inside the
     items they touch and reopen them where the items went, a local copy or
     move runs inside `VersionsState::transfer` (the session's `within`),
-    and Replace's Trash of a route that only lands here (a Drive download)
-    goes through `VersionedTrash`. Keep Versions is not a place: it needs
+    and Replace's Trash of a Drive transfer's local end (a Drive download's
+    replaced item, a moved local source of an upload) goes through
+    `VersionedTrash`. Keep Versions is not a place: it needs
     the app's watcher and SQLite, so it stays in the app.
   - Google Drive: the `places-gdrive` crate (accounts and sign-in without
     the window, the REST client, listing, opening, thumbnails, and its
@@ -124,13 +129,21 @@ may transfer). Then:
     read only; its async listing and download wait on Tauri's runtime with
     `block_on`, which is why every provider is called from a blocking
     thread.
-- **The transfer engine.** Every copy and move is `engine.rs`'s, which
-  takes the remote end's provider from the registry, opens its transfer
-  session (`places::with_transfer`: one `places::Transfer` for the whole
-  transfer) and builds the route from its primitives (what is at the
-  target, write, read, a copy on the server, rename, move, Trash and take
-  back, discard) and its declared `Capabilities` (`names_unique`,
-  `put_is_whole`), never from its scheme. On this computer (`engine::local`)
+- **The transfer engine.** Copies and moves on this computer and to, from
+  and inside Google Drive are `engine.rs`'s. `lib.rs` takes the provider
+  from the registry and opens its transfer session (`drive_transfer`,
+  `in_transfer`: `places::with_transfer`, one `places::Transfer` for the
+  whole transfer), then hands `engine::dispatch` an `engine::Remote` (the
+  session and its capabilities) or `engine::local` a `&dyn Transfer`; the
+  engine never sees the registry. It builds the route from the session's
+  primitives (what is at the target, write, read, a copy on the server,
+  rename, move, Trash and take back, discard) and its declared
+  `Capabilities` (`names_unique`, `put_is_whole`), never from its scheme.
+  Arbesk skips the engine: a local model file copied into a collection
+  (`Route::IntoArbesk`) is `lib.rs`' `write_into_place`, Arbesk's own
+  `Transfer::write`, and an asset copied out is first built by its
+  `Transfer::export` (`exported_source`), then copied by the engine like
+  any local file. On this computer (`engine::local`)
   and for whatever lands here (a Drive download) it places through
   `placement.rs`: the refusals and their wording, staging under a hidden
   name, Replace through the Trash with take-back, and a move's source

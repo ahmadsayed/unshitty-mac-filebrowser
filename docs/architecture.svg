@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720" role="img" aria-label="The frontend's main.ts asks four groups of rule and state modules (capabilities.ts among them) and calls typed commands in api.ts; Tauri IPC carries them to lib.rs, where every path goes through the place.rs gate. Reads and writes then ask the places::Registry in providers.rs; copies and moves go to the transfer engine (engine.rs and placement.rs), which runs them on a provider's Transfer session. The registry holds one provider per scheme: places-local inside Keep Versions' decorator, places-gdrive, arbesk, places-sftp and the app's received shares, all implementing the places crate's interface. The registry's capabilities go back to the frontend. Renames that never replace and both Trash layouts are in places-local.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720" role="img" aria-label="The frontend's main.ts asks four groups of rule and state modules (capabilities.ts among them) and calls typed commands in api.ts; Tauri IPC carries them to lib.rs. Reads (listing, existence, path info, thumbnails, opening, the preview's file) ask the places::Registry in providers.rs directly; writes, copies and moves pass the place.rs gate first, then writes ask the registry and copies and moves go to the transfer engine (engine.rs and placement.rs), which runs them on a provider's Transfer session. The registry holds one provider per scheme: places-local inside Keep Versions' decorator, places-gdrive, arbesk, places-sftp and the app's received shares, all implementing the places crate's interface. The registry's capabilities go back to the frontend. Renames that never replace and both Trash layouts are in places-local.">
   <title>File Browser architecture</title>
   <style>
     svg { --bg:#f5f7fa; --ink:#1c2430; --muted:#5a6575; --line:#b7c0cd; --box:#ffffff;
@@ -138,7 +138,7 @@
         <text class="n" x="696" y="108">lib.rs</text>
         <text class="s" x="696" y="127">thin commands · blocking pool · the capabilities table back to the frontend</text>
         <line class="edge" x1="920" y1="140" x2="920" y2="167" marker-end="url(#ah)"/>
-        <text class="e" x="928" y="157">every path</text>
+        <text class="e" x="928" y="157">writes · copies · moves</text>
 
         <rect class="deep" x="680" y="168" width="480" height="48" rx="8"/>
         <text class="n" x="696" y="188">place.rs</text>
@@ -148,7 +148,11 @@
         <line class="edge" x1="785" y1="216" x2="785" y2="235" marker-end="url(#ah)"/>
         <text class="e" x="777" y="230" text-anchor="end">copy · move</text>
         <line class="edge" x1="1040" y1="216" x2="1040" y2="235" marker-end="url(#ah)"/>
-        <text class="e" x="1048" y="230">list · open · write</text>
+        <text class="e" x="1048" y="230">write</text>
+
+        <!-- Reads skip the gate: lib.rs asks the registry directly -->
+        <polyline class="edge" points="1160,112 1170,112 1170,268 1161,268" marker-end="url(#ah)"/>
+        <text class="e" x="1164" y="230" text-anchor="end">reads</text>
 
         <rect class="deep" x="680" y="236" width="210" height="64" rx="8"/>
         <text class="n" x="696" y="256">engine.rs</text>
