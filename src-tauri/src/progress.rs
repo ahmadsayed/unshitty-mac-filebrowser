@@ -12,6 +12,10 @@ use serde::Serialize;
 /// `places` crate, so every provider reports into the same [`Progress`] the
 /// app shows.
 pub use places::{CANCELLED, Phase, Progress, cancelled_io, copy_counted, is_cancel};
+/// Kept at its old path like the rest, for code written against it; no
+/// module here reads it today.
+#[allow(unused_imports)]
+pub use places::SLICE;
 
 /// What the frontend receives, at most every 100 ms and once at the end.
 #[derive(Clone, Serialize, PartialEq, Eq, Debug)]

@@ -35,6 +35,10 @@ pub enum Operation {
     Trash,
     CopyIn,
     CopyOut,
+    /// A feature only items on this computer have (the local-only gate,
+    /// D10): its message is the place's “This action is not available for
+    /// …” text, as `place::local` words it today.
+    LocalOnly,
 }
 
 /// One refused operation and the backend's words for it.
@@ -202,9 +206,11 @@ pub trait Provider: Send + Sync {
 /// The primitives a provider offers the transfer engine (D6), each as safely
 /// as it can, declared in its [`Capabilities`]. Which pairs of places may
 /// transfer, the refusals, the name-clash decision and the order of a
-/// Replace are the engine's, not the provider's. Every cross-place transfer
-/// meets at a local path: a write reads a local source, a read fills a local
-/// target.
+/// Replace are the engine's, not the provider's. A transfer between two
+/// different providers meets at a local path (a write reads a local source,
+/// a read fills a local target); a copy inside one provider is
+/// [`Transfer::copy_within`], so it never leaves the place (Drive copies on
+/// the server).
 pub trait Transfer: Send + Sync {
     /// Write the local file or folder `source` to `target`, a path in this
     /// provider the engine chose (a staging name, or the final name where a
@@ -213,6 +219,14 @@ pub trait Transfer: Send + Sync {
     /// Read this provider's item at `path` into the local `target` the
     /// engine chose, streaming straight into it (no copy in the app cache).
     fn read_into(&self, path: &str, target: &Path, cx: &Cx) -> Result<Put>;
+    /// Copy this provider's own item at `from` to `to`, a path in this
+    /// provider the engine chose (a staging name for a folder or a Replace,
+    /// as for [`Transfer::write`]), without its bytes passing through this
+    /// computer: Drive's server-side `files.copy`, which also copies Google
+    /// Docs and shortcuts. A provider whose same-place copy the engine makes
+    /// itself (this computer: its copy is the engine's staged local copy)
+    /// returns [`Error::Unsupported`].
+    fn copy_within(&self, from: &str, to: &str, cx: &Cx) -> Result<Put>;
     /// Rename `from` to `to` in this provider, never replacing an item at
     /// `to`; returns the final path.
     fn rename_new(&self, from: &str, to: &str, cx: &Cx) -> Result<String>;
@@ -226,8 +240,12 @@ pub trait Transfer: Send + Sync {
     /// `original`, without making parent folders, unless something took
     /// its place.
     fn take_back(&self, trashed: &str, original: &str, cx: &Cx) -> Result<()>;
-    /// Discard a staged or partial copy the engine made (never the user's
-    /// own item).
+    /// Discard a staged or partial copy the engine made in this provider
+    /// with its own primitives (never the user's own item): removed for good
+    /// here, `trashed=true` on Drive. Policies that differ by route stay the
+    /// engine's, as `DiscardFn` is today: a Drive download's partial local
+    /// folder goes to the logged local Trash through the app's Trash, not
+    /// through this method.
     fn discard(&self, staged: &str, cx: &Cx) -> Result<()>;
 }
 
@@ -235,96 +253,59 @@ pub trait Transfer: Send + Sync {
 
 /// What isn't POSIX, one trait per feature (D4). A provider lacking one
 /// leaves it `None`, and the app checks for it instead of matching on a
-/// kind of place. The traits are declared small here and grow with the
-/// first provider that implements each.
+/// kind of place.
+///
+/// Only the slots are declared now. Each trait gets its methods in the
+/// migration step that first implements it, shaped like the command it
+/// replaces so nothing visible changes: thumbnails as PNG bytes with the
+/// per-window cancel ticket, item counts as `FolderSummary` (with the
+/// version badges), search with `show_hidden`, its limit, the per-window
+/// stop and its summary, a folder size as bytes cancelled by walk id,
+/// sharing with Arbesk's numeric role and its `Shared` result.
 pub mod ext {
-    use std::path::{Path, PathBuf};
+    /// Thumbnails of items (`thumbnail`'s per-kind arms).
+    pub trait Thumbnails: Send + Sync {}
 
-    use serde::Serialize;
+    /// What the Properties dialog shows, and a folder's total size
+    /// (`file_properties`, `folder_size`).
+    pub trait Properties: Send + Sync {}
 
-    use crate::{Cx, Entry, FileProperties, Result};
+    /// Item counts and version badges of folders, for the view
+    /// (`item_counts`).
+    pub trait Counts: Send + Sync {}
 
-    /// Thumbnails of items, as image files on this computer.
-    pub trait Thumbnails: Send + Sync {
-        /// A picture of `path` at most `size` pixels on its long side, or
-        /// `None` when there is none.
-        fn thumbnail(&self, path: &str, size: u32, cx: &Cx) -> Result<Option<PathBuf>>;
-    }
+    /// A recursive search, its results streamed in batches (`search_dir`).
+    pub trait Search: Send + Sync {}
 
-    /// What the Properties dialog shows, and a folder's total size.
-    pub trait Properties: Send + Sync {
-        fn properties(&self, path: &str, cx: &Cx) -> Result<FileProperties>;
-        /// Everything under `dir`, cancellable through `cx`.
-        fn folder_size(&self, dir: &str, cx: &Cx) -> Result<crate::Measure>;
-    }
+    /// Sizes and item counts before a copy, for the progress total
+    /// (`measure`).
+    pub trait Measure: Send + Sync {}
 
-    /// Item counts of folders, for the view.
-    pub trait Counts: Send + Sync {
-        /// One count per folder, `None` for one that can't be read.
-        fn item_counts(&self, dirs: &[&str], show_hidden: bool) -> Vec<Option<u32>>;
-    }
+    /// The saves of an item, oldest first (`arbesk_versions`).
+    pub trait Versions: Send + Sync {}
 
-    /// A recursive search, its results handed over in batches.
-    pub trait Search: Send + Sync {
-        fn search(&self, dir: &str, query: &str, found: &mut dyn FnMut(Vec<Entry>), cx: &Cx)
-        -> Result<()>;
-    }
+    /// Accounts a person signs in to (each provider keeps its own sign-in
+    /// step).
+    pub trait Accounts: Send + Sync {}
 
-    /// Sizes and item counts before a copy, for the progress total.
-    pub trait Measure: Send + Sync {
-        fn measure(&self, paths: &[&str], cx: &Cx) -> Result<crate::Measure>;
-    }
+    /// Sharing an item with someone by email (`arbesk_share_collection`).
+    pub trait Sharing: Send + Sync {}
 
-    /// One saved version of an item.
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-    pub struct Version {
-        pub id: String,
-        pub timestamp: Option<i64>,
-    }
-
-    /// The saves of an item, oldest first.
-    pub trait Versions: Send + Sync {
-        fn versions(&self, path: &str, cx: &Cx) -> Result<Vec<Version>>;
-    }
-
-    /// Accounts a person signs in to (each provider has its own sign-in
-    /// step, so only what they share is here).
-    pub trait Accounts: Send + Sync {
-        /// The root path of each connected account.
-        fn accounts(&self) -> Vec<String>;
-        /// Forget the account whose root is `root`, and its credential.
-        fn disconnect(&self, root: &str) -> Result<()>;
-    }
-
-    /// Sharing an item with someone by email.
-    pub trait Sharing: Send + Sync {
-        fn share(&self, path: &str, email: &str, role: &str, cx: &Cx) -> Result<()>;
-    }
-
-    /// The parts of a preview a provider builds itself (an Arbesk scene).
-    pub trait Preview: Send + Sync {
-        /// The scene of `path` (at `version`, if given), as the preview reads it.
-        fn scene(&self, path: &str, version: Option<&str>, cx: &Cx) -> Result<serde_json::Value>;
-        /// One part of that scene, as a local file.
-        fn part(&self, path: &str, version: Option<&str>, key: &str, cx: &Cx) -> Result<PathBuf>;
-    }
+    /// The parts of a preview a provider builds itself (`arbesk_scene`,
+    /// `arbesk_part`).
+    pub trait Preview: Send + Sync {}
 
     /// Features that only make sense for items on this computer (Make Link,
     /// permissions, Batch Rename, archives, Open With, drag out, OS icons,
-    /// Recent): the place's local path for the app's own code.
-    pub trait LocalOnly: Send + Sync {
-        fn local_path<'a>(&self, path: &'a str) -> Result<&'a Path>;
-    }
+    /// Recent). A provider without it refuses them with its
+    /// [`Operation::LocalOnly`](crate::Operation::LocalOnly) wording.
+    pub trait LocalOnly: Send + Sync {}
 
     /// Delete Permanently, only inside the Trash.
-    pub trait PermanentDelete: Send + Sync {
-        fn delete_permanently(&self, paths: &[&str], cx: &Cx) -> Vec<Result<()>>;
-    }
+    pub trait PermanentDelete: Send + Sync {}
 
     /// Empty Trash.
-    pub trait EmptyTrash: Send + Sync {
-        fn empty_trash(&self, cx: &Cx) -> Result<()>;
-    }
+    pub trait EmptyTrash: Send + Sync {}
 }
 
 /// The extensions a provider has; absent ones are `None`.
@@ -362,6 +343,18 @@ mod tests {
         assert_eq!(cx.check(), Ok(()));
         cx.progress.cancel();
         assert_eq!(cx.check(), Err(Error::cancelled()));
+    }
+
+    #[test]
+    fn the_local_only_gate_has_its_own_operation() {
+        let refused = Refused {
+            operation: Operation::LocalOnly,
+            message: "This action is not available for SSH servers.".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&refused).unwrap(),
+            r#"{"operation":"local_only","message":"This action is not available for SSH servers."}"#
+        );
     }
 
     #[test]
