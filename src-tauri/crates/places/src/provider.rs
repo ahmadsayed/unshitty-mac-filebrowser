@@ -175,11 +175,11 @@ pub enum NewKind {
 }
 
 /// One outcome of Move to Trash: the item as asked for, and where it went
-/// (for Undo) or why it stayed.
+/// (for Undo; `None` when the place can't tell) or why it stayed.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Trashed {
     pub path: String,
-    pub result: Result<String>,
+    pub result: Result<Option<String>>,
 }
 
 /// What a [`Transfer`] write or read left: the final path, and the items it
@@ -407,6 +407,16 @@ pub trait Transfer {
     /// folder goes to the logged local Trash through the app's Trash, not
     /// through this method.
     fn discard(&self, staged: &str, cx: &Cx) -> Result<()>;
+    /// Run `run`, a whole transfer from `from` to `to` inside this place
+    /// (a copy, or a move when `moving`), as the place keeps it: what it
+    /// keeps about its items stays consistent around it (on this computer,
+    /// Keep Versions closes the histories inside both ends for it and
+    /// reopens them after), and its primitives word their failures as the
+    /// transfer's (a move's or a copy's). Returns what `run` returns; by
+    /// default, just `run`.
+    fn within(&self, _from: &str, _to: &str, _moving: bool, run: &mut dyn FnMut() -> Result<String>) -> Result<String> {
+        run()
+    }
 }
 
 // ---- Extensions ----------------------------------------------------------------
@@ -501,7 +511,13 @@ pub mod ext {
     /// permissions, Batch Rename, archives, Open With, drag out, OS icons,
     /// Recent). A provider without it refuses them with its
     /// [`Operation::LocalOnly`](crate::Operation::LocalOnly) wording.
-    pub trait LocalOnly: Send + Sync {}
+    /// Batch Rename has its method since migration step 6b; the others
+    /// stay on their commands.
+    pub trait LocalOnly: Send + Sync {
+        /// Batch Rename: each `(from, to)` renamed in its folder, all or
+        /// nothing, never over another item.
+        fn rename_many(&self, renames: &[(String, String)]) -> Result<()>;
+    }
 
     /// Delete Permanently, only inside the Trash.
     pub trait PermanentDelete: Send + Sync {}

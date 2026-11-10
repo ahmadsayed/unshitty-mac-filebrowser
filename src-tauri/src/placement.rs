@@ -5,7 +5,9 @@
 //! that took the name meanwhile, and what a failure undoes.
 //!
 //! Plain functions, no Tauri. Callers only say how to fill a path
-//! (`Target::place`'s `fill`): a rename, a recursive copy, a download.
+//! (`Target::place`'s `fill`): the engine's local routes (a rename, or
+//! this computer's read of the item, `engine::local`) and its downloads
+//! (a Drive item's read).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -84,28 +86,12 @@ use places_local::rename::staging_path;
 // ---- Placing -----------------------------------------------------------------
 
 /// Where a Replace sends the item it replaces, and how it takes it back out
-/// when the Replace fails a moment later. The app passes its logged Trash
-/// (`trash_ops::Trash`, through `lib.rs`): Restore knows where the old item
-/// came from, and an item taken back is forgotten. A closure that sends an
-/// item away is one too, taking an item back with `trash_ops::untrash`;
-/// tests use it to make the Trash fail or record it.
-pub(crate) trait ReplaceTrash {
-    /// Send `path` to the Trash and say where it went there, when that can
-    /// be told, so a Replace that fails afterwards can put it back.
-    fn send(&self, path: &Path) -> Result<Option<PathBuf>, String>;
-
-    /// Put `trashed`, just sent to the Trash from `origin`, straight back,
-    /// never over an item that took its place.
-    fn take_back(&self, trashed: &Path, origin: &Path) -> Result<(), String> {
-        crate::trash_ops::untrash(trashed, origin)
-    }
-}
-
-impl<F: Fn(&Path) -> Result<Option<PathBuf>, String>> ReplaceTrash for F {
-    fn send(&self, path: &Path) -> Result<Option<PathBuf>, String> {
-        self(path)
-    }
-}
+/// when the Replace fails a moment later: this computer's
+/// (`places_local::transfer`), where its transfer session's Trash and the
+/// app's logged Trash implement it. A closure that sends an item away is
+/// one too, taking an item back with `trash_ops::untrash`; tests use it to
+/// make the Trash fail or record it.
+pub(crate) use places_local::transfer::ReplaceTrash;
 
 /// Replace's Trash, as placing takes it (`ReplaceTrash`).
 pub(crate) type TrashFn<'a> = &'a dyn ReplaceTrash;
@@ -113,20 +99,15 @@ pub(crate) type TrashFn<'a> = &'a dyn ReplaceTrash;
 /// Discards a partial copy filled in place: for good, or to the Trash.
 pub(crate) type DiscardFn<'a> = &'a dyn Fn(&Path) -> Result<(), String>;
 
-/// Removes a file, a link or a whole folder for good. Only for what the app
-/// made itself (a partial or staged copy) and for a moved source whose copy
-/// is in place.
-pub(crate) fn remove_any(path: &Path) -> std::io::Result<()> {
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
-    }
-}
+/// Removes a file, a link or a whole folder for good, only what the app
+/// made itself: this computer's discard (`places_local::transfer`).
+pub(crate) use places_local::transfer::remove_any;
 
 /// `remove_any` as a discard: a partial copy filled in place is ours, so it
-/// goes for good rather than to the Trash.
+/// goes for good rather than to the Trash. The engine's local route
+/// discards through this computer's transfer session (the same removal);
+/// tests discard with this.
+#[cfg(test)]
 pub(crate) fn remove(path: &Path) -> Result<(), String> {
     remove_any(path).map_err(|e| e.to_string())
 }
