@@ -314,7 +314,8 @@ next starts only after the human merged the last.
    `arbesk` and the app re-export them; nothing else changes. `Entry.cloud`
    stays typed, so Drive's tests don't change.
 2. **Registry and read-side dispatch:** `list`, `exists`, `path_info`,
-   `thumbnail` (`ext::Thumbnails`), `fetch`/open, through providers that
+   `thumbnail` (`ext::Thumbnails`), `fetch` (open, and the preview's file
+   for `preview_bytes`), through providers that
    wrap today's code in place (`src-tauri/src/providers.rs`, Arbesk's
    adapter too until step 3). The `_ =>` fallthroughs go away; the
    registry's prefix rule (D10) keeps `place.rs`' table test passing

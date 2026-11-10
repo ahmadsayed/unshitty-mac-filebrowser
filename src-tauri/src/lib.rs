@@ -622,7 +622,11 @@ async fn preview_text(path: String, limit: usize) -> Result<fs_ops::TextPreview,
 #[tauri::command]
 async fn preview_bytes(app: tauri::AppHandle, path: String, limit: u64) -> Result<tauri::ipc::Response, String> {
     let limit = limit.clamp(1, 512 * 1024 * 1024);
-    let bytes = blocking(move || fs_ops::preview_bytes(preview_file(&app, &path)?, limit)).await??;
+    let bytes = blocking(move || {
+        let cx = places_cx(&app, progress::Progress::default());
+        fs_ops::preview_bytes(preview_file(&app.state::<places::Registry>(), &path, &cx)?, limit)
+    })
+    .await??;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -657,19 +661,15 @@ async fn arbesk_part(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-/// `preview_file_with` the app's Arbesk builds.
-fn preview_file(app: &tauri::AppHandle, path: &str) -> Result<String, String> {
-    preview_file_with(path, |path| app.state::<arbesk::Client>().build(path, &progress::Progress::default()))
-}
-
-/// The file on this computer whose bytes preview `path`: the file itself, or
-/// an Arbesk asset's copy in the app cache, made by `build`. Every other
-/// path is refused.
-fn preview_file_with(path: &str, build: impl FnOnce(&str) -> Result<PathBuf, String>) -> Result<String, String> {
-    if place::kind(path) == Kind::Arbesk {
-        return build(path).map(|file| file.to_string_lossy().into_owned());
+/// The file on this computer whose bytes preview `path`, as its place's
+/// provider fetches it: the file itself, or an Arbesk asset's copy built in
+/// the app cache. Every other place refuses with its local-only words.
+fn preview_file(registry: &places::Registry, path: &str, cx: &places::Cx) -> Result<String, String> {
+    match registry.provider_for(path).fetch(path, places::Fetch::Preview, cx)? {
+        places::Fetched::File(file) => Ok(file.to_string_lossy().into_owned()),
+        // No provider previews a page; refused as anything else not local.
+        places::Fetched::Url(_) => Err(place::local(path).err().unwrap_or_else(|| format!("“{path}” is not a local file."))),
     }
-    place::local(path).map(|_| path.to_string())
 }
 
 #[tauri::command]
@@ -2959,6 +2959,17 @@ mod read_gate_tests {
     use super::*;
     use tauri::async_runtime::block_on;
 
+    /// `preview_bytes`' file for `path`, through the registry, with
+    /// Arbesk's builds from `build`.
+    fn preview_file_with(
+        path: &str,
+        build: impl Fn(&str) -> Result<PathBuf, String> + Send + Sync + 'static,
+    ) -> Result<String, String> {
+        let arbesk = providers::testing::StubArbesk { build: Box::new(build), ..Default::default() };
+        let registry = providers::testing::registry(Default::default(), arbesk);
+        preview_file(&registry, path, &places::Cx::default())
+    }
+
     /// Each refused path with its refusal, with `relative` as the relative one.
     fn refused(relative: &'static str) -> Vec<(&'static str, String)> {
         vec![
@@ -2978,7 +2989,7 @@ mod read_gate_tests {
             assert_eq!(preview_file_with(path, |_| panic!("not Arbesk")).err(), Some(refusal), "{path}");
         }
         let asset = "arbesk://0x00000000000000000000000000000000000000ab/1~Set/a1~Box.gltf";
-        let built = preview_file_with(asset, |path| {
+        let built = preview_file_with(asset, move |path| {
             assert_eq!(path, asset);
             Ok(PathBuf::from("/cache/arbesk/bafyA/Box.gltf"))
         });

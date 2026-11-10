@@ -5,10 +5,10 @@
 //! computer's over `fs_ops` and `thumbnails`, Google Drive's over
 //! `cloud::service`, Arbesk's over the `arbesk` crate's `Client`, SSH's over
 //! `sftp::SftpState`. The read side goes through them: listing, whether an
-//! item exists, path info, thumbnails and opening. Writes (new folders,
-//! rename, copy, move, Trash, restore) stay on their commands' own dispatch
-//! until the steps that move them, so each adapter's write methods say so
-//! instead of acting.
+//! item exists, path info, thumbnails, opening and the preview's file.
+//! Writes (new folders, rename, copy, move, Trash, restore) stay on their
+//! commands' own dispatch until the steps that move them, so each adapter's
+//! write methods say so instead of acting.
 //!
 //! Received shares are the one async place (D3): their listing and download
 //! are still awaited on the async runtime by `list_dir` and `open_target`
@@ -128,8 +128,8 @@ fn local_only_refusal(path: &str) -> Option<String> {
     place::local(path).err()
 }
 
-/// A path's local-only refusal as an error: what opening a remote item
-/// for the preview answers, as `preview_bytes` does.
+/// A path's local-only refusal as an error: what `preview_bytes` answers
+/// for a remote item.
 fn not_previewed<T>(path: &str) -> Result<T> {
     Err(Error::Unsupported(local_only_refusal(path).unwrap_or_default()))
 }
