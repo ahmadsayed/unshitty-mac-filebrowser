@@ -15,7 +15,7 @@ import {
   type CapabilityRow,
   type CapabilityTable,
 } from "../src/capabilities";
-import { capabilityRow, isReadOnlyKind, kindAcceptsNewItems, kindTakesPastes, knowsSizes, locationKind, searchesRecursively } from "../src/locations";
+import { capabilityRow, isReadOnlyKind, kindAcceptsNewItems, kindTakesPastes, knowsSizes, locationKind, searchesRecursively, takesDrops } from "../src/locations";
 import { refusal } from "../src/item-actions";
 
 afterEach(resetCapabilities);
@@ -81,6 +81,18 @@ test("paste reads can_copy_in, New Folder can_create", async () => {
   expect(kindAcceptsNewItems("drive")).toBe(true);
   expect(refusal("paste", { kind: "folder", items: [] })).toBeNull();
   expect(kindAcceptsNewItems("folder")).toBe(false);
+});
+
+test("a drop reads can_copy_in, as Paste does", async () => {
+  const drive = "gdrive://acct/root~x";
+  expect(takesDrops(drive)).toBe(true);
+  expect(takesDrops("/Users/me/Documents")).toBe(true);
+  expect(takesDrops("sftp://me@host/home")).toBe(false);
+  const changed: CapabilityTable = structuredClone(table);
+  changed.drive = { ...changed.drive, can_copy_in: false };
+  await loadCapabilities(async () => changed);
+  expect(takesDrops(drive)).toBe(false);
+  expect(takesDrops("/Users/me/Documents")).toBe(true);
 });
 
 test("cut's read-only toast is picked by the item's kind", async () => {

@@ -59,7 +59,7 @@ import { companionPath, gltfCompanions, isGlb, modelFormat, type ModelFormat } f
 import { accountOf, fromArbesk, fromDrive, PROVIDERS, providerOf, withAccount, withoutAccount, type Account, type ProviderActions, type ProviderId } from "./providers";
 import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
-import { acceptsNewItems, arbeskPasteRefusal, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, isReadOnlyLocation, knowsSizes, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
+import { acceptsNewItems, arbeskPasteRefusal, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, knowsSizes, takesDrops, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
 import { childPath, cloudAccountKey, homeFolder, isArbeskAccount, isArbeskCollection, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
@@ -3723,7 +3723,8 @@ function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; 
   // A collection in Arbesk takes only copies of model files; a forced move or a folder says no.
   const forceMoveKey = isMac ? mods.metaKey : mods.shiftKey;
   if (placeOf(dir) === "arbesk") return arbeskPasteRefusal(dir, sources, forceMoveKey && !(isMac ? mods.altKey : mods.ctrlKey), dirs) === null ? "copy" : null;
-  if (isReadOnlyLocation(dir) || copyOutRefusal(sources) !== null) return null;
+  // A place that takes no copies, or is read only, takes no drop: Paste's rule (`can_copy_in`).
+  if (!takesDrops(dir) || copyOutRefusal(sources) !== null) return null;
   // Into itself or its own subfolder: refused.
   if (sources.some((src) => isWithin(dir, src))) return null;
   // Drive items go to Drive's Trash with Move to Trash, not the app's Trash.

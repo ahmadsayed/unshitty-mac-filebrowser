@@ -545,7 +545,8 @@ next starts only after the human merged the last.
    pinning that) and reads `read_only` (`isReadOnlyKind`), `knows_sizes`,
    `searchable` (recursive search), `can_create` with `read_only` (New
    Folder and New Document), `can_copy_in` with `read_only` (Paste and
-   drops, `kindTakesPastes`) and `can_copy_in` alone (Arbesk's "Paste into a
+   drops, `kindTakesPastes`, and `takesDrops` for `main.ts`' `dropOp`,
+   the Trash's own drop rules kept) and `can_copy_in` alone (Arbesk's "Paste into a
    collection."), and `can_copy_out` (the copy-out refusal);
    `item-actions.ts` reads `can_rename` and `can_trash` (`byPlace`) and
    cut's read-only check through `isReadOnlyKind`, its toast picked by the

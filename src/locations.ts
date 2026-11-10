@@ -197,14 +197,25 @@ export function acceptsNewItems(path: string, trashPath: string): boolean {
   return kindAcceptsNewItems(locationKind(path, trashPath));
 }
 
-/** Whether Paste (and a drop) can put anything into a place of this kind
+/** Whether Paste and a drop can put anything into a place of this kind
  *  as it is: one that takes copies and isn't read only (the provider's
  *  `can_copy_in` and `read_only`), a folder or Drive. An Arbesk collection
  *  takes copies but is read only: what it takes is `arbeskPasteRefusal`'s
- *  rule. Never the Trash or a folder in it, as `kindAcceptsNewItems`. */
+ *  rule. Never the Trash or a folder in it, as `kindAcceptsNewItems`
+ *  (a drop on the Trash is Move to Trash: `takesDrops`). */
 export function kindTakesPastes(kind: LocationKind): boolean {
   const caps = capsOf(kind);
   return caps !== null && caps.can_copy_in && !caps.read_only;
+}
+
+/** Whether a drop can put anything into `path`'s place as it is
+ *  (`kindTakesPastes`), the one rule Paste reads too. The Trash's path
+ *  isn't passed: a drop on the Trash is Move to Trash, not a copy in, so
+ *  the Trash and a folder in it count as this computer's folders here and
+ *  the drop's own Trash rules decide. Arbesk's collections go through
+ *  `arbeskPasteRefusal` first. */
+export function takesDrops(path: string): boolean {
+  return kindTakesPastes(locationKind(path, ""));
 }
 
 /** The copy-out refusal's words, by the first item's kind; a share's
