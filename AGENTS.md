@@ -397,7 +397,13 @@ GPL-3.0-or-later).
 - In `lib.rs`, a read (listing, existence, path info, thumbnails, opening)
   asks the place's provider in the managed `places::Registry`
   (`provider_for`, `answer_each` for a batch), never a `match` on the kind;
-  what a provider can't do is its own answer, not a fallthrough.
+  what a provider can't do is its own answer, not a fallthrough. Two
+  checks of `provider.scheme()` stay until step 5 of the provider design
+  (`docs/superpowers/specs/2026-11-10-provider-crates-design.md`):
+  `in_share`, because a received share's listing and download are still
+  awaited on the async runtime, and `open_target`'s test for this
+  computer's provider, which opens a local file without registering a
+  progress operation. Add no others.
 - In `lib.rs`, ask `place.rs` which kind a path is and whether it may be
   written, rather than chaining `is_cloud`, `is_share` and `is_sftp`: a
   command that works on this computer only takes its path from

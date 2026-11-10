@@ -323,7 +323,13 @@ next starts only after the human merged the last.
    dispatch until the steps that need them, and each adapter says so if
    asked. Received shares stay async in this step: `list_dir` and
    `open_target` still await their listing and download (D3), and their
-   provider answers the rest. Capabilities are filled per kind, and per
+   provider answers the rest. So two commands still look at the provider's
+   scheme, the only exceptions to D10's one lookup and one call: `in_share`
+   sends a share's listing and download to the async code, and
+   `open_target` opens a path of this computer's provider (scheme "")
+   without registering a progress operation, as it did. Both go in step 5,
+   when shares run in `blocking(…)` and a fetch can say whether it reports
+   progress. Capabilities are filled per kind, and per
    path where today's refusals differ by path (an Arbesk asset can be
    copied out, a collection can't; a relative path is refused as not
    local), with a table test against `place.rs`' refusals.
@@ -337,7 +343,8 @@ next starts only after the human merged the last.
    fake-Drive suite for every primitive in D6's table.
 5. **SSH becomes `places-sftp`**; shares implement `Provider` in the app, and
    their arms move into `blocking(…)` (D3) with a test that a share listing
-   runs through the registry from a blocking thread.
+   runs through the registry from a blocking thread; `in_share` and
+   `open_target`'s scheme check go with them (step 2).
 6. **Local becomes `places-local`** (fs_ops' file operations, the Trash and
    its log, the exclusive rename, platform pieces). The engine stays in the
    app (D6); Keep Versions stays as its decorator (D7). `/big` (10,000
