@@ -84,8 +84,9 @@ fn registry_with(
 
 // ---- What every adapter shares ---------------------------------------------------
 
-/// Today's errors are words; they keep them, as `Other`, so a command
-/// returns exactly the same text.
+/// Today's errors from the wrapped services are words; they keep them, as
+/// `Other`, so a command returns exactly the same text. A refusal the
+/// provider makes itself is `Unsupported` (D3), with the same words.
 fn words(message: String) -> Error {
     Error::Other(message)
 }
@@ -93,7 +94,7 @@ fn words(message: String) -> Error {
 /// A write, or a read no command routes here yet: each still goes through
 /// its command's own dispatch until the step that moves it.
 fn not_yet<T>(what: &str) -> Result<T> {
-    Err(Error::Other(format!("{what} doesn't go through the places registry yet.")))
+    Err(Error::Unsupported(format!("{what} doesn't go through the places registry yet.")))
 }
 
 /// The methods no command routes through a provider yet (see [`not_yet`]).
@@ -130,7 +131,7 @@ fn local_only_refusal(path: &str) -> Option<String> {
 /// A path's local-only refusal as an error: what opening a remote item
 /// for the preview answers, as `preview_bytes` does.
 fn not_previewed<T>(path: &str) -> Result<T> {
-    Err(words(local_only_refusal(path).unwrap_or_default()))
+    Err(Error::Unsupported(local_only_refusal(path).unwrap_or_default()))
 }
 
 /// `refused` with each operation that has words.
@@ -824,7 +825,7 @@ mod tests {
             ("share://r1/a.txt", "This action is not available for shared folders."),
         ] {
             let refused = registry.provider_for(path).fetch(path, Fetch::Preview, &Cx::default());
-            assert_eq!(refused.unwrap_err().to_string(), words, "{path}");
+            assert_eq!(refused.unwrap_err(), Error::Unsupported(words.into()), "{path}");
         }
     }
 
@@ -855,7 +856,9 @@ mod tests {
         let cx = Cx::default();
         for path in ["/Users/me/a", "gdrive://acct/root~x", ARBESK, "sftp://me@host/a", "share://r1/a"] {
             let provider = registry.provider_for(path);
-            let not_yet = |result: Result<String>| result.unwrap_err().to_string().ends_with("registry yet.");
+            let not_yet = |result: Result<String>| {
+                matches!(result, Err(Error::Unsupported(words)) if words.ends_with("registry yet."))
+            };
             assert!(not_yet(provider.create(path, "b", NewKind::Folder, &cx)), "{path}");
             assert!(not_yet(provider.rename(path, "b", &cx)), "{path}");
             assert!(not_yet(provider.restore(path, &cx)), "{path}");
