@@ -825,7 +825,7 @@ mod tests {
         let dest = dir.path().join("Copy");
         state
             .transfer(&root, &dest, Transfer::Copy, || {
-                crate::fs_ops::copy_entry_with(
+                crate::local_transfer::copy_entry_with(
                     root.to_string_lossy().to_string(),
                     dest.to_string_lossy().to_string(),
                     false,

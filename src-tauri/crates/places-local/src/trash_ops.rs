@@ -26,12 +26,12 @@
 //! and what counts as inside the Trash. Move to Trash goes through the free
 //! functions `trash_many` and `trash_routed`, whose moves are then handed to
 //! `Trash::record`; every other item the app trashes goes through
-//! `Trash::send`, which logs it itself. Replace (`placement.rs`) sends the
+//! `Trash::send`, which logs it itself. Replace (the app's `placement.rs`) sends the
 //! old item through `Trash::send` too, and if its last step fails a moment
 //! later takes it straight back out with `Trash::untrash` (`untrash`, then
 //! the entry is forgotten).
 
-use crate::progress::Progress;
+use places::Progress;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -137,7 +137,7 @@ fn trash_dir_for(path: &Path, home: &Path) -> PathBuf {
 /// tests lay out either one on any host. `.trashinfo` sidecars are read on a
 /// freedesktop host only (`info_dir_of`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Layout {
+pub enum Layout {
     /// macOS: items directly in `~/.Trash` and `<volume>/.Trashes/<uid>`,
     /// origins in Finder's `.DS_Store` of each.
     Finder,
@@ -424,7 +424,7 @@ pub fn trash_routed(
         match elsewhere(path) {
             Some(result) => results.push(result),
             None => {
-                results.push(Err(crate::progress::CANCELLED.into()));
+                results.push(Err(places::CANCELLED.into()));
                 origins.push(PathBuf::from(path));
                 at.push(i);
             }
@@ -450,7 +450,7 @@ fn trash_many_with(
 ) -> Vec<TrashResult> {
     let mut results: Vec<TrashResult> = paths
         .iter()
-        .map(|_| Err(crate::progress::CANCELLED.into()))
+        .map(|_| Err(places::CANCELLED.into()))
         .collect();
     let mut items = Vec::new();
     for (index, path) in paths.iter().enumerate() {
@@ -646,7 +646,7 @@ fn changed_time(_: &Path) -> i64 {
 /// folder; like it, it never overwrites, even an item that appears
 /// meanwhile.
 pub fn untrash(trashed: &Path, origin: &Path) -> Result<(), String> {
-    crate::placement::rename_back(trashed, origin)?;
+    crate::rename::rename_back(trashed, origin)?;
     if let Some(trash_dir) = trashed.parent() {
         drop_sidecar(trashed, trash_dir);
     }
@@ -659,7 +659,7 @@ type MoveBack<'a> = &'a dyn Fn(&Path, &Path) -> std::io::Result<()>;
 
 /// How Restore moves an item back: never over one that took the name after
 /// the check (`fs::rename` would replace a file there, or an empty folder).
-const MOVE_BACK: MoveBack<'static> = &crate::placement::rename_new;
+const MOVE_BACK: MoveBack<'static> = &crate::rename::rename_new;
 
 /// Move `trashed`, which sits in `trash_dir`, back to `origin` with
 /// `move_back`, recreating missing parent folders. Never overwrites: an
@@ -861,8 +861,8 @@ impl Trash {
         }
         let _guard = self.lock();
         let mut log = read_log(log_path);
-        record(&mut log, moves, crate::recent::now());
-        let _ = crate::config_store::write_json(log_path, &log);
+        record(&mut log, moves, places::now());
+        let _ = places::write_json(log_path, &log);
     }
 
     /// Origin and trash date for each path in the Trash.
@@ -901,7 +901,7 @@ impl Trash {
             origin_of(trashed, &trash_dir, &log, put_back).ok_or("The original location is unknown")?;
         restore(trashed, &origin, &trash_dir, move_back)?;
         log.items.remove(&*trashed.to_string_lossy());
-        let _ = crate::config_store::write_json(log_path, &log);
+        let _ = places::write_json(log_path, &log);
         Ok(origin)
     }
 
@@ -944,7 +944,7 @@ impl Trash {
         let before = log.items.len();
         log.items.retain(|trashed, _| !gone(Path::new(trashed)));
         if log.items.len() < before {
-            let _ = crate::config_store::write_json(log_path, &log);
+            let _ = places::write_json(log_path, &log);
         }
     }
 
@@ -994,7 +994,7 @@ impl Trash {
 
     /// This Trash laid out as `layout`, with `device_of` telling volumes
     /// apart.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     fn laid_out(
         self,
         layout: Layout,
@@ -1008,8 +1008,8 @@ impl Trash {
 /// keeps the home Trash whatever `XDG_DATA_HOME` says (`Trash::new` would
 /// follow it to the user's own Trash), its items folder made, and its log in
 /// a temp config folder. Returns the Trash, the home and the items folder.
-#[cfg(test)]
-pub(crate) fn temp_trash(dir: &Path) -> (Trash, PathBuf, PathBuf) {
+#[cfg(any(test, feature = "testing"))]
+pub fn temp_trash(dir: &Path) -> (Trash, PathBuf, PathBuf) {
     let home = dir.join("home");
     let root = if cfg!(target_os = "macos") {
         home.join(".Trash")
@@ -1167,7 +1167,7 @@ fn read_record(d: &[u8], mut p: usize, out: &mut Vec<(String, [u8; 4], String)>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::progress::Progress;
+    use super::testing::*;
     use tempfile::tempdir;
 
     #[test]
@@ -1430,18 +1430,6 @@ mod tests {
         }
     }
 
-    fn files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
-        fs::create_dir_all(dir).unwrap();
-        names
-            .iter()
-            .map(|name| {
-                let path = dir.join(name);
-                fs::write(&path, *name).unwrap();
-                path
-            })
-            .collect()
-    }
-
     #[test]
     fn a_batch_is_one_call_and_finds_every_item() {
         let dir = tempdir().unwrap();
@@ -1562,7 +1550,7 @@ mod tests {
 
         assert_eq!(calls.lock().unwrap().len(), 1);
         assert!(results[..TRASH_CHUNK].iter().all(|r| matches!(r, Ok(Some(_)))));
-        assert_eq!(results[TRASH_CHUNK], Err(crate::progress::CANCELLED.into()));
+        assert_eq!(results[TRASH_CHUNK], Err(places::CANCELLED.into()));
         assert!(paths[TRASH_CHUNK].exists());
         assert_eq!(progress.snapshot().items, TRASH_CHUNK as u64);
     }
@@ -2111,64 +2099,6 @@ mod tests {
 
     // --- Trash: the log, Put Back and "is in a Trash" ---------------------
 
-    fn text(path: &Path) -> String {
-        path.to_string_lossy().to_string()
-    }
-
-    /// `name` in the Trash, holding its own name.
-    fn put_in(items: &Path, name: &str) -> PathBuf {
-        let path = items.join(name);
-        fs::write(&path, name).unwrap();
-        path
-    }
-
-    fn logged(trash: &Trash) -> TrashLog {
-        read_log(trash.log.as_ref().unwrap())
-    }
-
-    /// The home Trash and a USB stick's, laid out as `layout`, both made.
-    struct Volumes {
-        trash: Trash,
-        home: PathBuf,
-        /// The home Trash's items folder.
-        items: PathBuf,
-        /// Where the stick is mounted.
-        usb: PathBuf,
-        /// The stick's Trash's items folder.
-        usb_items: PathBuf,
-    }
-
-    /// A Trash laid out as `layout` for a temp home, its log in a temp
-    /// config folder, with a USB stick mounted at `<dir>/usb`: the one
-    /// folder on another filesystem.
-    fn with_usb(dir: &Path, layout: Layout) -> Volumes {
-        let home = dir.join("home");
-        let usb = dir.join("usb");
-        fs::create_dir_all(&home).unwrap();
-        let root = match layout {
-            Layout::Finder => home.join(".Trash"),
-            Layout::Freedesktop => home.join(".local/share/Trash"),
-        };
-        let on_usb = usb.clone();
-        let log = Some(dir.join("config/trash_log.json"));
-        let trash = Trash::with_root(home.clone(), root.clone(), log)
-            .laid_out(layout, move |p| Some(if p.starts_with(&on_usb) { 2 } else { 1 }));
-        let items = make_trash(layout, &root);
-        let usb_items = make_trash(layout, &layout.volume_trash(&usb, uid(&home)));
-        Volumes { trash, home, items, usb, usb_items }
-    }
-
-    /// Make the Trash whose root is `root` in `layout`; returns its items
-    /// folder.
-    fn make_trash(layout: Layout, root: &Path) -> PathBuf {
-        let items = layout.items_in(root);
-        fs::create_dir_all(&items).unwrap();
-        if layout == Layout::Freedesktop {
-            fs::create_dir_all(root.join("info")).unwrap();
-        }
-        items
-    }
-
     /// Finder's Put Back record in the Trash folder `trash_dir`'s
     /// `.DS_Store`: `name` came from `folder`, relative to its volume's root.
     fn put_back_record(trash_dir: &Path, name: &str, folder: &str) {
@@ -2440,15 +2370,6 @@ mod tests {
         assert!(found.exists() && !item.exists());
     }
 
-    /// Stands in for the `trash` crate: moves an item into the Trash folder
-    /// `trash` says it goes to, writing no record of its own.
-    fn into_its_trash(trash: &Trash) -> impl Fn(&Path) -> Result<(), String> + '_ {
-        move |path| {
-            let to = trash.dir_for(path).join(path.file_name().unwrap());
-            fs::rename(path, to).map_err(|e| e.to_string())
-        }
-    }
-
     #[test]
     fn an_item_sent_to_the_trash_is_logged_for_restore() {
         for layout in [Layout::Finder, Layout::Freedesktop] {
@@ -2473,86 +2394,6 @@ mod tests {
             assert_eq!(v.trash.send_with(&at_home[1], &refuse), Err("Failed to move to Trash: locked".into()));
             assert!(v.trash.send_with(&v.home.join("gone.txt"), &delete).is_err());
             assert_eq!(logged(&v.trash).items.keys().collect::<Vec<_>>(), [&text(&a)]);
-        }
-    }
-
-    /// The app's Trash as a Replace uses it (`ReplaceTrash`, as `lib.rs`
-    /// passes it): `Trash::send`, here with the trashing stood in for, and
-    /// `Trash::untrash`.
-    struct LoggedReplaceTrash<'a> {
-        trash: &'a Trash,
-        delete: &'a dyn Fn(&Path) -> Result<(), String>,
-    }
-
-    impl crate::placement::ReplaceTrash for LoggedReplaceTrash<'_> {
-        fn send(&self, path: &Path) -> Result<Option<PathBuf>, String> {
-            self.trash.send_with(path, self.delete)
-        }
-
-        fn take_back(&self, trashed: &Path, origin: &Path) -> Result<(), String> {
-            self.trash.untrash(trashed, origin)
-        }
-    }
-
-    /// Replace `old` through the logged Trash with a new file whose last
-    /// rename fails: once the old item is in the Trash, the staged copy
-    /// vanishes and `meanwhile` runs. Returns the error.
-    fn failed_replace(trash: &Trash, old: &Path, meanwhile: impl Fn(&Path)) -> String {
-        use crate::placement::{Stage, Staged, check_new};
-        let staged = std::cell::RefCell::new(PathBuf::new());
-        let fill = |dest: &Path| {
-            fs::write(dest, "new").unwrap();
-            staged.replace(dest.to_path_buf());
-            Ok(Staged::Copy)
-        };
-        let into_trash = into_its_trash(trash);
-        let delete = |path: &Path| {
-            into_trash(path)?;
-            fs::remove_file(&*staged.borrow()).unwrap();
-            meanwhile(path);
-            Ok(())
-        };
-        let replace_trash = LoggedReplaceTrash { trash, delete: &delete };
-        let target = check_new(old, true).unwrap();
-        target.place(Stage::Always, fill, &replace_trash).unwrap_err()
-    }
-
-    /// A Replace whose last rename fails takes the old item back out of the
-    /// logged Trash and forgets its entry: the item is back, nothing is left
-    /// in the Trash, and the log names nothing that left it. When something
-    /// took its place, it stays in the Trash and stays logged, so Restore
-    /// still knows where it came from. Both layouts, from home and a stick.
-    #[test]
-    fn a_failed_replace_takes_the_old_item_back_out_of_the_logged_trash() {
-        for layout in [Layout::Finder, Layout::Freedesktop] {
-            let dir = tempdir().unwrap();
-            let v = with_usb(dir.path(), layout);
-            let at_home = files(&v.home.join("Documents"), &["a.txt"]).remove(0);
-            let on_usb = files(&v.usb.join("Projects"), &["b.txt"]).remove(0);
-            let cases = [(&at_home, &v.items, "a.txt"), (&on_usb, &v.usb_items, "b.txt")];
-
-            for (old, items, name) in cases {
-                let err = failed_replace(&v.trash, old, |_| ());
-                assert!(err.starts_with("Failed to replace: "), "{layout:?}: {err}");
-                assert!(!err.contains("Trash"), "{layout:?}: {err}");
-                assert_eq!(fs::read_to_string(old).unwrap(), name, "{layout:?}");
-                assert!(names_in(items).is_empty(), "{layout:?}: {name} left in the Trash");
-                assert!(logged(&v.trash).items.is_empty(), "{layout:?}: {name} still logged");
-                assert_eq!(names_in(old.parent().unwrap()), HashSet::from([OsString::from(name)]));
-            }
-
-            for (old, items, name) in cases {
-                let err = failed_replace(&v.trash, old, |old| fs::write(old, "newer").unwrap());
-                let trashed = items.join(name);
-                let kept = format!(
-                    "in the Trash at “{}” and could not be put back: another item is there now",
-                    trashed.display()
-                );
-                assert!(err.ends_with(&kept), "{layout:?}: {err}");
-                assert_eq!(fs::read_to_string(old).unwrap(), "newer", "{layout:?}");
-                assert_eq!(fs::read_to_string(&trashed).unwrap(), name, "{layout:?}");
-                assert_eq!(logged(&v.trash).items[&text(&trashed)].origin, text(old), "{layout:?}");
-            }
         }
     }
 
@@ -2640,7 +2481,7 @@ mod tests {
         let mut stale = TrashLog::default();
         let entry = LoggedItem { origin: text(&home.join("stale/a.txt")), time: 5 };
         stale.items.insert(text(&item), entry);
-        crate::config_store::write_json(trash.log.as_ref().unwrap(), &stale).unwrap();
+        places::write_json(trash.log.as_ref().unwrap(), &stale).unwrap();
 
         let info = trash.info(&[text(&item)]);
         assert_eq!(info[0].origin, Some(text(&origin)));
@@ -2695,7 +2536,7 @@ mod tests {
                         format!("{prefix}{}", path.strip_prefix(&root).unwrap().to_string_lossy());
                     if path.is_dir() {
                         folders.push(path);
-                    } else if name != "trash_ops.rs"
+                    } else if name != "crates/places-local/src/trash_ops.rs"
                         && names_the_trash_crate(&fs::read_to_string(&path).unwrap_or_default())
                     {
                         callers.push(name);
@@ -2814,5 +2655,101 @@ mod tests {
         assert_eq!(progress.snapshot().items, 3);
         assert!(root.is_dir());
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    }
+}
+
+/// The Trash fixtures the tests here and the app's tests of Replace through
+/// the logged Trash share (feature `testing`): a temp home's Trash laid out
+/// either way, a stick with its own, and a stand-in for the `trash` crate.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    use super::*;
+
+    pub fn files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
+        fs::create_dir_all(dir).unwrap();
+        names
+            .iter()
+            .map(|name| {
+                let path = dir.join(name);
+                fs::write(&path, *name).unwrap();
+                path
+            })
+            .collect()
+    }
+
+    pub fn text(path: &Path) -> String {
+        path.to_string_lossy().to_string()
+    }
+
+    /// `name` in the Trash, holding its own name.
+    pub fn put_in(items: &Path, name: &str) -> PathBuf {
+        let path = items.join(name);
+        fs::write(&path, name).unwrap();
+        path
+    }
+
+    pub fn logged(trash: &Trash) -> TrashLog {
+        read_log(trash.log.as_ref().unwrap())
+    }
+
+    /// The home Trash and a USB stick's, laid out as `layout`, both made.
+    pub struct Volumes {
+        pub trash: Trash,
+        pub home: PathBuf,
+        /// The home Trash's items folder.
+        pub items: PathBuf,
+        /// Where the stick is mounted.
+        pub usb: PathBuf,
+        /// The stick's Trash's items folder.
+        pub usb_items: PathBuf,
+    }
+
+    /// A Trash laid out as `layout` for a temp home, its log in a temp
+    /// config folder, with a USB stick mounted at `<dir>/usb`: the one
+    /// folder on another filesystem.
+    pub fn with_usb(dir: &Path, layout: Layout) -> Volumes {
+        let home = dir.join("home");
+        let usb = dir.join("usb");
+        fs::create_dir_all(&home).unwrap();
+        let root = match layout {
+            Layout::Finder => home.join(".Trash"),
+            Layout::Freedesktop => home.join(".local/share/Trash"),
+        };
+        let on_usb = usb.clone();
+        let log = Some(dir.join("config/trash_log.json"));
+        let trash = Trash::with_root(home.clone(), root.clone(), log)
+            .laid_out(layout, move |p| Some(if p.starts_with(&on_usb) { 2 } else { 1 }));
+        let items = make_trash(layout, &root);
+        let usb_items = make_trash(layout, &layout.volume_trash(&usb, uid(&home)));
+        Volumes { trash, home, items, usb, usb_items }
+    }
+
+    /// Make the Trash whose root is `root` in `layout`; returns its items
+    /// folder.
+    pub fn make_trash(layout: Layout, root: &Path) -> PathBuf {
+        let items = layout.items_in(root);
+        fs::create_dir_all(&items).unwrap();
+        if layout == Layout::Freedesktop {
+            fs::create_dir_all(root.join("info")).unwrap();
+        }
+        items
+    }
+
+    /// Stands in for the `trash` crate: moves an item into the Trash folder
+    /// `trash` says it goes to, writing no record of its own.
+    pub fn into_its_trash(trash: &Trash) -> impl Fn(&Path) -> Result<(), String> + '_ {
+        move |path| {
+            let to = trash.dir_for(path).join(path.file_name().unwrap());
+            fs::rename(path, to).map_err(|e| e.to_string())
+        }
+    }
+
+    /// `Trash::send` with the trashing given, as the tests stand it in.
+    pub fn send_with(
+        trash: &Trash,
+        path: &Path,
+        delete: &dyn Fn(&Path) -> Result<(), String>,
+    ) -> Result<Option<PathBuf>, String> {
+        trash.send_with(path, delete)
     }
 }

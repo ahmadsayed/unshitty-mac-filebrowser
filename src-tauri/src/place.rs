@@ -58,11 +58,10 @@ pub fn kind(path: &str) -> Kind {
 // ---- Refusals ----------------------------------------------------------------
 
 /// `path` as a file on this computer, or why it isn't one.
+/// This computer's own words come from its provider (`places_local::local`).
 pub fn local(path: &str) -> Result<&Path, String> {
-    let local = Path::new(path);
     match kind(path) {
-        Kind::Local if local.is_absolute() => Ok(local),
-        Kind::Local => Err(format!("“{path}” is not a local file.")),
+        Kind::Local => places_local::local(path),
         Kind::Drive => Err(places_gdrive::service::unsupported()),
         Kind::Share => Err(share::provider::LOCAL_ONLY.into()),
         Kind::Sftp => Err(places_sftp::LOCAL_ONLY.into()),

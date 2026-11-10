@@ -1,0 +1,32 @@
+[package]
+name = "places-local"
+version = "0.1.0"
+description = "This computer's files for File Browser: listing, item counts, search, renames that never replace, the Trash in both layouts and its log, volumes and the local places provider"
+authors = ["you"]
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[features]
+# The Trash fixtures (a temp home's Trash, a stick with its own), for the
+# app's tests of Replace through the logged Trash.
+testing = ["dep:tempfile"]
+
+[dependencies]
+places = { version = "0.1.0", path = "../places" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+trash = "5"
+unicode-normalization = "0.1.26"
+tempfile = { version = "3", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Renames that never replace (renameat2 with RENAME_NOREPLACE).
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Renames that never replace (renamex_np with RENAME_EXCL).
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
