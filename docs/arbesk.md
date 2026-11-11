@@ -179,8 +179,39 @@ In the window:
   earlier model, or from an earlier version of another file, is tagged
   *Out of date*; the tag's tooltip says which. Each row has a menu with
   **Open With…** (that file, with any application) and **Copy** (that
-  file; pasted, it lands as one file). Adding and removing files come
-  next.
+  file; pasted, it lands as one file) and, for a file, **Remove…**
+  (below). A dim line under the list says *Paste or drop files onto the
+  asset to add them.*
+- **Paste Into Asset** in an asset's menu, or a drop on the asset (it
+  highlights as a folder does; a drop on a collection's empty space still
+  copies a model in), adds files from this computer to the asset. Cut, a
+  drag that moves, folders, items from Drive, shares or SSH servers, a file
+  with no extension, a `.gltf` that uses files beside it (*Add a .glb
+  instead.*) and a file over 256 MB are refused in one toast before
+  anything starts. Each file is recorded as `besk attach` records it: its
+  extension is its format, its role follows from it (a 3MF is a mesh, a
+  G-code is for the printer), a mesh or a printer file is made from the
+  model, and a G-code's own comments give its slicer, printer, material,
+  layer height, nozzle, print time and filament (PrusaSlicer, SuperSlicer,
+  OrcaSlicer, Bambu Studio and Cura); its id is besk's
+  (`gcode-original-prusa-mk4-petg`). An id the asset already has asks
+  *Replace “Box.stl” in “Box.gltf”?* (Skip, Keep Both, Replace; Enter keeps
+  both, as `Box.stl` → `stl-2`); two files of one paste with one id are
+  kept both without asking; an id held by a file entry File Browser can't
+  read is refused (*This asset already has a file “plan” that File Browser
+  can't show.*); when nothing is left, *Nothing was added to “Box.gltf”.*
+  Then *Add to “Box.gltf”?* says the files go public (and, for a `.blend`
+  or other source file, that it can hold more than the model), Cancel by
+  default. The paste is one new version and one operation (*Adding 2 files
+  to “Box.gltf”*), with progress and Cancel. An asset holds at most 32
+  files.
+- **Remove…** on a file of the Files… page asks *Remove “Bracket.gcode”
+  From “Box.gltf”?* (*Arbesk keeps it in the asset's earlier versions.*,
+  Cancel by default) and waits in the dialog, Cancel still live; a failure
+  is said there. The model can't be removed. Files made from the removed one
+  read out of date.
+- After an add or a remove the collection reloads, the asset's emblem
+  shows its new count, and an open Files… page is drawn again.
 - **Open With…** in an asset's menu asks the system which of the asset's
   formats the chosen application opens (GIO's MIME types and caches on
   Linux, LaunchServices on macOS; never a list of File Browser's own). An
@@ -223,6 +254,27 @@ Underneath:
   one is kept and a fresh copy goes beside it, and copies are pruned after
   a week like other downloads (edited ones go to the Trash). Edits to an
   opened copy stay on this computer: File Browser uploads nothing back.
+
+Adding and removing write the asset's next version as besk does, and lose
+nothing: the next manifest starts from the stored one (every key, every
+file entry, those File Browser can't read included, and the model kept),
+its version is besk's `versionOf + 1`, linked back to the one before, and a
+text file (G-code, glTF, OBJ…) is stored brotli-framed as asset-core
+stores it. Everything is checked before the first upload (the session, that
+you may edit the collection, each file, the ids and the room); then the
+files are uploaded, and the collection is changed only while it still
+names the version the write started from (a compare-and-swap, under the
+same one-write-at-a-time hold as copying in, which waits for this app's own
+last write to show). If another save landed meanwhile (the Studio, `besk`,
+another window), the write is done once more on top of it, reusing the
+uploaded files, keeping what that save changed; a second time it stops
+with *“Box.gltf” changed while the files were being added. Nothing was
+changed; try again.* A failed or cancelled upload, a refused relay or a
+lost session leaves the asset as it was (*Sign in to Arbesk again to add
+files to it.* signs in again and carries on). The written manifest is
+checked against besk's own `attach` output
+(`crates/arbesk/tests/fixtures/attach.json`, made by
+`scripts/make-attach-fixture.ts`).
 
 Replacing an asset's model (copy-in's *Replace*) keeps its other files, see
 [Copying into Arbesk](#copying-into-arbesk).

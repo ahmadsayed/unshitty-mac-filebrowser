@@ -121,8 +121,10 @@ Then:
     file copied into a collection (`Transfer::write`; Replace saves a new
     version, keeping the asset's other files) and an asset out
     (`Transfer::export`), and the `Versions`, `Preview`, `Representations`
-    (an asset's other files: their list, and one fetched into the app
-    cache), `Properties` (an asset's name, collection, date and version),
+    (an asset's other files: their list, one fetched into the app cache,
+    and files added or removed as a new version, `attach.rs`; only an
+    asset's capabilities allow `Operation::Attach`, which the frontend
+    reads as `can_attach`), `Properties` (an asset's name, collection, date and version),
     `Sharing` and `Accounts` extensions, whose own records reach
     the frontend as the crate serialises them (`places::Json`). Its asset
     rows carry `places::Entry.representations`, a summary of those files

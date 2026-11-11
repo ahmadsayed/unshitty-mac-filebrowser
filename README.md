@@ -96,8 +96,10 @@ one out on its own platform.
   its **Properties** show its version and list those files. **Open With…**
   hands an application the file it opens (asking which when it opens
   several: a slicer gets the 3MF, G-code or STL, Blender the `.blend`), and
-  copying the asset out asks which of its files to copy
-  ([details](docs/arbesk.md)).
+  copying the asset out asks which of its files to copy. **Paste Into
+  Asset** (or a drop on the asset) adds files from this computer to it as
+  a new version, after a confirmation, and **Remove…** on its Files… page
+  takes one out ([details](docs/arbesk.md)).
 - **Trash done right:** Undo (⌘Z), Restore (also for items trashed in Finder),
   and nothing is ever deleted without asking.
 - **Check for Updates** (main menu): the AppImage and the Mac app download,
@@ -194,9 +196,10 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
   attached to an Arbesk account that has signed in once can be shared with;
   Arbesk lists only Editors in Network for now, so a Viewer needs the
   collection's path to open it; assets open in the Studio, not as files, and
-  only their newest version can be copied out; an asset's other files can
-  be opened with an application and copied out, but not added or removed
-  from the window yet; collections, and scenes that
+  only their newest version can be copied out; an asset's other files can't
+  have their role, profile or source changed (`besk attach` can), and the
+  only files added are ones on this computer (up to 256 MB, at most 32 per
+  asset); collections, and scenes that
   link to other assets, can't be
   copied yet, nor dragged to other apps; no sizes in listings; a scene's
   links to assets on another chain are left out of its preview.

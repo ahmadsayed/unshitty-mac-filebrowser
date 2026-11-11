@@ -605,7 +605,11 @@ version.** Sources: regular files on this computer, at most 256 MB each
 
 **The rule.** `item-actions.ts` gains **`attach`** (a `SharedAction`), read
 from `here.paths` as `copyOut` is: the target's `can_attach` (F13) and every
-source a local regular file (`isLocalRegularFile`), with the toasts below.
+source a local regular file, with the toasts below. (As built: the
+clipboard holds `{ paths, dirs }` and no link facts, so the rule takes
+every source on this computer that isn't one of `dirs`, `locations.ts`'
+`attachRefusal`; the backend's plan refuses anything but a regular file,
+links followed, with the same words.)
 Paste Into Asset and the drop both call `refuse("attach", hereFor(…))`, and
 `tests/item-actions.test.ts` gains its cells.
 
@@ -659,6 +663,8 @@ never against what the Files… page shows:
   automatic, with no dialog: neither file was there before.
 - When every file is skipped or refused, **no version is written** and
   nothing is relayed; a toast says *Nothing was added to “Box.gltf”.*
+  (libadwaita shows one toast at a time: as built, a paste's refusals and
+  this sentence share one toast.)
 
 Then room: stored entries + files that add an entry (new ids, Keep Both)
 must be at most 32; Replace adds none. Past it: *An asset holds at most 32
@@ -708,7 +714,9 @@ until the collection manifest is uploaded, as copy-in does
    `scene.nodes` array) is first wrapped exactly as besk's
    `compositeWrapper` does, field for field (F1's "What Arbesk stores"):
    `type: "asset"`, `name` = the composite's `name` else the listed name,
-   `asset_id`, `version` = `version_of(composite)`, one node `node_id:
+   `asset_id` (as built: with no `name` of its own, the listed name
+   without its extension, where besk takes the name the user typed),
+   `version` = `version_of(composite)`, one node `node_id:
    "node_1"` with the identity `transform_matrix` and `source {cid,
    format, path}` (`path` for gltf and 3mf), the format from
    `compose::format_of` (glTF, or 3MF for `composite-3mf`, as
@@ -731,9 +739,12 @@ until the collection manifest is uploaded, as copy-in does
 **A conflict** is retried once by itself, from the new tip: steps 1, 3 and
 4 again, reusing the file CIDs step 2 uploaded (content-addressed: the same
 bytes have the same CID, so nothing is uploaded twice), with
-`derived_from` recomputed from the new tip and the ids settled again (a
-new clash with a valid entry asks again; one with an unparseable entry is
-refused). It keeps whatever the other save changed. A second conflict stops
+`derived_from` recomputed from the new tip and the ids settled again (one
+clashing with an unparseable entry is refused). As built, a new clash with
+a valid entry is not asked again: a command can't ask mid-write, so a clash
+nobody answered is Keep Both, which overwrites nothing, and Replace
+replaces only while the entry still holds the file the user agreed to
+replace (the plan's CID), else Keep Both too. It keeps whatever the other save changed. A second conflict stops
 with *“Box.gltf” changed while the files were being added. Nothing was
 changed; try again.* (the `CONFLICT` of `catalog.ts:184`). The asset's model
 and every other representation are never dropped by an attach: a test
@@ -767,7 +778,9 @@ again to remove files from it.*).
 `providers::capability_table` derives `can_attach` from it as it derives
 `can_copy_in` (`providers.rs:168-190`): true only for the `arbesk-asset`
 row. Every other row refuses it with its own read-only or local-only
-words; an Arbesk account, collection or file with *Add files to an asset.*.
+words; an Arbesk account, collection or file with *Add files to an asset.*
+(as built, `places::ADD_TO_AN_ASSET`), and so does a folder on this
+computer, which has no read-only or local-only words of its own.
 The column is added to `tests/capabilities.json`, `capabilities.ts`'
 `PlaceCapabilities` and built-in table, and the mock's answer. The
 frontend's `attach` rule (F10) reads it.
