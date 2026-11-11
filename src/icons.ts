@@ -56,7 +56,9 @@ const SYMBOLIC: Record<string, string> = {
   "emblem-versions": `<path d="M8 2.4 14 5.8 8 9.2 2 5.8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M2 8.6 8 12l6-3.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 10.9 8 14.3l6-3.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>`,
   // Two sheets, the back one up and to the right, the front one with a
   // folded corner: "has other files". Not the versions stack, not a clip.
-  "emblem-files": `<path d="M5.25 4V2.25a1 1 0 0 1 1-1h7.5a1 1 0 0 1 1 1v8.5a1 1 0 0 1-1 1H12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M1.25 6.25a1 1 0 0 1 1-1H7l3 3v6.5a1 1 0 0 1-1 1H2.25a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M6.75 5.5v2.75h2.75" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
+  // Every 2-unit stroke stays inside the 16-unit box (the front sheet's
+  // bottom edge at 15, so <symbol>'s clip leaves it whole).
+  "emblem-files": `<path d="M5.25 3.25v-1a1 1 0 0 1 1-1h7.5a1 1 0 0 1 1 1v8.5a1 1 0 0 1-1 1H12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M1.25 5.5a1 1 0 0 1 1-1H7l3 3V14a1 1 0 0 1-1 1H2.25a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M6.75 4.75V7.5h2.75" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
   "object-select": `<path d="m3 8.5 3.25 3.25L13 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`,
   "window-close": `<path d="m4.5 4.5 7 7m0-7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`,
   "window-minimize": `<path d="M4.5 11.5h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`,

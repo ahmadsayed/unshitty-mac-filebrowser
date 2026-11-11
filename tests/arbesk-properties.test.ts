@@ -96,6 +96,69 @@ test("Files… lists the model first, then each file with its subtitle and out-o
   await closeOverlays();
 });
 
+type MockCalls = { hold(cmd: string): void; release(cmd: string): void; count(cmd: string): number; failNext(cmd: string, error: string): void };
+const calls = () => (globalThis as unknown as { __mockCalls: MockCalls }).__mockCalls;
+const button = (label: string) => $$<HTMLButtonElement>(".properties-dialog .dialog-responses button").find((b) => b.textContent === label)!;
+
+test("Files… waits on Arbesk once: a second press is ignored and one page opens", async () => {
+  await click(row("Bracket.gltf"));
+  await key("i", { mod: true });
+  await settle(10);
+  calls().hold("arbesk_representations");
+  const before = calls().count("arbesk_representations");
+  await click(button("Files…"));
+  await settle(10);
+  expect(button("Files…").disabled).toBe(true);
+  expect(button("Close").disabled).toBe(false);
+  await click(button("Files…"));
+  await settle(10);
+  calls().release("arbesk_representations");
+  await settle(20);
+  expect(calls().count("arbesk_representations")).toBe(before + 1);
+  expect($$(".files-dialog")).toHaveLength(1);
+  expect(button("Files…").disabled).toBe(false);
+  await closeOverlays();
+});
+
+test("Properties closed while Files… waits opens no page; a failure is a toast", async () => {
+  await click(row("Bracket.gltf"));
+  await key("i", { mod: true });
+  await settle(10);
+  calls().hold("arbesk_representations");
+  await click(button("Files…"));
+  await settle(10);
+  await click(button("Close"));
+  await settle(10);
+  expect(dialogHeading()).toBeUndefined();
+  calls().release("arbesk_representations");
+  await settle(20);
+  expect($$(".files-dialog")).toHaveLength(0);
+  await key("i", { mod: true });
+  await settle(10);
+  calls().failNext("arbesk_representations", "Failed to read the asset: The gateway did not answer.");
+  await respond("Files…");
+  await settle(10);
+  expect($$(".files-dialog")).toHaveLength(0);
+  expect(toasts()).toContain("Could not show the files: The gateway did not answer.");
+  expect(dialogHeading()).toBe("Properties");
+  await closeOverlays();
+});
+
+test("the Version row is the manifest's version, not a count of saves, and none for a fractional one", async () => {
+  await click(row("Big.gltf"));
+  await key("i", { mod: true });
+  await settle(10);
+  expect(propertyRows().Version).toBeUndefined();
+  await closeOverlays();
+  await openArbesk("Untitled Collection");
+  await click(row("Table.gltf"));
+  await key("i", { mod: true });
+  await settle(10);
+  // One save, numbered 5 by its manifest.
+  expect(propertyRows().Version).toBe("5");
+  await closeOverlays();
+});
+
 test("a collection and the account still have no Properties", async () => {
   await openArbesk();
   await click(row("Shapes"));

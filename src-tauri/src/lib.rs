@@ -2582,6 +2582,86 @@ mod properties_tests {
             );
         }
     }
+
+    use super::arbesk_properties;
+    use places::{Cx, Entry, Fetch, Fetched, FileProperties, ListOptions, Provider, Registry, ext};
+    use std::sync::Arc;
+
+    /// A place answering every call as read only; Properties only when
+    /// `version` is given, for an asset with that version.
+    struct Place {
+        scheme: &'static str,
+        version: Option<Option<u32>>,
+    }
+
+    impl Provider for Place {
+        fn scheme(&self) -> &'static str {
+            self.scheme
+        }
+        fn list(&self, _: &str, _: &ListOptions, _: &Cx) -> places::Result<Vec<Entry>> {
+            Ok(Vec::new())
+        }
+        fn fetch(&self, _: &str, _: Fetch, _: &Cx) -> places::Result<Fetched> {
+            Err(places::Error::Unsupported("Not in tests.".into()))
+        }
+        places::read_only_place!("Read only.", "Not here.");
+        fn extensions(&self) -> places::Extensions<'_> {
+            places::Extensions {
+                properties: self.version.is_some().then_some(self as &dyn ext::Properties),
+                ..Default::default()
+            }
+        }
+    }
+
+    impl ext::Properties for Place {
+        fn properties(&self, path: &str) -> places::Result<FileProperties> {
+            let (parent, name) = path.rsplit_once('/').unwrap();
+            Ok(FileProperties {
+                name: name.split_once('~').unwrap().1.into(),
+                path: path.into(),
+                parent: parent.into(),
+                is_dir: false,
+                is_symlink: false,
+                symlink_target: None,
+                size: 0,
+                item_count: None,
+                modified: 1_762_000_000,
+                accessed: 0,
+                created: 0,
+                mode: String::new(),
+                octal: String::new(),
+                owner: String::new(),
+                group: String::new(),
+                others: String::new(),
+                version: self.version.flatten(),
+            })
+        }
+    }
+
+    fn with_arbesk(version: Option<Option<u32>>) -> Registry {
+        Registry::new(Arc::new(Place { scheme: "", version: None })).register(Arc::new(Place { scheme: "arbesk", version }))
+    }
+
+    /// `file_properties` for an Arbesk asset: the registry's Arbesk provider
+    /// answers it through its Properties extension, version included.
+    #[test]
+    fn an_arbesk_asset_s_properties_come_from_its_provider() {
+        let asset = format!("arbesk://0x{}/1~Shapes/box~Box.gltf", "ab".repeat(20));
+        for version in [Some(4), None] {
+            let props = arbesk_properties(&with_arbesk(Some(version)), &asset).unwrap();
+            assert_eq!((props.name.as_str(), props.version), ("Box.gltf", version));
+            assert_eq!(props.parent, format!("arbesk://0x{}/1~Shapes", "ab".repeat(20)));
+        }
+        // A provider without the extension is refused in Arbesk's words.
+        assert_eq!(
+            arbesk_properties(&with_arbesk(None), &asset).unwrap_err(),
+            "Properties aren't available for Arbesk yet."
+        );
+        // The app's own registry routes to the real Arbesk client's
+        // extension: with no account connected, its own refusal comes back.
+        let registry = crate::providers::testing::plain();
+        assert_eq!(arbesk_properties(&registry, &asset).unwrap_err(), "Connect this Arbesk account first.");
+    }
 }
 
 #[cfg(test)]

@@ -3066,10 +3066,15 @@ async function showProperties(entry: Entry): Promise<void> {
     ],
     defaultResponse: "close",
     closeResponse: "close",
+    // Files… waits on Arbesk: one fetch at a time, Close still live; the
+    // page opens only over a Properties dialog still open.
+    busy: { liveWhileBusy: ["close"], errorText: (err) => `Could not show the files: ${cleanError(err)}` },
     onResponse: (id) => {
       if (id === "files") {
-        void showAssetFiles(entry);
-        return false;
+        return arbeskRepresentations(entry.path).then((files) => {
+          if (extra.isConnected) showFilesDialog(entry, files);
+          return false;
+        });
       }
       if (id === "permissions") {
         showPermissionsDialog(info.path, parseInt(info.octal, 8) & 0o777, () => {
@@ -3092,19 +3097,6 @@ async function showProperties(entry: Entry): Promise<void> {
       if (sizeValue.isConnected) sizeValue.textContent = "Unknown";
     }
   }
-}
-
-/** The Files… page of an Arbesk asset's Properties: its other files, read
- *  from the asset's current save (spec F3), shown over Properties. */
-async function showAssetFiles(entry: Entry): Promise<void> {
-  let files;
-  try {
-    files = await arbeskRepresentations(entry.path);
-  } catch (err) {
-    showToast(`Could not show the files: ${cleanError(err)}`);
-    return;
-  }
-  showFilesDialog(entry, files);
 }
 
 // ---------------------------------------------------------------------------
