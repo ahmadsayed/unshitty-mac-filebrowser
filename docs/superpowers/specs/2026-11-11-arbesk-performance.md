@@ -107,16 +107,67 @@ in fixed pairs: a slow part idles its partner's slot.
   flight across every feature (listings, parts, thumbnails, files, versions),
   with a byte budget for parts held in memory. RPC calls get their own
   smaller limit (4). Waiting for a permit listens to the stop flag.
-- `in_parallel` takes permits from it instead of spawning a fixed batch.
+- Every read inside `in_parallel` takes a permit from it, one per read
+  (not one per item: an item's work makes several reads, and a worker
+  holding a permit while its next read waits for another could leave every
+  permit waiting); `in_parallel` keeps only its threads.
 - `Parts::fetch` becomes a sliding window through the limiter instead of
   fixed pairs of 2; parts are still assembled in order. The build's byte
   budget is reserved before a part is fetched (its size is known from the
-  composite's `byteLength` where present), so the cap can't be overshot.
+  composite's `byteLength`, else the `_arbesk.bytes` asset-core records on
+  every part, where present), so the cap can't be overshot.
 - A single-flight map: two callers asking for the same CID at once share one
   read.
 
 **Gain.** 12 parts: 6 rounds become 2; 40 parts: 20 become 5. Total reads in
 flight never pass 8, whatever runs at once.
+
+**As built.**
+- `limiter.rs`: `Limiter` (one per `Client`, `Client::limiter`) with
+  `READS` = 8 gateway permits and `RPCS` = 4 chain RPC permits; a wait
+  for a permit hears the operation's stop every `TICK` (and a stopped
+  operation starts no read). The limits travel with the `Http` a read is
+  handed: `Client` wraps its client in `limiter::Limited`, which answers
+  the new `Http::limits`; `Gateway::get` (manifests, parts, thumbnails) and
+  `Gateway::raw` (an asset's other files) take a read permit, `chain`'s
+  `eth_call` an RPC permit. The stop is the operation's `Progress` for a
+  build, an export, a file and a part; a thumbnail's view stop, which may
+  only be asked on its own thread, through `limiter::bridged`; listings,
+  scenes, versions, Properties and file lists never stop. Writes (save,
+  attach, detach, create, share, attach's planning) keep the bare client:
+  unlimited, as before, so a save under its collection hold never queues
+  behind a listing.
+- Single-flight is `Limiter::shared`, keyed by the gateway URL, for the
+  whole-body reads only: each caller gets its own copy, a caller whose
+  shared read was cancelled by its leader's stop reads again for itself,
+  and the answer is not kept once the read lands. A streamed download of
+  an asset's other file is never shared (its progress and cancel are its
+  caller's; one file's opens already take turns in `Builds`).
+- `in_parallel` keeps `READS` threads for a listing's rows; the listing's
+  `PARALLEL` is gone.
+- `Parts::build` runs up to `READS` workers beside the assembler for the
+  whole build (`compose::Window`). A part of known size starts while what
+  landed, what is on its way and it fit the cap; alone it starts anyway and
+  is charged when it lands, as before, so a size that understates is still
+  caught and the verdict is the one charging every part after it lands
+  gives. A part of unknown size (an older source that records none) goes
+  as before: in pairs (`PARALLEL_PARTS` = 2) charged when both land, never
+  beside a sized one. Any failure (a read, the budget, a cancel) fails the
+  build with its words; reads under way finish, workers start nothing more.
+- Not changed: what is read and where results land, the frontend's caps
+  (thumbnails 4, the copy-out plan 4).
+- Tests: `limiter`'s own (the cap, a cancel while waiting, shared reads,
+  their failures and cancels, `bridged`), `ipfs`'
+  `callers_of_one_cid_at_once_share_one_read`, `compose`'s
+  `a_slow_part_does_not_idle_the_others`,
+  `parts_in_flight_never_overshoot_the_budget`,
+  `one_failed_part_among_many_fails_the_build`,
+  `a_part_size_comes_from_byte_length_or_its_recorded_bytes` and
+  `a_build_waiting_for_a_permit_stops_on_a_cancel`, and the client's
+  `every_read_shares_one_limit` (a listing, a build and four thumbnails:
+  12 reads at once without the limiter, at most 8 with it),
+  `a_cancel_while_waiting_for_a_permit_returns_at_once` and
+  `one_unreachable_read_still_fails_the_listing`.
 
 ## Phase 3: a scene's models load together
 
