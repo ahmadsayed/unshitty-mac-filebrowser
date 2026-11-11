@@ -314,15 +314,10 @@ pub fn bridged<R: Send>(
             let _ = sender.send(());
             answer
         });
-        loop {
-            match receiver.recv_timeout(TICK) {
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    if stop() {
-                        stopped.store(true, Ordering::SeqCst);
-                    }
-                }
-                // Done, or the worker panicked: `join` says which.
-                _ => break,
+        // Until it is done, or panicked (`join` says which).
+        while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = receiver.recv_timeout(TICK) {
+            if stop() {
+                stopped.store(true, Ordering::SeqCst);
             }
         }
         match worker.join() {

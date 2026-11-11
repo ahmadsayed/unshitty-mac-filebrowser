@@ -367,6 +367,12 @@ impl<'a> Gateway<'a> {
         })
     }
 
+    /// Whether the operation these reads are for was stopped (a cancel, a
+    /// closed preview); never without limits.
+    pub fn stopped(&self) -> bool {
+        self.http.limits().is_some_and(|limits| (limits.stop)())
+    }
+
     /// The stored bytes at `cid`, never unpacked: an asset's other file,
     /// which its entry's `encoding` decodes (a raw file that starts like a
     /// brotli frame or gzip stays as it is). Parts keep [`Gateway::bytes`].
