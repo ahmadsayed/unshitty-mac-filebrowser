@@ -362,24 +362,6 @@ dependencies = [
 
 [[package]]
 name = "bao-tree"
-version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "149a2a6017771141e2cd5d0c55b3892d8ff1958df5c318b2e496bf3544b426ed"
-dependencies = [
- "blake3",
- "bytes",
- "futures-lite",
- "genawaiter",
- "iroh-io",
- "positioned-io",
- "range-collections",
- "self_cell",
- "serde",
- "smallvec",
-]
-
-[[package]]
-name = "bao-tree"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50d0e17303b78c9bb240014f3f401ecae5c0460438ace49a171e5f97e3ae57ba"
@@ -1603,7 +1585,6 @@ version = "0.8.2"
 dependencies = [
  "arbesk",
  "argon2",
- "bao-tree 0.16.1",
  "base64 0.23.1",
  "blake3",
  "brotli",
@@ -2773,7 +2754,7 @@ version = "0.104.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7880fd27004f713cfb220b494036613a439cff4e9c17d16d5179e8440f90cb0d"
 dependencies = [
- "bao-tree 0.17.0",
+ "bao-tree",
  "bytes",
  "cfg_aliases",
  "chrono",
