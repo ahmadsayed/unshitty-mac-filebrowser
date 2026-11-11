@@ -114,6 +114,7 @@ fn make_entry(entry_path: &Path, name: String) -> Option<Entry> {
         modified: secs(meta.modified()),
         is_symlink,
         cloud: None,
+        representations: None,
     })
 }
 
@@ -731,6 +732,7 @@ mod tests {
             is_hidden: false,
             is_symlink: false,
             cloud: None,
+            representations: None,
         };
         let json = serde_json::to_value(&entry).unwrap();
         assert!(json.get("cloud").is_none());
@@ -926,6 +928,7 @@ mod tests {
             is_hidden: false,
             is_symlink: false,
             cloud: None,
+            representations: None,
         };
         walk.add(entry("a")); // due: sent at once
         walk.add(entry("b")); // waits for the next batch

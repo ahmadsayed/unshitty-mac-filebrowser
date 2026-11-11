@@ -18,6 +18,7 @@ use crate::location::{ArbeskPath, asset_path_named, collection_path, parse};
 use crate::scene::{Links, Scene, resolve};
 use crate::Entry;
 use crate::progress::Progress;
+use crate::representations;
 use crate::image::png_from_bytes;
 
 /// How many requests a listing runs at once.
@@ -751,7 +752,10 @@ impl<'a> Reader<'a> {
         let name = self.name_of(&manifest, asset_id, cid)?;
         let path = asset_path_named(collection, asset_id, &name);
         let thumbnail = self.stored_thumbnail(&manifest);
-        Ok((entry(name, path, false, &manifest), thumbnail))
+        let mut row = entry(name, path, false, &manifest);
+        // From the manifest in hand: no request of its own (spec F2).
+        row.representations = representations::summary(&manifest);
+        Ok((row, thumbnail))
     }
 }
 
@@ -840,6 +844,7 @@ fn entry(name: String, path: String, is_dir: bool, manifest: &Value) -> Entry {
         modified: manifest["timestamp"].as_i64().map_or(0, |ms| ms / 1000),
         is_hidden: false,
         is_symlink: false,
+        representations: None,
     }
 }
 
@@ -1148,6 +1153,73 @@ mod tests {
         assert_eq!(gltf.modified, STAMP_MS / 1000);
         let paths: HashSet<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
         assert_eq!(paths.len(), entries.len());
+    }
+
+    /// A representation of Shapes' Box.gltf (whose model is `bafySrcGltf`).
+    fn rep(id: &str, format: &str, derived: Option<&str>) -> Value {
+        let mut entry = json!({ "id": id, "role": "mesh", "format": format, "name": format!("Box.{format}"),
+            "cid": format!("bafy{id}"), "bytes": 3, "encoding": "raw", "created_at": 1 });
+        if let Some(cid) = derived {
+            entry["derived_from"] = json!({ "ref": "primary", "cid": cid });
+        }
+        entry
+    }
+
+    /// Shapes, with other files on Box.gltf (a1: an STL made from its model,
+    /// a G-code made from an earlier one, a second STL, an entry this app
+    /// can't read) and on the linked scene (a3), and a bare composite (b1).
+    fn world_with_files(files: bool) -> testing::World {
+        let mut w = world();
+        let box_files = json!([rep("stl", "stl", Some("bafySrcGltf")), rep("gcode", "gcode", Some("bafyOld")),
+            { "id": "Not Valid" }, rep("stl-2", "stl", None)]);
+        let linked_files = json!([rep("stl", "stl", Some("bafySrcGltf")), rep("blend", "blend", None)]);
+        for (cid, list) in [("bafyA1", box_files), ("bafyA3", linked_files)] {
+            if files {
+                let mut manifest: Value = serde_json::from_slice(&w.files[cid]).unwrap();
+                manifest["representations"] = list;
+                w.put(cid, manifest);
+            }
+        }
+        w.add_asset("1", "b1", "bafySrcGltf");
+        w
+    }
+
+    /// Spec F2: each asset row sums up its other files from the manifest
+    /// the listing already reads, with no request of its own.
+    #[test]
+    fn a_listing_sums_up_each_assets_other_files() {
+        let requests = |files: bool| {
+            let cache = tempfile::tempdir().unwrap();
+            let http = arbesk(Arc::new(Mutex::new(world_with_files(files))));
+            let entries = listed(&http, cache.path());
+            // Rows are read in parallel, so two may race for one source:
+            // what matters is which addresses were asked for.
+            let asked: HashSet<String> = http.requests().into_iter().map(|r| r.url).collect();
+            (entries, asked)
+        };
+        let (entries, with) = requests(true);
+        let (plain, without) = requests(false);
+        assert_eq!(with, without, "no extra request per item");
+        assert!(plain.iter().all(|entry| entry.representations.is_none()));
+        let row = |name: &str| entries.iter().find(|entry| entry.path.contains(name)).unwrap();
+        let summary = row("/a1~").representations.clone().unwrap();
+        assert_eq!((summary.count, summary.stale), (3, 1));
+        assert_eq!(summary.formats, ["stl", "gcode"]);
+        // A child_ref scene has no model CID: what was made from it reads stale.
+        let linked = row("/a3~").representations.clone().unwrap();
+        assert_eq!((linked.count, linked.stale), (2, 1));
+        assert_eq!(linked.formats, ["stl", "blend"]);
+        // A bare composite, an asset without a list, and a collection have none.
+        assert!(row("/b1~").representations.is_none());
+        assert!(row("/a2~").representations.is_none());
+        let json = serde_json::to_value(row("/a2~")).unwrap();
+        assert!(json.get("representations").is_none());
+        let collections = list(&http_of(world_with_files(true)), &site(), &crate::location::account_path(ADDRESS), tempfile::tempdir().unwrap().path(), &Thumbnails::default()).unwrap();
+        assert!(collections.iter().all(|entry| entry.representations.is_none()));
+    }
+
+    fn http_of(world: testing::World) -> FakeHttp {
+        arbesk(Arc::new(Mutex::new(world)))
     }
 
     #[test]

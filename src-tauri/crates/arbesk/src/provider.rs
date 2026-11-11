@@ -117,8 +117,9 @@ pub fn capabilities(path: &str) -> Capabilities {
     }
 }
 
-/// A listing row as one of the app's entries. Only Google Drive sets the
-/// `cloud` key (the frontend reads one as a Drive item).
+/// A listing row as one of the app's entries, with an asset's summary of
+/// its other files. Only Google Drive sets the `cloud` key (the frontend
+/// reads one as a Drive item).
 fn place_entry(entry: Entry) -> places::Entry {
     places::Entry {
         name: entry.name,
@@ -129,6 +130,7 @@ fn place_entry(entry: Entry) -> places::Entry {
         is_hidden: entry.is_hidden,
         is_symlink: entry.is_symlink,
         cloud: None,
+        representations: entry.representations,
     }
 }
 
@@ -411,6 +413,7 @@ mod tests {
             modified: 1_762_000_000,
             is_hidden: false,
             is_symlink: false,
+            representations: None,
         });
         assert_eq!(entry.name, "Box.gltf");
         assert_eq!(entry.path, "arbesk://0xab/1~Set/a1~Box.gltf");

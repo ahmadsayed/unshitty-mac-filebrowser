@@ -69,6 +69,10 @@ pub struct Entry {
     pub modified: i64,
     pub is_hidden: bool,
     pub is_symlink: bool,
+    /// An asset's other files, summed up from the manifest the row is read
+    /// from (spec F2); absent for collections and assets with none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub representations: Option<places::Representations>,
 }
 
 /// Where new accounts sign in: Arbesk's public deployment on Base Sepolia.

@@ -1,0 +1,9647 @@
+{
+ "about": "asset-core's answers for the representation cases (made by scripts/make-representations-fixture.ts; do not edit by hand)",
+ "arbesk_commit": "54e16595df395ae043c2323c0a326353336ad5ba",
+ "entries": [
+  {
+   "label": "the spec's source file",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": true
+  },
+  {
+   "label": "an upper-case id",
+   "entry": {
+    "id": "Source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "an id with an underscore",
+   "entry": {
+    "id": "my_file",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "an empty id",
+   "entry": {
+    "id": "",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "a 64-character id",
+   "entry": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": true
+  },
+  {
+   "label": "a 65-character id",
+   "entry": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "the reserved id primary",
+   "entry": {
+    "id": "primary",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "an unknown role",
+   "entry": {
+    "id": "source",
+    "role": "print",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "an unknown encoding",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "gzip",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "a format with a dot",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": ".stl",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "an upper-case format",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "STL",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "a 16-letter format",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "aaaaaaaaaaaaaaaa",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": true
+  },
+  {
+   "label": "a 17-letter format",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "aaaaaaaaaaaaaaaaa",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "a 256 MB file",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 268435456,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": true
+  },
+  {
+   "label": "a file over 256 MB",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 268435457,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "a fractional size",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 1.5,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "a negative size",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": -1,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "a size as a string",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": "12",
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "an empty name",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "a 255-unit name",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀a",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": true
+  },
+  {
+   "label": "a 256-unit name of 128 characters",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "an empty cid",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "no cid",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "a cid that is a number",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": 7,
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "valid": false
+  },
+  {
+   "label": "created_at as a string",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": "2026-11-10T00:00:00Z"
+   },
+   "valid": false
+  },
+  {
+   "label": "no created_at",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw"
+   },
+   "valid": false
+  },
+  {
+   "label": "a derived_from ref that is no id",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "derived_from": {
+     "ref": "Not An Id",
+     "cid": "x"
+    }
+   },
+   "valid": false
+  },
+  {
+   "label": "a derived_from from another entry",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "derived_from": {
+     "ref": "stl",
+     "cid": "x"
+    }
+   },
+   "valid": true
+  },
+  {
+   "label": "a derived_from with an empty cid",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "derived_from": {
+     "ref": "stl",
+     "cid": ""
+    }
+   },
+   "valid": false
+  },
+  {
+   "label": "a derived_from of null",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "derived_from": null
+   },
+   "valid": false
+  },
+  {
+   "label": "a derived_from with its own extra key",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "derived_from": {
+     "ref": "primary",
+     "cid": "x",
+     "note": 1
+    }
+   },
+   "valid": true
+  },
+  {
+   "label": "a derived_from matrix of 16 numbers",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "derived_from": {
+     "ref": "primary",
+     "cid": "x",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    }
+   },
+   "valid": true
+  },
+  {
+   "label": "a derived_from matrix of 15 numbers",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "derived_from": {
+     "ref": "primary",
+     "cid": "x",
+     "transform_matrix": [
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    }
+   },
+   "valid": false
+  },
+  {
+   "label": "a derived_from matrix with a string",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "derived_from": {
+     "ref": "primary",
+     "cid": "x",
+     "transform_matrix": [
+      "1",
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    }
+   },
+   "valid": false
+  },
+  {
+   "label": "a profile with an object value",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "profile": {
+     "printer": {
+      "model": "MK4"
+     }
+    }
+   },
+   "valid": false
+  },
+  {
+   "label": "a profile with a boolean value",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "profile": {
+     "sliced": true
+    }
+   },
+   "valid": false
+  },
+  {
+   "label": "a profile of 32 keys",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "profile": {
+     "k0": 0,
+     "k1": 1,
+     "k2": 2,
+     "k3": 3,
+     "k4": 4,
+     "k5": 5,
+     "k6": 6,
+     "k7": 7,
+     "k8": 8,
+     "k9": 9,
+     "k10": 10,
+     "k11": 11,
+     "k12": 12,
+     "k13": 13,
+     "k14": 14,
+     "k15": 15,
+     "k16": 16,
+     "k17": 17,
+     "k18": 18,
+     "k19": 19,
+     "k20": 20,
+     "k21": 21,
+     "k22": 22,
+     "k23": 23,
+     "k24": 24,
+     "k25": 25,
+     "k26": 26,
+     "k27": 27,
+     "k28": 28,
+     "k29": 29,
+     "k30": 30,
+     "k31": 31
+    }
+   },
+   "valid": true
+  },
+  {
+   "label": "a profile over 32 keys",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "profile": {
+     "k0": 0,
+     "k1": 1,
+     "k2": 2,
+     "k3": 3,
+     "k4": 4,
+     "k5": 5,
+     "k6": 6,
+     "k7": 7,
+     "k8": 8,
+     "k9": 9,
+     "k10": 10,
+     "k11": 11,
+     "k12": 12,
+     "k13": 13,
+     "k14": 14,
+     "k15": 15,
+     "k16": 16,
+     "k17": 17,
+     "k18": 18,
+     "k19": 19,
+     "k20": 20,
+     "k21": 21,
+     "k22": 22,
+     "k23": 23,
+     "k24": 24,
+     "k25": 25,
+     "k26": 26,
+     "k27": 27,
+     "k28": 28,
+     "k29": 29,
+     "k30": 30,
+     "k31": 31,
+     "k32": 32
+    }
+   },
+   "valid": false
+  },
+  {
+   "label": "stats over 32 keys",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "stats": {
+     "k0": 0,
+     "k1": 1,
+     "k2": 2,
+     "k3": 3,
+     "k4": 4,
+     "k5": 5,
+     "k6": 6,
+     "k7": 7,
+     "k8": 8,
+     "k9": 9,
+     "k10": 10,
+     "k11": 11,
+     "k12": 12,
+     "k13": 13,
+     "k14": 14,
+     "k15": 15,
+     "k16": 16,
+     "k17": 17,
+     "k18": 18,
+     "k19": 19,
+     "k20": 20,
+     "k21": 21,
+     "k22": 22,
+     "k23": 23,
+     "k24": 24,
+     "k25": 25,
+     "k26": 26,
+     "k27": 27,
+     "k28": 28,
+     "k29": 29,
+     "k30": 30,
+     "k31": 31,
+     "k32": 32
+    }
+   },
+   "valid": false
+  },
+  {
+   "label": "a tool of null",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "tool": null
+   },
+   "valid": false
+  },
+  {
+   "label": "a tool that is an array",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "tool": [
+     "PrusaSlicer"
+    ]
+   },
+   "valid": false
+  },
+  {
+   "label": "a newer client's key",
+   "entry": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "checksum": "abc"
+   },
+   "valid": true
+  },
+  {
+   "label": "the spec's G-code",
+   "entry": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel"
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "valid": true
+  },
+  {
+   "label": "an entry that is an array",
+   "entry": [
+    {
+     "id": "source",
+     "role": "source",
+     "format": "blend",
+     "name": "Bracket.blend",
+     "cid": "bafyBlend",
+     "bytes": 4812331,
+     "encoding": "raw",
+     "created_at": 1793900000000
+    }
+   ],
+   "valid": false
+  },
+  {
+   "label": "an entry that is a string",
+   "entry": "source",
+   "valid": false
+  },
+  {
+   "label": "an entry that is null",
+   "entry": null,
+   "valid": false
+  },
+  {
+   "label": "an entry that is a number",
+   "entry": 3,
+   "valid": false
+  }
+ ],
+ "lists": [
+  {
+   "label": "valid entries in stored order",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "gcode-original-prusa-mk4-petg",
+      "role": "machine",
+      "format": "gcode",
+      "name": "Bracket_0.2mm_PETG_MK4.gcode",
+      "cid": "bafyGcode",
+      "bytes": 812331,
+      "encoding": "brotli",
+      "derived_from": {
+       "ref": "primary",
+       "cid": "bafyModel"
+      },
+      "tool": {
+       "name": "PrusaSlicer",
+       "version": "2.9.2"
+      },
+      "profile": {
+       "printer": "Original Prusa MK4",
+       "material": "PETG",
+       "layer_mm": 0.2,
+       "nozzle_mm": 0.4
+      },
+      "stats": {
+       "print_time_s": 7420,
+       "filament_g": 38.5
+      },
+      "created_at": 1793900000000
+     },
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     }
+    ]
+   },
+   "kept": [
+    0,
+    1
+   ],
+   "stored_count": 2,
+   "stored_ids": [
+    "gcode-original-prusa-mk4-petg",
+    "source"
+   ]
+  },
+  {
+   "label": "an entry that does not parse left out",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "BAD"
+     },
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     }
+    ]
+   },
+   "kept": [
+    1
+   ],
+   "stored_count": 2,
+   "stored_ids": [
+    "BAD",
+    "source"
+   ]
+  },
+  {
+   "label": "no list",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    }
+   },
+   "kept": [],
+   "stored_count": 0,
+   "stored_ids": []
+  },
+  {
+   "label": "a list that is a string",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": "nope"
+   },
+   "kept": [],
+   "stored_count": 0,
+   "stored_ids": []
+  },
+  {
+   "label": "a list that is an object",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": {
+     "0": {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     }
+    }
+   },
+   "kept": [],
+   "stored_count": 0,
+   "stored_ids": []
+  },
+  {
+   "label": "a duplicate id kept twice",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     },
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyDup",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     }
+    ]
+   },
+   "kept": [
+    0,
+    1
+   ],
+   "stored_count": 2,
+   "stored_ids": [
+    "source",
+    "source"
+   ]
+  },
+  {
+   "label": "a foreign entry and nulls",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     null,
+     {
+      "id": "print-plan",
+      "role": "plan"
+     },
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     },
+     7
+    ]
+   },
+   "kept": [
+    2
+   ],
+   "stored_count": 4,
+   "stored_ids": [
+    "print-plan",
+    "source"
+   ]
+  }
+ ],
+ "cids": [
+  {
+   "label": "the model",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     }
+    ]
+   },
+   "ref": "primary",
+   "cid": "bafyModel"
+  },
+  {
+   "label": "another entry",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     }
+    ]
+   },
+   "ref": "source",
+   "cid": "bafyBlend"
+  },
+  {
+   "label": "a missing entry",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     }
+    ]
+   },
+   "ref": "missing",
+   "cid": null
+  },
+  {
+   "label": "no scene",
+   "manifest": {},
+   "ref": "primary",
+   "cid": null
+  },
+  {
+   "label": "an empty source cid",
+   "manifest": {
+    "scene": {
+     "nodes": [
+      {
+       "source": {
+        "cid": ""
+       }
+      }
+     ]
+    }
+   },
+   "ref": "primary",
+   "cid": null
+  },
+  {
+   "label": "a source cid that is a number",
+   "manifest": {
+    "scene": {
+     "nodes": [
+      {
+       "source": {
+        "cid": 7
+       }
+      }
+     ]
+    }
+   },
+   "ref": "primary",
+   "cid": null
+  },
+  {
+   "label": "an entry this client can't parse",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "source",
+      "cid": "bafyForeign"
+     },
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     }
+    ]
+   },
+   "ref": "source",
+   "cid": "bafyBlend"
+  },
+  {
+   "label": "only an entry this client can't parse",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "source",
+      "cid": "bafyForeign"
+     }
+    ]
+   },
+   "ref": "source",
+   "cid": null
+  },
+  {
+   "label": "the first of two valid entries",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     },
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyDup",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     }
+    ]
+   },
+   "ref": "source",
+   "cid": "bafyBlend"
+  }
+ ],
+ "stale": [
+  {
+   "label": "no derived_from",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     }
+    ]
+   },
+   "rep": {
+    "id": "source",
+    "role": "source",
+    "format": "blend",
+    "name": "Bracket.blend",
+    "cid": "bafyBlend",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "primary, the same model",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "gcode-original-prusa-mk4-petg",
+      "role": "machine",
+      "format": "gcode",
+      "name": "Bracket_0.2mm_PETG_MK4.gcode",
+      "cid": "bafyGcode",
+      "bytes": 812331,
+      "encoding": "brotli",
+      "derived_from": {
+       "ref": "primary",
+       "cid": "bafyModel"
+      },
+      "tool": {
+       "name": "PrusaSlicer",
+       "version": "2.9.2"
+      },
+      "profile": {
+       "printer": "Original Prusa MK4",
+       "material": "PETG",
+       "layer_mm": 0.2,
+       "nozzle_mm": 0.4
+      },
+      "stats": {
+       "print_time_s": 7420,
+       "filament_g": 38.5
+      },
+      "created_at": 1793900000000
+     }
+    ]
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel"
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "primary, another model",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "source": {
+        "cid": "bafyModel2"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "gcode-original-prusa-mk4-petg",
+      "role": "machine",
+      "format": "gcode",
+      "name": "Bracket_0.2mm_PETG_MK4.gcode",
+      "cid": "bafyGcode",
+      "bytes": 812331,
+      "encoding": "brotli",
+      "derived_from": {
+       "ref": "primary",
+       "cid": "bafyModel"
+      },
+      "tool": {
+       "name": "PrusaSlicer",
+       "version": "2.9.2"
+      },
+      "profile": {
+       "printer": "Original Prusa MK4",
+       "material": "PETG",
+       "layer_mm": 0.2,
+       "nozzle_mm": 0.4
+      },
+      "stats": {
+       "print_time_s": 7420,
+       "filament_g": 38.5
+      },
+      "created_at": 1793900000000
+     }
+    ]
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel"
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "primary, no source node",
+   "manifest": {
+    "version": 1,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "n",
+       "child_ref": {}
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel"
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "chained, the same source",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     },
+     {
+      "id": "stl",
+      "role": "mesh",
+      "format": "stl",
+      "name": "Bracket.blend",
+      "cid": "bafyStl",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000,
+      "derived_from": {
+       "ref": "source",
+       "cid": "bafyBlend"
+      }
+     }
+    ]
+   },
+   "rep": {
+    "id": "stl",
+    "role": "mesh",
+    "format": "stl",
+    "name": "Bracket.blend",
+    "cid": "bafyStl",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "derived_from": {
+     "ref": "source",
+     "cid": "bafyBlend"
+    }
+   },
+   "stale": false
+  },
+  {
+   "label": "chained, another source",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "source",
+      "role": "source",
+      "format": "blend",
+      "name": "Bracket.blend",
+      "cid": "bafyBlend2",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000
+     },
+     {
+      "id": "stl",
+      "role": "mesh",
+      "format": "stl",
+      "name": "Bracket.blend",
+      "cid": "bafyStl",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000,
+      "derived_from": {
+       "ref": "source",
+       "cid": "bafyBlend"
+      }
+     }
+    ]
+   },
+   "rep": {
+    "id": "stl",
+    "role": "mesh",
+    "format": "stl",
+    "name": "Bracket.blend",
+    "cid": "bafyStl",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "derived_from": {
+     "ref": "source",
+     "cid": "bafyBlend"
+    }
+   },
+   "stale": true
+  },
+  {
+   "label": "chained, the source removed",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "stl",
+      "role": "mesh",
+      "format": "stl",
+      "name": "Bracket.blend",
+      "cid": "bafyStl",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000,
+      "derived_from": {
+       "ref": "source",
+       "cid": "bafyBlend"
+      }
+     }
+    ]
+   },
+   "rep": {
+    "id": "stl",
+    "role": "mesh",
+    "format": "stl",
+    "name": "Bracket.blend",
+    "cid": "bafyStl",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "derived_from": {
+     "ref": "source",
+     "cid": "bafyBlend"
+    }
+   },
+   "stale": true
+  },
+  {
+   "label": "chained, the source can't be parsed",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    },
+    "representations": [
+     {
+      "id": "source",
+      "cid": "bafyBlend"
+     },
+     {
+      "id": "stl",
+      "role": "mesh",
+      "format": "stl",
+      "name": "Bracket.blend",
+      "cid": "bafyStl",
+      "bytes": 4812331,
+      "encoding": "raw",
+      "created_at": 1793900000000,
+      "derived_from": {
+       "ref": "source",
+       "cid": "bafyBlend"
+      }
+     }
+    ]
+   },
+   "rep": {
+    "id": "stl",
+    "role": "mesh",
+    "format": "stl",
+    "name": "Bracket.blend",
+    "cid": "bafyStl",
+    "bytes": 4812331,
+    "encoding": "raw",
+    "created_at": 1793900000000,
+    "derived_from": {
+     "ref": "source",
+     "cid": "bafyBlend"
+    }
+   },
+   "stale": true
+  },
+  {
+   "label": "placed, unmoved",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       }
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "placed, scaled",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        2,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "unplaced entry, scaled model",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        2,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel"
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "placed, identity written out and more nodes",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      },
+      {
+       "node_id": "node_2",
+       "source": {
+        "cid": "bafyOther"
+       }
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "placed, a 15-value matrix reads as identity",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "placed, a matrix that is a string",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": "1,0,0"
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "placed, -0 equals 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(\"\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(\"  \") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "  ",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"  \") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "  ",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(\" \\n\\t1 \") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        " \n\t1 ",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(\" \\n\\t1 \") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        " \n\t1 ",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"0x10\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "0x10",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"0x10\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "0x10",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"0X1f\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "0X1f",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"0X1f\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "0X1f",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"0o7\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "0o7",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"0o7\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "0o7",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"0b11\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "0b11",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"0b11\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "0b11",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"-0x10\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "-0x10",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"-0x10\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "-0x10",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"Infinity\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "Infinity",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"Infinity\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "Infinity",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"-Infinity\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "-Infinity",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"-Infinity\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "-Infinity",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"+Infinity\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "+Infinity",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"+Infinity\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "+Infinity",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"inf\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "inf",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"inf\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "inf",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"nan\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "nan",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"nan\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "nan",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"NaN\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "NaN",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"NaN\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "NaN",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"1_000\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "1_000",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"1_000\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "1_000",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"1\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "1",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(\"1\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "1",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"-.5\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "-.5",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"-.5\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "-.5",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"5.\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "5.",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"5.\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "5.",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"1e3\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "1e3",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"1e3\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "1e3",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"+1\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "+1",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(\"+1\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "+1",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"1e\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "1e",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"1e\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "1e",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\".\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        ".",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\".\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        ".",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"0\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "0",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"0\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "0",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(\"-0\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "-0",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"-0\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "-0",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(\"00\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "00",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"00\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "00",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(\"1.0\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "1.0",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(\"1.0\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "1.0",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\" 1 \") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        " 1 ",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(\" 1 \") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        " 1 ",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"﻿0\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "﻿0",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"﻿0\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "﻿0",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(\"1 1\") at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        "1 1",
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(\"1 1\") at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        "1 1",
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber([]) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        [],
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber([]) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        [],
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber([7]) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        [
+         7
+        ],
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber([7]) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        [
+         7
+        ],
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber([\"7\"]) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        [
+         "7"
+        ],
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber([\"7\"]) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        [
+         "7"
+        ],
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber([1,2]) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        [
+         1,
+         2
+        ],
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber([1,2]) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        [
+         1,
+         2
+        ],
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber([null]) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        [
+         null
+        ],
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber([null]) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        [
+         null
+        ],
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber([[]]) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        [
+         []
+        ],
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber([[]]) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        [
+         []
+        ],
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber([[1]]) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        [
+         [
+          1
+         ]
+        ],
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber([[1]]) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        [
+         [
+          1
+         ]
+        ],
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber([true]) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        [
+         true
+        ],
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber([true]) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        [
+         true
+        ],
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber({}) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        {},
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber({}) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        {},
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(true) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        true,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(true) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        true,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(false) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        false,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(false) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        false,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(null) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        null,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(null) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        null,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(1) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  },
+  {
+   "label": "ToNumber(1) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(0) at index 0",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": true
+  },
+  {
+   "label": "ToNumber(0) at index 1",
+   "manifest": {
+    "type": "asset",
+    "version": 3,
+    "scene": {
+     "nodes": [
+      {
+       "node_id": "node_1",
+       "source": {
+        "cid": "bafyModel"
+       },
+       "transform_matrix": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+       ]
+      }
+     ]
+    }
+   },
+   "rep": {
+    "id": "gcode-original-prusa-mk4-petg",
+    "role": "machine",
+    "format": "gcode",
+    "name": "Bracket_0.2mm_PETG_MK4.gcode",
+    "cid": "bafyGcode",
+    "bytes": 812331,
+    "encoding": "brotli",
+    "derived_from": {
+     "ref": "primary",
+     "cid": "bafyModel",
+     "transform_matrix": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    },
+    "tool": {
+     "name": "PrusaSlicer",
+     "version": "2.9.2"
+    },
+    "profile": {
+     "printer": "Original Prusa MK4",
+     "material": "PETG",
+     "layer_mm": 0.2,
+     "nozzle_mm": 0.4
+    },
+    "stats": {
+     "print_time_s": 7420,
+     "filament_g": 38.5
+    },
+    "created_at": 1793900000000
+   },
+   "stale": false
+  }
+ ],
+ "ids": [
+  {
+   "role": "machine",
+   "format": "gcode",
+   "profile": {
+    "printer": "Original Prusa MK4",
+    "material": "PETG"
+   },
+   "id": "gcode-original-prusa-mk4-petg"
+  },
+  {
+   "role": "source",
+   "format": "blend",
+   "profile": null,
+   "id": "source"
+  },
+  {
+   "role": "mesh",
+   "format": "stl",
+   "profile": null,
+   "id": "stl"
+  },
+  {
+   "role": "machine",
+   "format": "gcode",
+   "profile": {
+    "layer_mm": 0.2
+   },
+   "id": "gcode"
+  },
+  {
+   "role": "machine",
+   "format": "gcode",
+   "profile": {
+    "printer": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "material": "PLA"
+   },
+   "id": "gcode-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+   "role": "machine",
+   "format": "gcode",
+   "profile": {
+    "printer": "Bambu Lab X1 Carbon",
+    "material": 0.2
+   },
+   "id": "gcode-bambu-lab-x1-carbon-0-2"
+  },
+  {
+   "role": "machine",
+   "format": "gcode",
+   "profile": {
+    "printer": "",
+    "material": "PLA"
+   },
+   "id": "gcode-pla"
+  },
+  {
+   "role": "machine",
+   "format": "gcode",
+   "profile": {
+    "printer": "---",
+    "material": "PLA"
+   },
+   "id": "gcode-pla"
+  },
+  {
+   "role": "other",
+   "format": "",
+   "profile": null,
+   "id": "other"
+  },
+  {
+   "role": "view",
+   "format": "glb",
+   "profile": {
+    "printer": "Ünïcödé Printer!"
+   },
+   "id": "glb-n-c-d-printer"
+  },
+  {
+   "role": "machine",
+   "format": "3mf",
+   "profile": {
+    "printer": 12,
+    "material": "PETG-CF"
+   },
+   "id": "3mf-12-petg-cf"
+  }
+ ],
+ "tables": [
+  {
+   "format": "blend",
+   "role": "source",
+   "encoding": "raw"
+  },
+  {
+   "format": "step",
+   "role": "source",
+   "encoding": "brotli"
+  },
+  {
+   "format": "stp",
+   "role": "source",
+   "encoding": "brotli"
+  },
+  {
+   "format": "f3d",
+   "role": "source",
+   "encoding": "raw"
+  },
+  {
+   "format": "fcstd",
+   "role": "source",
+   "encoding": "raw"
+  },
+  {
+   "format": "scad",
+   "role": "source",
+   "encoding": "brotli"
+  },
+  {
+   "format": "iges",
+   "role": "source",
+   "encoding": "brotli"
+  },
+  {
+   "format": "igs",
+   "role": "source",
+   "encoding": "brotli"
+  },
+  {
+   "format": "stl",
+   "role": "mesh",
+   "encoding": "raw"
+  },
+  {
+   "format": "obj",
+   "role": "mesh",
+   "encoding": "brotli"
+  },
+  {
+   "format": "ply",
+   "role": "mesh",
+   "encoding": "brotli"
+  },
+  {
+   "format": "3mf",
+   "role": "mesh",
+   "encoding": "raw"
+  },
+  {
+   "format": "glb",
+   "role": "view",
+   "encoding": "raw"
+  },
+  {
+   "format": "gltf",
+   "role": "view",
+   "encoding": "brotli"
+  },
+  {
+   "format": "usdz",
+   "role": "view",
+   "encoding": "raw"
+  },
+  {
+   "format": "gcode",
+   "role": "machine",
+   "encoding": "brotli"
+  },
+  {
+   "format": "bgcode",
+   "role": "machine",
+   "encoding": "raw"
+  },
+  {
+   "format": "mtl",
+   "role": "other",
+   "encoding": "brotli"
+  },
+  {
+   "format": "dxf",
+   "role": "other",
+   "encoding": "brotli"
+  },
+  {
+   "format": "svg",
+   "role": "other",
+   "encoding": "brotli"
+  },
+  {
+   "format": "txt",
+   "role": "other",
+   "encoding": "brotli"
+  },
+  {
+   "format": "json",
+   "role": "other",
+   "encoding": "brotli"
+  },
+  {
+   "format": "csv",
+   "role": "other",
+   "encoding": "brotli"
+  },
+  {
+   "format": "zip",
+   "role": "other",
+   "encoding": "raw"
+  },
+  {
+   "format": "BLEND",
+   "role": "source",
+   "encoding": "raw"
+  },
+  {
+   "format": "GCODE",
+   "role": "machine",
+   "encoding": "brotli"
+  }
+ ]
+}

@@ -279,6 +279,7 @@ fn entry_for(parent: &DriveLocation, file: &DriveFile) -> Entry {
             web_url: file.web_view_link.clone(),
             can_download: file.can_download(),
         }),
+        representations: None,
     }
 }
 

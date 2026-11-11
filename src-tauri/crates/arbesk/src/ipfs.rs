@@ -340,13 +340,29 @@ impl<'a> Gateway<'a> {
     }
 
     fn fetch(&self, cid: &str, cap: u64) -> Result<Vec<u8>, String> {
+        unpack(self.get(cid)?, cap)
+    }
+
+    /// The stored bytes at `cid`, as the gateway sends them.
+    fn get(&self, cid: &str) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
-        let packed = self.http.get(&url).map_err(|error| match error.status {
+        self.http.get(&url).map_err(|error| match error.status {
             // The gateway answered: it has nothing there. Not worth failing a listing for.
             Some(404 | 410) => format!("Arbesk's storage has nothing at {cid}."),
             _ => format!("{STORAGE_UNREACHABLE}: {}", error.message),
-        })?;
-        unpack(packed, cap)
+        })
+    }
+
+    /// The stored bytes at `cid`, never unpacked: an asset's other file,
+    /// which its entry's `encoding` decodes (a raw file that starts like a
+    /// brotli frame or gzip stays as it is). More than `cap` is refused.
+    /// Parts keep [`Gateway::bytes`].
+    pub fn raw(&self, cid: &str, cap: u64) -> Result<Vec<u8>, String> {
+        let bytes = self.get(cid)?;
+        if bytes.len() as u64 > cap {
+            return Err(TOO_LARGE.into());
+        }
+        Ok(bytes)
     }
 
     /// The content at `cid`, unpacked.
@@ -489,6 +505,23 @@ mod tests {
             gateway_over(&http, dir.path()).bytes("bafyPart").unwrap(),
             b"part"
         );
+    }
+
+    #[test]
+    fn raw_bytes_are_never_unpacked() {
+        let dir = tempfile::tempdir().unwrap();
+        for stored in [brotli_framed(b"G1 X1"), gzipped(b"G1 X1"), b"plain".to_vec()] {
+            let sent = stored.clone();
+            let http = FakeHttp::new(move |request| {
+                assert_eq!(request.url, "https://gw.test/ipfs/bafyRep");
+                Ok(sent.clone())
+            });
+            let gateway = gateway_over(&http, dir.path());
+            assert_eq!(gateway.raw("bafyRep", 1 << 20).unwrap(), stored);
+            assert_eq!(gateway.raw("bafyRep", stored.len() as u64).unwrap(), stored);
+            assert_eq!(gateway.raw("bafyRep", stored.len() as u64 - 1).unwrap_err(), TOO_LARGE);
+            assert!(gateway.raw("../x", 1 << 20).is_err());
+        }
     }
 
     #[test]

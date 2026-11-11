@@ -167,6 +167,7 @@ fn to_entry(loc: &ShareLocation, e: &ManifestEntry) -> Option<Entry> {
         is_hidden: name.starts_with('.'),
         is_symlink: false,
         cloud: None,
+        representations: None,
     })
 }
 

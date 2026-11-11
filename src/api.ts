@@ -18,10 +18,22 @@ export interface Entry {
   trashed?: number;
   /** Present only for a Google Drive entry. */
   cloud?: CloudEntry;
+  /** An item's other files, when it has some (an Arbesk asset's representations). */
+  representations?: RepresentationsSummary;
   /** Shares view: who shared this folder. */
   sharer?: string;
   /** Shares view: whether the sharer is reachable. */
   shareStatus?: "online" | "offline" | "no-access" | "missing";
+}
+
+/**
+ * How many other files an item has (valid ones), how many are out of date,
+ * and their distinct formats (lower-case extensions) in stored order.
+ */
+export interface RepresentationsSummary {
+  count: number;
+  stale: number;
+  formats: string[];
 }
 
 /** Drive-specific fields on an `Entry`; local entries omit them. */

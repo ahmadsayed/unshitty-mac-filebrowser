@@ -141,6 +141,7 @@ fn list_entry(base: &str, remote: &Path, stat: &ssh2::FileStat) -> Option<places
         is_hidden: name.starts_with('.'),
         is_symlink: stat.file_type().is_symlink(),
         cloud: None,
+        representations: None,
     })
 }
 
