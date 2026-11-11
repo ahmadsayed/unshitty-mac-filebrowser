@@ -3233,12 +3233,39 @@ function askConflict(name: string, isDir: boolean, destDir: string, remaining: n
 /** "name (copy).txt", then "name (copy 2).txt", … — the first one that's
  *  free in `dir` and not `reserved` (lower-cased names a paste still
  *  plans to write, spec F9). */
-async function freeCopyName(dir: string, name: string, isDir: boolean, reserved?: ReadonlySet<string>): Promise<string> {
+async function freeCopyName(
+  dir: string, name: string, isDir: boolean, reserved?: ReadonlySet<string>,
+  taken: (name: string) => Promise<boolean> = (candidate) => pathExists(joinPath(dir, candidate)),
+): Promise<string> {
   for (let n = 1; ; n++) {
     const candidate = copyNameAt(name, n, isDir);
     if (reserved?.has(candidate.toLowerCase())) continue;
-    if (!(await pathExists(joinPath(dir, candidate)))) return candidate;
+    if (!(await taken(candidate))) return candidate;
   }
+}
+
+/** Which names a paste finds taken in `destDir`, and the names it lands. */
+interface TakenNames {
+  has(name: string): Promise<boolean>;
+  add(name: string): void;
+}
+
+/**
+ * The names taken in `destDir` for one paste (performance plan, phase 4).
+ * An Arbesk collection's are taken once for the whole batch: from the view
+ * when it is the folder on screen, else from one listing; each name the
+ * paste lands is added. A name another app adds meanwhile is still refused
+ * by the backend's own claim. Anywhere else, or when the listing fails,
+ * each name is asked as before (`pathExists`).
+ */
+async function takenNamesIn(destDir: string): Promise<TakenNames> {
+  const asked: TakenNames = { has: (name) => pathExists(joinPath(destDir, name)), add: () => {} };
+  if (!isArbeskCollection(destDir)) return asked;
+  const onScreen = destDir === location && listingError === null;
+  const listed = onScreen ? entries : await listDir(destDir, prefs.showHidden).catch(() => null);
+  if (!listed) return asked;
+  const names = new Set(listed.map((entry) => entry.name));
+  return { has: async (name) => names.has(name), add: (name) => void names.add(name) };
 }
 
 /** Transfers run one at a time; a new one waits behind this (spec D8). */
@@ -3555,6 +3582,8 @@ async function transferBatch(
   const signIn = signInAgainOnce(destDir);
   // Keep Both never takes a name the paste plans for another file (F9).
   const reserved = names && new Set([...names.values()].map((name) => name.toLowerCase()));
+  const taken = await takenNamesIn(destDir);
+  const freeName = (name: string, isDir: boolean) => freeCopyName(destDir, name, isDir, reserved, (candidate) => taken.has(candidate));
 
   for (let i = 0; i < paths.length && !batch.cancelled; i++) {
     const from = paths[i];
@@ -3566,7 +3595,7 @@ async function transferBatch(
     const isDir = dirs.has(from);
     const moving = move(from);
     anyMove ||= moving;
-    let to = joinPath(destDir, name);
+    let landing = name;
     let overwrite = false;
 
     // Same folder: in Drive `from` is an id path and `to` a pending name,
@@ -3575,8 +3604,8 @@ async function transferBatch(
       // A copy into its own folder makes a duplicate, as in GNOME Files;
       // moving into the same folder does nothing.
       if (moving) continue;
-      to = joinPath(destDir, await freeCopyName(destDir, name, isDir, reserved));
-    } else if (await pathExists(to)) {
+      landing = await freeName(name, isDir);
+    } else if (await taken.has(name)) {
       let choice: ConflictChoice | null = applyToAll;
       if (!choice) {
         const answer = await askConflict(name, isDir, destDir, paths.length - i - 1);
@@ -3588,12 +3617,13 @@ async function transferBatch(
         break;
       }
       if (choice === "skip") continue;
-      if (choice === "keepboth") to = joinPath(destDir, await freeCopyName(destDir, name, isDir, reserved));
+      if (choice === "keepboth") landing = await freeName(name, isDir);
       else overwrite = true;
     }
 
     try {
-      done.push(await transferSigningIn(op, from, to, overwrite, moving, signIn, batch));
+      done.push(await transferSigningIn(op, from, joinPath(destDir, landing), overwrite, moving, signIn, batch));
+      taken.add(landing);
       showLanded(destDir);
     } catch (err) {
       // A cancel is not a failure: no toast, finished items stay.
