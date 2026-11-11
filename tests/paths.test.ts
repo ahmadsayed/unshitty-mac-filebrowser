@@ -4,7 +4,7 @@ import { expect, test } from "vitest";
 import {
   childPath, cloudSegmentName, decodeSegment, homeFolder, isCloudRoot, isKnownPath, isUnder, isWithin, joinCloudPath, joinSharePath, joinSftpPath,
   isCloudPath, isRemotePath, isShareLink, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket,
-  isSharePath, isSftpPath, resolveTypedPath, isArbeskPath, isArbeskAccount, isArbeskAsset, isArbeskCollection, arbeskAccountKey,
+  isSharePath, isSftpPath, resolveTypedPath, isArbeskPath, isArbeskAccount, isArbeskAsset, isArbeskCollection, isArbeskFile, arbeskAccountKey,
 } from "../src/paths";
 
 const HOME = "/Users/me";
@@ -294,6 +294,24 @@ test("an Arbesk asset is the third level, below its collection", () => {
   expect(isArbeskAsset(`${account}/1~S/a~B.gltf/`)).toBe(true);
   for (const path of [account, `${account}/`, `${account}/1~S`, `${account}/1~S/`, "/Users/me/1~S/a~B.gltf", "gdrive://acct/1~S/a~B.gltf", "arbesk://"]) {
     expect(isArbeskAsset(path), path).toBe(false);
+  }
+});
+
+test("an Arbesk asset's other file is the fourth level, below its asset", () => {
+  const asset = "arbesk://0x00000000000000000000000000000000000000ab/1~S/a~B.gltf";
+  for (const path of [`${asset}/stl~B.stl`, `${asset}/gcode-mk4@bafyG1~B.gcode`, `${asset}/gcode%40bafyG1~B.gcode`, `${asset}/stl~`, `${asset}/stl~B.stl/`, `${asset}/${"a".repeat(64)}~B`]) {
+    expect(isArbeskFile(path), path).toBe(true);
+    expect(placeOf(path), path).toBe("arbesk");
+    expect(isArbeskAsset(path), path).toBe(false);
+  }
+  // Not an id (or a pin) the backend parses: the account's row answers.
+  const malformed = ["GCODE~x", "primary~x", "primary@bafy1~x", "my_file~x", "stl@~x", "stl@ba-fy~x", "%E0~x", `${"a".repeat(65)}~x`, "stl~%E0.stl", "stl~50%.stl"];
+  // Nor is a path whose other segments the backend refuses: a bad address, a
+  // token that isn't a number, an empty segment, a badly encoded name.
+  const account = "arbesk://0x00000000000000000000000000000000000000ab";
+  const elsewhere = ["arbesk://0xab/1~S/a~B.gltf/stl~x", `${account}/abc~S/a~B.gltf/stl~x`, `${account}//1~S/a~B.gltf/stl~x`, `${account}/1~S//a~B.gltf/stl~x`, `${account}/1~S%/a~B.gltf/stl~x`, `${account}/1~S/~B.gltf/stl~x`];
+  for (const path of [asset, `${asset}/`, `${asset}/x`, `${asset}/~B.stl`, `${asset}/stl~B.stl/more~x`, ...malformed.map((file) => `${asset}/${file}`), ...elsewhere, "/Users/me/1~S/a~B.gltf/stl~B.stl", "gdrive://acct/1~S/a~B/stl~B.stl", "arbesk://"]) {
+    expect(isArbeskFile(path), path).toBe(false);
   }
 });
 

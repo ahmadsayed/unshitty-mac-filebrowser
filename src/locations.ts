@@ -12,7 +12,7 @@
 // each saying so.
 
 import { capabilitiesOf, type CapabilityRow, type PlaceCapabilities } from "./capabilities";
-import { isArbeskAsset, isArbeskCollection, isWithin, placeOf, PSEUDO_PREFIX, type Place, type Pseudo } from "./paths";
+import { isArbeskAsset, isArbeskCollection, isArbeskFile, isWithin, placeOf, PSEUDO_PREFIX, type Place, type Pseudo } from "./paths";
 
 /** Every pseudo location starts with this, and Recent, Starred and Network
  *  (the places that aren't folders) are its names: spelled in paths.ts,
@@ -53,7 +53,8 @@ function isViewKind(kind: LocationKind): kind is ViewKind {
 }
 
 /** The backend's row for an Arbesk path's copies, by its number of
- *  segments: its asset or collection row, and its account's for anything
+ *  segments: its asset, an asset's other file (`isArbeskFile`) or
+ *  collection row, and its account's for anything
  *  else (an account, the root, a malformed or non-Arbesk path), which
  *  neither takes copies in nor gives them out. Only the copy flags hold for
  *  the root and a malformed path the account's row answers (a Rust test in
@@ -63,12 +64,14 @@ function isViewKind(kind: LocationKind): kind is ViewKind {
  *  backend refuses its copy itself. */
 function arbeskRow(path: string): CapabilityRow {
   if (isArbeskAsset(path)) return "arbesk-asset";
+  if (isArbeskFile(path)) return "arbesk-file";
   return isArbeskCollection(path) ? "arbesk-collection" : "arbesk-account";
 }
 
 /** Which row of the backend's capability table answers for `kind`, at
- *  `path` where Arbesk's account, collection and asset differ (an Arbesk
- *  item whose path isn't known counts as a collection); null for the
+ *  `path` where Arbesk's account, collection, asset and an asset's other
+ *  file differ (an Arbesk item whose path isn't known counts as a
+ *  collection); null for the
  *  frontend's own views (`ViewKind`). With a path, the row is right for the
  *  copy flags only (`can_copy_in`, `can_copy_out`): the Arbesk root and a
  *  malformed path get the account's row, though their provider refuses New

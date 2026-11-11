@@ -27,6 +27,7 @@ mod location;
 mod merkle;
 mod progress;
 mod provider;
+mod representations;
 mod scene;
 mod service;
 mod session;
@@ -52,6 +53,7 @@ use crate::signin::{CALLBACK_TIMEOUT, Flow, now_ms};
 pub use accounts::Account;
 pub use location::{ArbeskPath as Location, is_arbesk, is_folder, parse, parse_target};
 pub use progress::{CANCELLED, Phase, Progress, Snapshot};
+pub use representations::RepresentationInfo;
 pub use provider::SCHEME;
 pub use scene::Scene;
 pub use service::Version;
@@ -68,6 +70,10 @@ pub struct Entry {
     pub modified: i64,
     pub is_hidden: bool,
     pub is_symlink: bool,
+    /// An asset's other files, summed up from the manifest the row is read
+    /// from (spec F2); absent for collections and assets with none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub representations: Option<places::Representations>,
 }
 
 /// Where new accounts sign in: Arbesk's public deployment on Base Sepolia.
@@ -229,6 +235,48 @@ impl Client {
             progress,
             &self.builds,
         )
+    }
+
+    /// `service::representations` for the account `path` belongs to: the
+    /// asset's other files (at `version`, the current save without).
+    pub fn representations(
+        &self,
+        path: &str,
+        version: Option<&str>,
+    ) -> Result<Vec<RepresentationInfo>, String> {
+        let (http, site) = self.reach(path)?;
+        service::representations(http, &site, path, version, &self.cache_dir)
+    }
+
+    /// The asset at `path`'s other file `id` (at `version`, the current
+    /// save without), decoded into the app cache (`service::file`).
+    pub fn representation_file(
+        &self,
+        path: &str,
+        version: Option<&str>,
+        id: &str,
+        progress: &Progress,
+    ) -> Result<PathBuf, String> {
+        let wanted = service::Wanted { asset: path, version, id, pin: None };
+        self.file(&wanted, progress)
+    }
+
+    /// The file an asset's other file's path names (spec F4), decoded into
+    /// the app cache: the current save's entry, refused when the path pins
+    /// a CID the entry no longer has.
+    pub fn file_at(&self, path: &str, progress: &Progress) -> Result<PathBuf, String> {
+        let location::ArbeskPath::File { id, pin, .. } = parse(path)? else {
+            return Err(format!("“{path}” is not one of an Arbesk asset's files."));
+        };
+        let (asset, name) = location::file_parts(path).ok_or("This file's name can't be read.")?;
+        let pin = pin.as_deref().map(|cid| (cid, name.as_str()));
+        let wanted = service::Wanted { asset, version: None, id: &id, pin };
+        self.file(&wanted, progress)
+    }
+
+    fn file(&self, wanted: &service::Wanted, progress: &Progress) -> Result<PathBuf, String> {
+        let (http, site) = self.reach(wanted.asset)?;
+        service::file(http, &site, wanted, &self.cache_dir, progress, &self.builds)
     }
 
     /// `service::versions` for the account `path` belongs to.

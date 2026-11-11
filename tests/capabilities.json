@@ -7,7 +7,8 @@
     "sftp": "sftp://me@host/home",
     "arbesk-account": "arbesk://0x00000000000000000000000000000000000000ab",
     "arbesk-collection": "arbesk://0x00000000000000000000000000000000000000ab/12~Set",
-    "arbesk-asset": "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf"
+    "arbesk-asset": "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf",
+    "arbesk-file": "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf/stl~Box.stl"
   },
   "table": {
     "folder": {
@@ -93,6 +94,18 @@
       "knows_counts": false,
       "searchable": false,
       "has_thumbnails": true
+    },
+    "arbesk-file": {
+      "read_only": true,
+      "can_create": false,
+      "can_rename": false,
+      "can_trash": false,
+      "can_copy_in": false,
+      "can_copy_out": true,
+      "knows_sizes": false,
+      "knows_counts": false,
+      "searchable": false,
+      "has_thumbnails": false
     }
   }
 }

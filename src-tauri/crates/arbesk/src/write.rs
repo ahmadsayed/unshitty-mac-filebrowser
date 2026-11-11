@@ -21,6 +21,7 @@ use crate::http::{Http, HttpError};
 use crate::location::{asset_path_named, collection_path};
 use crate::merkle;
 use crate::progress::{Phase, Progress};
+use crate::representations;
 use crate::service::{Reader, collection_name};
 use crate::share::Editor;
 use crate::signin::now_ms;
@@ -85,7 +86,7 @@ pub struct Target {
 pub fn asset_manifest(
     name: &str,
     asset_id: &str,
-    version: u64,
+    version: impl Into<Value>,
     prev: Option<&str>,
     timestamp_ms: i64,
     source_cid: &str,
@@ -107,7 +108,7 @@ pub fn asset_manifest(
         "type": "asset",
         "name": name,
         "asset_id": asset_id,
-        "version": version,
+        "version": version.into(),
         "timestamp": timestamp_ms,
         "scene": { "nodes": [node] },
     });
@@ -598,7 +599,8 @@ impl Write<'_> {
     }
 
     /// Upload the asset manifest: a new asset, or the next version of
-    /// `replaced`. Its id and CID.
+    /// `replaced` (`version_of + 1`, as besk numbers it), which carries the
+    /// replaced version's other files forward (spec F15). Its id and CID.
     fn put_asset(
         &mut self,
         collection: &Value,
@@ -606,14 +608,15 @@ impl Write<'_> {
         source: &str,
         format: Format,
     ) -> Result<(String, String), String> {
-        let (asset_id, version, prev) = match replaced {
+        let (asset_id, version, prev, files) = match replaced {
             Some((id, cid)) => {
                 let old = self.reader.manifest_at(&cid)?;
-                (id, old["version"].as_u64().map_or(2, |v| v + 1), Some(cid))
+                let files = representations::carried(&old);
+                (id, representations::next_version(&old), Some(cid), files)
             }
-            None => (fresh_id(collection, now_ms()), 1, None),
+            None => (fresh_id(collection, now_ms()), json!(1), None, None),
         };
-        let manifest = asset_manifest(
+        let mut manifest = asset_manifest(
             &self.name,
             &asset_id,
             version,
@@ -622,6 +625,9 @@ impl Write<'_> {
             source,
             format,
         );
+        if let Some(files) = files {
+            manifest["representations"] = files;
+        }
         // The file name the Studio's `writeJSONToIPFS` gives an asset manifest.
         let file_name = format!("asset_{}_composite.gltf", sanitize_file_name(&asset_id));
         self.progress.check()?;
@@ -863,6 +869,15 @@ mod tests {
     impl Http for Watched<'_> {
         fn get(&self, url: &str) -> Result<Vec<u8>, HttpError> {
             self.inner.get(url)
+        }
+
+        fn get_streamed(
+            &self,
+            url: &str,
+            expected: u64,
+            chunk: &mut dyn FnMut(&[u8]) -> bool,
+        ) -> Result<(), HttpError> {
+            self.inner.get_streamed(url, expected, chunk)
         }
 
         fn post_json(
@@ -1114,6 +1129,63 @@ mod tests {
         drop(w);
         let saves = service::versions(&http, &site(), &path, cache.path()).unwrap();
         assert_eq!(saves.len(), 2);
+    }
+
+    /// Shapes' Box.gltf (a1) as `edit` leaves its manifest, replaced with
+    /// the GLB fixture: the new version's manifest.
+    fn replaced_after(edit: impl FnOnce(&mut Value)) -> Value {
+        let (world, http, cache) = signed_in();
+        {
+            let mut w = world.lock().unwrap();
+            let mut manifest: Value = serde_json::from_slice(&w.files["bafyA1"]).unwrap();
+            edit(&mut manifest);
+            w.put("bafyA1", manifest);
+        }
+        let target = into("1", "Box.gltf");
+        add_to(&http, cache.path(), &target, &glb(), true, &Progress::default()).unwrap();
+        let w = world.lock().unwrap();
+        let read = |cid: &str| -> Value { serde_json::from_slice(&w.files[cid]).unwrap() };
+        let collection = read(&w.tokens["1"]);
+        read(collection["assets"]["a1"].as_str().unwrap())
+    }
+
+    #[test]
+    fn replace_carries_the_other_files_forward() {
+        // Verbatim, an entry this app can't read and a newer client's key
+        // included (spec F15).
+        let files = json!([
+            { "id": "gcode-original-prusa-mk4-petg", "role": "machine", "format": "gcode",
+              "name": "Bracket.gcode", "cid": "bafyG", "bytes": 12, "encoding": "brotli",
+              "derived_from": { "ref": "primary", "cid": "bafySrcGltf" },
+              "created_at": "2026-11-10T00:00:00.000Z", "from_a_newer_client": [1, 2] },
+            { "id": "Not Valid" }
+        ]);
+        let kept = files.clone();
+        let next = replaced_after(|manifest| manifest["representations"] = kept);
+        assert_eq!(next["representations"], files);
+        assert_eq!(next["prev_asset_manifest_cid"], "bafyA1");
+
+        // Nothing to carry: the key is left out, never `null` or a non-array.
+        let next = replaced_after(|_| {});
+        assert!(next.get("representations").is_none());
+        for value in [json!([]), Value::Null, json!({ "id": "stl" }), json!("stl")] {
+            let next = replaced_after(|manifest| manifest["representations"] = value);
+            assert!(next.get("representations").is_none(), "{next}");
+        }
+    }
+
+    #[test]
+    fn replace_numbers_the_next_version_as_besk_does() {
+        for (version, next) in [
+            (json!(3), json!(4)),
+            (json!(3.0), json!(4)),
+            (json!(-1), json!(0)),
+            (json!("7"), json!(2)),
+        ] {
+            let after = replaced_after(|manifest| manifest["version"] = version.clone());
+            assert_eq!(after["version"], next, "{version}");
+            assert_eq!(after["version"].to_string(), next.to_string(), "{version}");
+        }
     }
 
     #[test]

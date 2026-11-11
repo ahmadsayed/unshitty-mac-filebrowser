@@ -1591,3 +1591,68 @@ test("copy_entry puts a local model into an Arbesk collection, with the backend'
   expect(await invoke("arbesk_signed_in", { path: set })).toBe(false);
   await expect(invoke("copy_entry", { from: `${HOME}/Up/Box.glb`, to: `${set}/~Box.gltf`, overwrite: true })).rejects.toBe("Connect this Arbesk account first.");
 });
+
+// Last: its Replace changes Shapes' Box.gltf for every test after it.
+test("Arbesk: an asset's other files: the listing's summary, the list per save, and opening one", async () => {
+  const { ARBESK_MOCK_ADDRESS: address, ARBESK_MOCK_FILES: files } = await import("../dev/mock-tauri/core");
+  const root = `arbesk://${address}`;
+  const start = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  const account = await invoke<{ id: string }>("arbesk_connect_finish", { flowId: start.flow_id });
+  type Row = { name: string; path: string; representations?: { count: number; stale: number; formats: string[] } };
+
+  // The summary rides on the listing (spec F2); an asset without files has no key.
+  const shapes = await invoke<Row[]>("list_dir", { path: `${root}/1~Shapes`, showHidden: false });
+  expect(shapes.map((r) => [r.name, r.representations])).toEqual([
+    ["Box.gltf", { count: 1, stale: 0, formats: ["stl"] }], ["Box.3mf", undefined], ["Big.gltf", undefined],
+  ]);
+  expect("representations" in shapes[1]).toBe(false);
+  const untitled = await invoke<Row[]>("list_dir", { path: `${root}/2~Untitled%20Collection`, showHidden: false });
+  const cube = untitled.find((r) => r.name === "Cube.gltf")!;
+  // The entry File Browser can't read is left out; the G-code made from an earlier save is out of date.
+  expect(cube.representations).toEqual({ count: 4, stale: 1, formats: ["blend", "stl", "gcode", "3mf"] });
+
+  // The full list (spec F3), per save: an earlier save has none here; a save that isn't the asset's is refused.
+  type Info = { id: string; name: string; stale: boolean; derived_from: string | null; profile: Record<string, unknown> | null };
+  const listed = await invoke<Info[]>("arbesk_representations", { path: cube.path, version: null });
+  expect(listed.map((r) => [r.id, r.stale, r.derived_from])).toEqual([
+    ["source", false, null], ["stl", false, "primary"], ["gcode-original-prusa-mk4-petg", true, "primary"], ["3mf", false, null],
+  ]);
+  expect(listed[2].profile).toMatchObject({ printer: "Original Prusa MK4", material: "PETG" });
+  expect(await invoke("arbesk_representations", { path: cube.path, version: "cube-v3" })).toEqual(listed);
+  expect(await invoke("arbesk_representations", { path: cube.path, version: "cube-v1" })).toEqual([]);
+  await expect(invoke("arbesk_representations", { path: cube.path, version: "box-g-v1" })).rejects.toBe("This version is not in the asset.");
+
+  // A file's path (spec F4) opens its copy in the app cache (spec F5), pinned or not.
+  const gcode = `${cube.path}/gcode-original-prusa-mk4-petg~Cube_0.2mm_PETG_MK4.gcode`;
+  const gcodeCid = "bafyrepasset1xgcodeoriginalprusamk4petg";
+  const opened = { kind: "file", path: `${files}/${gcodeCid}/Cube_0.2mm_PETG_MK4.gcode` };
+  expect(await invoke("open_target", { path: gcode, op: "" })).toEqual(opened);
+  expect(await invoke("path_exists", { path: opened.path })).toBe(true);
+  const pinned = `${cube.path}/gcode-original-prusa-mk4-petg@${gcodeCid}~Cube_0.2mm_PETG_MK4.gcode`;
+  expect(await invoke("open_target", { path: pinned, op: "" })).toEqual(opened);
+  await expect(invoke("open_target", { path: `${cube.path}/stl@bafyOld~Cube.stl`, op: "" })).rejects.toBe("“Cube.stl” changed in Arbesk since it was copied.");
+  await expect(invoke("open_target", { path: `${cube.path}/gone~Gone.stl`, op: "" })).rejects.toBe("This file is no longer in the asset.");
+  // A pin or an id the backend doesn't parse is no Arbesk location at all.
+  for (const file of ["stl@bafy-x~Cube.stl", "primary~Cube.gltf", "STL~Cube.stl"]) {
+    const path = `${cube.path}/${file}`;
+    await expect(invoke("open_target", { path, op: "" })).rejects.toBe(`“${path}” is not an Arbesk location.`);
+  }
+  // Another asset's STL is another file, with its own CID.
+  await expect(invoke("open_target", { path: `${cube.path}/stl@bafyrepboxgxstl~Box.stl`, op: "" })).rejects.toBe("“Box.stl” changed in Arbesk since it was copied.");
+  // The copy is a local file Open With and the preview can read.
+  const stl = await invoke<{ path: string }>("open_target", { path: `${shapes[0].path}/stl~Box.stl`, op: "" });
+  expect(stl.path).toBe(`${files}/bafyrepboxgxstl/Box.stl`);
+  expect((await invoke<ArrayBuffer>("preview_bytes", { path: stl.path, limit: 1 << 20 })).byteLength).toBeGreaterThan(0);
+  await invoke("open_with", { path: stl.path, app: "/Applications/TextEdit.app" });
+
+  // The capability row of a file: its asset's, with no thumbnail of its own.
+  const table = await invoke<Record<string, { can_copy_out: boolean; has_thumbnails: boolean }>>("capabilities", {});
+  expect(table["arbesk-file"]).toMatchObject({ can_copy_out: true, has_thumbnails: false });
+
+  // Replace keeps the files (spec F15): what was made from the old model is now out of date.
+  const lamp = `${HOME}/Documents/Projects/Prints/lamp.glb`;
+  await invoke("copy_entry", { from: lamp, to: `${root}/1~Shapes/~Box.gltf`, overwrite: true });
+  const replaced = await invoke<Row[]>("list_dir", { path: `${root}/1~Shapes`, showHidden: false });
+  expect(replaced[0].representations).toEqual({ count: 1, stale: 1, formats: ["stl"] });
+  await invoke("arbesk_disconnect", { account: account.id });
+});

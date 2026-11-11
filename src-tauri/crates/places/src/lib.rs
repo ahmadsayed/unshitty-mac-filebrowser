@@ -27,7 +27,7 @@ mod records;
 mod refusal;
 mod registry;
 
-pub use entry::{CloudEntry, Entry, OpenTarget};
+pub use entry::{CloudEntry, Entry, OpenTarget, Representations};
 pub use error::{Error, Result};
 pub use files::{MARK_SUFFIX, is_unchanged, mark, mark_path, now, unchanged, write_json};
 pub use info::{FileProperties, Measure, PathInfo};

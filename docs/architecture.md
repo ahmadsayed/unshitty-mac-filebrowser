@@ -43,7 +43,8 @@ It owns no rules: it asks small modules that have no DOM.
   the row star), asked inside the action itself. What a place allows (read
   only, creates, renames, trashes, copies in or out, knows sizes, searches)
   is the backend's providers' own answer: `capabilities.ts` holds their
-  table, one row per kind (Arbesk's account, collection and asset apart),
+  table, one row per kind (Arbesk's account, collection and asset apart,
+  and an asset's other file),
   read once at startup with nothing waiting for it, and both modules read
   it rule by rule; only the frontend's own views (Recent, Starred, Network,
   the Trash) and rules no capability matches keep their own cells. `preview-actions.ts` builds
@@ -118,9 +119,14 @@ Then:
     path rebuilt from public sources, assets built into the app cache to
     open, preview and copy out, New Collection as `create`, a local model
     file copied into a collection (`Transfer::write`; Replace saves a new
-    version) and an asset out (`Transfer::export`), and the `Versions`, `Preview`, `Sharing` and
-    `Accounts` extensions, whose own records reach the frontend as the
-    crate serialises them (`places::Json`). Behind `Client` the modules are
+    version, keeping the asset's other files) and an asset out
+    (`Transfer::export`), and the `Versions`, `Preview`, `Representations`
+    (an asset's other files: their list, and one fetched into the app
+    cache), `Sharing` and `Accounts` extensions, whose own records reach
+    the frontend as the crate serialises them (`places::Json`). Its asset
+    rows carry `places::Entry.representations`, a summary of those files
+    (count, out of date, formats), the one key besides Drive's `cloud` a
+    provider may add to an entry. Behind `Client` the modules are
     private.
   - SSH servers: the `places-sftp` crate (`SftpState`: connections, known
     hosts, listing, downloads), read only; the Connect to Server commands
@@ -159,7 +165,7 @@ Then:
   `providers::capability_table`: each registered provider's own
   `capabilities` for a path of each kind the frontend tells apart
   (`providers::KINDS`: a folder, Drive, a share, an SSH server, Arbesk's
-  account, collection and asset), booleans only. `capabilities.ts` loads it
+  account, collection and asset, and an asset's other file), booleans only. `capabilities.ts` loads it
   at startup into a synchronous cache, answering from a built-in copy of
   the same table until it lands; `tests/capabilities.json` pins the
   backend's table, the built-in copy and the mock's. The refusal wording

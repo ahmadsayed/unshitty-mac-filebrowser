@@ -14,10 +14,11 @@ use crate::compose::{
 };
 use crate::http::Http;
 use crate::ipfs::{FileCache, Gateway, ManifestCache, STORAGE_UNREACHABLE, in_parallel};
-use crate::location::{ArbeskPath, asset_path_named, collection_path, parse};
+use crate::location::{ArbeskPath, asset_path_named, collection_path, parse, safe_name};
 use crate::scene::{Links, Scene, resolve};
 use crate::Entry;
 use crate::progress::Progress;
+use crate::representations;
 use crate::image::png_from_bytes;
 
 /// How many requests a listing runs at once.
@@ -45,7 +46,9 @@ pub fn list(
             thumbs.forget_collection(&address, &token_id);
             reader.assets(path, &address, &token_id, thumbs)
         }
-        ArbeskPath::Asset { .. } => Err(format!("“{path}” is a file, not a folder.")),
+        ArbeskPath::Asset { .. } | ArbeskPath::File { .. } => {
+            Err(format!("“{path}” is a file, not a folder."))
+        }
     }
 }
 
@@ -321,6 +324,167 @@ fn build_as(
     })
 }
 
+/// The asset manifest at `path` (an asset's): the save `version` names (a
+/// manifest CID from [`versions`]), else the current one. Through the
+/// manifest cache, so after a listing the current one costs one
+/// `tokenURI` read and a version none.
+fn manifest_of(
+    reader: &Reader,
+    path: &str,
+    version: Option<&str>,
+) -> Result<(String, Value), String> {
+    let ArbeskPath::Asset {
+        token_id, asset_id, ..
+    } = parse(path)?
+    else {
+        return Err(format!("“{path}” is not an Arbesk asset."));
+    };
+    match version {
+        Some(cid) => Ok((cid.to_string(), reader.gateway.json(cid)?)),
+        None => reader.asset_manifest(&token_id, &asset_id),
+    }
+}
+
+/// The other files of the asset at `path` (at the save `version`, the
+/// current one without), each valid entry in stored order with whether it
+/// is out of date (spec F3). The model is not in the list.
+pub fn representations(
+    http: &dyn Http,
+    site: &Site,
+    path: &str,
+    version: Option<&str>,
+    cache_dir: &Path,
+) -> Result<Vec<representations::RepresentationInfo>, String> {
+    let reader = Reader::open(http, site, cache_dir)?;
+    let (_, manifest) = manifest_of(&reader, path, version)?;
+    Ok(representations::infos(&manifest))
+}
+
+/// Which of an asset's other files [`file`] fetches.
+pub struct Wanted<'a> {
+    /// The asset's path.
+    pub asset: &'a str,
+    /// The save to read (a manifest CID), the current one without.
+    pub version: Option<&'a str>,
+    pub id: &'a str,
+    /// The CID the entry must still have (a pinned path), with the name
+    /// the path shows, for the refusal's words.
+    pub pin: Option<(&'a str, &'a str)>,
+}
+
+/// “Bracket.gcode” changed in Arbesk since it was copied.
+fn changed(name: &str) -> String {
+    format!("“{name}” changed in Arbesk since it was copied.")
+}
+
+/// An asset's other file decoded into `cache_dir/arbesk/files/<cid>/<name>`
+/// with the `.downloaded` mark, as an opened build (spec F5): its entry
+/// read from the manifest, its stored bytes fetched without unpacking,
+/// decoded by the entry's `encoding`, checked against its `bytes`. An
+/// unchanged copy is reused; one someone edited is kept and a fresh copy
+/// goes beside it. A pinned entry whose CID moved (or that is gone) is
+/// refused.
+pub fn file(
+    http: &dyn Http,
+    site: &Site,
+    wanted: &Wanted,
+    cache_dir: &Path,
+    progress: &Progress,
+    builds: &Builds,
+) -> Result<PathBuf, String> {
+    progress.check()?;
+    let reader = Reader::open(http, site, cache_dir)?;
+    let (_, manifest) = manifest_of(&reader, wanted.asset, wanted.version)?;
+    let rep = representations::list(&manifest)
+        .into_iter()
+        .find(|rep| rep.id == wanted.id);
+    let rep = match (rep, wanted.pin) {
+        (Some(rep), Some((cid, _))) if rep.cid == cid => rep,
+        (_, Some((_, name))) => return Err(changed(name)),
+        (Some(rep), None) => rep,
+        (None, None) => return Err(FILE_GONE.into()),
+    };
+    // The manifest's text never decides a cache path: a CID is letters
+    // and digits, as the gateway's path takes it.
+    if crate::ipfs::checked_cid(&rep.cid).is_err() {
+        return Err(representations::DAMAGED.into());
+    }
+    progress.set_total(rep.bytes);
+    let dir = cache_dir.join("arbesk").join("files").join(&rep.cid);
+    build_file(&dir, &cache_name(&rep.name), progress, builds, || {
+        fetch_decoded(&reader.gateway, &rep, progress)
+    })
+}
+
+/// The longest name [`cache_name`] gives a cached file, in bytes: most
+/// file systems take 255, and its `.part` while it is saved
+/// (`.<name>.<nanos>-<pid>.part`) and its mark (`.<name>.downloaded`) need
+/// up to 37 more.
+const MAX_NAME_BYTES: usize = 200;
+/// The longest extension [`cache_name`] keeps when it cuts a name, in bytes.
+const MAX_EXT_BYTES: usize = 32;
+
+/// `name` as a file name in the app cache: made safe (`safe_name`), then,
+/// when it is longer than [`MAX_NAME_BYTES`] (a valid name of 255 UTF-16
+/// units may take 765 bytes of UTF-8), cut at a character boundary,
+/// keeping its extension.
+fn cache_name(name: &str) -> String {
+    let safe = safe_name(name);
+    if safe.len() <= MAX_NAME_BYTES {
+        return safe;
+    }
+    let (stem, ext) = match safe.rfind('.') {
+        Some(at) if at > 0 && safe.len() - at <= MAX_EXT_BYTES => safe.split_at(at),
+        _ => (safe.as_str(), ""),
+    };
+    let mut end = MAX_NAME_BYTES - ext.len();
+    while !stem.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{ext}", &stem[..end])
+}
+
+/// The entry's file is no longer in the asset.
+const FILE_GONE: &str = "This file is no longer in the asset.";
+
+/// `rep`'s bytes from the gateway, decoded and checked: at most 256 MiB
+/// once decoded (stored: that, plus 1 MiB for a `brotli` entry's frame and
+/// brotli's growth of what doesn't compress), exactly its `bytes` long.
+/// Streamed: each chunk counts towards `progress` (whose total is `bytes`,
+/// the decoded size: the rest is counted once decoded), and a cancel stops
+/// the download between chunks.
+fn fetch_decoded(
+    gateway: &Gateway,
+    rep: &representations::Rep,
+    progress: &Progress,
+) -> Result<Vec<u8>, String> {
+    let stored_cap = match rep.encoding {
+        representations::Encoding::Raw => representations::MAX_BYTES,
+        representations::Encoding::Brotli => representations::MAX_BYTES + 1024 * 1024,
+    };
+    let too_large = |error: String| match error.as_str() {
+        crate::ipfs::TOO_LARGE => representations::TOO_LARGE.to_string(),
+        _ => error,
+    };
+    let mut counted = 0u64;
+    let mut count = |n: usize| {
+        progress.check()?;
+        let step = (n as u64).min(rep.bytes - counted);
+        counted += step;
+        progress.add_bytes(step);
+        Ok(())
+    };
+    let stored = gateway
+        .raw(&rep.cid, stored_cap, rep.bytes, &mut count)
+        .map_err(too_large)?;
+    let decoded = representations::decode(stored, rep.encoding, representations::MAX_BYTES)?;
+    if decoded.len() as u64 != rep.bytes {
+        return Err(representations::DAMAGED.into());
+    }
+    progress.add_bytes(rep.bytes - counted);
+    Ok(decoded)
+}
+
 /// The scene of the asset at `path`: each stored model once, with every
 /// place it goes (`scene::resolve`).
 pub fn scene(
@@ -457,7 +621,7 @@ fn build_file(
     make: impl FnOnce() -> Result<Vec<u8>, String>,
 ) -> Result<PathBuf, String> {
     let target = dir.join(name);
-    let _held = builds.hold(dir.to_path_buf());
+    let _held = builds.hold(dir.to_path_buf(), progress)?;
     if crate::cache::is_unchanged(&target) {
         return Ok(target);
     }
@@ -544,16 +708,23 @@ struct Held<'a> {
 }
 
 impl Builds {
-    fn hold(&self, folder: PathBuf) -> Held<'_> {
+    /// `folder`, once no other build holds it. The wait looks at `progress`
+    /// every [`crate::http::TICK`]: a cancel stops it, so a second open of
+    /// a file whose large download is under way can still be cancelled.
+    fn hold(&self, folder: PathBuf, progress: &Progress) -> Result<Held<'_>, String> {
         let mut busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
         while busy.contains(&folder) {
-            busy = self.done.wait(busy).unwrap_or_else(|e| e.into_inner());
+            progress.check()?;
+            busy = match self.done.wait_timeout(busy, crate::http::TICK) {
+                Ok((busy, _)) => busy,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
         }
         busy.insert(folder.clone());
-        Held {
+        Ok(Held {
             builds: self,
             folder,
-        }
+        })
     }
 }
 
@@ -751,7 +922,10 @@ impl<'a> Reader<'a> {
         let name = self.name_of(&manifest, asset_id, cid)?;
         let path = asset_path_named(collection, asset_id, &name);
         let thumbnail = self.stored_thumbnail(&manifest);
-        Ok((entry(name, path, false, &manifest), thumbnail))
+        let mut row = entry(name, path, false, &manifest);
+        // From the manifest in hand: no request of its own (spec F2).
+        row.representations = representations::summary(&manifest);
+        Ok((row, thumbnail))
     }
 }
 
@@ -840,21 +1014,13 @@ fn entry(name: String, path: String, is_dir: bool, manifest: &Value) -> Entry {
         modified: manifest["timestamp"].as_i64().map_or(0, |ms| ms / 1000),
         is_hidden: false,
         is_symlink: false,
+        representations: None,
     }
 }
 
 /// `<name>.<ext>` as a file name: no `/` or NUL, never empty, `.` or `..`.
 fn file_name(name: &str, ext: &str) -> String {
-    let safe: String = name
-        .chars()
-        .map(|c| if c == '/' || c == '\0' { '_' } else { c })
-        .collect();
-    let safe = if safe.is_empty() || safe == "." || safe == ".." {
-        "_".to_string()
-    } else {
-        safe
-    };
-    format!("{safe}.{ext}")
+    format!("{}.{ext}", safe_name(name))
 }
 
 fn unique_folder() -> String {
@@ -1148,6 +1314,209 @@ mod tests {
         assert_eq!(gltf.modified, STAMP_MS / 1000);
         let paths: HashSet<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
         assert_eq!(paths.len(), entries.len());
+    }
+
+    /// A representation of Shapes' Box.gltf (whose model is `bafySrcGltf`).
+    fn rep(id: &str, format: &str, derived: Option<&str>) -> Value {
+        let mut entry = json!({ "id": id, "role": "mesh", "format": format, "name": format!("Box.{format}"),
+            "cid": format!("bafy{id}"), "bytes": 3, "encoding": "raw", "created_at": 1 });
+        if let Some(cid) = derived {
+            entry["derived_from"] = json!({ "ref": "primary", "cid": cid });
+        }
+        entry
+    }
+
+    /// Shapes, with other files on Box.gltf (a1: an STL made from its model,
+    /// a G-code made from an earlier one, a second STL, an entry this app
+    /// can't read) and on the linked scene (a3), and a bare composite (b1).
+    fn world_with_files(files: bool) -> testing::World {
+        let mut w = world();
+        let box_files = json!([rep("stl", "stl", Some("bafySrcGltf")), rep("gcode", "gcode", Some("bafyOld")),
+            { "id": "Not Valid" }, rep("stl-2", "stl", None)]);
+        let linked_files = json!([rep("stl", "stl", Some("bafySrcGltf")), rep("blend", "blend", None)]);
+        for (cid, list) in [("bafyA1", box_files), ("bafyA3", linked_files)] {
+            if files {
+                let mut manifest: Value = serde_json::from_slice(&w.files[cid]).unwrap();
+                manifest["representations"] = list;
+                w.put(cid, manifest);
+            }
+        }
+        w.add_asset("1", "b1", "bafySrcGltf");
+        w
+    }
+
+    /// Spec F2: each asset row sums up its other files from the manifest
+    /// the listing already reads, with no request of its own.
+    #[test]
+    fn a_listing_sums_up_each_assets_other_files() {
+        let requests = |files: bool| {
+            let cache = tempfile::tempdir().unwrap();
+            let http = arbesk(Arc::new(Mutex::new(world_with_files(files))));
+            let entries = listed(&http, cache.path());
+            // Rows are read in parallel, so two may race for one source:
+            // what matters is which addresses were asked for.
+            let asked: HashSet<String> = http.requests().into_iter().map(|r| r.url).collect();
+            (entries, asked)
+        };
+        let (entries, with) = requests(true);
+        let (plain, without) = requests(false);
+        assert_eq!(with, without, "no extra request per item");
+        assert!(plain.iter().all(|entry| entry.representations.is_none()));
+        let row = |name: &str| entries.iter().find(|entry| entry.path.contains(name)).unwrap();
+        let summary = row("/a1~").representations.clone().unwrap();
+        assert_eq!((summary.count, summary.stale), (3, 1));
+        assert_eq!(summary.formats, ["stl", "gcode"]);
+        // A child_ref scene has no model CID: what was made from it reads stale.
+        let linked = row("/a3~").representations.clone().unwrap();
+        assert_eq!((linked.count, linked.stale), (2, 1));
+        assert_eq!(linked.formats, ["stl", "blend"]);
+        // A bare composite, an asset without a list, and a collection have none.
+        assert!(row("/b1~").representations.is_none());
+        assert!(row("/a2~").representations.is_none());
+        let json = serde_json::to_value(row("/a2~")).unwrap();
+        assert!(json.get("representations").is_none());
+        let collections = list(&http_of(world_with_files(true)), &site(), &crate::location::account_path(ADDRESS), tempfile::tempdir().unwrap().path(), &Thumbnails::default()).unwrap();
+        assert!(collections.iter().all(|entry| entry.representations.is_none()));
+    }
+
+    fn http_of(world: testing::World) -> FakeHttp {
+        arbesk(Arc::new(Mutex::new(world)))
+    }
+
+    /// Shapes with Box.gltf's other files set to `files` and their bytes
+    /// stored at their CIDs.
+    fn world_with(files: Value, stored: &[(&str, &[u8])]) -> testing::World {
+        let mut w = world();
+        let mut manifest: Value = serde_json::from_slice(&w.files["bafyA1"]).unwrap();
+        manifest["representations"] = files;
+        w.put("bafyA1", manifest);
+        for (cid, bytes) in stored {
+            w.files.insert(cid.to_string(), bytes.to_vec());
+        }
+        w
+    }
+
+    fn other_file(id: &str, name: &str, cid: &str, bytes: usize) -> Value {
+        json!({ "id": id, "role": "other", "format": "bin", "name": name, "cid": cid,
+            "bytes": bytes, "encoding": "raw", "created_at": 1 })
+    }
+
+    fn fetched(http: &FakeHttp, id: &str, cache: &Path, progress: &Progress) -> Result<PathBuf, String> {
+        let asset = box_gltf();
+        let wanted = Wanted { asset: &asset, version: None, id, pin: None };
+        file(http, &site(), &wanted, cache, progress, &Builds::default())
+    }
+
+    /// Spec F5: progress counts each chunk as it arrives, and a cancel
+    /// stops the download between chunks, before the rest is read, with
+    /// nothing saved.
+    #[test]
+    fn a_file_streams_with_progress_and_stops_on_a_cancel() {
+        let body: Vec<u8> = (0..40).collect();
+        let world = || world_with(json!([other_file("bin", "Part.bin", "bafyBin", 40)]), &[("bafyBin", &body)]);
+        let cache = tempfile::tempdir().unwrap();
+        let progress = Progress::default();
+        let seen = progress.clone();
+        let counted = Arc::new(Mutex::new(Vec::new()));
+        let log = counted.clone();
+        let http = http_of(world()).in_chunks(8, move |_| log.lock().unwrap().push(seen.snapshot().bytes));
+        let path = fetched(&http, "bin", cache.path(), &progress).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), body);
+        assert_eq!(*counted.lock().unwrap(), [0, 8, 16, 24, 32], "counted as it arrives");
+        assert_eq!((progress.snapshot().bytes, progress.snapshot().total), (40, Some(40)));
+
+        let cache = tempfile::tempdir().unwrap();
+        let progress = Progress::default();
+        let cancel = progress.clone();
+        let http = http_of(world()).in_chunks(8, move |n| if n == 1 { cancel.cancel() });
+        assert_eq!(fetched(&http, "bin", cache.path(), &progress).unwrap_err(), crate::progress::CANCELLED);
+        assert_eq!(http.chunks.load(std::sync::atomic::Ordering::SeqCst), 2, "nothing read past the cancel");
+        assert_eq!(progress.snapshot().bytes, 8);
+        assert!(!cache.path().join("arbesk/files/bafyBin").read_dir().is_ok_and(|mut d| d.next().is_some()));
+    }
+
+    /// Spec F5: a cancel stops a download whose gateway has gone silent,
+    /// within a tick, without waiting for the next chunk or the timeout.
+    #[test]
+    fn a_cancel_stops_a_stalled_download() {
+        let body: Vec<u8> = (0..40).collect();
+        let world = world_with(json!([other_file("bin", "Part.bin", "bafyBin", 40)]), &[("bafyBin", &body)]);
+        let cache = tempfile::tempdir().unwrap();
+        let progress = Progress::default();
+        let stall = |n| if n == 1 { std::thread::sleep(std::time::Duration::from_secs(10)) };
+        let http = http_of(world).in_chunks(8, stall);
+        let cancel = progress.clone();
+        let started = std::time::Instant::now();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            cancel.cancel();
+        });
+        assert_eq!(fetched(&http, "bin", cache.path(), &progress).unwrap_err(), crate::progress::CANCELLED);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "{:?}", started.elapsed());
+        canceller.join().unwrap();
+        assert_eq!(progress.snapshot().bytes, 8);
+    }
+
+    /// A second build of a folder another build holds waits for it, and a
+    /// cancel stops that wait at once.
+    #[test]
+    fn a_cancel_stops_the_wait_for_another_build() {
+        let builds = Builds::default();
+        let dir = tempfile::tempdir().unwrap();
+        let held = builds.hold(dir.path().to_path_buf(), &Progress::default()).unwrap();
+        let progress = Progress::default();
+        let started = std::time::Instant::now();
+        let waited = std::thread::scope(|scope| {
+            let cancel = progress.clone();
+            scope.spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                cancel.cancel();
+            });
+            build_file(dir.path(), "x.bin", &progress, &builds, || Ok(b"x".to_vec()))
+        });
+        assert_eq!(waited.unwrap_err(), crate::progress::CANCELLED);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "{:?}", started.elapsed());
+        assert!(!dir.path().join("x.bin").exists(), "nothing built while another build held it");
+        drop(held);
+        let built = build_file(dir.path(), "x.bin", &Progress::default(), &builds, || Ok(b"x".to_vec()));
+        assert_eq!(std::fs::read(built.unwrap()).unwrap(), b"x");
+    }
+
+    /// A CID that isn't one never decides a cache path, even where a
+    /// marked file waits at the folder it would name.
+    #[test]
+    fn a_file_whose_cid_is_not_one_is_refused() {
+        let cache = tempfile::tempdir().unwrap();
+        // Where `files/../../x` leads.
+        let elsewhere = cache.path().join("x");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("Part.bin"), b"not yours").unwrap();
+        crate::cache::mark(&elsewhere.join("Part.bin"));
+        assert!(crate::cache::is_unchanged(&elsewhere.join("Part.bin")));
+        for cid in ["../../x", "/abs", "bafy rep"] {
+            let http = http_of(world_with(json!([other_file("bin", "Part.bin", cid, 9)]), &[]));
+            let refused = fetched(&http, "bin", cache.path(), &Progress::default());
+            assert_eq!(refused.unwrap_err(), representations::DAMAGED, "{cid}");
+        }
+    }
+
+    /// A valid name of 255 UTF-16 units can take 765 bytes: its cache copy
+    /// is cut to a file name the file system takes, keeping the extension.
+    #[test]
+    fn a_long_name_opens_cut_to_a_file_name() {
+        let name = format!("{}.gcode", "字".repeat(249));
+        assert_eq!(name.encode_utf16().count(), 255);
+        let cache = tempfile::tempdir().unwrap();
+        let http = http_of(world_with(json!([other_file("long", &name, "bafyLong", 2)]), &[("bafyLong", b"G1")]));
+        let path = fetched(&http, "long", cache.path(), &Progress::default()).unwrap();
+        let saved = path.file_name().unwrap().to_str().unwrap();
+        assert!(saved.len() <= MAX_NAME_BYTES && saved.ends_with(".gcode"), "{saved}");
+        assert!(name.starts_with(saved.trim_end_matches(".gcode")));
+        assert_eq!(std::fs::read(&path).unwrap(), b"G1");
+        assert_eq!(cache_name("a.b"), "a.b");
+        assert_eq!(cache_name(&format!("a{}", "é".repeat(150))).len(), 199, "cut at a character boundary");
+        let no_ext = cache_name(&format!("{}.{}", "a".repeat(10), "b".repeat(300)));
+        assert_eq!(no_ext.len(), MAX_NAME_BYTES);
     }
 
     #[test]

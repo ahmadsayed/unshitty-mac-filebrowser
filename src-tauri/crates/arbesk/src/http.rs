@@ -23,6 +23,19 @@ impl HttpError {
 
 pub trait Http: Send + Sync {
     fn get(&self, url: &str) -> Result<Vec<u8>, HttpError>;
+    /// GET a download that may be large (an asset's other file), waiting
+    /// longer the larger `expected` bytes are ([`transfer_timeout`]) and
+    /// handing the body to `chunk` piece by piece as it arrives. While
+    /// nothing arrives, `chunk` is handed an empty piece every [`TICK`], so
+    /// a cancel is heard on a stalled connection too. `chunk` stops the
+    /// read by answering `false` (a cancel, a body past its cap): the call
+    /// answers `Ok` at once, and the rest is never handed over.
+    fn get_streamed(
+        &self,
+        url: &str,
+        expected: u64,
+        chunk: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<(), HttpError>;
     /// POST `body` as JSON; `session` goes in `Authorization: Session <token>`.
     fn post_json(
         &self,
@@ -83,15 +96,109 @@ pub fn multipart_body(
 /// How long the relay and uploads may take: four minutes.
 const SLOW_TIMEOUT_SECS: u64 = 240;
 
-/// The slowest upload rate an upload is given time for: 64 KiB/s.
-const UPLOAD_BYTES_PER_SEC: u64 = 64 * 1024;
+/// The slowest rate an upload or a large download is given time for: 64 KiB/s.
+const TRANSFER_BYTES_PER_SEC: u64 = 64 * 1024;
 
-/// How long an upload of `len` bytes may take: four minutes, plus the time
-/// it takes at `UPLOAD_BYTES_PER_SEC` (100 MB: about half an hour). A fixed
-/// limit would fail a large part on a slow link, and no limit would wait
-/// on a stalled one for ever.
-fn upload_timeout(len: usize) -> Duration {
-    Duration::from_secs(SLOW_TIMEOUT_SECS + len as u64 / UPLOAD_BYTES_PER_SEC)
+/// How long an upload or a large download of `len` bytes may take: four
+/// minutes, plus the time it takes at `TRANSFER_BYTES_PER_SEC` (100 MB:
+/// about half an hour). A fixed limit would fail a large file on a slow
+/// link, and no limit would wait on a stalled one for ever.
+pub(crate) fn transfer_timeout(len: u64) -> Duration {
+    Duration::from_secs(SLOW_TIMEOUT_SECS + len / TRANSFER_BYTES_PER_SEC)
+}
+
+/// How much of a streamed download is read at a time, between checks.
+const STREAM_CHUNK: usize = 64 * 1024;
+
+/// How often a streamed GET that is waiting for data asks its caller
+/// whether to go on (an empty piece): a cancel is heard within this long.
+pub(crate) const TICK: Duration = Duration::from_millis(200);
+
+/// What a streamed GET's reading thread hands over.
+enum Piece {
+    Bytes(Vec<u8>),
+    End,
+    Failed(HttpError),
+}
+
+/// Runs `next` on a thread of its own until it answers `None` (the end) or
+/// fails, handing each piece it reads to `chunk` on this thread; while none
+/// comes, `chunk` is handed an empty piece every [`TICK`]. When `chunk`
+/// answers `false` this returns `Ok` at once: the reading thread, which may
+/// be blocked on a stalled connection, is left to end by itself when its
+/// next piece finds nobody to take it, or at its request's timeout. It
+/// reads a piece only once `chunk` has taken the one before, so nothing is
+/// read past a stop.
+fn pump(
+    mut next: impl FnMut() -> Result<Option<Vec<u8>>, HttpError> + Send + 'static,
+    chunk: &mut dyn FnMut(&[u8]) -> bool,
+) -> Result<(), HttpError> {
+    use std::sync::mpsc;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let (taken, wait_taken) = mpsc::channel::<()>();
+    std::thread::Builder::new()
+        .name("arbesk-download".into())
+        .spawn(move || {
+            loop {
+                let (piece, last) = match next() {
+                    Ok(Some(bytes)) => (Piece::Bytes(bytes), false),
+                    Ok(None) => (Piece::End, true),
+                    Err(error) => (Piece::Failed(error), true),
+                };
+                if sender.send(piece).is_err() || last || wait_taken.recv().is_err() {
+                    return;
+                }
+            }
+        })
+        .map_err(|error| HttpError::new(None, error.to_string()))?;
+    loop {
+        let go_on = match receiver.recv_timeout(TICK) {
+            Ok(Piece::Bytes(bytes)) => {
+                let go_on = chunk(&bytes);
+                if go_on {
+                    // A dead reading thread shows as `Disconnected` next turn.
+                    let _ = taken.send(());
+                }
+                go_on
+            }
+            Ok(Piece::End) => return Ok(()),
+            Ok(Piece::Failed(error)) => return Err(error),
+            Err(mpsc::RecvTimeoutError::Timeout) => chunk(&[]),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(HttpError::new(None, "The download stopped unexpectedly."));
+            }
+        };
+        if !go_on {
+            return Ok(());
+        }
+    }
+}
+
+/// The response to a streamed GET, refused unless it succeeded and says
+/// it holds at most `cap` bytes.
+fn open_streamed(
+    request: reqwest::blocking::RequestBuilder,
+    cap: u64,
+) -> Result<reqwest::blocking::Response, HttpError> {
+    let response = request
+        .send()
+        .map_err(|error| HttpError::new(None, error.without_url().to_string()))?;
+    let status = response.status();
+    if !status.is_success() {
+        let message = format!("The server answered {status}.");
+        return Err(HttpError::new(Some(status.as_u16()), message));
+    }
+    if response.content_length().is_some_and(|length| length > cap) {
+        return Err(too_long(status.as_u16()));
+    }
+    Ok(response)
+}
+
+fn too_long(status: u16) -> HttpError {
+    HttpError::new(
+        Some(status),
+        "Arbesk sent more than File Browser reads at once.",
+    )
 }
 
 /// `name` safe inside `filename="…"`: `"`, CR and LF percent-encoded, as
@@ -106,7 +213,7 @@ fn quoted_file_name(name: &str) -> String {
 pub const MAX_BODY: u64 = 512 * 1024 * 1024;
 
 /// The real client: 30 seconds per request (four minutes for the relay,
-/// longer for a large upload: `upload_timeout`), rustls, no cookies, and no answer read past `cap` bytes,
+/// longer for a large upload or download: `transfer_timeout`), rustls, no cookies, and no answer read past `cap` bytes,
 /// whatever the server says.
 pub struct ReqwestHttp {
     client: reqwest::blocking::Client,
@@ -184,6 +291,45 @@ impl Http for ReqwestHttp {
         self.send(self.client.get(url), None)
     }
 
+    /// On the slow client, given [`transfer_timeout`] of `expected`, read
+    /// [`STREAM_CHUNK`] at a time on a thread of its own ([`pump`]: the
+    /// request is sent there too, so a cancel is heard while the server is
+    /// silent); never more than the client's cap.
+    fn get_streamed(
+        &self,
+        url: &str,
+        expected: u64,
+        chunk: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<(), HttpError> {
+        use std::io::Read;
+        let cap = self.cap;
+        let mut request = Some(self.slow.get(url).timeout(transfer_timeout(expected)));
+        let mut response = None;
+        let mut read = 0u64;
+        pump(
+            move || {
+                if let Some(request) = request.take() {
+                    response = Some(open_streamed(request, cap)?);
+                }
+                let Some(response) = response.as_mut() else {
+                    return Ok(None);
+                };
+                let status = response.status().as_u16();
+                let mut buffer = vec![0; STREAM_CHUNK];
+                let n = response
+                    .read(&mut buffer)
+                    .map_err(|error| HttpError::new(Some(status), error.to_string()))?;
+                read += n as u64;
+                if read > cap {
+                    return Err(too_long(status));
+                }
+                buffer.truncate(n);
+                Ok((n > 0).then_some(buffer))
+            },
+            chunk,
+        )
+    }
+
     fn post_json(
         &self,
         url: &str,
@@ -217,7 +363,7 @@ impl Http for ReqwestHttp {
         let request = self
             .slow
             .post(url)
-            .timeout(upload_timeout(bytes.len()))
+            .timeout(transfer_timeout(bytes.len() as u64))
             .header(
                 "Content-Type",
                 format!("multipart/form-data; boundary={boundary}"),
@@ -251,10 +397,18 @@ pub mod fake {
     }
 
     type Answer = Box<dyn Fn(&Request) -> Result<Vec<u8>, HttpError> + Send + Sync>;
+    type BeforeChunk = std::sync::Arc<dyn Fn(usize) + Send + Sync>;
 
     pub struct FakeHttp {
         answer: Answer,
         pub log: Mutex<Vec<Request>>,
+        /// How many bytes a streamed GET hands over at a time.
+        chunk: usize,
+        /// Runs before a streamed GET reads chunk `n` (from 0), on the
+        /// reading thread: it may block, as a stalled connection does.
+        before_chunk: Option<BeforeChunk>,
+        /// How many chunks streamed GETs have handed over.
+        pub chunks: std::sync::atomic::AtomicUsize,
     }
 
     impl FakeHttp {
@@ -264,6 +418,23 @@ pub mod fake {
             Self {
                 answer: Box::new(answer),
                 log: Mutex::new(Vec::new()),
+                chunk: usize::MAX,
+                before_chunk: None,
+                chunks: Default::default(),
+            }
+        }
+
+        /// The same fake, streaming bodies `size` bytes at a time and
+        /// running `before` ahead of each chunk.
+        pub fn in_chunks(
+            self,
+            size: usize,
+            before: impl Fn(usize) + Send + Sync + 'static,
+        ) -> Self {
+            Self {
+                chunk: size,
+                before_chunk: Some(std::sync::Arc::new(before)),
+                ..self
             }
         }
 
@@ -287,6 +458,40 @@ pub mod fake {
                 session: None,
                 data: None,
                 fields: Vec::new(),
+            })
+        }
+
+        /// The answer to a GET, handed over in chunks through [`pump`],
+        /// as the real client hands them; `chunks` counts the ones handed.
+        fn get_streamed(
+            &self,
+            url: &str,
+            _expected: u64,
+            chunk: &mut dyn FnMut(&[u8]) -> bool,
+        ) -> Result<(), HttpError> {
+            let body = self.get(url)?;
+            let size = self.chunk.max(1);
+            let mut pieces = body
+                .chunks(size)
+                .map(<[u8]>::to_vec)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .enumerate();
+            let before = self.before_chunk.clone();
+            let next = move || {
+                Ok(pieces.next().map(|(n, piece)| {
+                    if let Some(before) = &before {
+                        before(n);
+                    }
+                    piece
+                }))
+            };
+            pump(next, &mut |piece| {
+                if !piece.is_empty() {
+                    self.chunks
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                chunk(piece)
             })
         }
 
@@ -420,6 +625,75 @@ mod tests {
     }
 
     #[test]
+    fn a_streamed_get_hands_over_the_body_until_told_to_stop() {
+        let (url, server) = serve_once("200 OK", "hello");
+        let mut got = Vec::new();
+        ReqwestHttp::new()
+            .unwrap()
+            .get_streamed(&url, 5, &mut |piece| {
+                got.extend_from_slice(piece);
+                true
+            })
+            .unwrap();
+        assert_eq!(got, b"hello");
+        assert!(server.join().unwrap().starts_with("GET / "));
+        let (url, server) = serve_once("200 OK", "hello");
+        let mut calls = 0;
+        let stopped = ReqwestHttp::new().unwrap().get_streamed(&url, 5, &mut |_| {
+            calls += 1;
+            false
+        });
+        assert_eq!((stopped, calls), (Ok(()), 1));
+        server.join().unwrap();
+        let (url, server) = serve_once("404 Not Found", "");
+        let error = ReqwestHttp::new()
+            .unwrap()
+            .get_streamed(&url, 0, &mut |_| true);
+        assert_eq!(error.unwrap_err().status, Some(404));
+        server.join().unwrap();
+        let (url, server) = serve_once("200 OK", "too long");
+        let capped = ReqwestHttp::with_cap(4).unwrap();
+        assert!(capped.get_streamed(&url, 0, &mut |_| true).is_err());
+        server.join().unwrap();
+    }
+
+    /// A server that says it sends a body and then goes silent: the call
+    /// asks `chunk` every tick meanwhile, and returns as soon as it stops.
+    #[test]
+    fn a_streamed_get_hears_a_stop_while_the_server_is_silent() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhe")
+                .unwrap();
+            // Silent until the test is over.
+            let _ = finished.recv_timeout(Duration::from_secs(10));
+        });
+        let started = std::time::Instant::now();
+        let (mut got, mut ticks) = (Vec::new(), 0);
+        let stopped = ReqwestHttp::new()
+            .unwrap()
+            .get_streamed(&url, 10, &mut |piece| {
+                got.extend_from_slice(piece);
+                ticks += usize::from(piece.is_empty());
+                ticks < 2
+            });
+        assert_eq!((stopped, got.as_slice(), ticks), (Ok(()), &b"he"[..], 2));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        done.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
     fn a_post_sends_json_and_the_session() {
         let (url, server) = serve_once("200 OK", "{}");
         let body = serde_json::json!({ "email": "a@b.c" });
@@ -497,12 +771,12 @@ mod tests {
     }
 
     #[test]
-    fn an_upload_may_take_longer_the_larger_it_is() {
-        assert_eq!(upload_timeout(0), Duration::from_secs(240));
-        assert_eq!(upload_timeout(64 * 1024), Duration::from_secs(241));
+    fn a_transfer_may_take_longer_the_larger_it_is() {
+        assert_eq!(transfer_timeout(0), Duration::from_secs(240));
+        assert_eq!(transfer_timeout(64 * 1024), Duration::from_secs(241));
         // 100 MB at 64 KiB/s, on top of the four minutes.
         assert_eq!(
-            upload_timeout(100 * 1024 * 1024),
+            transfer_timeout(100 * 1024 * 1024),
             Duration::from_secs(240 + 1600)
         );
     }
@@ -560,7 +834,11 @@ mod tests {
             .port();
         let url = format!("http://127.0.0.1:{port}/secret-presigned-path?sig=abc");
         let error = ReqwestHttp::new().unwrap().get(&url).unwrap_err();
-        assert!(!error.message.contains("secret-presigned-path"), "{}", error.message);
+        assert!(
+            !error.message.contains("secret-presigned-path"),
+            "{}",
+            error.message
+        );
         assert!(!error.message.contains("sig=abc"), "{}", error.message);
     }
 }

@@ -507,6 +507,19 @@ pub mod ext {
         fn part(&self, path: &str, version: Option<&str>, key: &str, cx: &Cx) -> Result<PathBuf>;
     }
 
+    /// An item's other files (an Arbesk asset's representations:
+    /// `arbesk_representations`, and fetching one): what only one place
+    /// has today. Each provider describes its files in its own record,
+    /// handed on as it serialises it.
+    pub trait Representations: Send + Sync {
+        /// The other files of the item at `path`, at the save `version`
+        /// (the current one without).
+        fn representations(&self, path: &str, version: Option<&str>) -> Result<Json>;
+        /// The other file `id` of the item at `path`, at the save
+        /// `version` (the current one without), on this computer.
+        fn file(&self, path: &str, version: Option<&str>, id: &str, cx: &Cx) -> Result<PathBuf>;
+    }
+
     /// Features that only make sense for items on this computer (Make Link,
     /// permissions, Batch Rename, archives, Open With, drag out, OS icons,
     /// Recent). A provider without it refuses them with its
@@ -538,6 +551,7 @@ pub struct Extensions<'a> {
     pub accounts: Option<&'a dyn ext::Accounts>,
     pub sharing: Option<&'a dyn ext::Sharing>,
     pub preview: Option<&'a dyn ext::Preview>,
+    pub representations: Option<&'a dyn ext::Representations>,
     pub local_only: Option<&'a dyn ext::LocalOnly>,
     pub permanent_delete: Option<&'a dyn ext::PermanentDelete>,
     pub empty_trash: Option<&'a dyn ext::EmptyTrash>,
@@ -582,6 +596,7 @@ mod tests {
         assert!(none.search.is_none() && none.measure.is_none() && none.versions.is_none());
         assert!(none.accounts.is_none() && none.sharing.is_none() && none.preview.is_none());
         assert!(none.local_only.is_none() && none.permanent_delete.is_none());
+        assert!(none.representations.is_none());
         assert!(none.empty_trash.is_none());
     }
 }

@@ -19,6 +19,22 @@ pub struct Entry {
     /// may set it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cloud: Option<CloudEntry>,
+    /// The item's other files, when it has some: today an Arbesk asset's
+    /// `representations` list. Named for what it is, not for Arbesk, so
+    /// another place with "other files of one item" can fill it. Omitted
+    /// otherwise, so every other entry's JSON is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub representations: Option<Representations>,
+}
+
+/// A summary of an item's other files, for the view: how many (valid
+/// ones), how many are out of date, and their distinct formats (lower-case
+/// extensions) in stored order.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Representations {
+    pub count: u32,
+    pub stale: u32,
+    pub formats: Vec<String>,
 }
 
 /// Fields that only exist on an entry from a cloud provider. Omitted from the
@@ -59,6 +75,7 @@ mod tests {
             is_hidden: false,
             is_symlink: false,
             cloud,
+            representations: None,
         }
     }
 
@@ -90,6 +107,23 @@ mod tests {
         );
         let linked = CloudEntry { web_url: Some("https://drive/x".into()), ..cloud };
         assert!(serde_json::to_string(&linked).unwrap().contains(r#""web_url":"https://drive/x""#));
+    }
+
+    #[test]
+    fn an_entry_with_other_files_carries_their_summary() {
+        let mut with = entry("arbesk://0xab/1~Set/a1~Box.gltf", None);
+        with.representations = Some(Representations {
+            count: 3,
+            stale: 1,
+            formats: vec!["blend".into(), "gcode".into()],
+        });
+        assert_eq!(
+            serde_json::to_string(&with).unwrap(),
+            concat!(
+                r#"{"name":"a.txt","path":"arbesk://0xab/1~Set/a1~Box.gltf","is_dir":false,"size":3,"modified":1700000000,"is_hidden":false,"is_symlink":false,"#,
+                r#""representations":{"count":3,"stale":1,"formats":["blend","gcode"]}}"#
+            )
+        );
     }
 
     #[test]

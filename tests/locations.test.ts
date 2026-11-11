@@ -6,6 +6,7 @@ import {
   acceptsNewItems,
   arbeskPasteRefusal,
   arbeskTargetName,
+  capabilityRow,
   isArbeskModelFile,
   copyOutRefusal,
   isInTrash,
@@ -147,6 +148,21 @@ test("the copy-out refusal, in the first item's words", () => {
   expect(copyOutRefusal(["sftp://me@host/a.txt", "share://r1/b"])).toBe("Copying from SSH servers comes next.");
   expect(copyOutRefusal(["/Users/me/a.txt", "sftp://me@host/b"])).toBe("Copying out of a shared folder comes next.");
   expect(copyOutRefusal([])).toBeNull();
+});
+
+test("an Arbesk asset's other file has its own row, never the account's", () => {
+  const asset = "arbesk://0x00000000000000000000000000000000000000ab/1~S/a~B.gltf";
+  for (const file of [`${asset}/stl~B.stl`, `${asset}/gcode@bafyG1~B.gcode`]) {
+    expect(locationKind(file, ""), file).toBe("arbesk");
+    expect(capabilityRow("arbesk", file), file).toBe("arbesk-file");
+    // It copies out as its asset does (the account's row would refuse it).
+    expect(copyOutRefusal([file]), file).toBeNull();
+  }
+  // A fourth segment that isn't a file's stays the account's, as the
+  // backend answers it (providers.rs' malformed-path test).
+  for (const file of ["x", "GCODE~x", "primary~x", "stl@~x", "stl@ba-fy~x"]) {
+    expect(capabilityRow("arbesk", `${asset}/${file}`), file).toBe("arbesk-account");
+  }
 });
 
 const COLLECTION = "arbesk://0x00000000000000000000000000000000000000ab/1~S";

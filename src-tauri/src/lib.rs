@@ -622,6 +622,23 @@ async fn arbesk_versions(app: tauri::AppHandle, path: String) -> Result<Vec<plac
     .await?
 }
 
+/// An Arbesk asset's other files (its representations), at the save
+/// `version` (a manifest CID from `arbesk_versions`; the current save
+/// without), as Arbesk's provider describes them.
+#[tauri::command]
+async fn arbesk_representations(
+    app: tauri::AppHandle,
+    path: String,
+    version: Option<String>,
+) -> Result<places::Json, String> {
+    blocking(move || {
+        let registry = app.state::<places::Registry>();
+        let files = arbesk_ext(&registry, |ext| ext.representations)?;
+        files.representations(&path, version.as_deref()).map_err(String::from)
+    })
+    .await?
+}
+
 /// One part of an Arbesk asset's scene, as the preview loads it (a GLB or a
 /// 3MF), at most `limit` bytes.
 #[tauri::command]
@@ -2415,6 +2432,7 @@ pub fn run() {
             preview_bytes,
             arbesk_scene,
             arbesk_versions,
+            arbesk_representations,
             arbesk_part,
             rename_many,
             set_permissions,

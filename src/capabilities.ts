@@ -26,15 +26,15 @@ export interface PlaceCapabilities {
 }
 
 /** The kinds of place the backend answers for: a folder on this computer,
- *  Drive, a received share, an SSH server, and Arbesk's account, collection
- *  and asset, which allow different things. Recent, Starred, Network and
+ *  Drive, a received share, an SSH server, and Arbesk's account, collection,
+ *  asset and an asset's other file, which allow different things. Recent, Starred, Network and
  *  the Trash are the frontend's own views and have no row
  *  (`locations.ts`' `capabilityRow`). */
-export type CapabilityRow = "folder" | "drive" | "share" | "sftp" | "arbesk-account" | "arbesk-collection" | "arbesk-asset";
+export type CapabilityRow = "folder" | "drive" | "share" | "sftp" | "arbesk-account" | "arbesk-collection" | "arbesk-asset" | "arbesk-file";
 
 export type CapabilityTable = Record<CapabilityRow, PlaceCapabilities>;
 
-const ROWS: readonly CapabilityRow[] = ["folder", "drive", "share", "sftp", "arbesk-account", "arbesk-collection", "arbesk-asset"];
+const ROWS: readonly CapabilityRow[] = ["folder", "drive", "share", "sftp", "arbesk-account", "arbesk-collection", "arbesk-asset", "arbesk-file"];
 const FLAGS: readonly (keyof PlaceCapabilities)[] = [
   "read_only", "can_create", "can_rename", "can_trash", "can_copy_in",
   "can_copy_out", "knows_sizes", "knows_counts", "searchable", "has_thumbnails",
@@ -59,6 +59,7 @@ export const BUILT_IN_CAPABILITIES: CapabilityTable = {
   "arbesk-account": row(   T,       T,     F,     F,    F,      F,       F,    F,     F,     T),
   "arbesk-collection": row(T,       F,     F,     F,    T,      F,       F,    F,     F,     T),
   "arbesk-asset": row(     T,       F,     F,     F,    F,      T,       F,    F,     F,     T),
+  "arbesk-file": row(      T,       F,     F,     F,    F,      T,       F,    F,     F,     F),
 };
 
 let table: CapabilityTable = BUILT_IN_CAPABILITIES;

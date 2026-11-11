@@ -44,7 +44,7 @@ to a printer) and a **G-code viewer**. F17 says how Print plugs in.
   `cid`; `bytes` (decoded size, an integer, at most 256 MiB); `encoding`
   `raw` or `brotli`; optional `derived_from {ref, cid, transform_matrix?}`;
   optional `tool`, `profile`, `stats` (at most 32 keys, string or number
-  values); `created_at`. Entries are `passthrough` (a newer client's keys are
+  values); `created_at` (a number, milliseconds: `z.number()`). Entries are `passthrough` (a newer client's keys are
   kept). At most 32 entries, ids unique.
 - `packages/asset-core/src/manifest/representations.ts`:
   `listRepresentations` (:68) is tolerant: an entry that doesn't parse is
@@ -241,9 +241,12 @@ what it is, not for Arbesk, so another place with "other files of one item"
 can fill it; today only Arbesk does, and `place_entry` copies it from
 Arbesk's `Entry`, which gains the same field. The frontend's `Entry`
 (`src/api.ts:5-25`) gains `representations?: { count: number; stale:
-number; formats: string[] }`. At most 32 short strings per row: a
-collection of 1,000 assets with full lists adds well under 200 KB to its
-listing.
+number; formats: string[] }`. At most 32 short strings per row (`formats`
+stops at `MAX_REPRESENTATIONS` however long a list another client stored):
+a collection of 1,000 assets with full lists adds well under 200 KB to its
+listing. Staleness is worked out in one pass per manifest (the model's CID
+and placement, and an id-to-CID map that keeps the first valid entry of
+each id, as `currentCidOf` finds it), never one list per entry.
 
 **F3. The full list is one command, from the cache.**
 `arbesk_representations(path, version?) -> RepresentationInfo[]` reads the
@@ -259,11 +262,14 @@ is an extension), with the methods F5, F10 and F12 add.
 
 **F4. A representation has a path: one segment below its asset.**
 `arbesk://<address>/<token>~<name>/<asset>~<name>.<ext>/<rep-id>~<rep name>`.
-`location.rs` gains `ArbeskPath::File { address, token_id, asset_id, id }`;
+`location.rs` gains `ArbeskPath::File { address, token_id, asset_id, id,
+pin }` (`pin`: the CID of a pinned path, below);
 `is_folder` stays false for it and for the asset (an asset is still a file:
 listing it is refused as today, `service.rs:48`). The id decides, the name
 is for display (as everywhere in `location.rs`). Ids are `[a-z0-9-]`, so
-nothing needs encoding. The name segment is the entry's `name` **made safe
+nothing needs encoding. The segment always has its `~`, as the backend
+writes it, so a fourth segment without one (`…/Box.gltf/more`) stays a
+malformed path, as it was before this design. The name segment is the entry's `name` **made safe
 first** (F5's `file_name` rules: no `/` or NUL, never empty, `.` or `..`;
 the frontend also applies `safeLocalName` when it names a local target),
 then encoded with `NAME_SET`, so every path a paste sees already names one
@@ -275,14 +281,18 @@ may also **pin** the entry's CID: `<rep-id>@<cid>~<name>` (CIDs are
 alphanumeric, ids never hold `@`). A pinned path means "that entry while
 its CID is still `<cid>`": a fetch or copy of it whose current entry has
 another CID, or none, is refused with *“Bracket.gcode” changed in Arbesk
-since it was copied.* Everything that hands a representation to a later
+since it was copied.* An unpinned path whose entry is gone says *This file
+is no longer in the asset.* Everything that hands a representation to a later
 step pins it (the Files… page's Copy, F9's sources), so a Studio save or
 `besk attach` between Copy and Paste can't swap in a different file. These
 paths are what the clipboard, the copy engine, a conflict dialog and an
 operation's progress see. Nothing lists them, so they never reach stars,
 bookmarks, Recent or tabs.
 
-In the frontend, `paths.ts` gains `isArbeskFile(path)` (four segments;
+In the frontend, `paths.ts` gains `isArbeskFile(path)` (four segments, the
+fourth with a `~` and, decoded, a valid id and optional pin before it, as
+the backend's `file_id` parses it: `[a-z0-9-]{1,64}` but `primary`, then
+`@` and letters and digits;
 `isArbeskAsset` stays exactly three), with rows in `tests/paths.test.ts`;
 `placeOf` answers `arbesk` for it. `locations.ts`' `arbeskRow` returns a new
 capabilities row **`arbesk-file`** for it (a row in
@@ -291,18 +301,27 @@ capabilities row **`arbesk-file`** for it (a row in
 `KINDS`, `tests/capabilities.json` and `capabilities.ts` together, since
 `isCapabilityTable` requires every row: an asset's booleans but
 `has_thumbnails` false (and `can_attach` false, F13). The mock's
-`arbeskIds` (`core.ts:1695`) also returns the file id and the pin.
+`arbeskIds` (`core.ts:1695`) also returns the file id and the pin, refusing
+what the backend's `file_id` refuses, and the mock's CIDs are letters and
+digits, one per asset and file. Until F9's copy lands (phase 3),
+`place::copy` refuses an F4 source in its own words (*Copying an asset's
+other files out comes next.*), though its row already allows the copy.
 
 **F5. Fetching a file decodes it into the app cache, as an opened build.**
 `fetch(<file path>, Fetch::Open | Fetch::Preview)` and the extension's
 `file(path, version?, id, cx)` read the entry, fetch its CID with
-`Gateway::raw` (encoded cap: 256 MiB + 1 MiB for a `brotli` entry, which
+`Gateway::raw` (streamed with `Http::get_streamed` on the slow client,
+given `transfer_timeout` of the entry's `bytes` as an upload of that size
+is: four minutes plus 64 KiB/s; encoded cap: 256 MiB + 1 MiB for a `brotli` entry, which
 covers the frame and brotli's worst-case growth of incompressible input, a
-few bytes per meta-block; 256 MiB for a `raw` one), decode it (F1; decoded
+few bytes per meta-block; 256 MiB for a `raw` one; *This file is too large
+to open.* past it too), decode it (F1; decoded
 cap exactly 256 MiB, *This file is too large to open.* past it), check
 that the decoded length equals the entry's `bytes` (else *Arbesk sent a
 damaged file.*) and save it under
-`cache_dir/arbesk/files/<cid>/<name>` with the `.downloaded` mark
+`cache_dir/arbesk/files/<cid>/<name>` (a `cid` that isn't letters and
+digits is refused with *Arbesk sent a damaged file.* before it names a
+folder) with the `.downloaded` mark
 (`places::mark`), through `build_file` (`service.rs:452`): an unchanged
 copy is reused; one someone edited is kept, and a fresh copy goes beside
 it. Keyed by the file's CID, so two versions sharing a G-code fetch it
@@ -310,9 +329,16 @@ once. `downloads::DIRS` already holds `arbesk` (`downloads.rs:11`): pruning
 after a week deletes unchanged copies and sends edited ones to the Trash,
 as for Drive downloads. Progress and Cancel work as for an opened Drive
 file (`open_target`, `lib.rs:520`): the provider reports progress for
-these fetches. The file name is the entry's `name` made safe with
+these fetches chunk by chunk as they arrive (the total is the decoded
+`bytes`; what decoding adds is counted at the end), and a cancel stops the
+download between chunks, or within a moment while the gateway sends
+nothing (the read runs on a thread of its own, and the caller looks at the
+cancel every 200 ms). A second open of the same file waits for the first
+(one build per folder), and a cancel stops that wait too. The file name is the entry's `name` made safe with
 `file_name`'s rules (`service.rs:847`: no `/` or NUL, never empty, `.`
-or `..`).
+or `..`), then cut to 200 bytes at a character boundary, keeping its
+extension (a valid 255-unit name may take 765 bytes of UTF-8; the `.part`
+and the mark beside it need the rest of the 255 a file system takes).
 
 Edits to an opened copy stay in the cache, as for Drive and SSH files: File
 Browser uploads nothing back. To keep them, the user saves elsewhere and
@@ -815,19 +841,26 @@ file page.
 ## Mock
 
 `dev/mock-tauri/core.ts`'s `MockAsset` (:1644-1655) gains `representations`:
-entries as Arbesk stores them, plus each file's text or bytes. The fixtures
+entries as Arbesk stores them (the mock's filesystem keeps sizes, not
+bytes, so a fetched file is a sized node whose preview bytes come from its
+name, as for every mock file). The fixtures
 gain: *Bracket* in Shapes with a `.blend` (source), an STL (fresh), a G-code
 for an Original Prusa MK4 in PETG (stale: derived from an earlier model
 CID), a 3MF and one invalid entry (left out, but counted for room); and the
-existing *Box* glTF with a single STL. The mock serves:
+existing *Box* glTF with a single STL. (Phase 1, where nothing visible may
+change, can't add an asset: every mock collection's listing is pinned by
+existing tests. It gives the existing *Cube* in Untitled Collection, saved
+three times, Bracket's set, its G-code made from its second save; *Bracket*
+itself joins Shapes in phase 2, whose view changes on purpose and updates
+those tests.) The mock serves:
 
 - listing summaries (F2) computed by a TypeScript copy of the stale rule
   over the mock manifest;
 - `arbesk_representations`, `app_formats` (a fixed table per mock app:
   *PrusaSlicer* opens `3mf`, `gcode`, `stl`; *Blender* opens `blend`,
   `gltf`, `glb`, `stl`; *Text Editor* opens `gcode`; others nothing),
-  fetching F4 paths (pinned and not) through `open_target` and the
-  representation file command, each fetch **writing the file under a mock
+  fetching F4 paths (pinned and not) through `open_target` and (from the
+  phase that adds it, 3 or 5) the representation file command, each fetch **writing the file under a mock
   cache folder** in the fake filesystem (`…/arbesk/files/<cid>/<name>`, as
   the backend does), so `open_with` (`mockOpenWith` looks the path
   up) and `preview_bytes` find it; `arbesk_copy` of F4 paths;
