@@ -105,8 +105,13 @@ pub struct Limiter {
     /// they may before another part of known size starts.
     held: Mutex<u64>,
     held_cap: u64,
-    /// Reads under way, by what they read (a gateway URL).
+    /// Reads under way, by what they read (a gateway URL, or a token's
+    /// `tokenURI` for [`crate::memo::TokenMemo`]).
     flights: Mutex<HashMap<String, Arc<Flight>>>,
+    /// The `tokenURI` answers reads share for a few seconds (performance
+    /// plan, phase 4). Only reads through [`Limited`] reach it: a write's
+    /// bare client never does.
+    pub tokens: crate::memo::TokenMemo,
 }
 
 impl Default for Limiter {
@@ -123,6 +128,7 @@ impl Limiter {
             held: Mutex::new(0),
             held_cap: HELD,
             flights: Mutex::new(HashMap::new()),
+            tokens: crate::memo::TokenMemo::default(),
         }
     }
 
