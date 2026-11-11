@@ -6,7 +6,7 @@ resolver = "3"
 
 [package]
 name = "filebrowser"
-version = "0.8.2"
+version = "0.9.0"
 description = "A GNOME Files-style file browser for macOS and Linux"
 authors = ["you"]
 edition = "2024"
