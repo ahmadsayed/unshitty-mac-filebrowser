@@ -871,6 +871,15 @@ mod tests {
             self.inner.get(url)
         }
 
+        fn get_streamed(
+            &self,
+            url: &str,
+            expected: u64,
+            chunk: &mut dyn FnMut(&[u8]) -> bool,
+        ) -> Result<(), HttpError> {
+            self.inner.get_streamed(url, expected, chunk)
+        }
+
         fn post_json(
             &self,
             url: &str,

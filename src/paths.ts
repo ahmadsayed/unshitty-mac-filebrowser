@@ -57,15 +57,29 @@ export function isArbeskAsset(path: string): boolean {
   return isArbeskPath(path) && path.slice(ARBESK_PREFIX.length).split("/").filter(Boolean).length === 3;
 }
 
+/** An asset's file id (`[a-z0-9-]{1,64}`, never `primary`), optionally
+ *  pinned to a CID of letters and digits: what the backend's `file_id`
+ *  takes before the segment's `~`. */
+const ARBESK_FILE_ID = /^([a-z0-9-]{1,64})(@[A-Za-z0-9]+)?$/;
+
 /** Whether `path` is one of an Arbesk asset's other files (spec F4), one
  *  segment below the asset: `…/<asset>~<name>/<file-id>~<name>`, or pinned
  *  to a CID, `…/<file-id>@<cid>~<name>`. Its segment always has its `~`
- *  and an id before it, as the backend writes it; nothing lists these
- *  paths. */
+ *  and, decoded, a valid id (and pin) before it, as the backend parses it,
+ *  so both pick the same capability row; nothing lists these paths. */
 export function isArbeskFile(path: string): boolean {
   if (!isArbeskPath(path)) return false;
   const segments = path.slice(ARBESK_PREFIX.length).split("/").filter(Boolean);
-  return segments.length === 4 && segments[3].indexOf("~") > 0;
+  const tilde = segments.length === 4 ? segments[3].indexOf("~") : -1;
+  if (tilde <= 0) return false;
+  let id: string;
+  try {
+    id = decodeURIComponent(segments[3].slice(0, tilde));
+  } catch {
+    return false;
+  }
+  const match = ARBESK_FILE_ID.exec(id);
+  return match !== null && match[1] !== "primary";
 }
 
 /** Whether `path` is an Arbesk collection, the one place files are copied into:

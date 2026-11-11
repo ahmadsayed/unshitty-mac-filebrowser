@@ -158,8 +158,11 @@ test("an Arbesk asset's other file has its own row, never the account's", () => 
     // It copies out as its asset does (the account's row would refuse it).
     expect(copyOutRefusal([file]), file).toBeNull();
   }
-  // A fourth segment that isn't a file's stays the account's.
-  expect(capabilityRow("arbesk", `${asset}/x`)).toBe("arbesk-account");
+  // A fourth segment that isn't a file's stays the account's, as the
+  // backend answers it (providers.rs' malformed-path test).
+  for (const file of ["x", "GCODE~x", "primary~x", "stl@~x", "stl@ba-fy~x"]) {
+    expect(capabilityRow("arbesk", `${asset}/${file}`), file).toBe("arbesk-account");
+  }
 });
 
 const COLLECTION = "arbesk://0x00000000000000000000000000000000000000ab/1~S";

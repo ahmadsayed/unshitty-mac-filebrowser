@@ -241,9 +241,12 @@ what it is, not for Arbesk, so another place with "other files of one item"
 can fill it; today only Arbesk does, and `place_entry` copies it from
 Arbesk's `Entry`, which gains the same field. The frontend's `Entry`
 (`src/api.ts:5-25`) gains `representations?: { count: number; stale:
-number; formats: string[] }`. At most 32 short strings per row: a
-collection of 1,000 assets with full lists adds well under 200 KB to its
-listing.
+number; formats: string[] }`. At most 32 short strings per row (`formats`
+stops at `MAX_REPRESENTATIONS` however long a list another client stored):
+a collection of 1,000 assets with full lists adds well under 200 KB to its
+listing. Staleness is worked out in one pass per manifest (the model's CID
+and placement, and an id-to-CID map that keeps the first valid entry of
+each id, as `currentCidOf` finds it), never one list per entry.
 
 **F3. The full list is one command, from the cache.**
 `arbesk_representations(path, version?) -> RepresentationInfo[]` reads the
@@ -287,7 +290,9 @@ operation's progress see. Nothing lists them, so they never reach stars,
 bookmarks, Recent or tabs.
 
 In the frontend, `paths.ts` gains `isArbeskFile(path)` (four segments, the
-fourth with a `~` and an id before it, as the backend parses it;
+fourth with a `~` and, decoded, a valid id and optional pin before it, as
+the backend's `file_id` parses it: `[a-z0-9-]{1,64}` but `primary`, then
+`@` and letters and digits;
 `isArbeskAsset` stays exactly three), with rows in `tests/paths.test.ts`;
 `placeOf` answers `arbesk` for it. `locations.ts`' `arbeskRow` returns a new
 capabilities row **`arbesk-file`** for it (a row in
@@ -296,19 +301,27 @@ capabilities row **`arbesk-file`** for it (a row in
 `KINDS`, `tests/capabilities.json` and `capabilities.ts` together, since
 `isCapabilityTable` requires every row: an asset's booleans but
 `has_thumbnails` false (and `can_attach` false, F13). The mock's
-`arbeskIds` (`core.ts:1695`) also returns the file id and the pin.
+`arbeskIds` (`core.ts:1695`) also returns the file id and the pin, refusing
+what the backend's `file_id` refuses, and the mock's CIDs are letters and
+digits, one per asset and file. Until F9's copy lands (phase 3),
+`place::copy` refuses an F4 source in its own words (*Copying an asset's
+other files out comes next.*), though its row already allows the copy.
 
 **F5. Fetching a file decodes it into the app cache, as an opened build.**
 `fetch(<file path>, Fetch::Open | Fetch::Preview)` and the extension's
 `file(path, version?, id, cx)` read the entry, fetch its CID with
-`Gateway::raw` (encoded cap: 256 MiB + 1 MiB for a `brotli` entry, which
+`Gateway::raw` (streamed with `Http::get_streamed` on the slow client,
+given `transfer_timeout` of the entry's `bytes` as an upload of that size
+is: four minutes plus 64 KiB/s; encoded cap: 256 MiB + 1 MiB for a `brotli` entry, which
 covers the frame and brotli's worst-case growth of incompressible input, a
 few bytes per meta-block; 256 MiB for a `raw` one; *This file is too large
 to open.* past it too), decode it (F1; decoded
 cap exactly 256 MiB, *This file is too large to open.* past it), check
 that the decoded length equals the entry's `bytes` (else *Arbesk sent a
 damaged file.*) and save it under
-`cache_dir/arbesk/files/<cid>/<name>` with the `.downloaded` mark
+`cache_dir/arbesk/files/<cid>/<name>` (a `cid` that isn't letters and
+digits is refused with *Arbesk sent a damaged file.* before it names a
+folder) with the `.downloaded` mark
 (`places::mark`), through `build_file` (`service.rs:452`): an unchanged
 copy is reused; one someone edited is kept, and a fresh copy goes beside
 it. Keyed by the file's CID, so two versions sharing a G-code fetch it
@@ -316,9 +329,13 @@ once. `downloads::DIRS` already holds `arbesk` (`downloads.rs:11`): pruning
 after a week deletes unchanged copies and sends edited ones to the Trash,
 as for Drive downloads. Progress and Cancel work as for an opened Drive
 file (`open_target`, `lib.rs:520`): the provider reports progress for
-these fetches. The file name is the entry's `name` made safe with
+these fetches chunk by chunk as they arrive (the total is the decoded
+`bytes`; what decoding adds is counted at the end), and a cancel stops the
+download between chunks. The file name is the entry's `name` made safe with
 `file_name`'s rules (`service.rs:847`: no `/` or NUL, never empty, `.`
-or `..`).
+or `..`), then cut to 200 bytes at a character boundary, keeping its
+extension (a valid 255-unit name may take 765 bytes of UTF-8; the `.part`
+and the mark beside it need the rest of the 255 a file system takes).
 
 Edits to an opened copy stay in the cache, as for Drive and SSH files: File
 Browser uploads nothing back. To keep them, the user saves elsewhere and

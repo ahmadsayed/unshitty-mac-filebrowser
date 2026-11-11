@@ -404,13 +404,44 @@ pub fn file(
         (Some(rep), None) => rep,
         (None, None) => return Err(FILE_GONE.into()),
     };
+    // The manifest's text never decides a cache path: a CID is letters
+    // and digits, as the gateway's path takes it.
+    if crate::ipfs::checked_cid(&rep.cid).is_err() {
+        return Err(representations::DAMAGED.into());
+    }
     progress.set_total(rep.bytes);
     let dir = cache_dir.join("arbesk").join("files").join(&rep.cid);
-    build_file(&dir, &safe_name(&rep.name), progress, builds, || {
-        let decoded = fetch_decoded(&reader.gateway, &rep)?;
-        progress.add_bytes(decoded.len() as u64);
-        Ok(decoded)
+    build_file(&dir, &cache_name(&rep.name), progress, builds, || {
+        fetch_decoded(&reader.gateway, &rep, progress)
     })
+}
+
+/// The longest name [`cache_name`] gives a cached file, in bytes: most
+/// file systems take 255, and its `.part` while it is saved
+/// (`.<name>.<nanos>-<pid>.part`) and its mark (`.<name>.downloaded`) need
+/// up to 37 more.
+const MAX_NAME_BYTES: usize = 200;
+/// The longest extension [`cache_name`] keeps when it cuts a name, in bytes.
+const MAX_EXT_BYTES: usize = 32;
+
+/// `name` as a file name in the app cache: made safe (`safe_name`), then,
+/// when it is longer than [`MAX_NAME_BYTES`] (a valid name of 255 UTF-16
+/// units may take 765 bytes of UTF-8), cut at a character boundary,
+/// keeping its extension.
+fn cache_name(name: &str) -> String {
+    let safe = safe_name(name);
+    if safe.len() <= MAX_NAME_BYTES {
+        return safe;
+    }
+    let (stem, ext) = match safe.rfind('.') {
+        Some(at) if at > 0 && safe.len() - at <= MAX_EXT_BYTES => safe.split_at(at),
+        _ => (safe.as_str(), ""),
+    };
+    let mut end = MAX_NAME_BYTES - ext.len();
+    while !stem.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{ext}", &stem[..end])
 }
 
 /// The entry's file is no longer in the asset.
@@ -419,7 +450,14 @@ const FILE_GONE: &str = "This file is no longer in the asset.";
 /// `rep`'s bytes from the gateway, decoded and checked: at most 256 MiB
 /// once decoded (stored: that, plus 1 MiB for a `brotli` entry's frame and
 /// brotli's growth of what doesn't compress), exactly its `bytes` long.
-fn fetch_decoded(gateway: &Gateway, rep: &representations::Rep) -> Result<Vec<u8>, String> {
+/// Streamed: each chunk counts towards `progress` (whose total is `bytes`,
+/// the decoded size: the rest is counted once decoded), and a cancel stops
+/// the download between chunks.
+fn fetch_decoded(
+    gateway: &Gateway,
+    rep: &representations::Rep,
+    progress: &Progress,
+) -> Result<Vec<u8>, String> {
     let stored_cap = match rep.encoding {
         representations::Encoding::Raw => representations::MAX_BYTES,
         representations::Encoding::Brotli => representations::MAX_BYTES + 1024 * 1024,
@@ -428,11 +466,22 @@ fn fetch_decoded(gateway: &Gateway, rep: &representations::Rep) -> Result<Vec<u8
         crate::ipfs::TOO_LARGE => representations::TOO_LARGE.to_string(),
         _ => error,
     };
-    let stored = gateway.raw(&rep.cid, stored_cap).map_err(too_large)?;
+    let mut counted = 0u64;
+    let mut count = |n: usize| {
+        progress.check()?;
+        let step = (n as u64).min(rep.bytes - counted);
+        counted += step;
+        progress.add_bytes(step);
+        Ok(())
+    };
+    let stored = gateway
+        .raw(&rep.cid, stored_cap, rep.bytes, &mut count)
+        .map_err(too_large)?;
     let decoded = representations::decode(stored, rep.encoding, representations::MAX_BYTES)?;
     if decoded.len() as u64 != rep.bytes {
         return Err(representations::DAMAGED.into());
     }
+    progress.add_bytes(rep.bytes - counted);
     Ok(decoded)
 }
 
@@ -1325,6 +1374,95 @@ mod tests {
 
     fn http_of(world: testing::World) -> FakeHttp {
         arbesk(Arc::new(Mutex::new(world)))
+    }
+
+    /// Shapes with Box.gltf's other files set to `files` and their bytes
+    /// stored at their CIDs.
+    fn world_with(files: Value, stored: &[(&str, &[u8])]) -> testing::World {
+        let mut w = world();
+        let mut manifest: Value = serde_json::from_slice(&w.files["bafyA1"]).unwrap();
+        manifest["representations"] = files;
+        w.put("bafyA1", manifest);
+        for (cid, bytes) in stored {
+            w.files.insert(cid.to_string(), bytes.to_vec());
+        }
+        w
+    }
+
+    fn other_file(id: &str, name: &str, cid: &str, bytes: usize) -> Value {
+        json!({ "id": id, "role": "other", "format": "bin", "name": name, "cid": cid,
+            "bytes": bytes, "encoding": "raw", "created_at": 1 })
+    }
+
+    fn fetched(http: &FakeHttp, id: &str, cache: &Path, progress: &Progress) -> Result<PathBuf, String> {
+        let asset = box_gltf();
+        let wanted = Wanted { asset: &asset, version: None, id, pin: None };
+        file(http, &site(), &wanted, cache, progress, &Builds::default())
+    }
+
+    /// Spec F5: progress counts each chunk as it arrives, and a cancel
+    /// stops the download between chunks, before the rest is read, with
+    /// nothing saved.
+    #[test]
+    fn a_file_streams_with_progress_and_stops_on_a_cancel() {
+        let body: Vec<u8> = (0..40).collect();
+        let world = || world_with(json!([other_file("bin", "Part.bin", "bafyBin", 40)]), &[("bafyBin", &body)]);
+        let cache = tempfile::tempdir().unwrap();
+        let progress = Progress::default();
+        let seen = progress.clone();
+        let counted = Arc::new(Mutex::new(Vec::new()));
+        let log = counted.clone();
+        let http = http_of(world()).in_chunks(8, move |_| log.lock().unwrap().push(seen.snapshot().bytes));
+        let path = fetched(&http, "bin", cache.path(), &progress).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), body);
+        assert_eq!(*counted.lock().unwrap(), [0, 8, 16, 24, 32], "counted as it arrives");
+        assert_eq!((progress.snapshot().bytes, progress.snapshot().total), (40, Some(40)));
+
+        let cache = tempfile::tempdir().unwrap();
+        let progress = Progress::default();
+        let cancel = progress.clone();
+        let http = http_of(world()).in_chunks(8, move |n| if n == 1 { cancel.cancel() });
+        assert_eq!(fetched(&http, "bin", cache.path(), &progress).unwrap_err(), crate::progress::CANCELLED);
+        assert_eq!(http.chunks.load(std::sync::atomic::Ordering::SeqCst), 2, "nothing read past the cancel");
+        assert_eq!(progress.snapshot().bytes, 8);
+        assert!(!cache.path().join("arbesk/files/bafyBin").read_dir().is_ok_and(|mut d| d.next().is_some()));
+    }
+
+    /// A CID that isn't one never decides a cache path, even where a
+    /// marked file waits at the folder it would name.
+    #[test]
+    fn a_file_whose_cid_is_not_one_is_refused() {
+        let cache = tempfile::tempdir().unwrap();
+        // Where `files/../../x` leads.
+        let elsewhere = cache.path().join("x");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("Part.bin"), b"not yours").unwrap();
+        crate::cache::mark(&elsewhere.join("Part.bin"));
+        assert!(crate::cache::is_unchanged(&elsewhere.join("Part.bin")));
+        for cid in ["../../x", "/abs", "bafy rep"] {
+            let http = http_of(world_with(json!([other_file("bin", "Part.bin", cid, 9)]), &[]));
+            let refused = fetched(&http, "bin", cache.path(), &Progress::default());
+            assert_eq!(refused.unwrap_err(), representations::DAMAGED, "{cid}");
+        }
+    }
+
+    /// A valid name of 255 UTF-16 units can take 765 bytes: its cache copy
+    /// is cut to a file name the file system takes, keeping the extension.
+    #[test]
+    fn a_long_name_opens_cut_to_a_file_name() {
+        let name = format!("{}.gcode", "字".repeat(249));
+        assert_eq!(name.encode_utf16().count(), 255);
+        let cache = tempfile::tempdir().unwrap();
+        let http = http_of(world_with(json!([other_file("long", &name, "bafyLong", 2)]), &[("bafyLong", b"G1")]));
+        let path = fetched(&http, "long", cache.path(), &Progress::default()).unwrap();
+        let saved = path.file_name().unwrap().to_str().unwrap();
+        assert!(saved.len() <= MAX_NAME_BYTES && saved.ends_with(".gcode"), "{saved}");
+        assert!(name.starts_with(saved.trim_end_matches(".gcode")));
+        assert_eq!(std::fs::read(&path).unwrap(), b"G1");
+        assert_eq!(cache_name("a.b"), "a.b");
+        assert_eq!(cache_name(&format!("a{}", "é".repeat(150))).len(), 199, "cut at a character boundary");
+        let no_ext = cache_name(&format!("{}.{}", "a".repeat(10), "b".repeat(300)));
+        assert_eq!(no_ext.len(), MAX_NAME_BYTES);
     }
 
     #[test]

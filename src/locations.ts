@@ -69,8 +69,9 @@ function arbeskRow(path: string): CapabilityRow {
 }
 
 /** Which row of the backend's capability table answers for `kind`, at
- *  `path` where Arbesk's account, collection and asset differ (an Arbesk
- *  item whose path isn't known counts as a collection); null for the
+ *  `path` where Arbesk's account, collection, asset and an asset's other
+ *  file differ (an Arbesk item whose path isn't known counts as a
+ *  collection); null for the
  *  frontend's own views (`ViewKind`). With a path, the row is right for the
  *  copy flags only (`can_copy_in`, `can_copy_out`): the Arbesk root and a
  *  malformed path get the account's row, though their provider refuses New

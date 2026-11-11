@@ -132,7 +132,8 @@ pub struct CopyRoute {
 
 /// [`transfer`] for a copy, which may also take an Arbesk asset out to this
 /// computer or Drive, or a local file into an Arbesk collection. A move never
-/// does: Arbesk is read only. Collections can't be copied yet.
+/// does: Arbesk is read only. Collections, and an asset's other files,
+/// can't be copied yet.
 pub fn copy(from: &str, to: &str) -> Result<CopyRoute, String> {
     if kind(to) == Kind::Arbesk && kind(from) != Kind::Arbesk {
         return into_arbesk(from, to);
@@ -141,8 +142,15 @@ pub fn copy(from: &str, to: &str) -> Result<CopyRoute, String> {
         return transfer(from, to).map(|route| CopyRoute { route, from_arbesk: false });
     }
     writable(to)?;
-    if !matches!(arbesk::parse(from)?, arbesk::Location::Asset { .. }) {
-        return Err("Copying Arbesk collections comes next.".into());
+    match arbesk::parse(from)? {
+        arbesk::Location::Asset { .. } => {}
+        // Its capability row already allows the copy (spec F4): the copy
+        // itself lands with the Files… page (F9), so until then it is
+        // refused in its own words.
+        arbesk::Location::File { .. } => {
+            return Err("Copying an asset's other files out comes next.".into());
+        }
+        _ => return Err("Copying Arbesk collections comes next.".into()),
     }
     let route = if kind(to) == Kind::Drive {
         Route::Drive
@@ -197,6 +205,7 @@ mod tests {
     const ARBESK_LOCAL: &str = "This action is not available for Arbesk.";
     const ARBESK_READ_ONLY: &str = "Arbesk is read only.";
     const ARBESK_COLLECTION: &str = "Copying Arbesk collections comes next.";
+    const ARBESK_FILE: &str = "Copying an asset's other files out comes next.";
     const ARBESK: &str = "arbesk://0x00000000000000000000000000000000000000ab/12~Set";
 
     /// Each path: its kind, `local`'s answer (None: the path itself),
@@ -344,6 +353,8 @@ mod tests {
             (asset, "rel/Box.gltf", "“rel/Box.gltf” is not a local file.".into()),
             (ARBESK, b, ARBESK_COLLECTION.into()),
             ("arbesk://0x00000000000000000000000000000000000000ab", b, ARBESK_COLLECTION.into()),
+            (format!("{asset}/stl@bafyStl~Box.stl").as_str(), b, ARBESK_FILE.into()),
+            (format!("{asset}/stl~Box.stl").as_str(), drive, ARBESK_FILE.into()),
             ("share://r1/a", b, SHARE_READ_ONLY.into()),
         ] {
             assert_eq!(copy(from, to).unwrap_err(), refusal, "{from} -> {to}");

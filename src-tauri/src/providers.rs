@@ -764,8 +764,9 @@ mod tests {
 
     /// The frontend picks an Arbesk path's row by its number of segments
     /// (`locations.ts`' `capabilityRow`): the root, a single segment that
-    /// isn't an address, a fourth segment without its `~` (not an asset's
-    /// file, `isArbeskFile`) and more segments get the account's row,
+    /// isn't an address, a fourth segment that isn't an asset's file
+    /// (`isArbeskFile`: no `~`, or no valid id and pin before it) and more
+    /// segments get the account's row,
     /// and it reads a path's row for its copy flags only (`copiesOf`).
     /// Those agree with what the provider says for such a path; New
     /// Collection doesn't (the account allows it, these paths refuse it).
@@ -773,7 +774,9 @@ mod tests {
     fn the_arbesk_root_and_a_malformed_path_copy_as_the_account() {
         let registry = testing::plain();
         let account = KindCapabilities::of(&registry.provider_for(ACCOUNT).capabilities(ACCOUNT));
-        for path in ["arbesk://", "arbesk://not-an-address", "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf/x"] {
+        let bad_files = ["x", "GCODE~x", "primary~x", "my_file~x", "stl@~x", "stl@ba-fy~x", "~x"].map(|file| format!("{ASSET}/{file}"));
+        let paths = ["arbesk://", "arbesk://not-an-address"].into_iter().map(String::from).chain(bad_files);
+        for path in paths.collect::<Vec<_>>().iter().map(String::as_str) {
             assert_eq!(registry.provider_for(path).scheme(), "arbesk", "{path}");
             let caps = KindCapabilities::of(&registry.provider_for(path).capabilities(path));
             assert_eq!((caps.can_copy_in, caps.can_copy_out), (account.can_copy_in, account.can_copy_out), "{path}");

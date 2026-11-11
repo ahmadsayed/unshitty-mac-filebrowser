@@ -9,6 +9,7 @@
 //! `tests/fixtures/representations-stale.json`, made by
 //! `scripts/make-representations-fixture.ts` from an Arbesk checkout.
 
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 
 use serde::Serialize;
@@ -16,8 +17,8 @@ use serde_json::{Map, Value, json};
 
 /// The reserved id of the asset's own model (`scene.nodes[0].source`).
 pub(crate) const PRIMARY: &str = "primary";
-/// Most entries one asset manifest may hold.
-#[allow(dead_code)] // Attaching files (spec F10, phase 4) checks room with it.
+/// Most entries one asset manifest may hold (writers check it), and most
+/// formats a listing's summary carries.
 pub(crate) const MAX_REPRESENTATIONS: usize = 32;
 /// Largest file (decoded bytes) one entry may record: 256 MiB.
 pub(crate) const MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -233,20 +234,58 @@ pub(crate) fn primary_transform_of(manifest: &Value) -> Option<Vec<f64>> {
     }
 }
 
+/// What staleness compares against, read once per manifest: the model's
+/// CID and placement, and the CID of the first valid entry of each id (as
+/// `currentCidOf` finds it). Each entry's check is then a lookup, so a
+/// long list costs one pass, never one per entry.
+pub(crate) struct Current {
+    primary_cid: Option<String>,
+    primary_transform: Option<Vec<f64>>,
+    cids: HashMap<String, String>,
+}
+
+impl Current {
+    pub(crate) fn of(manifest: &Value, reps: &[Rep]) -> Self {
+        let mut cids = HashMap::new();
+        for rep in reps {
+            cids.entry(rep.id.clone()).or_insert_with(|| rep.cid.clone());
+        }
+        Current {
+            primary_cid: current_cid_of(manifest, PRIMARY),
+            primary_transform: primary_transform_of(manifest),
+            cids,
+        }
+    }
+
+    fn cid_of(&self, reference: &str) -> Option<&str> {
+        if reference == PRIMARY {
+            self.primary_cid.as_deref()
+        } else {
+            self.cids.get(reference).map(String::as_str)
+        }
+    }
+}
+
 /// `isStale`: no `derived_from` is never stale; a ref whose current CID
 /// differs (or is gone) is; for `primary` with a recorded matrix, a
 /// different placement is.
+#[cfg_attr(not(test), allow(dead_code))] // The view and the command use `is_stale_in`.
 pub(crate) fn is_stale(manifest: &Value, rep: &Rep) -> bool {
+    is_stale_in(&Current::of(manifest, &list(manifest)), rep)
+}
+
+/// [`is_stale`] against a manifest's [`Current`].
+pub(crate) fn is_stale_in(current: &Current, rep: &Rep) -> bool {
     let Some(from) = &rep.derived_from else {
         return false;
     };
-    if current_cid_of(manifest, &from.reference).as_deref() != Some(from.cid.as_str()) {
+    if current.cid_of(&from.reference) != Some(from.cid.as_str()) {
         return true;
     }
     let (true, Some(recorded)) = (from.reference == PRIMARY, &from.transform_matrix) else {
         return false;
     };
-    match primary_transform_of(manifest) {
+    match &current.primary_transform {
         // f64 equality, as `===`: NaN never equals, -0 equals 0.
         Some(now) => now.len() != recorded.len() || now.iter().zip(recorded).any(|(a, b)| a != b),
         None => true,
@@ -553,22 +592,25 @@ pub(crate) fn encode(bytes: &[u8], format: &str) -> (Vec<u8>, Encoding) {
 // ---- What the view and the command show --------------------------------------------------
 
 /// The listing's summary of `manifest`'s other files (spec F2): the valid
-/// entries, how many are stale, their distinct formats in stored order;
-/// `None` when it has none.
+/// entries, how many are stale, their distinct formats in stored order (at
+/// most [`MAX_REPRESENTATIONS`] of them, however long a list a client
+/// stored); `None` when it has none. One pass over the list.
 pub(crate) fn summary(manifest: &Value) -> Option<places::Representations> {
     let reps = list(manifest);
     if reps.is_empty() {
         return None;
     }
-    let mut formats: Vec<String> = Vec::new();
-    for rep in &reps {
-        if !formats.contains(&rep.format) {
-            formats.push(rep.format.clone());
-        }
-    }
+    let current = Current::of(manifest, &reps);
+    let mut seen = HashSet::new();
+    let formats: Vec<String> = reps
+        .iter()
+        .filter(|rep| seen.insert(rep.format.as_str()))
+        .take(MAX_REPRESENTATIONS)
+        .map(|rep| rep.format.clone())
+        .collect();
     Some(places::Representations {
         count: reps.len() as u32,
-        stale: reps.iter().filter(|rep| is_stale(manifest, rep)).count() as u32,
+        stale: reps.iter().filter(|rep| is_stale_in(&current, rep)).count() as u32,
         formats,
     })
 }
@@ -592,10 +634,11 @@ pub struct RepresentationInfo {
 
 /// Each valid entry of `manifest`, in stored order, with its staleness.
 pub(crate) fn infos(manifest: &Value) -> Vec<RepresentationInfo> {
-    list(manifest)
-        .into_iter()
+    let reps = list(manifest);
+    let current = Current::of(manifest, &reps);
+    reps.into_iter()
         .map(|rep| RepresentationInfo {
-            stale: is_stale(manifest, &rep),
+            stale: is_stale_in(&current, &rep),
             derived_from: rep.derived_from.as_ref().map(|from| from.reference.clone()),
             id: rep.id,
             role: rep.role,
@@ -802,6 +845,46 @@ mod tests {
                 "stale": false, "derived_from": null, "tool": null, "profile": null, "stats": null,
                 "created_at": 1.0 })
         );
+    }
+
+    /// A list no writer would store (50,000 entries, each made from
+    /// another) still sums up in one pass, with a bounded row.
+    #[test]
+    fn a_huge_list_sums_up_quickly_and_briefly() {
+        let reps: Vec<Value> = (0..50_000)
+            .map(|i| {
+                let mut rep = entry();
+                rep["id"] = json!(format!("r{i}"));
+                rep["format"] = json!(format!("f{i}"));
+                rep["cid"] = json!(format!("bafy{i}"));
+                rep["derived_from"] = json!({ "ref": format!("r{}", (i + 1) % 50_000), "cid": format!("bafy{}", (i + 1) % 50_000) });
+                rep
+            })
+            .collect();
+        let mut manifest = json!({ "representations": reps });
+        manifest["representations"][1]["derived_from"]["cid"] = json!("bafyOld");
+        let started = std::time::Instant::now();
+        let summary = summary(&manifest).unwrap();
+        assert_eq!((summary.count, summary.stale), (50_000, 1));
+        assert_eq!(summary.formats.len(), MAX_REPRESENTATIONS);
+        assert_eq!(summary.formats[..2], ["f0", "f1"]);
+        assert_eq!(infos(&manifest).iter().filter(|info| info.stale).count(), 1);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+    }
+
+    /// A ref names the first valid entry with its id, as `currentCidOf`.
+    #[test]
+    fn a_ref_reads_the_first_valid_entry_with_its_id() {
+        let mut first = entry();
+        first["id"] = json!("dup");
+        let mut second = first.clone();
+        second["cid"] = json!("bafyOther");
+        let mut made = entry();
+        made["derived_from"] = json!({ "ref": "dup", "cid": "bafyStl" });
+        let manifest = json!({ "representations": [{ "id": "dup", "cid": "bafyBad" }, first, second, made] });
+        let rep = parse_entry(&manifest["representations"][3]).unwrap();
+        assert!(!is_stale(&manifest, &rep));
+        assert_eq!(summary(&manifest).unwrap().stale, 0);
     }
 
     #[test]

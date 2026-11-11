@@ -1624,16 +1624,24 @@ test("Arbesk: an asset's other files: the listing's summary, the list per save, 
 
   // A file's path (spec F4) opens its copy in the app cache (spec F5), pinned or not.
   const gcode = `${cube.path}/gcode-original-prusa-mk4-petg~Cube_0.2mm_PETG_MK4.gcode`;
-  const opened = { kind: "file", path: `${files}/bafy-rep-gcode-original-prusa-mk4-petg/Cube_0.2mm_PETG_MK4.gcode` };
+  const gcodeCid = "bafyrepasset1xgcodeoriginalprusamk4petg";
+  const opened = { kind: "file", path: `${files}/${gcodeCid}/Cube_0.2mm_PETG_MK4.gcode` };
   expect(await invoke("open_target", { path: gcode, op: "" })).toEqual(opened);
   expect(await invoke("path_exists", { path: opened.path })).toBe(true);
-  const pinned = `${cube.path}/gcode-original-prusa-mk4-petg@bafy-rep-gcode-original-prusa-mk4-petg~Cube_0.2mm_PETG_MK4.gcode`;
+  const pinned = `${cube.path}/gcode-original-prusa-mk4-petg@${gcodeCid}~Cube_0.2mm_PETG_MK4.gcode`;
   expect(await invoke("open_target", { path: pinned, op: "" })).toEqual(opened);
   await expect(invoke("open_target", { path: `${cube.path}/stl@bafyOld~Cube.stl`, op: "" })).rejects.toBe("“Cube.stl” changed in Arbesk since it was copied.");
   await expect(invoke("open_target", { path: `${cube.path}/gone~Gone.stl`, op: "" })).rejects.toBe("This file is no longer in the asset.");
+  // A pin or an id the backend doesn't parse is no Arbesk location at all.
+  for (const file of ["stl@bafy-x~Cube.stl", "primary~Cube.gltf", "STL~Cube.stl"]) {
+    const path = `${cube.path}/${file}`;
+    await expect(invoke("open_target", { path, op: "" })).rejects.toBe(`“${path}” is not an Arbesk location.`);
+  }
+  // Another asset's STL is another file, with its own CID.
+  await expect(invoke("open_target", { path: `${cube.path}/stl@bafyrepboxgxstl~Box.stl`, op: "" })).rejects.toBe("“Box.stl” changed in Arbesk since it was copied.");
   // The copy is a local file Open With and the preview can read.
   const stl = await invoke<{ path: string }>("open_target", { path: `${shapes[0].path}/stl~Box.stl`, op: "" });
-  expect(stl.path).toBe(`${files}/bafy-rep-stl/Box.stl`);
+  expect(stl.path).toBe(`${files}/bafyrepboxgxstl/Box.stl`);
   expect((await invoke<ArrayBuffer>("preview_bytes", { path: stl.path, limit: 1 << 20 })).byteLength).toBeGreaterThan(0);
   await invoke("open_with", { path: stl.path, app: "/Applications/TextEdit.app" });
 

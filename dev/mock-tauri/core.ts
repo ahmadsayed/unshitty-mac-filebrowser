@@ -1666,10 +1666,13 @@ type MockRepresentation = Record<string, unknown>;
  *  earlier save names another one, so it reads out of date. */
 const arbeskModelCid = (asset: MockAsset) => `bafy-${asset.id}-v${asset.saves?.count ?? 1}`;
 
-/** A representation entry as `besk attach` records one. */
-function mockRep(id: string, role: string, format: string, name: string, bytes: number, extra: MockRepresentation = {}): MockRepresentation {
+/** A representation entry of asset `asset` as `besk attach` records one.
+ *  Its CID is letters and digits, as real ones are (a pinned path takes
+ *  nothing else), and differs per asset and file: a CID means the bytes. */
+function mockRep(asset: string, id: string, role: string, format: string, name: string, bytes: number, extra: MockRepresentation = {}): MockRepresentation {
   const encoding = ["gcode", "gltf", "obj", "step", "txt"].includes(format) ? "brotli" : "raw";
-  return { id, role, format, name, cid: `bafy-rep-${id}`, bytes, encoding, created_at: (now - day) * 1000, ...extra };
+  const cid = `bafyrep${asset}x${id}`.replace(/[^A-Za-z0-9]/g, "");
+  return { id, role, format, name, cid, bytes, encoding, created_at: (now - day) * 1000, ...extra };
 }
 
 /** The account's collections, as the backend lists them: Shapes, and one without a name. */
@@ -1683,7 +1686,7 @@ const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset
         name: "Box",
         ext: "gltf",
         thumbnail: true,
-        representations: [mockRep("stl", "mesh", "stl", "Box.stl", 684, { derived_from: { ref: "primary", cid: "bafy-box-g-v1" } })],
+        representations: [mockRep("box-g", "stl", "mesh", "stl", "Box.stl", 684, { derived_from: { ref: "primary", cid: "bafy-box-g-v1" } })],
       },
       { id: "box-m", name: "Box", ext: "3mf" },
       { id: "big", name: "Big", ext: "gltf", huge: true },
@@ -1703,15 +1706,15 @@ const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset
         // an earlier save (out of date), a 3MF, and an entry File Browser
         // can't read (left out, but stored).
         representations: [
-          mockRep("source", "source", "blend", "Cube.blend", 48_120),
-          mockRep("stl", "mesh", "stl", "Cube.stl", 3_412, { derived_from: { ref: "primary", cid: "bafy-asset_1-v3" } }),
-          mockRep("gcode-original-prusa-mk4-petg", "machine", "gcode", "Cube_0.2mm_PETG_MK4.gcode", 812_331, {
+          mockRep("asset_1", "source", "source", "blend", "Cube.blend", 48_120),
+          mockRep("asset_1", "stl", "mesh", "stl", "Cube.stl", 3_412, { derived_from: { ref: "primary", cid: "bafy-asset_1-v3" } }),
+          mockRep("asset_1", "gcode-original-prusa-mk4-petg", "machine", "gcode", "Cube_0.2mm_PETG_MK4.gcode", 812_331, {
             derived_from: { ref: "primary", cid: "bafy-asset_1-v2" },
             tool: { name: "PrusaSlicer", version: "2.9.2" },
             profile: { printer: "Original Prusa MK4", material: "PETG", layer_mm: 0.2, nozzle_mm: 0.4 },
             stats: { print_time_s: 7420, filament_g: 38.5 },
           }),
-          mockRep("3mf", "mesh", "3mf", "Cube.3mf", 1_102),
+          mockRep("asset_1", "3mf", "mesh", "3mf", "Cube.3mf", 1_102),
           { id: "Print Plan", role: "plan", format: "json" },
         ],
       },
@@ -1746,7 +1749,9 @@ function arbeskIds(path: string): { address: string; token?: string; asset?: str
   }
   const [token, asset, segment] = rest.map((part) => decodeURIComponent(part.split("~")[0]));
   if (segment === undefined) return { address, token, asset };
-  const [file, pin] = segment.split("@");
+  // As the backend's `file_id`: a valid id, and a pin of letters and digits.
+  const [, file, pin] = /^([a-z0-9-]{1,64})(?:@([A-Za-z0-9]+))?$/.exec(segment) ?? [];
+  if (file === undefined || file === "primary") throw `“${path}” is not an Arbesk location.`;
   return { address, token, asset, file, pin };
 }
 

@@ -55,9 +55,18 @@ pub fn unpack(bytes: Vec<u8>, cap: u64) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// A failed gateway request in words: nothing there, or no answer.
+fn storage_error(cid: &str, error: crate::http::HttpError) -> String {
+    match error.status {
+        // The gateway answered: it has nothing there. Not worth failing a listing for.
+        Some(404 | 410) => format!("Arbesk's storage has nothing at {cid}."),
+        _ => format!("{STORAGE_UNREACHABLE}: {}", error.message),
+    }
+}
+
 /// A CID as the gateway's path takes it: letters and digits only, so
 /// nothing in it can change which URL is asked for or which file is read.
-fn checked_cid(cid: &str) -> Result<&str, String> {
+pub(crate) fn checked_cid(cid: &str) -> Result<&str, String> {
     if !cid.is_empty() && cid.bytes().all(|b| b.is_ascii_alphanumeric()) {
         Ok(cid)
     } else {
@@ -346,22 +355,40 @@ impl<'a> Gateway<'a> {
     /// The stored bytes at `cid`, as the gateway sends them.
     fn get(&self, cid: &str) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
-        self.http.get(&url).map_err(|error| match error.status {
-            // The gateway answered: it has nothing there. Not worth failing a listing for.
-            Some(404 | 410) => format!("Arbesk's storage has nothing at {cid}."),
-            _ => format!("{STORAGE_UNREACHABLE}: {}", error.message),
-        })
+        self.http.get(&url).map_err(|error| storage_error(cid, error))
     }
 
     /// The stored bytes at `cid`, never unpacked: an asset's other file,
     /// which its entry's `encoding` decodes (a raw file that starts like a
-    /// brotli frame or gzip stays as it is). More than `cap` is refused.
-    /// Parts keep [`Gateway::bytes`].
-    pub fn raw(&self, cid: &str, cap: u64) -> Result<Vec<u8>, String> {
-        let bytes = self.get(cid)?;
-        if bytes.len() as u64 > cap {
-            return Err(TOO_LARGE.into());
+    /// brotli frame or gzip stays as it is). Parts keep [`Gateway::bytes`].
+    ///
+    /// Streamed, given time for about `expected` bytes
+    /// (`http::transfer_timeout`): `on_chunk` hears each chunk's length
+    /// before it is kept and stops the read with its error (a cancel);
+    /// more than `cap` bytes stops it with [`TOO_LARGE`].
+    pub fn raw(
+        &self,
+        cid: &str,
+        cap: u64,
+        expected: u64,
+        on_chunk: &mut dyn FnMut(usize) -> Result<(), String>,
+    ) -> Result<Vec<u8>, String> {
+        let url = format!("{}/{}", self.base, checked_cid(cid)?);
+        let mut bytes = Vec::new();
+        let mut stopped = None;
+        let read = self.http.get_streamed(&url, expected, &mut |chunk| {
+            let kept = (bytes.len() + chunk.len()) as u64;
+            let refused = if kept > cap { Err(TOO_LARGE.to_string()) } else { on_chunk(chunk.len()) };
+            match refused {
+                Ok(()) => bytes.extend_from_slice(chunk),
+                Err(error) => stopped = Some(error),
+            }
+            stopped.is_none()
+        });
+        if let Some(error) = stopped {
+            return Err(error);
         }
+        read.map_err(|error| storage_error(cid, error))?;
         Ok(bytes)
     }
 
@@ -517,11 +544,44 @@ mod tests {
                 Ok(sent.clone())
             });
             let gateway = gateway_over(&http, dir.path());
-            assert_eq!(gateway.raw("bafyRep", 1 << 20).unwrap(), stored);
-            assert_eq!(gateway.raw("bafyRep", stored.len() as u64).unwrap(), stored);
-            assert_eq!(gateway.raw("bafyRep", stored.len() as u64 - 1).unwrap_err(), TOO_LARGE);
-            assert!(gateway.raw("../x", 1 << 20).is_err());
+            let raw = |cid: &str, cap: u64| gateway.raw(cid, cap, 0, &mut |_| Ok(()));
+            assert_eq!(raw("bafyRep", 1 << 20).unwrap(), stored);
+            assert_eq!(raw("bafyRep", stored.len() as u64).unwrap(), stored);
+            assert_eq!(raw("bafyRep", stored.len() as u64 - 1).unwrap_err(), TOO_LARGE);
+            assert!(raw("../x", 1 << 20).is_err());
         }
+    }
+
+    /// A raw file streams in chunks: each is heard before it is kept, a
+    /// cancel stops the read there, and the cap stops it at the chunk
+    /// that passes it, before the rest is read.
+    #[test]
+    fn raw_bytes_stream_and_stop_on_a_cancel_or_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let body: Vec<u8> = (0..20).collect();
+        let sent = body.clone();
+        let http = FakeHttp::new(move |_| Ok(sent.clone())).in_chunks(4, |_| {});
+        let gateway = gateway_over(&http, dir.path());
+        let mut heard = Vec::new();
+        let whole = gateway.raw("bafyRep", 20, 20, &mut |n| {
+            heard.push(n);
+            Ok(())
+        });
+        assert_eq!((whole.unwrap(), heard), (body, vec![4; 5]));
+        let read = |http: &FakeHttp| http.chunks.swap(0, std::sync::atomic::Ordering::SeqCst);
+        read(&http);
+        let mut calls = 0;
+        let cancelled = gateway.raw("bafyRep", 20, 20, &mut |_| {
+            calls += 1;
+            if calls == 2 { Err(crate::progress::CANCELLED.into()) } else { Ok(()) }
+        });
+        assert_eq!(cancelled.unwrap_err(), crate::progress::CANCELLED);
+        assert_eq!(read(&http), 2, "nothing read past the cancel");
+        assert_eq!(gateway.raw("bafyRep", 9, 20, &mut |_| Ok(())).unwrap_err(), TOO_LARGE);
+        assert_eq!(read(&http), 3, "nothing read past the cap");
+        let missing = FakeHttp::new(|_| Err(crate::http::fake::not_found()));
+        let error = gateway_over(&missing, dir.path()).raw("bafyGone", 20, 0, &mut |_| Ok(()));
+        assert_eq!(error.unwrap_err(), "Arbesk's storage has nothing at bafyGone.");
     }
 
     #[test]

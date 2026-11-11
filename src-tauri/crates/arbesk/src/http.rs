@@ -23,6 +23,17 @@ impl HttpError {
 
 pub trait Http: Send + Sync {
     fn get(&self, url: &str) -> Result<Vec<u8>, HttpError>;
+    /// GET a download that may be large (an asset's other file), waiting
+    /// longer the larger `expected` bytes are ([`transfer_timeout`]) and
+    /// handing the body to `chunk` piece by piece as it arrives. `chunk`
+    /// stops the read by answering `false` (a cancel, a body past its cap):
+    /// the rest is never read, and the call answers `Ok`.
+    fn get_streamed(
+        &self,
+        url: &str,
+        expected: u64,
+        chunk: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<(), HttpError>;
     /// POST `body` as JSON; `session` goes in `Authorization: Session <token>`.
     fn post_json(
         &self,
@@ -83,16 +94,19 @@ pub fn multipart_body(
 /// How long the relay and uploads may take: four minutes.
 const SLOW_TIMEOUT_SECS: u64 = 240;
 
-/// The slowest upload rate an upload is given time for: 64 KiB/s.
-const UPLOAD_BYTES_PER_SEC: u64 = 64 * 1024;
+/// The slowest rate an upload or a large download is given time for: 64 KiB/s.
+const TRANSFER_BYTES_PER_SEC: u64 = 64 * 1024;
 
-/// How long an upload of `len` bytes may take: four minutes, plus the time
-/// it takes at `UPLOAD_BYTES_PER_SEC` (100 MB: about half an hour). A fixed
-/// limit would fail a large part on a slow link, and no limit would wait
-/// on a stalled one for ever.
-fn upload_timeout(len: usize) -> Duration {
-    Duration::from_secs(SLOW_TIMEOUT_SECS + len as u64 / UPLOAD_BYTES_PER_SEC)
+/// How long an upload or a large download of `len` bytes may take: four
+/// minutes, plus the time it takes at `TRANSFER_BYTES_PER_SEC` (100 MB:
+/// about half an hour). A fixed limit would fail a large file on a slow
+/// link, and no limit would wait on a stalled one for ever.
+pub(crate) fn transfer_timeout(len: u64) -> Duration {
+    Duration::from_secs(SLOW_TIMEOUT_SECS + len / TRANSFER_BYTES_PER_SEC)
 }
+
+/// How much of a streamed download is read at a time, between checks.
+const STREAM_CHUNK: usize = 64 * 1024;
 
 /// `name` safe inside `filename="…"`: `"`, CR and LF percent-encoded, as
 /// browsers send them.
@@ -106,7 +120,7 @@ fn quoted_file_name(name: &str) -> String {
 pub const MAX_BODY: u64 = 512 * 1024 * 1024;
 
 /// The real client: 30 seconds per request (four minutes for the relay,
-/// longer for a large upload: `upload_timeout`), rustls, no cookies, and no answer read past `cap` bytes,
+/// longer for a large upload or download: `transfer_timeout`), rustls, no cookies, and no answer read past `cap` bytes,
 /// whatever the server says.
 pub struct ReqwestHttp {
     client: reqwest::blocking::Client,
@@ -184,6 +198,49 @@ impl Http for ReqwestHttp {
         self.send(self.client.get(url), None)
     }
 
+    /// On the slow client, given [`transfer_timeout`] of `expected`, read
+    /// [`STREAM_CHUNK`] at a time; never more than the client's cap.
+    fn get_streamed(
+        &self,
+        url: &str,
+        expected: u64,
+        chunk: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<(), HttpError> {
+        use std::io::Read;
+        let mut response = self
+            .slow
+            .get(url)
+            .timeout(transfer_timeout(expected))
+            .send()
+            .map_err(|error| HttpError::new(None, error.without_url().to_string()))?;
+        let status = response.status();
+        if !status.is_success() {
+            let message = format!("The server answered {status}.");
+            return Err(HttpError::new(Some(status.as_u16()), message));
+        }
+        let too_long = || {
+            let message = "Arbesk sent more than File Browser reads at once.";
+            HttpError::new(Some(status.as_u16()), message)
+        };
+        if response.content_length().is_some_and(|length| length > self.cap) {
+            return Err(too_long());
+        }
+        let mut buffer = vec![0; STREAM_CHUNK];
+        let mut read = 0u64;
+        loop {
+            let n = response
+                .read(&mut buffer)
+                .map_err(|error| HttpError::new(Some(status.as_u16()), error.to_string()))?;
+            read += n as u64;
+            if n == 0 || !chunk(&buffer[..n]) {
+                return Ok(());
+            }
+            if read > self.cap {
+                return Err(too_long());
+            }
+        }
+    }
+
     fn post_json(
         &self,
         url: &str,
@@ -217,7 +274,7 @@ impl Http for ReqwestHttp {
         let request = self
             .slow
             .post(url)
-            .timeout(upload_timeout(bytes.len()))
+            .timeout(transfer_timeout(bytes.len() as u64))
             .header(
                 "Content-Type",
                 format!("multipart/form-data; boundary={boundary}"),
@@ -251,10 +308,17 @@ pub mod fake {
     }
 
     type Answer = Box<dyn Fn(&Request) -> Result<Vec<u8>, HttpError> + Send + Sync>;
+    type BeforeChunk = Box<dyn Fn(usize) + Send + Sync>;
 
     pub struct FakeHttp {
         answer: Answer,
         pub log: Mutex<Vec<Request>>,
+        /// How many bytes a streamed GET hands over at a time.
+        chunk: usize,
+        /// Runs before a streamed GET hands over chunk `n` (from 0).
+        before_chunk: Option<BeforeChunk>,
+        /// How many chunks streamed GETs have handed over.
+        pub chunks: std::sync::atomic::AtomicUsize,
     }
 
     impl FakeHttp {
@@ -264,6 +328,19 @@ pub mod fake {
             Self {
                 answer: Box::new(answer),
                 log: Mutex::new(Vec::new()),
+                chunk: usize::MAX,
+                before_chunk: None,
+                chunks: Default::default(),
+            }
+        }
+
+        /// The same fake, streaming bodies `size` bytes at a time and
+        /// running `before` ahead of each chunk.
+        pub fn in_chunks(self, size: usize, before: impl Fn(usize) + Send + Sync + 'static) -> Self {
+            Self {
+                chunk: size,
+                before_chunk: Some(Box::new(before)),
+                ..self
             }
         }
 
@@ -288,6 +365,26 @@ pub mod fake {
                 data: None,
                 fields: Vec::new(),
             })
+        }
+
+        /// The answer to a GET, handed over in chunks.
+        fn get_streamed(
+            &self,
+            url: &str,
+            _expected: u64,
+            chunk: &mut dyn FnMut(&[u8]) -> bool,
+        ) -> Result<(), HttpError> {
+            let body = self.get(url)?;
+            for (n, piece) in body.chunks(self.chunk).enumerate() {
+                if let Some(before) = &self.before_chunk {
+                    before(n);
+                }
+                self.chunks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if !chunk(piece) {
+                    break;
+                }
+            }
+            Ok(())
         }
 
         fn post_json(
@@ -420,6 +517,37 @@ mod tests {
     }
 
     #[test]
+    fn a_streamed_get_hands_over_the_body_until_told_to_stop() {
+        let (url, server) = serve_once("200 OK", "hello");
+        let mut got = Vec::new();
+        ReqwestHttp::new()
+            .unwrap()
+            .get_streamed(&url, 5, &mut |piece| {
+                got.extend_from_slice(piece);
+                true
+            })
+            .unwrap();
+        assert_eq!(got, b"hello");
+        assert!(server.join().unwrap().starts_with("GET / "));
+        let (url, server) = serve_once("200 OK", "hello");
+        let mut calls = 0;
+        let stopped = ReqwestHttp::new().unwrap().get_streamed(&url, 5, &mut |_| {
+            calls += 1;
+            false
+        });
+        assert_eq!((stopped, calls), (Ok(()), 1));
+        server.join().unwrap();
+        let (url, server) = serve_once("404 Not Found", "");
+        let error = ReqwestHttp::new().unwrap().get_streamed(&url, 0, &mut |_| true);
+        assert_eq!(error.unwrap_err().status, Some(404));
+        server.join().unwrap();
+        let (url, server) = serve_once("200 OK", "too long");
+        let capped = ReqwestHttp::with_cap(4).unwrap();
+        assert!(capped.get_streamed(&url, 0, &mut |_| true).is_err());
+        server.join().unwrap();
+    }
+
+    #[test]
     fn a_post_sends_json_and_the_session() {
         let (url, server) = serve_once("200 OK", "{}");
         let body = serde_json::json!({ "email": "a@b.c" });
@@ -497,12 +625,12 @@ mod tests {
     }
 
     #[test]
-    fn an_upload_may_take_longer_the_larger_it_is() {
-        assert_eq!(upload_timeout(0), Duration::from_secs(240));
-        assert_eq!(upload_timeout(64 * 1024), Duration::from_secs(241));
+    fn a_transfer_may_take_longer_the_larger_it_is() {
+        assert_eq!(transfer_timeout(0), Duration::from_secs(240));
+        assert_eq!(transfer_timeout(64 * 1024), Duration::from_secs(241));
         // 100 MB at 64 KiB/s, on top of the four minutes.
         assert_eq!(
-            upload_timeout(100 * 1024 * 1024),
+            transfer_timeout(100 * 1024 * 1024),
             Duration::from_secs(240 + 1600)
         );
     }

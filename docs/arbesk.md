@@ -170,7 +170,10 @@ Nothing shows these files yet; what is in place underneath:
   (`arbesk/files/<cid>/<name>`, beside the built assets), decoded as its
   entry says (a raw file is never unpacked), at most 256 MB (*This file is
   too large to open.*), and checked against the size its entry records
-  (*Arbesk sent a damaged file.*). An unchanged copy is reused, an edited
+  (*Arbesk sent a damaged file.*). The download shows its progress as it
+  arrives and Cancel stops it; a large file is given time as an upload is
+  (four minutes, plus its size at 64 KB/s). A name too long for the disk
+  is shortened, keeping its extension. An unchanged copy is reused, an edited
   one is kept and a fresh copy goes beside it, and copies are pruned after
   a week like other downloads (edited ones go to the Trash). Edits to an
   opened copy stay on this computer: File Browser uploads nothing back.
