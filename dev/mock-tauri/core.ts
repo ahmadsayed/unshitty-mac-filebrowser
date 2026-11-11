@@ -1,6 +1,7 @@
 import { encodeCloudName, isArbeskAsset, isUnder, placeOf, type Place } from "../../src/paths";
 import { fold } from "../../src/search";
 import { BUILT_IN_CAPABILITIES } from "../../src/capabilities";
+import { formatLabel } from "../../src/representations";
 import { sample3mf, sampleGlb, sampleModelBytes } from "./models";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
@@ -1666,6 +1667,10 @@ type MockAsset = {
   /** The save whose model the newest save holds, when a later save only
    *  changed its other files (an attach or a remove); the newest otherwise. */
   model?: number;
+  /** Each earlier save's model, by save number: the save whose model it
+   *  held, when it only changed its other files; a save not named here
+   *  held its own. Filled as each save is superseded. */
+  models?: Record<number, number>;
 };
 
 /** A representation entry as stored, loosely typed as another client may write it. */
@@ -1841,7 +1846,13 @@ function arbeskFiles(asset: MockAsset, save?: number): Array<ValidRepresentation
 function arbeskModelCidAt(asset: MockAsset, save?: number): string {
   const count = asset.saves?.count ?? 1;
   if (save === undefined || save === count) return arbeskModelCid(asset);
-  return `bafy-${asset.id}-v${asset.model !== undefined && save >= asset.model ? asset.model : save}`;
+  return `bafy-${asset.id}-v${asset.models?.[save] ?? save}`;
+}
+
+/** Before a new save: the newest one's model, kept as an earlier save's. */
+function keepEarlierModel(asset: MockAsset): void {
+  const count = asset.saves?.count ?? 1;
+  if (asset.model !== undefined) asset.models = { ...asset.models, [count]: asset.model };
 }
 
 /** `isStale`: made from a model or an entry whose CID has changed (or is
@@ -1853,14 +1864,9 @@ function arbeskStale(asset: MockAsset, rep: ValidRepresentation, save?: number):
   return current !== from.cid;
 }
 
-const MOCK_FORMAT_LABELS: Record<string, string> = {
-  gcode: "G-code", bgcode: "binary G-code", blend: "Blender file", stl: "STL", obj: "OBJ", "3mf": "3MF", step: "STEP",
-  stp: "STEP", glb: "GLB", gltf: "glTF", usdz: "USDZ", f3d: "Fusion file", fcstd: "FreeCAD file", scad: "OpenSCAD file",
-};
-
 /** besk's `changeText`: "Added G-code (Original Prusa MK4, PETG)". */
 function mockChangeText(verb: string, rep: ValidRepresentation): string {
-  const label = MOCK_FORMAT_LABELS[rep.format] ?? rep.format.toUpperCase();
+  const label = formatLabel(rep.format);
   const profile = rep.profile as Record<string, unknown> | undefined;
   const details = [profile?.printer, profile?.material].filter((part) => part !== undefined && part !== "");
   return `${verb} ${label}${details.length ? ` (${details.join(", ")})` : ""}`;
@@ -1882,10 +1888,11 @@ function mockChanges(before: ValidRepresentation[], after: ValidRepresentation[]
 }
 
 /** Before a save that adds a version: the newest save's files become
- *  that save's, as Arbesk keeps each version's list (R4). */
+ *  that save's, as Arbesk keeps each version's list (R4), each entry its
+ *  own copy, so a later change to the newest list leaves them as saved. */
 function keepEarlierFiles(asset: MockAsset): void {
   const count = asset.saves?.count ?? 1;
-  if (asset.representations?.length) asset.earlier = { ...asset.earlier, [count]: [...asset.representations] };
+  if (asset.representations?.length) asset.earlier = { ...asset.earlier, [count]: asset.representations.map((rep) => structuredClone(rep)) };
 }
 
 /** The listing's summary (spec F2); none without valid entries. */
@@ -2200,6 +2207,7 @@ function arbeskAdd(a: Args): string {
   (a.onProgress as Channel<MockUpdate> | undefined)?.onmessage({ bytes: source.size, items: 0, total: null, phase: "saving", done: false });
   if (taken) {
     keepEarlierFiles(taken);
+    keepEarlierModel(taken);
     const saves = taken.saves ?? { prefix: taken.id, count: 1 };
     taken.saves = { ...saves, count: saves.count + 1 };
     // A new model: the newest save's own.
@@ -2287,6 +2295,7 @@ const arbeskWrites = { conflictNext: false, failUploadNext: false };
 /** A new mock version of `asset` that keeps its model: one more save. */
 function newFilesVersion(asset: MockAsset): void {
   const saves = asset.saves ?? { prefix: asset.id, count: 1 };
+  keepEarlierModel(asset);
   asset.model ??= saves.count;
   asset.saves = { ...saves, count: saves.count + 1 };
   if (asset.version !== undefined) asset.version = arbeskVersionOf(asset) + 1;
@@ -3274,6 +3283,8 @@ function localWrite(path: string): string {
 
 const calls = {
   counts: new Map<string, number>(),
+  /** Each command's arguments, call by call, since the last reset. */
+  args: new Map<string, Args[]>(),
   /** Commands held, each with the calls waiting for release(). */
   held: new Map<string, (() => void)[]>(),
   /** The next call of each command rejects with this, once. */
@@ -3288,6 +3299,7 @@ function releaseCalls(cmd: string): void {
 
 (globalThis as Record<string, unknown>).__mockCalls = {
   count: (cmd: string) => calls.counts.get(cmd) ?? 0,
+  argsOf: (cmd: string) => calls.args.get(cmd) ?? [],
   hold(cmd: string) {
     if (!calls.held.has(cmd)) calls.held.set(cmd, []);
   },
@@ -3303,13 +3315,15 @@ function releaseCalls(cmd: string): void {
   reset() {
     [...calls.held.keys()].forEach(releaseCalls);
     calls.counts.clear();
+    calls.args.clear();
     calls.failures.clear();
   },
 };
 
 /** Count the call, wait while the command is held, and fail it if asked. */
-async function callGate(cmd: string): Promise<void> {
+async function callGate(cmd: string, args: Args): Promise<void> {
   calls.counts.set(cmd, (calls.counts.get(cmd) ?? 0) + 1);
+  calls.args.set(cmd, [...(calls.args.get(cmd) ?? []), args]);
   const waiting = calls.held.get(cmd);
   if (waiting) await new Promise<void>((resolve) => waiting.push(resolve));
   const failure = calls.failures.get(cmd);
@@ -3322,6 +3336,6 @@ export async function invoke<T>(cmd: string, args: Args = {}): Promise<T> {
   await new Promise((r) => setTimeout(r, DELAY));
   const command = COMMANDS[cmd];
   if (!command) throw `mock: unknown command ${cmd}`;
-  await callGate(cmd);
+  await callGate(cmd, args);
   return (await command(args)) as T;
 }

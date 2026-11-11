@@ -325,9 +325,11 @@ fn build_as(
 }
 
 /// The asset manifest at `path` (an asset's): the save `version` names (a
-/// manifest CID from [`versions`]), else the current one. Through the
+/// manifest CID from [`versions`]), else the current one. A version must
+/// be one of the asset's own saves, as [`scene`] checks: another asset's
+/// manifest, or one past the saves listed, is refused. Through the
 /// manifest cache, so after a listing the current one costs one
-/// `tokenURI` read and a version none.
+/// `tokenURI` read and a version only cached reads.
 fn manifest_of(
     reader: &Reader,
     path: &str,
@@ -339,11 +341,18 @@ fn manifest_of(
     else {
         return Err(format!("“{path}” is not an Arbesk asset."));
     };
-    match version {
-        Some(cid) => Ok((cid.to_string(), reader.gateway.json(cid)?)),
-        None => reader.asset_manifest(&token_id, &asset_id),
-    }
+    let current = reader.asset_manifest(&token_id, &asset_id)?;
+    let Some(version) = version else {
+        return Ok(current);
+    };
+    chain(reader, &current.0)
+        .into_iter()
+        .find(|(id, _)| id == version)
+        .ok_or_else(|| NOT_IN_ASSET.into())
 }
+
+/// Why a version (a manifest CID) that isn't one of the asset's saves is refused.
+const NOT_IN_ASSET: &str = "This version is not in the asset.";
 
 /// The other files of the asset at `path` (at the save `version`, the
 /// current one without), each valid entry in stored order with whether it
@@ -547,7 +556,7 @@ pub fn scene(
         return Ok(resolve(&cid, &reader));
     };
     if !chain(&reader, &cid).iter().any(|(id, _)| id == version) {
-        return Err("This version is not in the asset.".into());
+        return Err(NOT_IN_ASSET.into());
     }
     Ok(resolve(version, &reader))
 }
@@ -1940,6 +1949,27 @@ mod tests {
         };
         assert_eq!(at(Some("bafyA1old")), b"old");
         assert_eq!(at(None), b"new");
+    }
+
+    /// A version from another asset (or a stale CID) never fetches a file
+    /// or lists files under this asset's path, as `scene` refuses it.
+    #[test]
+    fn a_file_of_a_version_outside_the_chain_is_refused() {
+        let mut w = world();
+        let mut other: Value = serde_json::from_slice(&w.files["bafyA1"]).unwrap();
+        other["representations"] = json!([{ "id": "gcode", "role": "machine", "format": "gcode",
+            "name": "Other.gcode", "cid": "bafyOtherGcode", "bytes": 5, "encoding": "raw", "created_at": 1 }]);
+        w.put("bafyOther", other);
+        w.files.insert("bafyOtherGcode".into(), b"other".to_vec());
+        let http = http_of(w);
+        let cache = tempfile::tempdir().unwrap();
+        let asset = box_gltf();
+        let wanted = Wanted { asset: &asset, version: Some("bafyOther"), id: "gcode", pin: None };
+        let error = file(&http, &site(), &wanted, cache.path(), &Progress::default(), &Builds::default()).unwrap_err();
+        assert_eq!(error, NOT_IN_ASSET);
+        let listed = representations(&http, &site(), &asset, Some("bafyOther"), cache.path()).unwrap_err();
+        assert_eq!(listed, NOT_IN_ASSET);
+        assert!(!http.requests().iter().any(|r| r.url.ends_with("bafyOtherGcode")));
     }
 
     #[test]

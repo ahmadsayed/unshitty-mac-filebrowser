@@ -855,7 +855,14 @@ As built (phase 5):
   manifest CID from `arbesk_versions`), so nothing in the preview can
   fetch the current save by mistake; the file page's Open With… passes
   the save on to F8's step 3 (`openAssetWith`'s `version`), which fetches
-  through it instead of `arbesk_export`.
+  through it instead of `arbesk_export`. A `version` that is not one of
+  the asset's own saves (another asset's manifest, a stale CID) is
+  refused with *This version is not in the asset.*, by the files list and
+  the fetch alike, as `scene` refuses it (only cached reads of the chain).
+- The switcher's Model row loads the scene by the shown save's CID, the
+  current save's too, never by the asset's path: if the asset is saved
+  again while the preview is open, the model and the files listed beside
+  it still come from one save.
 - The switcher is asked for only when the listing's summary says the
   asset has files now (no request for an asset without), and for every
   version stepped to (an older save may have files the newest dropped).
@@ -875,7 +882,10 @@ As built (phase 5):
   app cache and is dropped, as a scene's parts are. A cancel sent after a
   command ended would be remembered for an operation id that never comes
   back (`progress::Registry::cancel`), and `operations_running` would then
-  hold up Restart.
+  hold up Restart. Each fetch's operation id is unique across windows
+  (the time, a random part and a count): the registry is app-wide, and
+  two windows sharing an id would let the first fetch to end unregister
+  the other, so Restart would not wait for it.
 - A version's changes are joined with ` · ` as one dim second line under
   its row (`MenuItem.subtitle`, new in `ui.ts`), cut with an ellipsis
   rather than widening the list. The wording is besk's `changeText`,

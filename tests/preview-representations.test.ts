@@ -15,7 +15,7 @@ vi.mock("../src/model-viewer", async (importOriginal) => {
   return { ...actual, showModel: viewer.showModel };
 });
 
-type MockCalls = { count(cmd: string): number; failNext(cmd: string, error: string): void; reset(): void };
+type MockCalls = { count(cmd: string): number; argsOf(cmd: string): Record<string, unknown>[]; failNext(cmd: string, error: string): void; reset(): void };
 const calls = () => (globalThis as unknown as { __mockCalls: MockCalls }).__mockCalls;
 type MockApps = { set(o: { list?: { name: string; id: string }[] }): void; opened(): { path: string; app: string }[]; reset(): void };
 const mockApps = () => (globalThis as unknown as { __mockApps: MockApps }).__mockApps;
@@ -121,16 +121,27 @@ test("an STL is fetched from the version on screen and previewed as a model", as
   const fetches = calls().count("arbesk_file");
   await pick("Bracket.stl");
   expect(calls().count("arbesk_file")).toBe(fetches + 1);
+  // From the shown save, under an operation id no other window's fetch shares.
+  const fetched = calls().argsOf("arbesk_file").at(-1)!;
+  expect(fetched).toMatchObject({ version: "bracket-v2", id: "stl" });
+  expect(fetched.op).toMatch(/^preview-file-[0-9a-z]+-[0-9a-z]+-\d+$/);
   expect(viewer.showModel.mock.calls.length).toBe(before + 1);
   expect($("#preview-body canvas.preview-model")).toBeTruthy();
   expect(switcherButton().textContent).toBe("STL");
   await click(switcherButton());
   expect(menuRows().find((r) => r.shown)?.title).toBe("Bracket.stl");
   await closeOverlays();
-  // Back to the model: the scene again.
+  // Back to the model: the scene again, of the shown save by its CID even
+  // when it is the current one, so the model and the files listed beside
+  // it come from one save.
   await pick("Bracket.gltf");
   expect(switcherButton().textContent).toBe("Model");
   expect(viewer.showModel.mock.calls.length).toBe(before + 2);
+  expect(calls().argsOf("arbesk_scene").at(-1)).toMatchObject({ version: "bracket-v2" });
+  // Each fetch its own id.
+  await pick("Bracket.stl");
+  const ops = calls().argsOf("arbesk_file").map((args) => args.op);
+  expect(new Set(ops).size).toBe(ops.length);
 });
 
 test("a .blend shows the file page; a G-code's says it is out of date, and so does the switcher", async () => {

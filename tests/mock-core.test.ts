@@ -1822,4 +1822,26 @@ test("Arbesk: each save's files, what it changed and a file of a save: arbesk_ve
   // A save without files has no `changes` key, as the backend sends it.
   const table = `arbesk://${core.ARBESK_MOCK_ADDRESS}/2~Untitled%20Collection/table~Table.gltf`;
   expect(await invoke("arbesk_versions", { path: table })).toEqual([{ id: "table-v1", timestamp: expect.any(Number) }]);
+
+  // Attach a G-code (save 2 keeps save 1's model), then Replace the model
+  // (save 3): save 2 still holds save 1's model, so its G-code is not out
+  // of date there; in save 3 it is. A change to the newest save's entry
+  // leaves save 2's as saved.
+  const hooks = (globalThis as unknown as { __mockArbesk: {
+    addAsset(token: string, id: string, name: string, files: unknown[]): void;
+    changeFile(token: string, asset: string, file: string): void;
+  } }).__mockArbesk;
+  hooks.addAsset("2", "keep", "Keep", []);
+  const keep = `arbesk://${core.ARBESK_MOCK_ADDRESS}/2~Untitled%20Collection/keep~Keep.gltf`;
+  await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/Keep.gcode`, overwrite: false });
+  await invoke("arbesk_attach", { path: keep, files: [{ path: `${HOME}/Keep.gcode` }], op: "" });
+  await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/Keep.gltf`, overwrite: false });
+  await invoke("copy_entry", { from: `${HOME}/Keep.gltf`, to: `arbesk://${core.ARBESK_MOCK_ADDRESS}/2~Untitled%20Collection/~Keep.gltf`, overwrite: true });
+  const keepAt = (version: string) => invoke<Array<{ id: string; stale: boolean; path: string }>>("arbesk_representations", { path: keep, version });
+  expect((await keepAt("keep-v2")).map((r) => [r.id, r.stale])).toEqual([["gcode", false]]);
+  expect((await keepAt("keep-v3")).map((r) => [r.id, r.stale])).toEqual([["gcode", true]]);
+  const saved = (await keepAt("keep-v2"))[0].path;
+  hooks.changeFile("2", "keep", "gcode");
+  expect((await keepAt("keep-v2"))[0].path).toBe(saved);
+  expect((await keepAt("keep-v3"))[0].path).not.toBe(saved);
 });

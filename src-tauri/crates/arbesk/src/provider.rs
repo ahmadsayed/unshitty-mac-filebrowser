@@ -594,11 +594,20 @@ mod tests {
         assert!(!dir.path().join("cache/arbesk/files/bafyBlend/Short.blend").exists());
     }
 
-    /// The extension lists an asset's files and fetches one of a given save.
+    /// The extension lists an asset's files and fetches one of a given
+    /// save; a save of another asset is refused, never read as this one's.
     #[test]
     fn the_extension_lists_and_fetches_an_assets_files() {
         let dir = tempfile::tempdir().unwrap();
-        let (client, _, _) = client_with(dir.path(), with_files);
+        let (client, _, _) = client_with(dir.path(), |world| {
+            // An earlier save without files before the current one.
+            let earlier: serde_json::Value = serde_json::from_slice(&world.files["bafyA1"]).unwrap();
+            world.put("bafyA1old", earlier);
+            with_files(world);
+            let mut current: serde_json::Value = serde_json::from_slice(&world.files["bafyA1"]).unwrap();
+            current["prev_asset_manifest_cid"] = serde_json::json!("bafyA1old");
+            world.put("bafyA1", current);
+        });
         let files = client.extensions().representations.unwrap();
         let asset = location::asset_path(&testing::shapes(), "a1", "Box", "gltf");
         let listed: serde_json::Value = serde_json::from_str(files.representations(&asset, None).unwrap().as_str()).unwrap();
@@ -608,11 +617,14 @@ mod tests {
         assert_eq!(listed[0]["stale"], false);
         let at_version: serde_json::Value = serde_json::from_str(files.representations(&asset, Some("bafyA1")).unwrap().as_str()).unwrap();
         assert_eq!(at_version, listed);
-        let before: serde_json::Value = serde_json::from_str(files.representations(&asset, Some("bafyA2")).unwrap().as_str()).unwrap();
+        let before: serde_json::Value = serde_json::from_str(files.representations(&asset, Some("bafyA1old")).unwrap().as_str()).unwrap();
         assert_eq!(before, serde_json::json!([]));
         let file = files.file(&asset, Some("bafyA1"), "gcode", &Cx::default()).unwrap();
         assert_eq!(file, dir.path().join("cache/arbesk/files/bafyGcode/Bracket.gcode"));
-        assert_eq!(files.file(&asset, Some("bafyA2"), "gcode", &Cx::default()).unwrap_err(), Error::Other("This file is no longer in the asset.".into()));
+        assert_eq!(files.file(&asset, Some("bafyA1old"), "gcode", &Cx::default()).unwrap_err(), Error::Other("This file is no longer in the asset.".into()));
+        let other = Error::Other("This version is not in the asset.".into());
+        assert_eq!(files.representations(&asset, Some("bafyA2")).unwrap_err(), other);
+        assert_eq!(files.file(&asset, Some("bafyA2"), "gcode", &Cx::default()).unwrap_err(), other);
         assert!(files.representations(&testing::shapes(), None).is_err());
     }
 

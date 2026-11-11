@@ -5156,12 +5156,21 @@ interface PreviewFiles {
   shown: number;
 }
 
-/** Numbers the preview's file fetches, each its own operation id (no
- *  row: the preview says "Loading…"). A fetch the preview moved on from
+/** Each of the preview's file fetches gets its own operation id (no
+ *  row: the preview says "Loading…"), unique across the app's windows:
+ *  the backend's progress registry is app-wide, and two windows sharing
+ *  an id would let the first fetch to end unregister the other, so
+ *  Restart would not wait for it. A fetch the preview moved on from
  *  finishes into the app cache, as a scene's parts do, and is dropped: a
  *  cancel sent after it ended would be remembered for an operation that
  *  never comes, holding up Restart. */
 let previewFetchSeq = 0;
+function previewFetchOp(): string {
+  // A per-window random part (getRandomValues needs no secure context, as
+  // randomUUID does), the time and a count, as operations.ts' ids.
+  const salt = Array.from(crypto.getRandomValues(new Uint32Array(2)), (n) => n.toString(36)).join("");
+  return `preview-file-${Date.now().toString(36)}-${salt}-${++previewFetchSeq}`;
+}
 
 function clearPreviewFiles(): void {
   previewFilesEl.hidden = true;
@@ -5194,7 +5203,10 @@ async function showPreviewFile(state: PreviewFiles, index: number): Promise<void
   const { entry, version } = next;
   if (index < 0) {
     previewLoading(entry, seq);
-    await previewArbeskScene(entry, seq, version.current ? null : version.id);
+    // The shown save's manifest CID, the current one's too: the model and
+    // the files listed beside it come from the same save, even if the
+    // asset is saved again while the preview is open.
+    await previewArbeskScene(entry, seq, version.id);
     return;
   }
   const rep = next.files[index];
@@ -5212,7 +5224,7 @@ async function showPreviewFile(state: PreviewFiles, index: number): Promise<void
  *  as a local model. A glTF that loads files beside it gets the file page. */
 async function previewFileModel(state: PreviewFiles, rep: RepresentationInfo, named: ModelFormat, seq: number): Promise<void> {
   try {
-    const file = await arbeskFile(state.entry.path, state.version.id, rep.id, { op: `preview-file-${++previewFetchSeq}` });
+    const file = await arbeskFile(state.entry.path, state.version.id, rep.id, { op: previewFetchOp() });
     if (previewStale(seq)) return;
     const bytes = await previewBytes(file, MODEL_PREVIEW_LIMIT);
     if (previewStale(seq)) return;
