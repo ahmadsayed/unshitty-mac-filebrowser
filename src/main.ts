@@ -3066,15 +3066,24 @@ async function showProperties(entry: Entry): Promise<void> {
     ],
     defaultResponse: "close",
     closeResponse: "close",
-    // Files… waits on Arbesk: one fetch at a time, Close still live; the
-    // page opens only over a Properties dialog still open.
+    // Files… waits on Arbesk: one fetch at a time, Close still live. Its
+    // answer, success or failure, counts only while Properties is open, and
+    // the page opens once the wait has ended, so Files… has its focus back
+    // and the page returns it there when closed.
     busy: { liveWhileBusy: ["close"], errorText: (err) => `Could not show the files: ${cleanError(err)}` },
     onResponse: (id) => {
       if (id === "files") {
-        return arbeskRepresentations(entry.path).then((files) => {
-          if (extra.isConnected) showFilesDialog(entry, files);
-          return false;
-        });
+        void propertiesDialog
+          .run(() =>
+            arbeskRepresentations(entry.path).catch((err: unknown) => {
+              if (extra.isConnected) throw err;
+              return null;
+            })
+          )
+          .then((files) => {
+            if (files && extra.isConnected) showFilesDialog(entry, files);
+          });
+        return false;
       }
       if (id === "permissions") {
         showPermissionsDialog(info.path, parseInt(info.octal, 8) & 0o777, () => {

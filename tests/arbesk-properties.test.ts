@@ -144,6 +144,49 @@ test("Properties closed while Files… waits opens no page; a failure is a toast
   await closeOverlays();
 });
 
+test("Properties closed while Files… waits shows no failure either", async () => {
+  await click(row("Bracket.gltf"));
+  await key("i", { mod: true });
+  await settle(10);
+  for (const t of document.querySelectorAll(".toast")) t.remove();
+  calls().hold("arbesk_representations");
+  calls().failNext("arbesk_representations", "Failed to read the asset: The gateway did not answer.");
+  await click(button("Files…"));
+  await settle(10);
+  await click(button("Close"));
+  await settle(10);
+  calls().release("arbesk_representations");
+  await settle(20);
+  expect(dialogHeading()).toBeUndefined();
+  expect(toasts()).not.toContain("Could not show the files: The gateway did not answer.");
+});
+
+test("the Files page opens after the wait and gives focus back to Files… when closed", async () => {
+  await click(row("Bracket.gltf"));
+  await key("i", { mod: true });
+  await settle(10);
+  calls().hold("arbesk_representations");
+  button("Files…").focus();
+  await click(button("Files…"));
+  await settle(10);
+  // WebKit drops focus from a disabled control to the page; jsdom keeps it
+  // there and will not blur a disabled control, so the test drops it.
+  const files = button("Files…");
+  expect(files.disabled).toBe(true);
+  files.disabled = false;
+  files.blur();
+  files.disabled = true;
+  expect(document.activeElement).toBe(document.body);
+  calls().release("arbesk_representations");
+  await settle(20);
+  expect(dialogHeading()).toBe("Files of “Bracket.gltf”");
+  await key("Escape");
+  await settle(10);
+  expect(dialogHeading()).toBe("Properties");
+  expect(document.activeElement).toBe(button("Files…"));
+  await closeOverlays();
+});
+
 test("the Version row is the manifest's version, not a count of saves, and none for a fractional one", async () => {
   await click(row("Big.gltf"));
   await key("i", { mod: true });
