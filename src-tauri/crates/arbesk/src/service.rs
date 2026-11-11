@@ -601,7 +601,7 @@ pub fn versions(
     cache_dir: &Path,
 ) -> Result<Vec<Version>, String> {
     let (reader, cid) = open_asset(http, site, path, cache_dir)?;
-    let (saves, before) = walk(&reader, &cid, true);
+    let (saves, before) = walk(&reader, &cid);
     let mut prev = match before {
         Before::First => Some(None),
         Before::Read(manifest) => Some(Some(manifest)),
@@ -630,7 +630,7 @@ enum Before {
     /// The save before it, read.
     Read(Value),
     /// A save before it that wasn't read (the walk stopped at a manifest
-    /// it couldn't read, or wasn't asked to read past `MAX_VERSIONS`).
+    /// it couldn't read, or the one past `MAX_VERSIONS` can't be read).
     Unread,
 }
 
@@ -659,9 +659,9 @@ fn find_save(
 }
 
 /// The manifests from `cid` back through `prev_asset_manifest_cid`, oldest
-/// first, the newest `MAX_VERSIONS`, and what came before the oldest: with
-/// `read_before`, the save past `MAX_VERSIONS` is read too.
-fn walk(reader: &Reader, cid: &str, read_before: bool) -> (Vec<(String, Value)>, Before) {
+/// first, the newest `MAX_VERSIONS`, and what came before the oldest (the
+/// save past `MAX_VERSIONS` is read too, for the oldest's changes).
+fn walk(reader: &Reader, cid: &str) -> (Vec<(String, Value)>, Before) {
     let mut saves = Vec::new();
     let mut next = Some(cid.to_string());
     let before = loop {
@@ -669,9 +669,9 @@ fn walk(reader: &Reader, cid: &str, read_before: bool) -> (Vec<(String, Value)>,
             break Before::First;
         };
         if saves.len() >= MAX_VERSIONS {
-            break match read_before.then(|| reader.gateway.json(&id)) {
-                Some(Ok(manifest)) => Before::Read(manifest),
-                _ => Before::Unread,
+            break match reader.gateway.json(&id) {
+                Ok(manifest) => Before::Read(manifest),
+                Err(_) => Before::Unread,
             };
         }
         let Ok(manifest) = reader.gateway.json(&id) else {
@@ -2045,7 +2045,7 @@ mod tests {
             reads.borrow_mut().push(cid.to_string());
             saves.get(cid).cloned().ok_or_else(|| "missing".to_string())
         };
-        let mut find = |version: &str| {
+        let find = |version: &str| {
             reads.borrow_mut().clear();
             let found = find_save(&read, "bafyH3", version).map(|(id, _)| id);
             (found, reads.borrow().clone())

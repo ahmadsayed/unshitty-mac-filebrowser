@@ -4945,7 +4945,7 @@ async function showPreview(entry: Entry): Promise<void> {
 async function previewArbeskFirst(entry: Entry, seq: number): Promise<void> {
   const scene = arbeskScene(entry.path, null);
   const shown = scene.then(
-    (answer) => answer.cid ?? null,
+    (answer) => answer.cid,
     () => null,
   );
   void shown.then((cid) => {
@@ -4959,9 +4959,13 @@ async function previewArbeskFirst(entry: Entry, seq: number): Promise<void> {
  *  read and its scene has said which save it shows (`shown`), at that save:
  *  while preview `opened` is open, even if one of the save's files is shown
  *  by then. A scene that can't be read: at the newest, as before. A shown
- *  save the saves don't hold (read before it landed): no control. */
+ *  save the saves read don't hold (the walk read the head before that save
+ *  landed): the saves are read once more, and hold it then. */
 async function loadArbeskVersions(entry: Entry, opened: number, shown: Promise<string | null>): Promise<void> {
-  const [list, cid] = await Promise.all([previewVersionsOf(entry).catch((): VersionList => ({ versions: [], more: false, copies: new Map() })), shown]);
+  const read = () => previewVersionsOf(entry).catch((): VersionList => ({ versions: [], more: false, copies: new Map() }));
+  const [first, cid] = await Promise.all([read(), shown]);
+  const behind = cid !== null && first.versions.length > 0 && !first.versions.some((version) => version.id === cid);
+  const list = behind && opened === previewOpened ? await read() : first;
   if (opened !== previewOpened || previewLayer.hidden || list.versions.length < 2) return;
   const index = cid === null ? list.versions.length - 1 : list.versions.findIndex((version) => version.id === cid);
   if (index >= 0) drawPreviewVersions(entry, list, index);
@@ -5113,10 +5117,12 @@ async function previewModelEntry(entry: Entry, seq: number, named: ModelFormat, 
  * fails is left out; with none, the preview says why.
  */
 async function previewArbeskScene(entry: Entry, seq: number, version: string | null, asked?: Promise<ArbeskScene>): Promise<void> {
-  // The scene is asked for before three.js loads (the first view's already is).
+  // The scene is asked for before three.js loads (the first view's already
+  // is); a refusal that comes first waits, handled, for loadArbeskParts.
   const scene = asked ?? arbeskScene(entry.path, version);
+  void scene.catch(() => undefined);
   const viewer = await import("./model-viewer");
-  const { parts, tooLarge } = await loadArbeskParts(entry.path, version, scene, seq, viewer).catch(() => ({ parts: [], tooLarge: false }));
+  const { parts, tooLarge } = await loadArbeskParts(entry.path, scene, seq, viewer).catch(() => ({ parts: [], tooLarge: false }));
   if (previewStale(seq)) return;
   if (!parts.length) {
     previewEmpty(entry, tooLarge ? "This file is too large to preview." : "No preview available.");
@@ -5134,9 +5140,8 @@ async function previewArbeskScene(entry: Entry, seq: number, version: string | n
 /** Each part of the scene at `path`, loaded once, at most MODEL_PREVIEW_LIMIT
  *  bytes in all, from the save the scene was resolved from (its CID); none
  *  more once the preview has moved on. */
-async function loadArbeskParts(path: string, asked: string | null, scene: Promise<ArbeskScene>, seq: number, viewer: typeof import("./model-viewer")) {
-  const { parts: stored, cid } = await scene;
-  const version = cid ?? asked;
+async function loadArbeskParts(path: string, scene: Promise<ArbeskScene>, seq: number, viewer: typeof import("./model-viewer")) {
+  const { parts: stored, cid: version } = await scene;
   const parts: { object: import("three").Object3D; placements: import("./model-viewer").ScenePlacement[] }[] = [];
   let left = MODEL_PREVIEW_LIMIT;
   let tooLarge = false;

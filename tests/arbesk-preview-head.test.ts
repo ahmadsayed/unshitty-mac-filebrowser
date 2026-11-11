@@ -117,7 +117,8 @@ test("when the newest save can't be read, the preview says so and has no switche
   expect(calls().count("arbesk_part")).toBe(0);
 });
 
-// Last: the save it adds stays in the mock for the rest of the file.
+// From here on, each test's save stays in the mock for the tests after it:
+// Bracket has 3 saves after this one, 4 after the next, 5 after the last.
 test("a save that lands before the walk ends shows in the control; the preview stays on its save", async () => {
   await goTo(SHAPES);
   calls().hold("arbesk_versions");
@@ -143,4 +144,35 @@ test("a save that lands before the walk ends shows in the control; the preview s
   expect(title()).toBe("Version 3 of 3");
   expect(versionsOf("arbesk_scene").at(-1)).toBe("bracket-v3");
   expect(versionsOf("arbesk_representations").at(-1)).toBe("bracket-v3");
+});
+
+test("a save that lands between the scene and the files' read keeps the files on the scene's save", async () => {
+  await goTo(SHAPES);
+  calls().hold("arbesk_representations");
+  await preview("Bracket.gltf");
+  await until(() => calls().count("arbesk_representations") === 1);
+  expect(versionsOf("arbesk_scene")).toEqual([null]);
+  // The scene answered bracket-v3; another device saves before the files are read.
+  mockArbesk().saveAgain("1", "bracket");
+  calls().release("arbesk_representations");
+  await until(() => !switcher().hidden);
+  expect(versionsOf("arbesk_representations")).toEqual(["bracket-v3"]);
+  expect(versionsOf("arbesk_part")).toEqual(["bracket-v3"]);
+});
+
+test("a save that lands between the walk and the scene: the saves are read again, the control is drawn", async () => {
+  await goTo(SHAPES);
+  calls().hold("arbesk_scene");
+  await click(hit("Bracket.gltf"));
+  await key(" ");
+  await until(() => calls().count("arbesk_versions") === 1);
+  await settle(20);
+  // The walk read bracket-v4 as the newest; the scene, still waiting, reads after this save.
+  mockArbesk().saveAgain("1", "bracket");
+  calls().release("arbesk_scene");
+  await until(shown);
+  await until(() => !control().hidden);
+  expect(title()).toBe("Version 5 of 5");
+  expect(calls().count("arbesk_versions")).toBe(2);
+  expect(versionsOf("arbesk_part")).toEqual(["bracket-v5"]);
 });

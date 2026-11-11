@@ -302,16 +302,11 @@ impl Client {
 
     /// `service::scene_at` for the account `path` belongs to: the scene and
     /// the save's CID it was resolved from, kept for `part` under that CID
-    /// (the preview asks for the parts by it) and, without `version`, under
-    /// the asset's path too, as before.
+    /// only (the preview always asks for the parts by it; a part asked for
+    /// without a version resolves the newest scene again).
     pub fn scene(&self, path: &str, version: Option<&str>) -> Result<scene::SceneAt, String> {
         let (http, site) = self.reach(path)?;
         let (cid, resolved) = service::scene_at(http, &site, path, version, &self.cache_dir)?;
-        // The CID's last: a full store clears before it keeps, so the
-        // entry the parts are asked by is the one sure to stay.
-        if version.is_none() {
-            self.scenes.keep(&kept(path, None), resolved.clone());
-        }
         let scene = self.scenes.keep(&kept(path, Some(&cid)), resolved);
         Ok(scene::SceneAt {
             cid,

@@ -2134,7 +2134,6 @@ const arbeskSession = { signedIn: true, expireNext: false };
   failUploadNext(): void {
     arbeskWrites.failUploadNext = true;
   },
-  /** As a save elsewhere would: the file `file` of asset `asset` now holds other bytes (another CID). */
   /** Another device saves asset `asset` of collection `token` again,
    *  changing nothing: one more save, the model and files kept. */
   saveAgain(token: string, asset: string): void {
@@ -2143,6 +2142,7 @@ const arbeskSession = { signedIn: true, expireNext: false };
     keepEarlierFiles(found);
     newFilesVersion(found);
   },
+  /** As a save elsewhere would: the file `file` of asset `asset` now holds other bytes (another CID). */
   changeFile(token: string, asset: string, file: string): void {
     const found = ARBESK_COLLECTIONS.find((c) => c.token === token)?.assets.find((a) => a.id === asset);
     const rep = found?.representations?.find((r) => r.id === file);

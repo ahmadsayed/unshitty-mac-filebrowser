@@ -868,7 +868,7 @@ mod tests {
     /// The newest scene names the save it was resolved from, the newest
     /// save `versions` reads, and is kept under that CID, so the parts the
     /// preview asks for by it (performance plan, phase 1) don't resolve it
-    /// again; it is still kept under the path too.
+    /// again, and under that CID only: nothing asks for a part without one.
     #[test]
     fn the_newest_scene_names_its_save_and_is_kept_by_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -880,7 +880,7 @@ mod tests {
         assert_eq!(answered["cid"], newest.as_str());
         let kept_by_cid = client.scenes.get(&crate::kept(&asset, Some(&newest))).unwrap();
         assert_eq!(answered["parts"], serde_json::to_value(&kept_by_cid.parts).unwrap());
-        assert_eq!(client.scenes.get(&crate::kept(&asset, None)).unwrap(), kept_by_cid);
+        assert!(client.scenes.get(&crate::kept(&asset, None)).is_none());
         let by_cid = Client::scene(&client, &asset, Some(&newest)).unwrap();
         assert_eq!((by_cid.cid.as_str(), &by_cid.scene), (newest.as_str(), kept_by_cid.as_ref()));
     }
