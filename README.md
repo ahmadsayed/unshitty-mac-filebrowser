@@ -99,7 +99,11 @@ one out on its own platform.
   copying the asset out asks which of its files to copy. **Paste Into
   Asset** (or a drop on the asset) adds files from this computer to it as
   a new version, after a confirmation, and **Remove…** on its Files… page
-  takes one out ([details](docs/arbesk.md)).
+  takes one out. In Space, a menu in the preview's header switches between
+  the model and the files of the version shown (an STL or 3MF shown in
+  3D, a `.blend` or G-code with Open With…), and the version list says
+  what each save changed (*Added G-code (Original Prusa MK4, PETG)*)
+  ([details](docs/arbesk.md)).
 - **Trash done right:** Undo (⌘Z), Restore (also for items trashed in Finder),
   and nothing is ever deleted without asking.
 - **Check for Updates** (main menu): the AppImage and the Mac app download,
@@ -199,7 +203,8 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
   only their newest version can be copied out; an asset's other files can't
   have their role, profile or source changed (`besk attach` can), and the
   only files added are ones on this computer (up to 256 MB, at most 32 per
-  asset); collections, and scenes that
+  asset), and a G-code or `.blend` isn't drawn in the preview (its page
+  offers Open With…); collections, and scenes that
   link to other assets, can't be
   copied yet, nor dragged to other apps; no sizes in listings; a scene's
   links to assets on another chain are left out of its preview.

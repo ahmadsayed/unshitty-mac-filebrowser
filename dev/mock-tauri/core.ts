@@ -1,6 +1,7 @@
 import { encodeCloudName, isArbeskAsset, isUnder, placeOf, type Place } from "../../src/paths";
 import { fold } from "../../src/search";
 import { BUILT_IN_CAPABILITIES } from "../../src/capabilities";
+import { formatLabel } from "../../src/representations";
 import { sample3mf, sampleGlb, sampleModelBytes } from "./models";
 // Browser-only stand-in for @tauri-apps/api/core, used by `npm run dev:mock`
 // so the UI can be previewed in a normal browser without the Rust backend.
@@ -1658,11 +1659,18 @@ type MockAsset = {
   /** A scene's parts, each at the x offsets of its copies (tinted when a colour is given). */
   scene?: Array<{ key: string; format: "glb" | "3mf"; copies: Array<{ x: number; color?: string }> }>;
   /** Its other files, as Arbesk stores the entries (an invalid one
-   *  included), in the newest save only. */
+   *  included), in the newest save. */
   representations?: MockRepresentation[];
+  /** Each earlier save's files, by its number (1 is the first); a save
+   *  not named here had none. */
+  earlier?: Record<number, MockRepresentation[]>;
   /** The save whose model the newest save holds, when a later save only
    *  changed its other files (an attach or a remove); the newest otherwise. */
   model?: number;
+  /** Each earlier save's model, by save number: the save whose model it
+   *  held, when it only changed its other files; a save not named here
+   *  held its own. Filled as each save is superseded. */
+  models?: Record<number, number>;
 };
 
 /** A representation entry as stored, loosely typed as another client may write it. */
@@ -1705,6 +1713,19 @@ const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset
         name: "Bracket",
         ext: "gltf",
         saves: { prefix: "bracket", count: 2 },
+        // Its first save had the source and the G-code (made from that
+        // save's model); the second added the STL and the 3MF.
+        earlier: {
+          1: [
+            mockRep("bracket", "source", "source", "blend", "Bracket.blend", 96_240),
+            mockRep("bracket", "gcode-original-prusa-mk4-petg", "machine", "gcode", "Bracket_0.2mm_PETG_MK4.gcode", 1_204_118, {
+              derived_from: { ref: "primary", cid: "bafy-bracket-v1" },
+              tool: { name: "PrusaSlicer", version: "2.9.2" },
+              profile: { printer: "Original Prusa MK4", material: "PETG", layer_mm: 0.2, nozzle_mm: 0.4 },
+              stats: { print_time_s: 7380, filament_g: 38.5 },
+            }),
+          ],
+        },
         representations: [
           mockRep("bracket", "source", "source", "blend", "Bracket.blend", 96_240),
           mockRep("bracket", "stl", "mesh", "stl", "Bracket.stl", 5_684, { derived_from: { ref: "primary", cid: "bafy-bracket-v2" } }),
@@ -1812,15 +1833,66 @@ function validRepresentation(entry: MockRepresentation): entry is ValidRepresent
     && typeof entry.created_at === "number";
 }
 
-/** `listRepresentations`: the valid entries, in stored order. */
-const arbeskFiles = (asset: MockAsset) => (asset.representations ?? []).filter(validRepresentation);
+/** `listRepresentations`: the valid entries of the newest save (or of
+ *  save `save`, counting from 1), in stored order. */
+function arbeskFiles(asset: MockAsset, save?: number): Array<ValidRepresentation & MockRepresentation> {
+  const count = asset.saves?.count ?? 1;
+  const stored = save === undefined || save === count ? asset.representations : asset.earlier?.[save];
+  return (stored ?? []).filter(validRepresentation);
+}
 
-/** `isStale`: made from a model or an entry whose CID has changed (or is gone). */
-function arbeskStale(asset: MockAsset, rep: ValidRepresentation): boolean {
+/** The model's CID in save `save` (the newest without): a save that only
+ *  changed files keeps the model of the save it was made from. */
+function arbeskModelCidAt(asset: MockAsset, save?: number): string {
+  const count = asset.saves?.count ?? 1;
+  if (save === undefined || save === count) return arbeskModelCid(asset);
+  return `bafy-${asset.id}-v${asset.models?.[save] ?? save}`;
+}
+
+/** Before a new save: the newest one's model, kept as an earlier save's. */
+function keepEarlierModel(asset: MockAsset): void {
+  const count = asset.saves?.count ?? 1;
+  if (asset.model !== undefined) asset.models = { ...asset.models, [count]: asset.model };
+}
+
+/** `isStale`: made from a model or an entry whose CID has changed (or is
+ *  gone), in the newest save or in save `save`. */
+function arbeskStale(asset: MockAsset, rep: ValidRepresentation, save?: number): boolean {
   const from = rep.derived_from;
   if (!from) return false;
-  const current = from.ref === "primary" ? arbeskModelCid(asset) : arbeskFiles(asset).find((r) => r.id === from.ref)?.cid;
+  const current = from.ref === "primary" ? arbeskModelCidAt(asset, save) : arbeskFiles(asset, save).find((r) => r.id === from.ref)?.cid;
   return current !== from.cid;
+}
+
+/** besk's `changeText`: "Added G-code (Original Prusa MK4, PETG)". */
+function mockChangeText(verb: string, rep: ValidRepresentation): string {
+  const label = formatLabel(rep.format);
+  const profile = rep.profile as Record<string, unknown> | undefined;
+  const details = [profile?.printer, profile?.material].filter((part) => part !== undefined && part !== "");
+  return `${verb} ${label}${details.length ? ` (${details.join(", ")})` : ""}`;
+}
+
+/** besk's `representationChanges` in words: added and replaced in the
+ *  new list's order, then removed. */
+function mockChanges(before: ValidRepresentation[], after: ValidRepresentation[]): string[] {
+  const old = new Map(before.map((rep) => [rep.id, rep]));
+  const out: string[] = [];
+  for (const rep of after) {
+    const was = old.get(rep.id);
+    if (!was) out.push(mockChangeText("Added", rep));
+    else if (was.cid !== rep.cid) out.push(mockChangeText("Replaced", rep));
+  }
+  const kept = new Set(after.map((rep) => rep.id));
+  for (const rep of old.values()) if (!kept.has(rep.id)) out.push(mockChangeText("Removed", rep));
+  return out;
+}
+
+/** Before a save that adds a version: the newest save's files become
+ *  that save's, as Arbesk keeps each version's list (R4), each entry its
+ *  own copy, so a later change to the newest list leaves them as saved. */
+function keepEarlierFiles(asset: MockAsset): void {
+  const count = asset.saves?.count ?? 1;
+  if (asset.representations?.length) asset.earlier = { ...asset.earlier, [count]: asset.representations.map((rep) => structuredClone(rep)) };
 }
 
 /** The listing's summary (spec F2); none without valid entries. */
@@ -1834,16 +1906,24 @@ function arbeskSummary(asset: MockAsset): Entry["representations"] {
   };
 }
 
+/** The number of the save `version` names (1 is the first), its newest
+ *  when null; a save that isn't the asset's is refused. */
+function arbeskSaveOf(path: string, version: string | null): number {
+  const saves = arbeskVersions(path).map((v) => v.id);
+  if (version === null) return saves.length;
+  const save = saves.indexOf(version) + 1;
+  if (save === 0) throw "This version is not in the asset.";
+  return save;
+}
+
 /** `arbesk_representations`: the asset's files in a save (its newest when
- *  `version` is null; earlier saves have none here). */
+ *  `version` is null), each pinned to its CID. */
 function arbeskRepresentations(path: string, version: string | null) {
   const asset = arbeskAsset(path);
-  const saves = arbeskVersions(path).map((v) => v.id);
-  if (version !== null && !saves.includes(version)) throw "This version is not in the asset.";
-  if (version !== null && version !== saves[saves.length - 1]) return [];
-  return arbeskFiles(asset).map((rep) => ({
+  const save = arbeskSaveOf(path, version);
+  return arbeskFiles(asset, save).map((rep) => ({
     id: rep.id, role: rep.role, format: rep.format, name: rep.name, bytes: rep.bytes,
-    stale: arbeskStale(asset, rep), derived_from: rep.derived_from?.ref ?? null,
+    stale: arbeskStale(asset, rep, save), derived_from: rep.derived_from?.ref ?? null,
     tool: rep.tool ?? null, profile: rep.profile ?? null, stats: rep.stats ?? null, created_at: rep.created_at,
     path: arbeskFilePath(path, rep.id, rep.cid, rep.name),
   }));
@@ -1874,6 +1954,22 @@ function arbeskFileOpen(path: string): string {
     const shown = decodeURIComponent(path.slice(path.lastIndexOf("/") + 1).split("~").slice(1).join("~"));
     throw `“${shown}” changed in Arbesk since it was copied.`;
   }
+  if (!rep) throw "This file is no longer in the asset.";
+  const dir = ensureDir(`${ARBESK_MOCK_FILES}/${rep.cid}`);
+  const name = safeFileName(rep.name);
+  dir.children[name] ??= f(rep.bytes, 0);
+  return `${ARBESK_MOCK_FILES}/${rep.cid}/${name}`;
+}
+
+/** `arbesk_file` (spec F14): file `id` as save `version` holds it, fetched
+ *  into the app cache as `open_target` fetches a file. */
+function arbeskSavedFile(path: string, version: string, id: string): string {
+  if (!isArbeskAsset(path)) {
+    arbeskIds(path);
+    throw `“${path}” is not an Arbesk asset.`;
+  }
+  const asset = arbeskAsset(path);
+  const rep = arbeskFiles(asset, arbeskSaveOf(path, version)).find((r) => r.id === id);
   if (!rep) throw "This file is no longer in the asset.";
   const dir = ensureDir(`${ARBESK_MOCK_FILES}/${rep.cid}`);
   const name = safeFileName(rep.name);
@@ -2110,6 +2206,8 @@ function arbeskAdd(a: Args): string {
   if (taken && !a.overwrite) throw `Target already exists: ${name}`;
   (a.onProgress as Channel<MockUpdate> | undefined)?.onmessage({ bytes: source.size, items: 0, total: null, phase: "saving", done: false });
   if (taken) {
+    keepEarlierFiles(taken);
+    keepEarlierModel(taken);
     const saves = taken.saves ?? { prefix: taken.id, count: 1 };
     taken.saves = { ...saves, count: saves.count + 1 };
     // A new model: the newest save's own.
@@ -2197,6 +2295,7 @@ const arbeskWrites = { conflictNext: false, failUploadNext: false };
 /** A new mock version of `asset` that keeps its model: one more save. */
 function newFilesVersion(asset: MockAsset): void {
   const saves = asset.saves ?? { prefix: asset.id, count: 1 };
+  keepEarlierModel(asset);
   asset.model ??= saves.count;
   asset.saves = { ...saves, count: saves.count + 1 };
   if (asset.version !== undefined) asset.version = arbeskVersionOf(asset) + 1;
@@ -2269,6 +2368,7 @@ function arbeskAttach(a: Args) {
     kept.splice(at >= 0 ? at : kept.length, 0, entry);
     list.splice(0, list.length, ...kept);
   }
+  keepEarlierFiles(asset);
   asset.representations = list;
   newFilesVersion(asset);
   return attached(path, refused);
@@ -2287,6 +2387,7 @@ function arbeskDetach(a: Args) {
   if (!stored.all.has(id)) throw "This file is no longer in the asset.";
   if (stored.unreadable.has(id) || stored.valid.get(id) !== str(a, "cid")) throw "This file was replaced in the asset since it was shown. Nothing was removed.";
   const kept = (asset.representations ?? []).filter((rep) => rep.id !== id);
+  keepEarlierFiles(asset);
   asset.representations = kept.length ? kept : undefined;
   newFilesVersion(asset);
   return attached(path, []);
@@ -2341,6 +2442,17 @@ function arbeskVersions(path: string): Array<{ id: string; timestamp: number }> 
   return Array.from({ length: count }, (_, i) => ({ id: `${prefix}-v${i + 1}`, timestamp: (now - (count - 1 - i) * day) * 1000 }));
 }
 
+/** `arbesk_versions`: each save with what it changed in the asset's
+ *  files (spec F14), the key left out when nothing, as the backend does;
+ *  the first save's files read as added. */
+function arbeskVersionsWithChanges(path: string): Array<{ id: string; timestamp: number; changes?: string[] }> {
+  const asset = arbeskAsset(path);
+  return arbeskVersions(path).map((version, i) => {
+    const changes = mockChanges(i === 0 ? [] : arbeskFiles(asset, i), arbeskFiles(asset, i + 1));
+    return changes.length ? { ...version, changes } : version;
+  });
+}
+
 /** An asset's scene as the backend answers it, for one save (the newest
  *  when `version` is null): a single model is one part, one copy per save. */
 function arbeskScene(path: string, version: string | null = null) {
@@ -2375,10 +2487,11 @@ function arbeskPart(path: string, version: string | null, key: string, limit: nu
 }
 
 const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
-  arbesk_versions: (a) => arbeskVersions(str(a, "path")),
+  arbesk_versions: (a) => arbeskVersionsWithChanges(str(a, "path")),
   arbesk_scene: (a) => arbeskScene(str(a, "path"), (a.version as string | null | undefined) ?? null),
   arbesk_representations: (a) => arbeskRepresentations(str(a, "path"), (a.version as string | null | undefined) ?? null),
   arbesk_export: gated((a) => arbeskExport(str(a, "path"))),
+  arbesk_file: gated((a) => arbeskSavedFile(str(a, "path"), str(a, "version"), str(a, "id"))),
   arbesk_attach_plan: (a) => arbeskAttachPlan(str(a, "path"), a.files as string[]),
   arbesk_attach: gated(arbeskAttach),
   arbesk_detach: gated(arbeskDetach),
@@ -3170,6 +3283,8 @@ function localWrite(path: string): string {
 
 const calls = {
   counts: new Map<string, number>(),
+  /** Each command's arguments, call by call, since the last reset. */
+  args: new Map<string, Args[]>(),
   /** Commands held, each with the calls waiting for release(). */
   held: new Map<string, (() => void)[]>(),
   /** The next call of each command rejects with this, once. */
@@ -3184,6 +3299,7 @@ function releaseCalls(cmd: string): void {
 
 (globalThis as Record<string, unknown>).__mockCalls = {
   count: (cmd: string) => calls.counts.get(cmd) ?? 0,
+  argsOf: (cmd: string) => calls.args.get(cmd) ?? [],
   hold(cmd: string) {
     if (!calls.held.has(cmd)) calls.held.set(cmd, []);
   },
@@ -3199,13 +3315,15 @@ function releaseCalls(cmd: string): void {
   reset() {
     [...calls.held.keys()].forEach(releaseCalls);
     calls.counts.clear();
+    calls.args.clear();
     calls.failures.clear();
   },
 };
 
 /** Count the call, wait while the command is held, and fail it if asked. */
-async function callGate(cmd: string): Promise<void> {
+async function callGate(cmd: string, args: Args): Promise<void> {
   calls.counts.set(cmd, (calls.counts.get(cmd) ?? 0) + 1);
+  calls.args.set(cmd, [...(calls.args.get(cmd) ?? []), args]);
   const waiting = calls.held.get(cmd);
   if (waiting) await new Promise<void>((resolve) => waiting.push(resolve));
   const failure = calls.failures.get(cmd);
@@ -3218,6 +3336,6 @@ export async function invoke<T>(cmd: string, args: Args = {}): Promise<T> {
   await new Promise((r) => setTimeout(r, DELAY));
   const command = COMMANDS[cmd];
   if (!command) throw `mock: unknown command ${cmd}`;
-  await callGate(cmd);
+  await callGate(cmd, args);
   return (await command(args)) as T;
 }

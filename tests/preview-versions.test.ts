@@ -1,7 +1,8 @@
 // One list of versions for the Space preview, from a Keep Versions history or
 // an Arbesk asset's saves (src/preview-versions.ts).
 import { expect, test, vi } from "vitest";
-import { fromArbeskSaves, fromLocal, versionMenu, versionTitle, type PreviewVersion } from "../src/preview-versions";
+import { changesText, filesMenu, fromArbeskSaves, fromLocal, shownFileLabel, versionMenu, versionTitle, type PreviewVersion } from "../src/preview-versions";
+import type { RepresentationInfo } from "../src/api";
 import type { VersionInfo } from "../src/api";
 
 const row = (id: number, mtime: number, over: Partial<VersionInfo> = {}): VersionInfo => ({
@@ -61,4 +62,39 @@ test("the menu lists newest first and marks the shown one", () => {
   expect(items[2].accel).toBe("");
   items[1].action();
   expect(pick).toHaveBeenCalledWith(1);
+});
+
+// ---- An Arbesk save's other files (spec F14) ----
+
+const rep = (id: string, format: string, extra: Partial<RepresentationInfo> = {}): RepresentationInfo => ({
+  id, role: "mesh", format, name: `Box.${format}`, bytes: 2048, stale: false, derived_from: null,
+  tool: null, profile: null, stats: null, created_at: 0, path: `arbesk://x/1~S/a~Box.gltf/${id}~Box.${format}`, ...extra,
+});
+
+test("a save's rows say what it changed in the files, joined with ·", () => {
+  const saves = fromArbeskSaves([{ id: "a", timestamp: null, changes: ["Added Blender file", "Added G-code (Original Prusa MK4, PETG)"] }, { id: "b", timestamp: null }]);
+  expect(changesText(saves[0])).toBe("Added Blender file · Added G-code (Original Prusa MK4, PETG)");
+  expect(changesText(saves[1])).toBe("");
+  // A save without changes has no key, as before.
+  expect(saves[1]).toEqual({ id: "b", date: null, current: true });
+  const items = versionMenu(saves, 1, () => {}) as Array<{ subtitle?: string }>;
+  expect(items.map((i) => i.subtitle)).toEqual([undefined, "Added Blender file · Added G-code (Original Prusa MK4, PETG)"]);
+});
+
+test("the switcher says what is shown and lists the model, then each file with its subtitle", () => {
+  expect(shownFileLabel(null)).toBe("Model");
+  expect(shownFileLabel(rep("stl", "stl"))).toBe("STL");
+  expect(shownFileLabel(rep("gcode", "gcode"))).toBe("G-code");
+  expect(shownFileLabel(rep("source", "blend"))).toBe("Blender file");
+  expect(shownFileLabel(rep("ply", "ply"))).toBe("PLY");
+  const pick = vi.fn();
+  const items = filesMenu("Box.gltf", [rep("stl", "stl"), rep("source", "blend", { role: "source" })], 1, pick) as Array<{ label: string; subtitle: string; radio: boolean; action(): void }>;
+  expect(items.map((i) => [i.label, i.subtitle, i.radio])).toEqual([
+    ["Box.gltf", "Model", false],
+    ["Box.stl", "STL · 2.0 kB · Mesh", false],
+    ["Box.blend", "Blender file · 2.0 kB · Source", true],
+  ]);
+  items[0].action();
+  items[2].action();
+  expect(pick.mock.calls).toEqual([[-1], [1]]);
 });

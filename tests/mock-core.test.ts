@@ -1795,3 +1795,53 @@ test("Arbesk: adding files to an asset and removing them: arbesk_attach_plan, ar
   expect(Object.entries(table).filter(([, row]) => row.can_attach).map(([kind]) => kind)).toEqual(["arbesk-asset"]);
   await invoke("arbesk_disconnect", { account: account.id });
 });
+
+test("Arbesk: each save's files, what it changed and a file of a save: arbesk_versions, arbesk_representations, arbesk_file (spec F14)", async () => {
+  const core = await import("../dev/mock-tauri/core");
+  const start = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  await invoke("arbesk_connect_finish", { flowId: start.flow_id });
+  const bracket = `arbesk://${core.ARBESK_MOCK_ADDRESS}/1~Shapes/bracket~Bracket.gltf`;
+  // Bracket's two saves differ: the first had the source and the G-code, the second added the STL and the 3MF.
+  expect(await invoke("arbesk_versions", { path: bracket })).toEqual([
+    { id: "bracket-v1", timestamp: expect.any(Number), changes: ["Added Blender file", "Added G-code (Original Prusa MK4, PETG)"] },
+    { id: "bracket-v2", timestamp: expect.any(Number), changes: ["Added STL", "Added 3MF"] },
+  ]);
+  type Info = { id: string; stale: boolean };
+  const first = await invoke<Info[]>("arbesk_representations", { path: bracket, version: "bracket-v1" });
+  // In its own save, the G-code was made from that save's model: not out of date.
+  expect(first.map((r) => [r.id, r.stale])).toEqual([["source", false], ["gcode-original-prusa-mk4-petg", false]]);
+  // A file of a save, fetched into the app cache; one the save doesn't hold, or a save the asset doesn't have, refused.
+  const gcode = `${core.ARBESK_MOCK_FILES}/bafyrepbracketxgcodeoriginalprusamk4petg/Bracket_0.2mm_PETG_MK4.gcode`;
+  expect(await invoke("arbesk_file", { path: bracket, version: "bracket-v1", id: "gcode-original-prusa-mk4-petg", op: "" })).toBe(gcode);
+  expect(await invoke("path_exists", { path: gcode })).toBe(true);
+  await expect(invoke("arbesk_file", { path: bracket, version: "bracket-v1", id: "stl", op: "" })).rejects.toBe("This file is no longer in the asset.");
+  await expect(invoke("arbesk_file", { path: bracket, version: "box-g-v1", id: "stl", op: "" })).rejects.toBe("This version is not in the asset.");
+  await expect(invoke("arbesk_file", { path: `${bracket}/stl~Bracket.stl`, version: "bracket-v1", id: "stl", op: "" })).rejects.toBe(
+    `“${bracket}/stl~Bracket.stl” is not an Arbesk asset.`,
+  );
+  // A save without files has no `changes` key, as the backend sends it.
+  const table = `arbesk://${core.ARBESK_MOCK_ADDRESS}/2~Untitled%20Collection/table~Table.gltf`;
+  expect(await invoke("arbesk_versions", { path: table })).toEqual([{ id: "table-v1", timestamp: expect.any(Number) }]);
+
+  // Attach a G-code (save 2 keeps save 1's model), then Replace the model
+  // (save 3): save 2 still holds save 1's model, so its G-code is not out
+  // of date there; in save 3 it is. A change to the newest save's entry
+  // leaves save 2's as saved.
+  const hooks = (globalThis as unknown as { __mockArbesk: {
+    addAsset(token: string, id: string, name: string, files: unknown[]): void;
+    changeFile(token: string, asset: string, file: string): void;
+  } }).__mockArbesk;
+  hooks.addAsset("2", "keep", "Keep", []);
+  const keep = `arbesk://${core.ARBESK_MOCK_ADDRESS}/2~Untitled%20Collection/keep~Keep.gltf`;
+  await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/Keep.gcode`, overwrite: false });
+  await invoke("arbesk_attach", { path: keep, files: [{ path: `${HOME}/Keep.gcode` }], op: "" });
+  await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/Keep.gltf`, overwrite: false });
+  await invoke("copy_entry", { from: `${HOME}/Keep.gltf`, to: `arbesk://${core.ARBESK_MOCK_ADDRESS}/2~Untitled%20Collection/~Keep.gltf`, overwrite: true });
+  const keepAt = (version: string) => invoke<Array<{ id: string; stale: boolean; path: string }>>("arbesk_representations", { path: keep, version });
+  expect((await keepAt("keep-v2")).map((r) => [r.id, r.stale])).toEqual([["gcode", false]]);
+  expect((await keepAt("keep-v3")).map((r) => [r.id, r.stale])).toEqual([["gcode", true]]);
+  const saved = (await keepAt("keep-v2"))[0].path;
+  hooks.changeFile("2", "keep", "gcode");
+  expect((await keepAt("keep-v2"))[0].path).toBe(saved);
+  expect((await keepAt("keep-v3"))[0].path).not.toBe(saved);
+});

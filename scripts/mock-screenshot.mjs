@@ -11,7 +11,7 @@
 // --size <width>x<height> (default 1100x720), --theme gnome|macos (default
 // macos; the theme follows the platform, so gnome loads the page with a
 // Linux user agent and the app takes its Linux code paths), --scene
-// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-item-menu|arbesk-grid|network-arbesk|arbesk-preview|arbesk-properties|arbesk-files|arbesk-files-menu|arbesk-open-which|arbesk-copy-files (default grid: the folder as it
+// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-item-menu|arbesk-grid|network-arbesk|arbesk-preview|arbesk-properties|arbesk-files|arbesk-files-menu|arbesk-open-which|arbesk-copy-files|arbesk-preview-files|arbesk-preview-file|arbesk-preview-versions (default grid: the folder as it
 // opens; list: list view with the second item selected; menu: the main menu
 // open; item-menu: the right-click menu of --item; background-menu: the
 // right-click menu of the empty area; dialog: the Keyboard Shortcuts dialog; search, search-list: a search
@@ -36,7 +36,10 @@
 // in the path, asking which files; arbesk-paste-menu: --item's menu with a
 // local file copied; arbesk-attach-confirm, arbesk-attach-clash: bracket.stl
 // pasted into --item or Box.gltf, asking; arbesk-attach-done: added, in the
-// grid; arbesk-remove: Remove… on the Files… page). Uses ?demo (no
+// grid; arbesk-remove: Remove… on the Files… page; arbesk-preview-files:
+// Space on --item, default Bracket.gltf, with the shown file's menu open;
+// arbesk-preview-file: the file --query names, default Bracket.stl, chosen
+// there; arbesk-preview-versions: its version menu open). Uses ?demo (no
 // test-only folders). The page's clock is fixed, so the same scene always
 // gives the same image.
 import { createRequire } from "node:module";
@@ -50,7 +53,7 @@ const option = (name, fallback) => {
 const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene", "--query", "--item"];
 const [path, out] = args.filter((a, i) => !a.startsWith("--") && !VALUE_OPTIONS.includes(args[i - 1]));
 if (!path || !out) {
-  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-item-menu|arbesk-grid|network-arbesk|arbesk-preview|arbesk-properties|arbesk-files|arbesk-files-menu|arbesk-open-which|arbesk-copy-files] [--query <text>] [--item <name>]");
+  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-item-menu|arbesk-grid|network-arbesk|arbesk-preview|arbesk-properties|arbesk-files|arbesk-files-menu|arbesk-open-which|arbesk-copy-files|arbesk-preview-files|arbesk-preview-file|arbesk-preview-versions] [--query <text>] [--item <name>]");
   process.exit(2);
 }
 
@@ -292,7 +295,35 @@ const SCENES = {
     await page.waitForSelector("#preview-body > :not(.preview-loading)");
     await page.waitForTimeout(400);
   },
+  "arbesk-preview-files": async (page) => {
+    await openArbeskPreview(page);
+    await page.locator("#preview-files").click();
+    await page.waitForSelector(".popover .menu");
+  },
+  "arbesk-preview-file": async (page) => {
+    await openArbeskPreview(page);
+    await page.locator("#preview-files").click();
+    await page.locator(".popover .menu-item").filter({ hasText: option("--query", "Bracket.stl") }).click();
+    await page.waitForSelector("#preview-body > :not(.preview-loading)");
+    await page.waitForTimeout(400);
+  },
+  "arbesk-preview-versions": async (page) => {
+    await openArbeskPreview(page);
+    await page.locator(".preview-version-label").click();
+    await page.waitForSelector(".popover .menu");
+  },
 };
+
+/** Space on --item (default Bracket.gltf) in the mock's Shapes, once the
+ *  model and the header's controls show. */
+async function openArbeskPreview(page) {
+  await openMockArbeskCollection(page);
+  await page.locator("#view .item").filter({ hasText: option("--item", "Bracket.gltf") }).click();
+  await page.keyboard.press("Space");
+  await page.waitForSelector("#preview-body > :not(.preview-loading)");
+  await page.waitForSelector("#preview-files:not([hidden]), .preview-version-label", { timeout: 5000 }).catch(() => {});
+  await page.waitForTimeout(400);
+}
 
 /** The applications the Arbesk scenes offer (the mock's MOCK_ARBESK_APPS, after TextEdit). */
 const ARBESK_APPS = [

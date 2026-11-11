@@ -740,10 +740,13 @@ export async function arbeskPart(path: string, key: string, limit: number, versi
   return invoke<ArrayBuffer>("arbesk_part", { path, version, key, limit });
 }
 
-/** One save of an Arbesk asset: its manifest's CID, and when (ms), if known. */
+/** One save of an Arbesk asset: its manifest's CID, when (ms), if known,
+ *  and what it changed in the asset's other files, in besk's words
+ *  ("Added G-code (Original Prusa MK4, PETG)"), when anything (spec F14). */
 export interface ArbeskVersion {
   id: string;
   timestamp: number | null;
+  changes?: string[];
 }
 
 /** An Arbesk asset's saves, oldest first; the last is the asset now. */
@@ -786,6 +789,14 @@ export async function arbeskRepresentations(path: string, version?: string): Pro
  *  path) fetched there, as operation `tracked`. The local file's path. */
 export async function arbeskExport(path: string, tracked: Tracked): Promise<string> {
   return invoke<string>("arbesk_export", { path, ...trackedArgs(tracked) });
+}
+
+/** One of an Arbesk asset's other files, `id`, as the save `version` (a
+ *  manifest CID from `arbeskVersions`) holds it, fetched into the app cache
+ *  as operation `tracked` (spec F14: the preview's file page and its Open
+ *  With…, never the current save's path). The local file's path. */
+export async function arbeskFile(path: string, version: string, id: string, tracked: Tracked): Promise<string> {
+  return invoke<string>("arbesk_file", { path, version, id, ...trackedArgs(tracked) });
 }
 
 /** A file of a paste whose id an asset's entry already has (spec F10):

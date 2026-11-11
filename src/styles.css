@@ -910,7 +910,9 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   grid-column: 2;
   min-width: 0;
   display: flex;
+  align-items: center;
   justify-content: center;
+  gap: 6px;
 }
 
 .preview-close {
@@ -964,11 +966,71 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   content: " · ";
 }
 
+/* An Arbesk save's other files: a menu button beside the version control,
+   saying what is shown, with a dot when that file is out of date. */
+.preview-files {
+  display: flex;
+  flex: none;
+}
+
+.preview-files[hidden] {
+  display: none;
+}
+
+.preview-files-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 12px;
+  white-space: nowrap;
+}
+
+.preview-files-button .sym {
+  width: 16px;
+  height: 16px;
+}
+
+.preview-files-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
+/* A file the viewer doesn't draw: what it is, and Open With…. */
+.preview-file-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 36px;
+  text-align: center;
+}
+
+.preview-file-page p {
+  margin: 0;
+}
+
+.preview-file-name {
+  font-weight: 600;
+}
+
+.preview-file-subtitle {
+  max-width: 520px;
+  opacity: var(--dim);
+}
+
+.preview-file-page .btn {
+  margin-top: 8px;
+}
+
 /* The list of versions can be long (50 Arbesk saves, 1,000 local versions): it scrolls. */
 .menu.preview-version-menu {
   max-height: min(60vh, 480px);
   overflow-y: auto;
 }
+/* What a save changed in an asset's other files: cut, not widening the list. */
+.preview-version-menu .menu-item-subtitle { max-width: 420px; }
 
 .preview-body {
   flex: 1;
@@ -1231,6 +1293,21 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
 .menu-item:disabled { opacity: 0.5; }
 
 .menu-item .label { flex: 1; }
+/* A row with a second line: the label over a dim subtitle. */
+.menu-item:has(.menu-item-subtitle) { padding-top: 6px; padding-bottom: 6px; }
+.menu-item-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+.menu-item-subtitle {
+  font-size: 0.85em;
+  opacity: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .menu-item .accel { opacity: var(--dim); margin-left: 24px; }
 
 .menu-item .indicator {

@@ -30,8 +30,8 @@ import {
   type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
-import { appFormats, arbeskAttach, arbeskAttachPlan, arbeskDetach, arbeskExport, arbeskRepresentations, capabilities, openWith, type AppChoice, type AttachChoice, type Attached, type PlannedFile, type RepresentationInfo } from "./api";
-import { askAttachClash, chooseFileToOpen, chooseFilesToCopy, confirmAttach, confirmRemoveFile, showFilesDialog, type ClashChoice, type FilesActions, type FilesPage } from "./representation-dialogs";
+import { appFormats, arbeskAttach, arbeskAttachPlan, arbeskDetach, arbeskExport, arbeskFile, arbeskRepresentations, capabilities, openWith, type AppChoice, type AttachChoice, type Attached, type PlannedFile, type RepresentationInfo } from "./api";
+import { askAttachClash, chooseFileToOpen, chooseFilesToCopy, confirmAttach, confirmRemoveFile, iconEntry, showFilesDialog, type ClashChoice, type FilesActions, type FilesPage } from "./representation-dialogs";
 import { assetFormat, copyNameAt, copySources, onlyChoice, openWithCandidates, uniqueNames, type AssetFiles, type CopyChoice, type FileChoice } from "./representations";
 import { loadCapabilities } from "./capabilities";
 import { entryIcon, filesEmblemOf, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
@@ -44,7 +44,7 @@ import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slot
 import { applyToAllRow, cleanError, closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { checkForUpdates } from "./updates";
 import { addVersionRows, insideVersionedRoot, restoreName, showDeletedFiles, showVersions } from "./versions";
-import { LOCAL_VERSION_LIMIT, drawVersionControl, fromArbeskSaves, fromLocal, type PreviewVersion } from "./preview-versions";
+import { LOCAL_VERSION_LIMIT, drawFilesSwitcher, drawVersionControl, filePage, fromArbeskSaves, fromLocal, type PreviewVersion } from "./preview-versions";
 import { macDmgItems } from "./mac-dmg";
 import { showOpenWith as showOpenWithDialog } from "./open-with";
 import { linuxProgramItems } from "./linux-programs";
@@ -293,6 +293,8 @@ let previewName: HTMLElement;
 let previewBody: HTMLElement;
 let previewActionsEl: HTMLElement;
 let previewVersionsEl: HTMLElement;
+/** The preview header's switcher between an Arbesk save's model and its other files. */
+let previewFilesEl: HTMLElement;
 
 // SECURITY: escape HTML entities in user-derived strings before innerHTML insertion
 export function escapeHtml(text: string): string {
@@ -4846,6 +4848,7 @@ function closePreview(): void {
   previewName.hidden = false;
   previewVersionsEl.hidden = true;
   previewVersionsEl.replaceChildren();
+  clearPreviewFiles();
 }
 
 /** Empty the preview's content (to show another version of the same item):
@@ -4919,8 +4922,15 @@ async function showPreview(entry: Entry): Promise<void> {
     return;
   }
   previewLoading(entry, seq);
-  void loadPreviewVersions(entry, seq);
-  await previewEntry(entry, seq, fileKind(entry.name));
+  const newest = loadPreviewVersions(entry, seq);
+  // An Arbesk asset's first view is the newest save that arbesk_versions
+  // read, by its CID, as its files beside it are: a save made meanwhile
+  // can't put another save's model beside them. Saves that can't be read:
+  // the asset as it is now (and no switcher). Only its scene waits for them.
+  const scene = locationKind(entry.path, trashPath) === "arbesk" && modelFormat(entry.name) !== null;
+  const at: PreviewAt = scene ? { arbeskVersion: (await newest)?.id ?? null } : {};
+  if (previewStale(seq)) return;
+  await previewEntry(entry, seq, fileKind(entry.name), at);
 }
 
 // ---- Versions in the preview -------------------------------------------------
@@ -4946,11 +4956,16 @@ async function previewVersionsOf(entry: Entry): Promise<VersionList> {
   return { versions: fromLocal(rows, entry.modified), more: total > rows.length, copies };
 }
 
-/** The version control, once the item's versions are known and there are two or more. */
-async function loadPreviewVersions(entry: Entry, seq: number): Promise<void> {
+/** The version control, once the item's versions are known and there are
+ *  two or more. Resolves to the newest version read, if any. */
+async function loadPreviewVersions(entry: Entry, seq: number): Promise<PreviewVersion | undefined> {
   const list = await previewVersionsOf(entry).catch((): VersionList => ({ versions: [], more: false, copies: new Map() }));
-  if (previewStale(seq) || list.versions.length < 2) return;
-  drawPreviewVersions(entry, list, list.versions.length - 1);
+  if (previewStale(seq)) return undefined;
+  if (list.versions.length >= 2) drawPreviewVersions(entry, list, list.versions.length - 1);
+  // The asset now: its files only when the listing says it has some.
+  const newest = list.versions[list.versions.length - 1];
+  if (newest && entry.representations?.count) void loadPreviewFiles(entry, newest, seq);
+  return newest;
 }
 
 function drawPreviewVersions(entry: Entry, list: VersionList, shown: number): void {
@@ -4963,6 +4978,10 @@ function drawPreviewVersions(entry: Entry, list: VersionList, shown: number): vo
 async function showPreviewVersion(entry: Entry, list: VersionList, index: number): Promise<void> {
   const seq = resetPreviewBody();
   drawPreviewVersions(entry, list, index);
+  // Each save keeps its own files (Arbesk R4): the switcher follows the
+  // version on screen, which shows its model again.
+  clearPreviewFiles();
+  if (locationKind(entry.path, trashPath) === "arbesk") void loadPreviewFiles(entry, list.versions[index], seq);
   const refusal = versionRefusal(entry, list.versions[index]);
   if (refusal) {
     previewEmpty(entry, refusal);
@@ -4992,8 +5011,9 @@ function versionRefusal(entry: Entry, version: PreviewVersion): string | null {
 /** Where `version` of the item is read from: an older local version is
  *  materialized once as the read-only copy Versions… → Open makes. */
 async function previewAtVersion(entry: Entry, list: VersionList, version: PreviewVersion): Promise<PreviewAt> {
-  if (version.current) return {};
+  // An Arbesk save by its CID, the current one's too, as its files are listed.
   if (locationKind(entry.path, trashPath) === "arbesk") return { arbeskVersion: version.id };
+  if (version.current) return {};
   let copy = list.copies.get(version.id);
   if (!copy) {
     copy = openVersion(entry.path, Number(version.id), restoreName(entry.path, Math.round((version.date ?? 0) / 1000)));
@@ -5135,6 +5155,119 @@ async function previewThumbnailEntry(entry: Entry, seq: number, at: PreviewAt): 
   }
 }
 
+// ---- An Arbesk save's other files in the preview (spec F14) -----------------
+
+/** The switcher's save on screen: the asset, the save, its files and which
+ *  is shown (-1: the model). */
+interface PreviewFiles {
+  entry: Entry;
+  version: PreviewVersion;
+  files: RepresentationInfo[];
+  shown: number;
+}
+
+/** Each of the preview's file fetches gets its own operation id (no
+ *  row: the preview says "Loading…"), unique across the app's windows:
+ *  the backend's progress registry is app-wide, and two windows sharing
+ *  an id would let the first fetch to end unregister the other, so
+ *  Restart would not wait for it. A fetch the preview moved on from
+ *  finishes into the app cache, as a scene's parts do, and is dropped: a
+ *  cancel sent after it ended would be remembered for an operation that
+ *  never comes, holding up Restart. */
+let previewFetchSeq = 0;
+function previewFetchOp(): string {
+  // A per-window random part (getRandomValues needs no secure context, as
+  // randomUUID does), the time and a count, as operations.ts' ids.
+  const salt = Array.from(crypto.getRandomValues(new Uint32Array(2)), (n) => n.toString(36)).join("");
+  return `preview-file-${Date.now().toString(36)}-${salt}-${++previewFetchSeq}`;
+}
+
+function clearPreviewFiles(): void {
+  previewFilesEl.hidden = true;
+  previewFilesEl.replaceChildren();
+}
+
+/** The files of `version` of the asset; the switcher when it has some. A
+ *  list that can't be read shows none. */
+async function loadPreviewFiles(entry: Entry, version: PreviewVersion, seq: number): Promise<void> {
+  const files = await arbeskRepresentations(entry.path, version.id).catch((): RepresentationInfo[] => []);
+  if (previewStale(seq) || files.length === 0) return;
+  drawPreviewFiles({ entry, version, files, shown: -1 });
+}
+
+function drawPreviewFiles(state: PreviewFiles): void {
+  drawFilesSwitcher(previewFilesEl, state.entry.name, state.files, state.shown, (index) => void showPreviewFile(state, index));
+}
+
+/** An asset's file as an entry, for its icon and the Open With title. */
+function fileEntry(asset: Entry, rep: RepresentationInfo): Entry {
+  return { ...asset, name: rep.name, path: rep.path, representations: undefined };
+}
+
+/** Show the model (-1) or file `index` of the save on screen: a file the
+ *  viewer draws as a 3D model, any other on its file page. */
+async function showPreviewFile(state: PreviewFiles, index: number): Promise<void> {
+  const seq = resetPreviewBody();
+  const next = { ...state, shown: index };
+  drawPreviewFiles(next);
+  const { entry, version } = next;
+  if (index < 0) {
+    previewLoading(entry, seq);
+    // The shown save's manifest CID, the current one's too: the model and
+    // the files listed beside it come from the same save, even if the
+    // asset is saved again while the preview is open.
+    await previewArbeskScene(entry, seq, version.id);
+    return;
+  }
+  const rep = next.files[index];
+  const model = modelFormat(`file.${rep.format}`);
+  if (!model) {
+    showFilePage(next, rep);
+    return;
+  }
+  previewLoading(iconEntry(rep.name), seq);
+  await previewFileModel(next, rep, model, seq);
+}
+
+/** A file of the save on screen as a 3D model: fetched from that save's
+ *  manifest (never the current save's path) into the app cache, then read
+ *  as a local model. A glTF that loads files beside it gets the file page. */
+async function previewFileModel(state: PreviewFiles, rep: RepresentationInfo, named: ModelFormat, seq: number): Promise<void> {
+  try {
+    const file = await arbeskFile(state.entry.path, state.version.id, rep.id, { op: previewFetchOp() });
+    if (previewStale(seq)) return;
+    const bytes = await previewBytes(file, MODEL_PREVIEW_LIMIT);
+    if (previewStale(seq)) return;
+    const format: ModelFormat = named === "gltf" && isGlb(bytes) ? "glb" : named;
+    if (format === "gltf" && gltfExternalUris(JSON.parse(new TextDecoder().decode(bytes))).length > 0) {
+      showFilePage(state, rep);
+      return;
+    }
+    const viewer = await import("./model-viewer");
+    const model = await viewer.loadModel(format, bytes, new Map());
+    if (previewStale(seq)) return;
+    previewLoaded();
+    modelView = viewer.showModel(previewBody, model);
+  } catch (err) {
+    if (previewStale(seq)) return;
+    previewEmpty(iconEntry(rep.name), /too large/i.test(String(err)) ? "This file is too large to preview." : "No preview available.");
+  }
+}
+
+/** The file page: what the file is, and Open With… for it. */
+function showFilePage(state: PreviewFiles, rep: RepresentationInfo): void {
+  previewLoaded();
+  const icon = (box: HTMLElement) => itemIcons.dialogIcon(box, iconEntry(rep.name), 192);
+  previewBody.replaceChildren(filePage(rep, state.files, icon, () => openPreviewFileWith(state, rep)));
+}
+
+/** Open With… on the file page (spec F8, the file chosen): fetched from
+ *  the save on screen, as the page shows it. */
+function openPreviewFileWith(state: PreviewFiles, rep: RepresentationInfo): void {
+  if (refuse("openWith", hereFor([state.entry.path]))) return;
+  showOpenWith(state.entry, { kind: "file", rep }, fileEntry(state.entry, rep), state.version.id);
+}
+
 // ---- Preview actions (#48) -------------------------------------------------
 
 
@@ -5264,7 +5397,7 @@ function openItemWith(entry: Entry): void {
  *  an Arbesk asset the chosen application gets one of its files, fetched
  *  first (`openAssetWith`): `chosen` when the Files… page named it, else
  *  the one the application opens, asked when it opens several (spec F8). */
-function showOpenWith(entry: Entry, chosen?: FileChoice, title = entry): void {
+function showOpenWith(entry: Entry, chosen?: FileChoice, title = entry, version?: string): void {
   const arbesk = isArbeskAsset(entry.path);
   showOpenWithDialog(title, {
     icon(span, app) {
@@ -5275,7 +5408,7 @@ function showOpenWith(entry: Entry, chosen?: FileChoice, title = entry): void {
     opened(file) {
       if (!isRemotePath(file.path)) addRecent(file.path).catch(() => {});
     },
-    ...(arbesk ? { launch: (app: AppChoice) => openAssetWith(entry, app, chosen) } : {}),
+    ...(arbesk ? { launch: (app: AppChoice) => openAssetWith(entry, app, chosen, version) } : {}),
   });
 }
 
@@ -5298,8 +5431,9 @@ async function fileForApp(asset: Entry, app: AppChoice): Promise<FileChoice | nu
 
 /** Hand one of `asset`'s files to `app`: fetched into the app cache as an
  *  operation (progress, Cancel), then opened with it. A failure is a toast;
- *  a cancel says nothing; the cached file never goes to Recent. */
-async function openAssetWith(asset: Entry, app: AppChoice, chosen?: FileChoice): Promise<void> {
+ *  a cancel says nothing; the cached file never goes to Recent. A file of
+ *  the save `version` (the preview's file page) is read from that save. */
+async function openAssetWith(asset: Entry, app: AppChoice, chosen?: FileChoice, version?: string): Promise<void> {
   let choice: FileChoice | null;
   try {
     choice = chosen ?? (await fileForApp(asset, app));
@@ -5315,7 +5449,11 @@ async function openAssetWith(asset: Entry, app: AppChoice, chosen?: FileChoice):
   });
   setOperationState(op, "working");
   try {
-    const file = await arbeskExport(path, { op: op.id, onProgress: (u) => updateOperation(op, u) });
+    const tracked = { op: op.id, onProgress: (u: ProgressUpdate) => updateOperation(op, u) };
+    const file =
+      choice.kind === "file" && version !== undefined
+        ? await arbeskFile(asset.path, version, choice.rep.id, tracked)
+        : await arbeskExport(path, tracked);
     await openWith(file, app.id);
   } catch (err) {
     if (cleanError(err) !== CANCELLED) showToast(`Could not open “${name}”: ${cleanError(err)}`);
@@ -5328,8 +5466,7 @@ async function openAssetWith(asset: Entry, app: AppChoice, chosen?: FileChoice):
  *  chosen file, and Copy, which puts its pinned path (the model: the
  *  asset's) on the clipboard. */
 function filesActions(asset: Entry): FilesActions {
-  const named = (choice: FileChoice): Entry =>
-    choice.kind === "model" ? asset : { ...asset, name: choice.rep.name, path: choice.rep.path, representations: undefined };
+  const named = (choice: FileChoice): Entry => (choice.kind === "model" ? asset : fileEntry(asset, choice.rep));
   return {
     openWith: (choice) => {
       if (!refuse("openWith", hereFor([asset.path]))) showOpenWith(asset, choice, named(choice));
@@ -6587,6 +6724,7 @@ async function init(): Promise<void> {
   previewBody = $("#preview-body");
   previewActionsEl = $("#preview-actions");
   previewVersionsEl = $("#preview-versions");
+  previewFilesEl = $("#preview-files");
   // Escape on a preview button, or Escape or Space on a 3D model being
   // turned: the view's own keys don't see them.
   previewLayer.addEventListener("keydown", (event) => {

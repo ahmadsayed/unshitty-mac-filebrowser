@@ -165,6 +165,8 @@ export type MenuItem =
       /** Render as a radio item with this state. */
       radio?: boolean;
       accel?: string;
+      /** A dim second line under the label. */
+      subtitle?: string;
     };
 
 export function openMenu(anchor: Anchor, items: MenuItem[], opts: { className?: string } = {}): PopoverHandle {
@@ -200,8 +202,10 @@ function menuElement(item: MenuItem, hasIndicators: boolean, close: () => void):
   btn.setAttribute("role", item.radio !== undefined ? "menuitemradio" : item.check !== undefined ? "menuitemcheckbox" : "menuitem");
   btn.disabled = !!item.disabled;
   const indicator = hasIndicators ? `<span class="indicator">${indicatorMark(item)}</span>` : "";
-  btn.innerHTML = `${indicator}<span class="label"></span>${item.accel ? `<span class="accel"></span>` : ""}`;
+  const label = item.subtitle ? `<span class="menu-item-text"><span class="label"></span><span class="menu-item-subtitle"></span></span>` : `<span class="label"></span>`;
+  btn.innerHTML = `${indicator}${label}${item.accel ? `<span class="accel"></span>` : ""}`;
   btn.querySelector(".label")!.textContent = item.label;
+  if (item.subtitle) btn.querySelector(".menu-item-subtitle")!.textContent = item.subtitle;
   if (item.accel) btn.querySelector(".accel")!.textContent = item.accel;
   btn.addEventListener("click", () => {
     close();

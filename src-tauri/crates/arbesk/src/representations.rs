@@ -663,6 +663,78 @@ pub(crate) fn infos(manifest: &Value, asset_path: &str) -> Vec<RepresentationInf
         .collect()
 }
 
+// ---- What a save changed (spec F14, Arbesk R4) ----------------------------------------------
+
+/// besk's `FORMAT_LABELS` (`packages/besk/src/representations.ts`); any
+/// other format is shown in capitals.
+const FORMAT_LABELS: [(&str, &str); 14] = [
+    ("gcode", "G-code"),
+    ("bgcode", "binary G-code"),
+    ("blend", "Blender file"),
+    ("stl", "STL"),
+    ("obj", "OBJ"),
+    ("3mf", "3MF"),
+    ("step", "STEP"),
+    ("stp", "STEP"),
+    ("glb", "GLB"),
+    ("gltf", "glTF"),
+    ("usdz", "USDZ"),
+    ("f3d", "Fusion file"),
+    ("fcstd", "FreeCAD file"),
+    ("scad", "OpenSCAD file"),
+];
+
+/// besk's `changeText`: “Added G-code (Original Prusa MK4, PETG)”: the
+/// verb, the format's label and, when the profile names them, the printer
+/// and the material.
+fn change_text(verb: &str, rep: &Rep) -> String {
+    let label = FORMAT_LABELS
+        .iter()
+        .find(|(format, _)| *format == rep.format)
+        .map_or_else(|| rep.format.to_ascii_uppercase(), |(_, label)| (*label).to_string());
+    let details: Vec<String> = ["printer", "material"]
+        .iter()
+        .filter_map(|key| rep.profile.as_ref()?.get(*key))
+        .map(js_string)
+        .filter(|part| !part.is_empty())
+        .collect();
+    if details.is_empty() {
+        format!("{verb} {label}")
+    } else {
+        format!("{verb} {label} ({})", details.join(", "))
+    }
+}
+
+/// besk's `representationChanges`, as text: what the list of `next`
+/// changed from `prev`'s (none: every file is added). Entries added and
+/// replaced (the same id, another file) in `next`'s order, then those
+/// removed in `prev`'s; ids compared as besk's `Map` keeps them (the first
+/// place an id is listed, its last entry).
+pub(crate) fn changes(prev: Option<&Value>, next: &Value) -> Vec<String> {
+    let mut order: Vec<String> = Vec::new();
+    let mut before: HashMap<String, Rep> = HashMap::new();
+    for rep in prev.map(list).unwrap_or_default() {
+        if !before.contains_key(&rep.id) {
+            order.push(rep.id.clone());
+        }
+        before.insert(rep.id.clone(), rep);
+    }
+    let after = list(next);
+    let mut out = Vec::new();
+    for rep in &after {
+        match before.get(&rep.id) {
+            None => out.push(change_text("Added", rep)),
+            Some(old) if old.cid != rep.cid => out.push(change_text("Replaced", rep)),
+            Some(_) => {}
+        }
+    }
+    let kept: HashSet<&str> = after.iter().map(|rep| rep.id.as_str()).collect();
+    for id in order.iter().filter(|id| !kept.contains(id.as_str())) {
+        out.push(change_text("Removed", &before[id]));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,6 +754,20 @@ mod tests {
         let commit = fixture()["arbesk_commit"].as_str().unwrap().to_string();
         assert_eq!(commit.len(), 40);
         assert!(commit.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    /// Spec F14: what a save changed reads as besk's
+    /// `representationChanges` words it, case for case.
+    #[test]
+    fn changes_are_worded_as_besk_words_them() {
+        let fixture = fixture();
+        let changed = cases(&fixture, "changes");
+        assert!(!changed.is_empty());
+        for case in changed {
+            let prev = (!case["prev"].is_null()).then_some(&case["prev"]);
+            let expected: Vec<String> = serde_json::from_value(case["changes"].clone()).unwrap();
+            assert_eq!(changes(prev, &case["next"]), expected, "{}", case["label"]);
+        }
     }
 
     #[test]

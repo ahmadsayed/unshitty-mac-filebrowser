@@ -1,10 +1,13 @@
 // Versions in the Space preview: one list, oldest first, whether it comes
 // from a Keep Versions history or an Arbesk asset's saves, and the control
-// in the preview's header that steps through it. main.ts shows the version
-// picked.
-import type { ArbeskVersion, VersionInfo } from "./api";
+// in the preview's header that steps through it; beside it, for an Arbesk
+// save with other files, the switcher between its model and those files,
+// and the page a file the viewer doesn't draw shows (spec F14). main.ts
+// shows the version and the file picked.
+import type { ArbeskVersion, RepresentationInfo, VersionInfo } from "./api";
 import { formatDate } from "./format";
 import { sym } from "./icons";
+import { fileSubtitle, formatLabel, staleReason } from "./representations";
 import { openMenu, type MenuItem } from "./ui";
 
 /** One version the preview can show. */
@@ -17,6 +20,8 @@ export interface PreviewVersion {
   current: boolean;
   /** Its size in bytes, when the history says. */
   size?: number;
+  /** What it changed in the item's other files (an Arbesk save's), in words. */
+  changes?: string[];
 }
 
 /** How many Keep Versions rows the preview reads, as Versions… does. */
@@ -41,7 +46,12 @@ export function fromLocal(rows: VersionInfo[], modified = 0): PreviewVersion[] {
 
 /** An Arbesk asset's saves (oldest first): the last one is the asset now. */
 export function fromArbeskSaves(rows: ArbeskVersion[]): PreviewVersion[] {
-  return rows.map((row, i) => ({ id: row.id, date: row.timestamp, current: i === rows.length - 1 }));
+  return rows.map((row, i) => ({
+    id: row.id,
+    date: row.timestamp,
+    current: i === rows.length - 1,
+    ...(row.changes?.length ? { changes: row.changes } : {}),
+  }));
 }
 
 /** "Version 3 of 12": `index` counts from the oldest, which is 0. */
@@ -54,15 +64,27 @@ export function versionDate(version: PreviewVersion): string {
   return version.date === null ? "" : formatDate(Math.round(version.date / 1000));
 }
 
-/** The version list's menu, newest first, the shown one marked. */
+/** What a version changed in the item's other files, as its row's
+ *  subtitle: "Added G-code (Original Prusa MK4, PETG) · Removed STL"; ""
+ *  when nothing (or nothing known). */
+export function changesText(version: PreviewVersion): string {
+  return (version.changes ?? []).join(" · ");
+}
+
+/** The version list's menu, newest first, the shown one marked; each row
+ *  says what it changed in the item's other files, when it did. */
 export function versionMenu(versions: PreviewVersion[], shown: number, pick: (index: number) => void): MenuItem[] {
   return versions
-    .map((version, index) => ({
-      label: version.current ? `Version ${index + 1} — Current` : `Version ${index + 1}`,
-      accel: versionDate(version),
-      radio: index === shown,
-      action: () => pick(index),
-    }))
+    .map((version, index) => {
+      const changes = changesText(version);
+      return {
+        label: version.current ? `Version ${index + 1} — Current` : `Version ${index + 1}`,
+        accel: versionDate(version),
+        radio: index === shown,
+        ...(changes ? { subtitle: changes } : {}),
+        action: () => pick(index),
+      };
+    })
     .reverse();
 }
 
@@ -119,4 +141,81 @@ function openVersionMenu(label: HTMLElement, items: MenuItem[]): void {
   openMenu(label, items, { className: "preview-version-menu" });
   const shown = document.querySelector(".preview-version-menu .radio-dot")?.closest("button");
   shown?.scrollIntoView?.({ block: "nearest" });
+}
+
+// ---------------------------------------------------------------------------
+// An Arbesk asset's other files in the preview (spec F14)
+// ---------------------------------------------------------------------------
+
+/** What the switcher's button says is shown: "Model", or the file's
+ *  format ("STL", "G-code", "Blender file"). */
+export function shownFileLabel(shown: RepresentationInfo | null): string {
+  return shown ? formatLabel(shown.format) : "Model";
+}
+
+/** The switcher's menu: the model (titled with the asset's name), then
+ *  each file of the save on screen with its subtitle (spec F7); the shown
+ *  one marked. `shown` and `pick` count the files from 0, the model -1. */
+export function filesMenu(assetName: string, files: readonly RepresentationInfo[], shown: number, pick: (index: number) => void): MenuItem[] {
+  return [
+    { label: assetName, subtitle: "Model", radio: shown < 0, action: () => pick(-1) },
+    ...files.map((rep, index) => ({ label: rep.name, subtitle: fileSubtitle(rep), radio: index === shown, action: () => pick(index) })),
+  ];
+}
+
+/**
+ * Draw the switcher in `host`, beside the version control: a menu button
+ * labelled with what is shown, with the out-of-date dot when the shown
+ * file is out of date, opening `filesMenu`. Space or Enter on it opens
+ * the menu, whose rows the arrow keys move through.
+ */
+export function drawFilesSwitcher(
+  host: HTMLElement,
+  assetName: string,
+  files: readonly RepresentationInfo[],
+  shown: number,
+  pick: (index: number) => void,
+): void {
+  const rep = shown >= 0 ? files[shown] : null;
+  const label = shownFileLabel(rep);
+  const button = document.createElement("button");
+  button.className = "flat-btn preview-files-button";
+  button.setAttribute("aria-haspopup", "menu");
+  button.title = "Shown File";
+  button.setAttribute("aria-label", `Shown File: ${label}${rep?.stale ? ", out of date" : ""}`);
+  button.innerHTML = `<span class="preview-files-label"></span>${rep?.stale ? `<span class="preview-files-dot" aria-hidden="true"></span>` : ""}${sym("pan-down")}`;
+  button.querySelector(".preview-files-label")!.textContent = label;
+  button.addEventListener("click", () => openMenu(button, filesMenu(assetName, files, shown, pick), { className: "preview-files-menu" }));
+  // Keep the keyboard on the switcher when it is drawn again.
+  const focused = host.contains(document.activeElement);
+  host.replaceChildren(button);
+  host.hidden = false;
+  if (focused) button.focus();
+}
+
+/**
+ * The preview's page for a file the viewer doesn't draw (a .blend, a
+ * G-code): its icon (`icon` fills the box), its name, its subtitle, the
+ * *Out of date* tag saying why, and Open With… (`openWith`).
+ */
+export function filePage(rep: RepresentationInfo, files: readonly RepresentationInfo[], icon: (box: HTMLElement) => void, openWith: () => void): HTMLElement {
+  const page = document.createElement("div");
+  page.className = "preview-file-page";
+  page.innerHTML = `<div class="preview-empty-icon"></div><p class="preview-file-name"></p><p class="preview-file-subtitle"></p>`;
+  icon(page.querySelector<HTMLElement>(".preview-empty-icon")!);
+  page.querySelector(".preview-file-name")!.textContent = rep.name;
+  page.querySelector(".preview-file-subtitle")!.textContent = fileSubtitle(rep);
+  if (rep.stale) {
+    const tag = document.createElement("span");
+    tag.className = "out-of-date-tag";
+    tag.textContent = "Out of date";
+    tag.title = staleReason(rep, files);
+    page.appendChild(tag);
+  }
+  const button = document.createElement("button");
+  button.className = "btn";
+  button.textContent = "Open With…";
+  button.addEventListener("click", openWith);
+  page.appendChild(button);
+  return page;
 }
