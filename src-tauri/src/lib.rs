@@ -787,21 +787,17 @@ async fn file_properties(
     show_hidden: bool,
 ) -> Result<properties::FileProperties, String> {
     properties_refusal(&path)?;
-    if place::kind(&path) == Kind::Arbesk {
-        return blocking(move || {
-            let registry = app.state::<places::Registry>();
-            arbesk_properties(&registry, &path)
-        })
-        .await?;
+    blocking(move || properties_in(&app, &path, show_hidden)).await?
+}
+
+/// `file_properties` once `path` is known to be describable: Arbesk asks
+/// its provider, Drive its server, and this computer its disk.
+fn properties_in(app: &tauri::AppHandle, path: &str, show_hidden: bool) -> Result<properties::FileProperties, String> {
+    match place::kind(path) {
+        Kind::Arbesk => arbesk_properties(&app.state::<places::Registry>(), path),
+        Kind::Drive => places_gdrive::service::file_properties(&app.state::<CloudState>(), path, show_hidden),
+        _ => properties::file_properties(path, show_hidden),
     }
-    if place::kind(&path) == Kind::Drive {
-        return blocking(move || {
-            let state = app.state::<CloudState>();
-            places_gdrive::service::file_properties(&state, &path, show_hidden)
-        })
-        .await?;
-    }
-    blocking(move || properties::file_properties(&path, show_hidden)).await?
 }
 
 /// An Arbesk asset's Properties, from its provider's extension.
