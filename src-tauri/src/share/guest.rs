@@ -13,7 +13,6 @@ use super::manifest::{Kind, MAX_MANIFEST, Manifest, ManifestEntry};
 use super::proto::{self, Reply, Request, read_within, write_msg};
 use super::registry::Received;
 use crate::fs_ops::Entry;
-use bao_tree::ChunkNum;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::{
     ConnectError, ConnectingError, Connection, ConnectionError, TransportErrorCode,
@@ -23,7 +22,7 @@ use iroh_blobs::Hash;
 use iroh_blobs::api::downloader::{
     DownloadOptions, DownloadProgressItem, Downloader, SplitStrategy,
 };
-use iroh_blobs::protocol::{ChunkRanges, GetRequest};
+use iroh_blobs::protocol::{ChunkRanges, ChunkRangesExt, GetRequest};
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::util::connection_pool;
 use n0_future::StreamExt;
@@ -208,10 +207,7 @@ impl Guest {
         let lookup = MemoryLookup::new();
         let lookups = endpoint.address_lookup().map_err(|e| e.to_string())?;
         lookups.add(lookup.clone());
-        let pool = connection_pool::Options {
-            connect_timeout: CONNECT_TIMEOUT,
-            ..Default::default()
-        };
+        let pool = pool_options();
         let downloader = Downloader::new_with_opts(&store, &endpoint, pool);
         Ok(Guest {
             endpoint,
@@ -389,7 +385,7 @@ impl Guest {
     /// The verified size of a blob, learned from a one-chunk ranged get
     /// (the outboard root carries the full size). G1.
     async fn blob_size(&self, addr: &EndpointAddr, hash: Hash) -> Result<u64, Fail> {
-        let request = GetRequest::blob_ranges(hash, ChunkRanges::from(ChunkNum(0)..ChunkNum(1)));
+        let request = GetRequest::blob_ranges(hash, ChunkRanges::chunk(0));
         let options = DownloadOptions::new(request, Some(addr.id), SplitStrategy::None);
         let probe = self.downloader.download_with_opts(options);
         match tokio::time::timeout(CONNECT_TIMEOUT, probe).await {
@@ -505,10 +501,7 @@ impl Guest {
         let store = FsStore::load(&dir)
             .await
             .map_err(|e| Fail::Other(e.to_string()))?;
-        let pool = connection_pool::Options {
-            connect_timeout: CONNECT_TIMEOUT,
-            ..Default::default()
-        };
+        let pool = pool_options();
         let downloader = Downloader::new_with_opts(&store, &self.endpoint, pool);
         let outcome = async {
             download_with_progress(&downloader, hash, addr, progress).await?;
@@ -606,6 +599,15 @@ fn copy_new(src: &Path, dest: &Path) -> Result<(), String> {
     std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
     output.flush().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// The downloader's connection pool, with this module's connect timeout.
+/// `Options` is `#[non_exhaustive]` (iroh-util 0.7), so it is set field by
+/// field rather than built with a struct expression.
+fn pool_options() -> connection_pool::Options {
+    let mut options = connection_pool::Options::default();
+    options.connect_timeout = CONNECT_TIMEOUT;
+    options
 }
 
 #[cfg(test)]
