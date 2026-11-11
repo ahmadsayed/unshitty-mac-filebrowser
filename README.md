@@ -90,7 +90,10 @@ one out on its own platform.
   Create a collection with **New Collection…** in the account's menu, share
   it with another Arbesk account by email as a Viewer or Editor, and copy a
   `.gltf`, `.glb` or `.3mf` file from this computer into one to add it to
-  Arbesk, after a confirmation, since files in Arbesk are public
+  Arbesk, after a confirmation, since files in Arbesk are public. An asset
+  that carries other files (its `.blend`, an STL, the G-code a slicer made)
+  shows an emblem saying how many, with a dot when one is out of date, and
+  its **Properties** show its version and list those files
   ([details](docs/arbesk.md)).
 - **Trash done right:** Undo (⌘Z), Restore (also for items trashed in Finder),
   and nothing is ever deleted without asking.
@@ -188,7 +191,9 @@ Design notes live in `docs/superpowers/`; agent and contributor rules in
   attached to an Arbesk account that has signed in once can be shared with;
   Arbesk lists only Editors in Network for now, so a Viewer needs the
   collection's path to open it; assets open in the Studio, not as files, and
-  only their newest version can be copied out; collections, and scenes that
+  only their newest version can be copied out; an asset's other files are
+  listed in its Properties but can't be opened, copied, added or removed
+  from the window yet; collections, and scenes that
   link to other assets, can't be
   copied yet, nor dragged to other apps; no sizes in listings; a scene's
   links to assets on another chain are left out of its preview.

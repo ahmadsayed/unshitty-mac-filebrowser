@@ -122,7 +122,8 @@ Then:
     version, keeping the asset's other files) and an asset out
     (`Transfer::export`), and the `Versions`, `Preview`, `Representations`
     (an asset's other files: their list, and one fetched into the app
-    cache), `Sharing` and `Accounts` extensions, whose own records reach
+    cache), `Properties` (an asset's name, collection, date and version),
+    `Sharing` and `Accounts` extensions, whose own records reach
     the frontend as the crate serialises them (`places::Json`). Its asset
     rows carry `places::Entry.representations`, a summary of those files
     (count, out of date, formats), the one key besides Drive's `cloud` a
@@ -157,7 +158,8 @@ Then:
   `swap_in`. A provider gives primitives only; the sequences that keep data
   safe are written once, here.
 - **What stays outside the registry** calls its module through
-  `place.rs`' gate: Drive's own writes, Properties, folder sizes, item
+  `place.rs`' gate: Drive's own writes, Properties (but an Arbesk asset's,
+  which its provider's `Properties` extension answers), folder sizes, item
   counts, search and measure (their `places` extensions are empty slots for
   now), and Delete Permanently and Empty Trash (`trash_ops::Trash`, inside a
   Trash folder only).
