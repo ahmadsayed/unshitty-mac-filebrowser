@@ -1537,6 +1537,66 @@ test("arbesk_part holds and answers out of order, refuses past its limit, and a 
   await invoke("arbesk_disconnect", { account: account.id });
 });
 
+test("arbesk_prefetch builds a copy's source ahead, which copy_entry then takes; held, failed and cancelled by ticket (performance plan, phase 5)", async () => {
+  const { ARBESK_MOCK_ADDRESS: address } = await import("../dev/mock-tauri/core");
+  type Build = { path: string; ahead: boolean; outcome: string };
+  const mock = (globalThis as unknown as {
+    __mockArbesk: {
+      holdBuilds(hold: boolean): void;
+      releaseBuilds(which?: (path: string, ahead: boolean) => boolean): void;
+      failBuilds(path: string, error: string): void;
+      builds(): Build[];
+      buildsRunning(): number;
+      buildsPeak(): number;
+      placements(): string[];
+      resetBuilds(): void;
+    };
+  }).__mockArbesk;
+  const start = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  const account = await invoke<{ id: string }>("arbesk_connect_finish", { flowId: start.flow_id });
+  const shapes = `arbesk://${address}/1~Shapes`;
+  const box = `${shapes}/box-g~Box.gltf`, cube = `${shapes}/box-m~Box.3mf`;
+  await invoke("make_dir", { path: `${HOME}/AheadOut` });
+  mock.resetBuilds();
+  try {
+    // Built ahead, then copied: the copy takes that build and builds nothing.
+    expect(await invoke("arbesk_prefetch", { path: box, ticket: 501 })).toBeUndefined();
+    expect(await invoke("copy_entry", { from: box, to: `${HOME}/AheadOut/Box.gltf`, overwrite: false, op: "" })).toBe(`${HOME}/AheadOut/Box.gltf`);
+    expect(mock.builds()).toEqual([{ path: box, ahead: true, outcome: "built" }]);
+    expect(mock.placements()).toEqual([box]);
+    // Nothing but the app cache is written by a build ahead.
+    expect(await invoke<Array<{ name: string }>>("list_dir", { path: `${HOME}/AheadOut`, showHidden: false })).toHaveLength(1);
+
+    // Held, two run at once; a cancelled ticket answers Cancelled., the other builds.
+    mock.resetBuilds();
+    mock.holdBuilds(true);
+    const outcome = (path: string, ticket: number) =>
+      invoke("arbesk_prefetch", { path, ticket }).then(() => "built", (error: unknown) => String(error));
+    const both = [outcome(box, 502), outcome(cube, 503)];
+    await vi.waitFor(() => expect(mock.buildsRunning()).toBe(2));
+    await invoke("cancel_arbesk_parts", { tickets: [502] });
+    expect(await both[0]).toBe("Cancelled.");
+    mock.releaseBuilds();
+    expect(await both[1]).toBe("built");
+    expect(mock.buildsPeak()).toBe(2);
+    mock.holdBuilds(false);
+    // A cancelled ticket starts cancelled.
+    await expect(invoke("arbesk_prefetch", { path: box, ticket: 502 })).rejects.toBe("Cancelled.");
+
+    // A failing source fails ahead and again at the copy, in the same words; not an Arbesk path is refused.
+    mock.resetBuilds();
+    mock.failBuilds(box, "Arbesk's gateway could not be reached.");
+    await expect(invoke("arbesk_prefetch", { path: box, ticket: 504 })).rejects.toBe("Arbesk's gateway could not be reached.");
+    await expect(invoke("copy_entry", { from: box, to: `${HOME}/AheadOut/Box2.gltf`, overwrite: false, op: "" })).rejects.toBe("Arbesk's gateway could not be reached.");
+    expect(mock.builds().map((b) => b.ahead)).toEqual([true, false]);
+    await expect(invoke("arbesk_prefetch", { path: `${HOME}/AheadOut/Box.gltf`, ticket: 505 })).rejects.toBe(`“${HOME}/AheadOut/Box.gltf” is not an Arbesk location.`);
+    await expect(invoke("arbesk_prefetch", { path: `${shapes}/gone~Gone.gltf`, ticket: 506 })).rejects.toBe("This asset is no longer in the collection.");
+  } finally {
+    mock.resetBuilds();
+    await invoke("arbesk_disconnect", { account: account.id });
+  }
+});
+
 test("arbesk_create_collection mints a named collection in the account only", async () => {
   const { ARBESK_MOCK_ADDRESS: address } = await import("../dev/mock-tauri/core");
   const mock = (globalThis as unknown as { __mockArbesk: { signedIn: boolean } }).__mockArbesk;

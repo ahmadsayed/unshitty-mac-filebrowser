@@ -30,8 +30,9 @@ import {
   type Entry, type RepresentationsSummary, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
-import { appFormats, arbeskAttach, arbeskAttachPlan, arbeskDetach, arbeskExport, arbeskFile, arbeskRepresentations, capabilities, openWith, type AppChoice, type AttachChoice, type Attached, type PlannedFile, type RepresentationInfo } from "./api";
+import { appFormats, arbeskAttach, arbeskAttachPlan, arbeskDetach, arbeskExport, arbeskFile, arbeskPrefetch, arbeskRepresentations, capabilities, openWith, type AppChoice, type AttachChoice, type Attached, type PlannedFile, type RepresentationInfo } from "./api";
 import { askAttachClash, chooseFileToOpen, chooseFilesToCopy, chooseFormatsToCopy, confirmAttach, confirmRemoveFile, iconEntry, showFilesDialog, type ClashChoice, type FilesActions, type FilesPage } from "./representation-dialogs";
+import { buildsAhead, type BuildsAhead } from "./arbesk-ahead";
 import { assetFormat, choiceTakesFrom, copyNameAt, copySources, formatsOfSummary, mayOmitFormats, onlyChoice, openWithCandidates, uniqueNames, type AssetFiles, type CopyChoice, type FileChoice } from "./representations";
 import { loadCapabilities } from "./capabilities";
 import { entryIcon, filesEmblemOf, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
@@ -64,7 +65,7 @@ import { LatestSave } from "./latest-save";
 import { fetchParts } from "./arbesk-parts";
 import { acceptsNewItems, arbeskPasteRefusal, attachRefusal, takesFiles, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, hasLocalFileFacts, knowsSizes, takesDrops, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
-import { childPath, cloudAccountKey, homeFolder, isArbeskAccount, isArbeskAsset, isArbeskCollection, arbeskFilePin, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
+import { childPath, cloudAccountKey, homeFolder, isArbeskAccount, isArbeskAsset, isArbeskCollection, isArbeskFile, arbeskFilePin, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -3329,6 +3330,11 @@ async function takenNamesIn(destDir: string): Promise<TakenNames> {
   return { has: async (name) => names.has(name), add: (name) => void names.add(name) };
 }
 
+/** A transfer batch's state: cancelled, still measuring (nothing to stop
+ *  yet), and how to stop a copy out of Arbesk's builds ahead, while it has
+ *  some (performance plan, phase 5). */
+type TransferBatch = { cancelled: boolean; measuring: boolean; stopAhead?: () => void };
+
 /** Transfers run one at a time; a new one waits behind this (spec D8). */
 let transferChain: Promise<unknown> = Promise.resolve();
 let transfersRunning = 0;
@@ -3352,9 +3358,11 @@ async function runTransfer(
   if (placeOf(destDir) === "arbesk" && !(await readyForArbesk(paths, dirs, paths.some(move), destDir))) return false;
   // The user's selection as of this paste; see transferBatch's end.
   const intent = selection.intent;
-  const batch = { cancelled: false, started: false, measuring: false };
+  const batch: TransferBatch & { started: boolean } = { cancelled: false, started: false, measuring: false };
   const op = transferOperation(paths, paths.some(move), destDir, () => {
     batch.cancelled = true;
+    // A copy out of Arbesk's builds ahead stop at once (performance plan, phase 5).
+    batch.stopAhead?.();
     // Waiting in the queue or still measuring: nothing to stop yet, so the
     // row goes at once and the batch ends before its first item.
     if (!batch.started || batch.measuring) endOperation(op);
@@ -3731,9 +3739,28 @@ function showLanded(destDir: string): void {
   }, wait);
 }
 
+/** Whether `path` is built into the app cache before it is placed in
+ *  `destDir`: an Arbesk asset or one of its other files copied out to this
+ *  computer or Drive (spec F9), so it may be built ahead of its turn. */
+function builtBeforePlacing(path: string, moving: boolean, destDir: string): boolean {
+  const out = placeOf(destDir) === "local" || placeOf(destDir) === "drive";
+  return out && !moving && (isArbeskAsset(path) || isArbeskFile(path));
+}
+
+/** Item `i`'s build ahead's failure, in the copy's words, when it was
+ *  still running at the item's turn; null when the copy builds the item
+ *  itself (no build ahead, one that ended before, built, or was
+ *  cancelled; a sign-in, which the copy asks for). */
+async function aheadFailure(ahead: BuildsAhead, i: number): Promise<string | null> {
+  const ended = await ahead.turn(i);
+  if (!ended) return null;
+  const error = cleanError(ended.error);
+  return error === CANCELLED || error === ARBESK_SIGN_IN ? null : error;
+}
+
 async function transferBatch(
   paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string,
-  op: Operation, batch: { cancelled: boolean; measuring: boolean }, intent: number,
+  op: Operation, batch: TransferBatch, intent: number,
   names?: ReadonlyMap<string, string>,
 ): Promise<boolean> {
   await measureBatch(op, paths, batch);
@@ -3746,52 +3773,75 @@ async function transferBatch(
   const reserved = names && new Set([...names.values()].map((name) => name.toLowerCase()));
   const taken = await takenNamesIn(destDir);
   const freeName = (name: string, isDir: boolean) => freeCopyName(destDir, name, isDir, reserved, (candidate) => taken.has(candidate));
+  // Performance plan, phase 5: while an item is placed, the next Arbesk
+  // ones are built into the app cache; placing stays here, in order.
+  const ahead = buildsAhead(paths, (path) => builtBeforePlacing(path, move(path), destDir), {
+    build: arbeskPrefetch,
+    cancel: (tickets) => void cancelArbeskParts(tickets).catch(() => undefined),
+    ticket: () => ++partTicketSeq,
+  });
+  batch.stopAhead = () => ahead.stop();
+  try {
+    for (let i = 0; i < paths.length && !batch.cancelled; i++) {
+      ahead.placing(i);
+      const from = paths[i];
+      // A Drive or Arbesk name can be "a/b" or "..": locally it must stay one
+      // plain name. A copy out of Arbesk names each file as planned (F9).
+      const base = names?.get(from) ?? targetBase(from, destDir);
+      // A .glb is stored as glTF: its listed name, which a clash is checked against.
+      const name = placeOf(destDir) === "arbesk" ? arbeskTargetName(base) : base;
+      const isDir = dirs.has(from);
+      const moving = move(from);
+      anyMove ||= moving;
+      let landing = name;
+      let overwrite = false;
 
-  for (let i = 0; i < paths.length && !batch.cancelled; i++) {
-    const from = paths[i];
-    // A Drive or Arbesk name can be "a/b" or "..": locally it must stay one
-    // plain name. A copy out of Arbesk names each file as planned (F9).
-    const base = names?.get(from) ?? targetBase(from, destDir);
-    // A .glb is stored as glTF: its listed name, which a clash is checked against.
-    const name = placeOf(destDir) === "arbesk" ? arbeskTargetName(base) : base;
-    const isDir = dirs.has(from);
-    const moving = move(from);
-    anyMove ||= moving;
-    let landing = name;
-    let overwrite = false;
-
-    // Same folder: in Drive `from` is an id path and `to` a pending name,
-    // so compare folders, not paths.
-    if (parentOf(from) === destDir.replace(/\/+$/, "") && basename(from) === name) {
-      // A copy into its own folder makes a duplicate, as in GNOME Files;
-      // moving into the same folder does nothing.
-      if (moving) continue;
-      landing = await freeName(name, isDir);
-    } else if (await taken.has(name)) {
-      let choice: ConflictChoice | null = applyToAll;
-      if (!choice) {
-        const answer = await askConflict(name, isDir, destDir, paths.length - i - 1);
-        choice = answer.choice;
-        if (answer.all) applyToAll = choice;
+      // Same folder: in Drive `from` is an id path and `to` a pending name,
+      // so compare folders, not paths.
+      if (parentOf(from) === destDir.replace(/\/+$/, "") && basename(from) === name) {
+        // A copy into its own folder makes a duplicate, as in GNOME Files;
+        // moving into the same folder does nothing.
+        if (moving) continue;
+        landing = await freeName(name, isDir);
+      } else if (await taken.has(name)) {
+        let choice: ConflictChoice | null = applyToAll;
+        if (!choice) {
+          const answer = await askConflict(name, isDir, destDir, paths.length - i - 1);
+          choice = answer.choice;
+          if (answer.all) applyToAll = choice;
+        }
+        if (choice === "cancel") {
+          batch.cancelled = true;
+          break;
+        }
+        if (choice === "skip") continue;
+        if (choice === "keepboth") landing = await freeName(name, isDir);
+        else overwrite = true;
       }
-      if (choice === "cancel") {
-        batch.cancelled = true;
-        break;
-      }
-      if (choice === "skip") continue;
-      if (choice === "keepboth") landing = await freeName(name, isDir);
-      else overwrite = true;
-    }
 
-    try {
-      done.push(await transferSigningIn(op, from, joinPath(destDir, landing), overwrite, moving, signIn, batch));
-      taken.add(landing);
-      showLanded(destDir);
-    } catch (err) {
-      // A cancel is not a failure: no toast, finished items stay.
-      if (cleanError(err) === CANCELLED) batch.cancelled = true;
-      else errors.push(`“${name}”: ${cleanError(err)}`);
+      // Its build ahead still running: the copy's own build would wait for
+      // it, then build again; its failure is the copy's, told at once.
+      const failedAhead = await aheadFailure(ahead, i);
+      if (batch.cancelled) break;
+      if (failedAhead !== null) {
+        finishItem(op);
+        errors.push(`“${name}”: ${failedAhead}`);
+        continue;
+      }
+
+      try {
+        done.push(await transferSigningIn(op, from, joinPath(destDir, landing), overwrite, moving, signIn, batch));
+        taken.add(landing);
+        showLanded(destDir);
+      } catch (err) {
+        // A cancel is not a failure: no toast, finished items stay.
+        if (cleanError(err) === CANCELLED) batch.cancelled = true;
+        else errors.push(`“${name}”: ${cleanError(err)}`);
+      }
     }
+  } finally {
+    ahead.stop();
+    batch.stopAhead = undefined;
   }
 
   const verb = anyMove ? "move" : "copy";

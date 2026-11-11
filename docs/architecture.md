@@ -79,7 +79,8 @@ and the frontend's built-in copy and the mock's answer against it.
 Tauri's blocking pool (`blocking`). It manages the cancel registries a
 window's tickets name: `thumbnails::Requests` for thumbnails
 (`cancel_thumbnails`) and `part_tickets::PartTickets` for the preview's
-Arbesk part fetches (`cancel_arbesk_parts`). The read commands (listing,
+Arbesk part fetches and a copy out's builds ahead (`arbesk_prefetch`)
+(`cancel_arbesk_parts`). The read commands (listing,
 existence, path info, thumbnails, opening, the preview's file) ask the
 registry directly and never call `place.rs`. `place.rs` is a narrow gate,
 not a router: it gates the commands that work on this computer only
@@ -156,7 +157,8 @@ Then:
   (`Route::IntoArbesk`) is `lib.rs`' `write_into_place`, Arbesk's own
   `Transfer::write`, and an asset copied out is first built by its
   `Transfer::export` (`exported_source`), then copied by the engine like
-  any local file. On this computer (`engine::local`)
+  any local file; the frontend builds the next items ahead by that same
+  export (`arbesk_prefetch`), so the copy finds them built. On this computer (`engine::local`)
   and for whatever lands here (a Drive download) it places through
   `placement.rs`: the refusals and their wording, staging under a hidden
   name, Replace through the Trash with take-back, and a move's source
