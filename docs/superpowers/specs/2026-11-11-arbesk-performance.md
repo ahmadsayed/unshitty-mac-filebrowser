@@ -434,6 +434,73 @@ files one file at a time. 20 assets × 6 parts: about 100 serial round trips.
 
 **Gain.** 20 assets × 6 parts: about 100 round trips become 20 (30 s → 6 s).
 
+**As built.**
+- Where the look-ahead lives: the frontend asks for each build ahead, the
+  backend builds it. `arbesk_prefetch(path, ticket)` (`lib.rs`,
+  `built_ahead`) runs `arbesk_exported`, the very `Transfer::export` the
+  copy's own build (`copy_entry` → `exported_source`) runs on the same
+  provider, into the app cache: the same cache keys
+  (`cache/arbesk/<manifest CID>`, an other file's
+  `cache/arbesk/files/<CID>`), the same limiter permits and byte budget,
+  and `Builds` makes the copy's build of a source being built ahead wait
+  for it and take its file (no part is read twice). `engine.rs`,
+  `placement.rs` and `copy_entry` are untouched. A backend command fed the
+  whole list would have had to learn from the copy which item it was
+  placing, what it skipped and when it ended; the loop already knows.
+- `src/arbesk-ahead.ts` (`buildsAhead`, `BUILDS_AHEAD` = 4): while
+  `transferBatch` places item i, the items i+1 … i+4 not started yet are
+  built ahead, if `builtBeforePlacing` says so (an Arbesk asset or one of
+  its other files, copied, never moved, to this computer or Drive). The
+  window counts every item, so a mixed batch never builds further ahead;
+  an item the loop passes (Skip, a failure) is never built ahead later.
+  An asset's other files go by the paths the plan made, pinned to the
+  CIDs the dialog showed.
+- Placing is the loop as it was: one `copy_entry` at a time, in order, the
+  clash question asked at the item's turn, Keep Both, Replace through the
+  Trash, never overwriting. Nothing ahead writes outside the app cache.
+- Cancel: runTransfer's cancel calls `batch.stopAhead` at once, and the
+  batch's end stops what still runs (an item skipped): `cancel_arbesk_parts`
+  with their tickets, which `arbesk_prefetch` registers in
+  `part_tickets::PartTickets` (tickets from the preview's counter, so a
+  cancel that overtakes the async call is kept). The batch does not wait
+  for them to end: a read that can't be interrupted yet (phase 6) would
+  hold the row. A build ahead is not a tracked operation, so it reports
+  into no row and never keeps `restart_app` refusing.
+- Correction to *Change* above: the progress row is today's. `measure`
+  finds no size for an Arbesk source, so the row counts files as they are
+  placed (*N of M files*); the builds ahead report into no row.
+- A failed build ahead is never shown by itself: at its turn the copy
+  builds the item again, as it always did, and a failure then is told in
+  today's words (*Could not copy “name”: …*). A failure that lasts is told
+  at that turn, never earlier; one that passes costs no more than today's
+  single attempt. (The task text said the prefetch "reports its error at
+  its turn"; reporting the copy's own attempt keeps the words and the
+  outcome identical to a copy without builds ahead.)
+- A built copy never placed (a Skip, a Cancel, a later failure) stays in
+  the app cache, marked and pruned as today.
+- Mock: `arbesk_prefetch` builds a copy's source once (a second build
+  waiting for the first, as `Builds`), honouring its ticket; `copy_entry`
+  from Arbesk takes it or builds itself; `__mockArbesk.holdBuilds`,
+  `releaseBuilds`, `failBuilds`, `failBuildOnce`, `builds`,
+  `buildsRunning`, `buildsPeak`, `placements`, `placingPeak`,
+  `resetBuilds`.
+- Tests: the arbesk crate's
+  `builds_ahead_overlap_and_the_copy_takes_what_they_built` (six assets,
+  four ahead of the one placed: peak reads above 1 and within `READS`,
+  each placement the file built ahead, no part read twice),
+  `a_copy_waits_for_its_build_ahead_and_a_cancel_stops_the_wait` and
+  `builds_ahead_share_the_byte_budget` (five builds under a one-part
+  budget never have more than one part each on their way; more without);
+  the app's `arbesk_commands_reach_arbesks_provider` (a build ahead in the
+  copy's words); `tests/arbesk-ahead.test.ts` (the window);
+  `tests/arbesk-copy-ahead.test.ts` (six assets built five at once,
+  placed one at a time in order, each built once; Cancel stops the builds
+  ahead and lands nothing; a failing build ahead told only at its turn,
+  in the copy's words; one failing once built again and landed; a Skip
+  placing nothing; other files built ahead by their pinned paths), and the
+  mock's case in `tests/mock-core.test.ts`. No visible change: the dialogs
+  and the row look as before.
+
 ## Phase 6: large parts download on a timeout that fits their size
 
 **Now.** Model parts are read with `Gateway::bytes` on the 30-second client
