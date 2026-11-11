@@ -147,6 +147,37 @@ saves is downloaded once. Older saves store the model file itself (a `.glb`, or
 a zipped `.3mf`) instead of a stored source; the preview shows those as
 they are, as the Studio does.
 
+### An asset's other files
+
+An Arbesk asset can carry other files besides its model: the `.blend` it is
+edited in, an STL or 3MF to slice, the G-code a slicer made (its
+*representations*, added by `besk attach` or the Studio). File Browser
+still shows one file per asset. It reads the list from the manifest the
+listing already fetches (no extra request), and works out which files are
+out of date (made from an earlier model, or from another of the asset's
+files that has changed since) exactly as Arbesk's own `asset-core` does; a
+file entry it can't read is left out, never an error.
+
+Nothing shows these files yet; what is in place underneath:
+
+- Each file has a path one level below its asset,
+  `…/<asset>~Box.gltf/<file id>~Bracket.gcode`, which may be pinned to the
+  file's content, `…/<file id>@<cid>~Bracket.gcode`: a pinned path whose
+  file changed in Arbesk since says *“Bracket.gcode” changed in Arbesk since
+  it was copied.* The name in the path is made one plain file name (no `/`,
+  never `.` or `..`). Nothing lists these paths.
+- Opening one fetches it into the app cache
+  (`arbesk/files/<cid>/<name>`, beside the built assets), decoded as its
+  entry says (a raw file is never unpacked), at most 256 MB (*This file is
+  too large to open.*), and checked against the size its entry records
+  (*Arbesk sent a damaged file.*). An unchanged copy is reused, an edited
+  one is kept and a fresh copy goes beside it, and copies are pruned after
+  a week like other downloads (edited ones go to the Trash). Edits to an
+  opened copy stay on this computer: File Browser uploads nothing back.
+
+Replacing an asset's model (copy-in's *Replace*) keeps its other files, see
+[Copying into Arbesk](#copying-into-arbesk).
+
 A model stored in a way File Browser doesn't know yet says *This asset uses
 an Arbesk format File Browser can't read yet.* rather than showing a wrong
 file.

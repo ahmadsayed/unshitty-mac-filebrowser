@@ -23,6 +23,8 @@ interface Entry {
     web_url?: string;
     can_download: boolean;
   };
+  /** An item's other files (an Arbesk asset's representations), when it has some. */
+  representations?: { count: number; stale: number; formats: string[] };
 }
 
 type Node = { dir: true; children: Record<string, Node>; modified: number; link?: boolean } | { dir: false; size: number; modified: number; link?: boolean };
@@ -1652,7 +1654,23 @@ type MockAsset = {
   saves?: { prefix: string; count: number };
   /** A scene's parts, each at the x offsets of its copies (tinted when a colour is given). */
   scene?: Array<{ key: string; format: "glb" | "3mf"; copies: Array<{ x: number; color?: string }> }>;
+  /** Its other files, as Arbesk stores the entries (an invalid one
+   *  included), in the newest save only. */
+  representations?: MockRepresentation[];
 };
+
+/** A representation entry as stored, loosely typed as another client may write it. */
+type MockRepresentation = Record<string, unknown>;
+
+/** The CID of an asset's model in its newest save: a file made from an
+ *  earlier save names another one, so it reads out of date. */
+const arbeskModelCid = (asset: MockAsset) => `bafy-${asset.id}-v${asset.saves?.count ?? 1}`;
+
+/** A representation entry as `besk attach` records one. */
+function mockRep(id: string, role: string, format: string, name: string, bytes: number, extra: MockRepresentation = {}): MockRepresentation {
+  const encoding = ["gcode", "gltf", "obj", "step", "txt"].includes(format) ? "brotli" : "raw";
+  return { id, role, format, name, cid: `bafy-rep-${id}`, bytes, encoding, created_at: (now - day) * 1000, ...extra };
+}
 
 /** The account's collections, as the backend lists them: Shapes, and one without a name. */
 const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset[] }> = [
@@ -1660,7 +1678,13 @@ const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset
     token: "1",
     name: "Shapes",
     assets: [
-      { id: "box-g", name: "Box", ext: "gltf", thumbnail: true },
+      {
+        id: "box-g",
+        name: "Box",
+        ext: "gltf",
+        thumbnail: true,
+        representations: [mockRep("stl", "mesh", "stl", "Box.stl", 684, { derived_from: { ref: "primary", cid: "bafy-box-g-v1" } })],
+      },
       { id: "box-m", name: "Box", ext: "3mf" },
       { id: "big", name: "Big", ext: "gltf", huge: true },
     ],
@@ -1669,7 +1693,28 @@ const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset
     token: "2",
     name: "Untitled Collection",
     assets: [
-      { id: "asset_1", name: "Cube", ext: "gltf", thumbnail: true, saves: { prefix: "cube", count: 3 } },
+      {
+        id: "asset_1",
+        name: "Cube",
+        ext: "gltf",
+        thumbnail: true,
+        saves: { prefix: "cube", count: 3 },
+        // The spec's Bracket set: a source, a fresh STL, a G-code made from
+        // an earlier save (out of date), a 3MF, and an entry File Browser
+        // can't read (left out, but stored).
+        representations: [
+          mockRep("source", "source", "blend", "Cube.blend", 48_120),
+          mockRep("stl", "mesh", "stl", "Cube.stl", 3_412, { derived_from: { ref: "primary", cid: "bafy-asset_1-v3" } }),
+          mockRep("gcode-original-prusa-mk4-petg", "machine", "gcode", "Cube_0.2mm_PETG_MK4.gcode", 812_331, {
+            derived_from: { ref: "primary", cid: "bafy-asset_1-v2" },
+            tool: { name: "PrusaSlicer", version: "2.9.2" },
+            profile: { printer: "Original Prusa MK4", material: "PETG", layer_mm: 0.2, nozzle_mm: 0.4 },
+            stats: { print_time_s: 7420, filament_g: 38.5 },
+          }),
+          mockRep("3mf", "mesh", "3mf", "Cube.3mf", 1_102),
+          { id: "Print Plan", role: "plan", format: "json" },
+        ],
+      },
       // A scene: two copies of one model, the second 50 to the right (the model is 40 wide) and red, and a 3MF part.
       {
         id: "table",
@@ -1691,18 +1736,106 @@ let arbeskFlowSeq = 0;
 /** `<id>~<name>`, both encoded as the backend writes them. */
 const arbeskSegment = (id: string, name: string) => `${encodeCloudName(id)}~${encodeCloudName(name)}`;
 
-/** The ids an `arbesk://` path names, after checking its account is connected. */
-function arbeskIds(path: string): { address: string; token?: string; asset?: string } {
+/** The ids an `arbesk://` path names, after checking its account is
+ *  connected: for an asset's other file (spec F4), its id and the CID it
+ *  may be pinned to (`<id>@<cid>~<name>`). */
+function arbeskIds(path: string): { address: string; token?: string; asset?: string; file?: string; pin?: string } {
   const [address, ...rest] = path.slice("arbesk://".length).replace(/\/+$/, "").split("/");
   if (!arbeskAccountList.some((account) => account.address === address?.toLowerCase())) {
     throw "Connect this Arbesk account first.";
   }
-  const [token, asset] = rest.map((segment) => decodeURIComponent(segment.split("~")[0]));
-  return { address, token, asset };
+  const [token, asset, segment] = rest.map((part) => decodeURIComponent(part.split("~")[0]));
+  if (segment === undefined) return { address, token, asset };
+  const [file, pin] = segment.split("@");
+  return { address, token, asset, file, pin };
 }
 
-function arbeskEntry(name: string, path: string, isDir: boolean): Entry {
-  return { name, path, is_dir: isDir, size: 0, modified: now - day, is_hidden: false, is_symlink: false };
+function arbeskEntry(name: string, path: string, isDir: boolean, asset?: MockAsset): Entry {
+  const entry: Entry = { name, path, is_dir: isDir, size: 0, modified: now - day, is_hidden: false, is_symlink: false };
+  const summary = asset && arbeskSummary(asset);
+  if (summary) entry.representations = summary;
+  return entry;
+}
+
+// ----- An asset's other files (representations), as asset-core reads them -----
+
+/** A valid stored entry, as `representationSchema` checks it (the parts this mock's entries exercise). */
+type ValidRepresentation = {
+  id: string; role: string; format: string; name: string; cid: string; bytes: number; encoding: string;
+  derived_from?: { ref: string; cid: string }; tool?: object; profile?: object; stats?: object; created_at: number;
+};
+
+const REP_ID = /^[a-z0-9-]{1,64}$/;
+const REP_ROLES = ["source", "mesh", "view", "machine", "other"];
+
+function validRepresentation(entry: MockRepresentation): entry is ValidRepresentation & MockRepresentation {
+  const text = (key: string) => typeof entry[key] === "string" && (entry[key] as string).length > 0;
+  return REP_ID.test(String(entry.id)) && entry.id !== "primary" && REP_ROLES.includes(String(entry.role))
+    && /^[a-z0-9]{1,16}$/.test(String(entry.format)) && text("name") && text("cid")
+    && Number.isInteger(entry.bytes) && (entry.bytes as number) >= 0 && ["raw", "brotli"].includes(String(entry.encoding))
+    && typeof entry.created_at === "number";
+}
+
+/** `listRepresentations`: the valid entries, in stored order. */
+const arbeskFiles = (asset: MockAsset) => (asset.representations ?? []).filter(validRepresentation);
+
+/** `isStale`: made from a model or an entry whose CID has changed (or is gone). */
+function arbeskStale(asset: MockAsset, rep: ValidRepresentation): boolean {
+  const from = rep.derived_from;
+  if (!from) return false;
+  const current = from.ref === "primary" ? arbeskModelCid(asset) : arbeskFiles(asset).find((r) => r.id === from.ref)?.cid;
+  return current !== from.cid;
+}
+
+/** The listing's summary (spec F2); none without valid entries. */
+function arbeskSummary(asset: MockAsset): Entry["representations"] {
+  const reps = arbeskFiles(asset);
+  if (!reps.length) return undefined;
+  return {
+    count: reps.length,
+    stale: reps.filter((rep) => arbeskStale(asset, rep)).length,
+    formats: [...new Set(reps.map((rep) => rep.format))],
+  };
+}
+
+/** `arbesk_representations`: the asset's files in a save (its newest when
+ *  `version` is null; earlier saves have none here). */
+function arbeskRepresentations(path: string, version: string | null) {
+  const asset = arbeskAsset(path);
+  const saves = arbeskVersions(path).map((v) => v.id);
+  if (version !== null && !saves.includes(version)) throw "This version is not in the asset.";
+  if (version !== null && version !== saves[saves.length - 1]) return [];
+  return arbeskFiles(asset).map((rep) => ({
+    id: rep.id, role: rep.role, format: rep.format, name: rep.name, bytes: rep.bytes,
+    stale: arbeskStale(asset, rep), derived_from: rep.derived_from?.ref ?? null,
+    tool: rep.tool ?? null, profile: rep.profile ?? null, stats: rep.stats ?? null, created_at: rep.created_at,
+  }));
+}
+
+/** Where the backend keeps opened copies of Arbesk files, in the fake filesystem. */
+export const ARBESK_MOCK_FILES = "/tmp/opencode/mock-arbesk/files";
+
+/** A file name as the backend makes one safe: no `/` or NUL, never empty, `.` or `..`. */
+function safeFileName(name: string): string {
+  const safe = name.replace(/[/\0]/g, "_");
+  return safe === "" || safe === "." || safe === ".." ? "_" : safe;
+}
+
+/** Opening an asset's other file (spec F5): fetched into the app cache,
+ *  `…/arbesk/files/<cid>/<name>`, where `open_with` and `preview_bytes`
+ *  find it; a pinned path whose entry moved is refused. */
+function arbeskFileOpen(path: string): string {
+  const { file, pin } = arbeskIds(path);
+  const rep = arbeskFiles(arbeskAsset(path)).find((r) => r.id === file);
+  if (pin !== undefined && rep?.cid !== pin) {
+    const shown = decodeURIComponent(path.slice(path.lastIndexOf("/") + 1).split("~").slice(1).join("~"));
+    throw `“${shown}” changed in Arbesk since it was copied.`;
+  }
+  if (!rep) throw "This file is no longer in the asset.";
+  const dir = ensureDir(`${ARBESK_MOCK_FILES}/${rep.cid}`);
+  const name = safeFileName(rep.name);
+  dir.children[name] ??= f(rep.bytes, 0);
+  return `${ARBESK_MOCK_FILES}/${rep.cid}/${name}`;
 }
 
 function listArbesk(path: string): Entry[] {
@@ -1713,7 +1846,7 @@ function listArbesk(path: string): Entry[] {
   const collection = ARBESK_COLLECTIONS.find((c) => c.token === token);
   if (!collection) throw "The chain refused this collection.";
   const base = path.replace(/\/+$/, "");
-  return collection.assets.map((a) => arbeskEntry(`${a.name}.${a.ext}`, `${base}/${arbeskSegment(a.id, `${a.name}.${a.ext}`)}`, false));
+  return collection.assets.map((a) => arbeskEntry(`${a.name}.${a.ext}`, `${base}/${arbeskSegment(a.id, `${a.name}.${a.ext}`)}`, false, a));
 }
 
 function arbeskAsset(path: string): MockAsset {
@@ -1828,7 +1961,8 @@ function freshArbeskId(): string {
  * local .gltf, .glb or .3mf becomes an asset named after the target, a .glb
  * stored as glTF. Refused in the backend's order: the source, the target,
  * the account, the session, the file, a taken name. Replace keeps the asset
- * and saves the file as its next version (D3).
+ * and saves the file as its next version (D3), with its other files (spec
+ * F15), which then read out of date.
  */
 function arbeskAdd(a: Args): string {
   const from = str(a, "from");
@@ -1939,6 +2073,7 @@ function arbeskPart(path: string, version: string | null, key: string, limit: nu
 const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
   arbesk_versions: (a) => arbeskVersions(str(a, "path")),
   arbesk_scene: (a) => arbeskScene(str(a, "path"), (a.version as string | null | undefined) ?? null),
+  arbesk_representations: (a) => arbeskRepresentations(str(a, "path"), (a.version as string | null | undefined) ?? null),
   arbesk_part: (a) => arbeskPart(str(a, "path"), (a.version as string | null | undefined) ?? null, str(a, "key"), Number(a.limit)),
   arbesk_accounts: () => arbeskAccountList.map((account) => ({ ...account })),
   arbesk_connect_start: (a) => {
@@ -2636,7 +2771,8 @@ const DOWNLOAD_TO_OPEN: Record<Exclude<Place, "local">, (path: string) => OpenTa
   sftp: (path) => ({ kind: "file", path: `/tmp/opencode/mock-sftp/${decodeURIComponent(path.split("/").pop() ?? "file")}` }),
   // As the backend answers: the asset's Studio link, opened in the browser.
   arbesk: (path) => {
-    const { token } = arbeskIds(path);
+    const { token, file } = arbeskIds(path);
+    if (file !== undefined) return { kind: "file", path: arbeskFileOpen(path) };
     const asset = arbeskAsset(path);
     const query = new URLSearchParams({ asset: token ?? "", assetId: asset.id });
     return { kind: "url", url: `${ARBESK_ORIGIN}/studio?${query}` };

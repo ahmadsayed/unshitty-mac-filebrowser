@@ -71,9 +71,13 @@ fn refusals(each: [(Operation, Option<String>); 6]) -> Vec<Refused> {
 /// else is ever created (a new file is refused as read only by `create`
 /// itself). The account stays `read_only`: nothing in it is renamed,
 /// trashed or copied in.
+///
+/// An asset's other file (spec F4) allows what its asset does, but has no
+/// thumbnail of its own.
 pub fn capabilities(path: &str) -> Capabilities {
     let parsed = location::parse(path);
-    let is_asset = matches!(parsed, Ok(ArbeskPath::Asset { .. }));
+    let is_file = matches!(parsed, Ok(ArbeskPath::File { .. }));
+    let is_asset = is_file || matches!(parsed, Ok(ArbeskPath::Asset { .. }));
     let create = match &parsed {
         Ok(ArbeskPath::Account { .. }) => None,
         Ok(_) => Some(IN_ACCOUNT.to_string()),
@@ -85,7 +89,7 @@ pub fn capabilities(path: &str) -> Capabilities {
         Err(error) => Some(error.clone()),
     };
     let copy_out = match &parsed {
-        Ok(ArbeskPath::Asset { .. }) => None,
+        Ok(ArbeskPath::Asset { .. } | ArbeskPath::File { .. }) => None,
         Ok(_) => Some(COLLECTION_COPY.to_string()),
         Err(error) => Some(error.clone()),
     };
@@ -99,7 +103,7 @@ pub fn capabilities(path: &str) -> Capabilities {
         knows_sizes: false,
         knows_counts: false,
         searchable: false,
-        has_thumbnails: true,
+        has_thumbnails: !is_file,
         // Nothing is renamed here.
         rename_atomic: false,
         replace: Replace::NewVersion,
@@ -166,7 +170,13 @@ impl places::Provider for Client {
     }
     /// An asset opens in Arbesk's Studio, in the browser; the preview gets
     /// its file built in the app cache.
+    ///
+    /// An asset's other file (spec F4) is decoded into the app cache for
+    /// either, with progress (spec F5).
     fn fetch(&self, path: &str, purpose: Fetch, cx: &Cx) -> Result<Fetched> {
+        if let Ok(ArbeskPath::File { .. }) = location::parse(path) {
+            return self.file_at(path, &cx.progress).map(Fetched::File).map_err(words);
+        }
         match purpose {
             Fetch::Open => self.studio_url(path).map(Fetched::Url).map_err(words),
             Fetch::Preview => self.build(path, &cx.progress).map(Fetched::File).map_err(words),
@@ -201,6 +211,7 @@ impl places::Provider for Client {
             accounts: Some(self),
             sharing: Some(self),
             preview: Some(self),
+            representations: Some(self),
             ..Extensions::default()
         }
     }
@@ -299,6 +310,15 @@ impl ext::Preview for Client {
     }
 }
 
+impl ext::Representations for Client {
+    fn representations(&self, path: &str, version: Option<&str>) -> Result<Json> {
+        Json::of(&Client::representations(self, path, version).map_err(words)?)
+    }
+    fn file(&self, path: &str, version: Option<&str>, id: &str, cx: &Cx) -> Result<PathBuf> {
+        self.representation_file(path, version, id, &cx.progress).map_err(words)
+    }
+}
+
 impl ext::Sharing for Client {
     fn share(&self, path: &str, email: &str, role: u8) -> Result<Shared> {
         self.share_collection(path, email, role).map_err(words)
@@ -344,7 +364,13 @@ mod tests {
     /// A client over the fake Arbesk, with `testing::ADDRESS` connected and
     /// signed in, and the sessions it keeps.
     fn client(dir: &Path) -> (Client, Account, MemorySessions) {
+        client_with(dir, |_| {})
+    }
+
+    /// [`client`] over the fake Arbesk as `edit` leaves it.
+    fn client_with(dir: &Path, edit: impl FnOnce(&mut testing::World)) -> (Client, Account, MemorySessions) {
         let mut world = testing::world();
+        edit(&mut world);
         world.sessions.insert("t".into());
         let http = Arc::new(testing::arbesk(Arc::new(Mutex::new(world))));
         let sessions = MemorySessions::default();
@@ -399,6 +425,121 @@ mod tests {
         assert_eq!(refusal(&capabilities("arbesk://bad"), Operation::Create), Some(bad.clone()));
         assert_eq!(refusal(&capabilities("arbesk://bad"), Operation::CopyIn), Some(bad.clone()));
         assert_eq!(refusal(&capabilities("arbesk://bad"), Operation::CopyOut), Some(bad));
+    }
+
+    /// An asset's other file allows what its asset allows, but has no
+    /// thumbnail of its own (spec F4).
+    #[test]
+    fn an_assets_other_file_allows_what_its_asset_does() {
+        let file = format!("{ASSET}/stl@bafyStl~Box.stl");
+        let (caps, asset) = (capabilities(&file), capabilities(ASSET));
+        assert!(caps.can_copy_out && caps.read_only && !caps.can_create && !caps.has_thumbnails);
+        assert!(asset.has_thumbnails);
+        for operation in [Operation::Create, Operation::Rename, Operation::Trash, Operation::CopyIn, Operation::CopyOut, Operation::LocalOnly] {
+            assert_eq!(refusal(&caps, operation), refusal(&asset, operation), "{operation:?}");
+        }
+    }
+
+    const GCODE: &str = "G1 X10 Y10 E0.5\n";
+
+    /// Shapes' Box.gltf (a1) with other files: a G-code stored
+    /// brotli-framed, a raw `.blend` whose bytes start like a frame, one
+    /// whose `bytes` is wrong, and one named to leave its folder.
+    fn with_files(world: &mut testing::World) {
+        let text = GCODE.repeat(500).into_bytes();
+        let (stored, _) = crate::representations::encode(&text, "gcode");
+        world.files.insert("bafyGcode".into(), stored);
+        let blend = b"ARB\x01not a frame, a blend".to_vec();
+        world.files.insert("bafyBlend".into(), blend.clone());
+        let entry = |id: &str, format: &str, name: &str, cid: &str, bytes: usize, encoding: &str| {
+            serde_json::json!({ "id": id, "role": "other", "format": format, "name": name, "cid": cid,
+                "bytes": bytes, "encoding": encoding, "created_at": 1 })
+        };
+        let mut manifest: serde_json::Value = serde_json::from_slice(&world.files["bafyA1"]).unwrap();
+        manifest["representations"] = serde_json::json!([
+            entry("gcode", "gcode", "Bracket.gcode", "bafyGcode", text.len(), "brotli"),
+            entry("source", "blend", "../Bracket.blend", "bafyBlend", blend.len(), "raw"),
+            entry("short", "blend", "Short.blend", "bafyBlend", blend.len() + 1, "raw"),
+        ]);
+        world.put("bafyA1", manifest);
+    }
+
+    fn opened(client: &Client, path: &str) -> Result<PathBuf> {
+        match client.fetch(path, Fetch::Open, &Cx::default())? {
+            Fetched::File(file) => Ok(file),
+            Fetched::Url(url) => panic!("{path} opened {url}"),
+        }
+    }
+
+    /// Spec F5: a file is fetched without unpacking, decoded by its entry's
+    /// encoding, checked and saved in the app cache with the mark; an
+    /// unchanged copy is reused, an edited one kept beside a fresh copy.
+    #[test]
+    fn an_assets_other_file_opens_from_the_app_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, _, _) = client_with(dir.path(), with_files);
+        let asset = location::asset_path(&testing::shapes(), "a1", "Box", "gltf");
+        let gcode = location::file_path(&asset, "gcode", None, "Bracket.gcode");
+        let file = opened(&client, &gcode).unwrap();
+        assert_eq!(file, dir.path().join("cache/arbesk/files/bafyGcode/Bracket.gcode"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), GCODE.repeat(500));
+        assert!(places::is_unchanged(&file));
+        assert_eq!(opened(&client, &gcode).unwrap(), file, "an unchanged copy is reused");
+        let preview = client.fetch(&gcode, Fetch::Preview, &Cx::default()).unwrap();
+        assert_eq!(preview, Fetched::File(file.clone()));
+        std::fs::write(&file, "edited").unwrap();
+        let fresh = opened(&client, &gcode).unwrap();
+        assert_ne!(fresh, file);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited", "an edited copy is kept");
+        assert_eq!(std::fs::read_to_string(&fresh).unwrap(), GCODE.repeat(500));
+
+        // A raw file is never unpacked, and its name stays one file name.
+        let blend = opened(&client, &location::file_path(&asset, "source", Some("bafyBlend"), "x")).unwrap();
+        assert_eq!(blend, dir.path().join("cache/arbesk/files/bafyBlend/.._Bracket.blend"));
+        assert!(std::fs::read(&blend).unwrap().starts_with(b"ARB\x01not a frame"));
+    }
+
+    #[test]
+    fn a_file_that_changed_moved_or_was_damaged_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, _, _) = client_with(dir.path(), with_files);
+        let asset = location::asset_path(&testing::shapes(), "a1", "Box", "gltf");
+        let refused = |path: String| opened(&client, &path).unwrap_err();
+        let changed = Error::Other("“Bracket.gcode” changed in Arbesk since it was copied.".into());
+        assert_eq!(refused(location::file_path(&asset, "gcode", Some("bafyOld"), "Bracket.gcode")), changed);
+        let gone = Error::Other("“Old.gcode” changed in Arbesk since it was copied.".into());
+        assert_eq!(refused(location::file_path(&asset, "gone", Some("bafyGcode"), "Old.gcode")), gone);
+        assert_eq!(
+            refused(location::file_path(&asset, "gone", None, "Old.gcode")),
+            Error::Other("This file is no longer in the asset.".into())
+        );
+        assert_eq!(
+            refused(location::file_path(&asset, "short", None, "Short.blend")),
+            Error::Other("Arbesk sent a damaged file.".into())
+        );
+        assert!(!dir.path().join("cache/arbesk/files/bafyBlend/Short.blend").exists());
+    }
+
+    /// The extension lists an asset's files and fetches one of a given save.
+    #[test]
+    fn the_extension_lists_and_fetches_an_assets_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, _, _) = client_with(dir.path(), with_files);
+        let files = client.extensions().representations.unwrap();
+        let asset = location::asset_path(&testing::shapes(), "a1", "Box", "gltf");
+        let listed: serde_json::Value = serde_json::from_str(files.representations(&asset, None).unwrap().as_str()).unwrap();
+        let ids: Vec<&str> = listed.as_array().unwrap().iter().map(|f| f["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["gcode", "source", "short"]);
+        assert_eq!(listed[0]["name"], "Bracket.gcode");
+        assert_eq!(listed[0]["stale"], false);
+        let at_version: serde_json::Value = serde_json::from_str(files.representations(&asset, Some("bafyA1")).unwrap().as_str()).unwrap();
+        assert_eq!(at_version, listed);
+        let before: serde_json::Value = serde_json::from_str(files.representations(&asset, Some("bafyA2")).unwrap().as_str()).unwrap();
+        assert_eq!(before, serde_json::json!([]));
+        let file = files.file(&asset, Some("bafyA1"), "gcode", &Cx::default()).unwrap();
+        assert_eq!(file, dir.path().join("cache/arbesk/files/bafyGcode/Bracket.gcode"));
+        assert_eq!(files.file(&asset, Some("bafyA2"), "gcode", &Cx::default()).unwrap_err(), Error::Other("This file is no longer in the asset.".into()));
+        assert!(files.representations(&testing::shapes(), None).is_err());
     }
 
     /// The JSON the frontend gets for a listed asset, byte for byte, with no

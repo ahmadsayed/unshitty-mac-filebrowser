@@ -14,7 +14,7 @@ use crate::compose::{
 };
 use crate::http::Http;
 use crate::ipfs::{FileCache, Gateway, ManifestCache, STORAGE_UNREACHABLE, in_parallel};
-use crate::location::{ArbeskPath, asset_path_named, collection_path, parse};
+use crate::location::{ArbeskPath, asset_path_named, collection_path, parse, safe_name};
 use crate::scene::{Links, Scene, resolve};
 use crate::Entry;
 use crate::progress::Progress;
@@ -46,7 +46,9 @@ pub fn list(
             thumbs.forget_collection(&address, &token_id);
             reader.assets(path, &address, &token_id, thumbs)
         }
-        ArbeskPath::Asset { .. } => Err(format!("“{path}” is a file, not a folder.")),
+        ArbeskPath::Asset { .. } | ArbeskPath::File { .. } => {
+            Err(format!("“{path}” is a file, not a folder."))
+        }
     }
 }
 
@@ -320,6 +322,118 @@ fn build_as(
         Output::Preview => compose_preview(&reader.gateway, &source),
         Output::Export => compose(&reader.gateway, &source),
     })
+}
+
+/// The asset manifest at `path` (an asset's): the save `version` names (a
+/// manifest CID from [`versions`]), else the current one. Through the
+/// manifest cache, so after a listing the current one costs one
+/// `tokenURI` read and a version none.
+fn manifest_of(
+    reader: &Reader,
+    path: &str,
+    version: Option<&str>,
+) -> Result<(String, Value), String> {
+    let ArbeskPath::Asset {
+        token_id, asset_id, ..
+    } = parse(path)?
+    else {
+        return Err(format!("“{path}” is not an Arbesk asset."));
+    };
+    match version {
+        Some(cid) => Ok((cid.to_string(), reader.gateway.json(cid)?)),
+        None => reader.asset_manifest(&token_id, &asset_id),
+    }
+}
+
+/// The other files of the asset at `path` (at the save `version`, the
+/// current one without), each valid entry in stored order with whether it
+/// is out of date (spec F3). The model is not in the list.
+pub fn representations(
+    http: &dyn Http,
+    site: &Site,
+    path: &str,
+    version: Option<&str>,
+    cache_dir: &Path,
+) -> Result<Vec<representations::RepresentationInfo>, String> {
+    let reader = Reader::open(http, site, cache_dir)?;
+    let (_, manifest) = manifest_of(&reader, path, version)?;
+    Ok(representations::infos(&manifest))
+}
+
+/// Which of an asset's other files [`file`] fetches.
+pub struct Wanted<'a> {
+    /// The asset's path.
+    pub asset: &'a str,
+    /// The save to read (a manifest CID), the current one without.
+    pub version: Option<&'a str>,
+    pub id: &'a str,
+    /// The CID the entry must still have (a pinned path), with the name
+    /// the path shows, for the refusal's words.
+    pub pin: Option<(&'a str, &'a str)>,
+}
+
+/// “Bracket.gcode” changed in Arbesk since it was copied.
+fn changed(name: &str) -> String {
+    format!("“{name}” changed in Arbesk since it was copied.")
+}
+
+/// An asset's other file decoded into `cache_dir/arbesk/files/<cid>/<name>`
+/// with the `.downloaded` mark, as an opened build (spec F5): its entry
+/// read from the manifest, its stored bytes fetched without unpacking,
+/// decoded by the entry's `encoding`, checked against its `bytes`. An
+/// unchanged copy is reused; one someone edited is kept and a fresh copy
+/// goes beside it. A pinned entry whose CID moved (or that is gone) is
+/// refused.
+pub fn file(
+    http: &dyn Http,
+    site: &Site,
+    wanted: &Wanted,
+    cache_dir: &Path,
+    progress: &Progress,
+    builds: &Builds,
+) -> Result<PathBuf, String> {
+    progress.check()?;
+    let reader = Reader::open(http, site, cache_dir)?;
+    let (_, manifest) = manifest_of(&reader, wanted.asset, wanted.version)?;
+    let rep = representations::list(&manifest)
+        .into_iter()
+        .find(|rep| rep.id == wanted.id);
+    let rep = match (rep, wanted.pin) {
+        (Some(rep), Some((cid, _))) if rep.cid == cid => rep,
+        (_, Some((_, name))) => return Err(changed(name)),
+        (Some(rep), None) => rep,
+        (None, None) => return Err(FILE_GONE.into()),
+    };
+    progress.set_total(rep.bytes);
+    let dir = cache_dir.join("arbesk").join("files").join(&rep.cid);
+    build_file(&dir, &safe_name(&rep.name), progress, builds, || {
+        let decoded = fetch_decoded(&reader.gateway, &rep)?;
+        progress.add_bytes(decoded.len() as u64);
+        Ok(decoded)
+    })
+}
+
+/// The entry's file is no longer in the asset.
+const FILE_GONE: &str = "This file is no longer in the asset.";
+
+/// `rep`'s bytes from the gateway, decoded and checked: at most 256 MiB
+/// once decoded (stored: that, plus 1 MiB for a `brotli` entry's frame and
+/// brotli's growth of what doesn't compress), exactly its `bytes` long.
+fn fetch_decoded(gateway: &Gateway, rep: &representations::Rep) -> Result<Vec<u8>, String> {
+    let stored_cap = match rep.encoding {
+        representations::Encoding::Raw => representations::MAX_BYTES,
+        representations::Encoding::Brotli => representations::MAX_BYTES + 1024 * 1024,
+    };
+    let too_large = |error: String| match error.as_str() {
+        crate::ipfs::TOO_LARGE => representations::TOO_LARGE.to_string(),
+        _ => error,
+    };
+    let stored = gateway.raw(&rep.cid, stored_cap).map_err(too_large)?;
+    let decoded = representations::decode(stored, rep.encoding, representations::MAX_BYTES)?;
+    if decoded.len() as u64 != rep.bytes {
+        return Err(representations::DAMAGED.into());
+    }
+    Ok(decoded)
 }
 
 /// The scene of the asset at `path`: each stored model once, with every
@@ -850,16 +964,7 @@ fn entry(name: String, path: String, is_dir: bool, manifest: &Value) -> Entry {
 
 /// `<name>.<ext>` as a file name: no `/` or NUL, never empty, `.` or `..`.
 fn file_name(name: &str, ext: &str) -> String {
-    let safe: String = name
-        .chars()
-        .map(|c| if c == '/' || c == '\0' { '_' } else { c })
-        .collect();
-    let safe = if safe.is_empty() || safe == "." || safe == ".." {
-        "_".to_string()
-    } else {
-        safe
-    };
-    format!("{safe}.{ext}")
+    format!("{}.{ext}", safe_name(name))
 }
 
 fn unique_folder() -> String {

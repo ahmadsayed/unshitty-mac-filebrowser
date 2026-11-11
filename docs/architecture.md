@@ -118,9 +118,14 @@ Then:
     path rebuilt from public sources, assets built into the app cache to
     open, preview and copy out, New Collection as `create`, a local model
     file copied into a collection (`Transfer::write`; Replace saves a new
-    version) and an asset out (`Transfer::export`), and the `Versions`, `Preview`, `Sharing` and
-    `Accounts` extensions, whose own records reach the frontend as the
-    crate serialises them (`places::Json`). Behind `Client` the modules are
+    version, keeping the asset's other files) and an asset out
+    (`Transfer::export`), and the `Versions`, `Preview`, `Representations`
+    (an asset's other files: their list, and one fetched into the app
+    cache), `Sharing` and `Accounts` extensions, whose own records reach
+    the frontend as the crate serialises them (`places::Json`). Its asset
+    rows carry `places::Entry.representations`, a summary of those files
+    (count, out of date, formats), the one key besides Drive's `cloud` a
+    provider may add to an entry. Behind `Client` the modules are
     private.
   - SSH servers: the `places-sftp` crate (`SftpState`: connections, known
     hosts, listing, downloads), read only; the Connect to Server commands

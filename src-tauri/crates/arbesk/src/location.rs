@@ -5,7 +5,14 @@
 //! arbesk://<address>                                           an account
 //! arbesk://<address>/<token-id>~<name>                         a collection
 //! arbesk://<address>/<token-id>~<name>/<asset-id>~<name>.<ext> an asset
+//! …/<asset-id>~<name>.<ext>/<file-id>~<name>               one of its other files
+//! …/<asset-id>~<name>.<ext>/<file-id>@<cid>~<name>         that file while its CID is <cid>
 //! ```
+//!
+//! An asset's other file (a representation, spec F4) is one segment below
+//! it: its id (`[a-z0-9-]`, so nothing needs encoding), optionally pinned
+//! to a CID, then its name made safe as one file name. Nothing lists these
+//! paths: they are what the clipboard, a copy and an opened file see.
 //!
 //! Ids and names are percent-encoded with Drive's set, which encodes `~` and
 //! `/`, so the first `~` of a segment always ends its id.
@@ -55,6 +62,16 @@ pub enum ArbeskPath {
         token_id: String,
         asset_id: String,
     },
+    /// One of the asset's other files: the current version's entry `id`,
+    /// or, when `pin` holds a CID, that entry only while its CID is still
+    /// `pin`.
+    File {
+        address: String,
+        token_id: String,
+        asset_id: String,
+        id: String,
+        pin: Option<String>,
+    },
 }
 
 impl ArbeskPath {
@@ -63,17 +80,22 @@ impl ArbeskPath {
         match self {
             Self::Account { address }
             | Self::Collection { address, .. }
-            | Self::Asset { address, .. } => address,
+            | Self::Asset { address, .. }
+            | Self::File { address, .. } => address,
         }
     }
 }
 
 /// Whether `path` names a folder (an account or collection) or a file (an
-/// asset); `None` when it isn't an Arbesk location.
+/// asset, or one of its other files); `None` when it isn't an Arbesk
+/// location.
 pub fn is_folder(path: &str) -> Option<bool> {
-    parse(path)
-        .ok()
-        .map(|parsed| !matches!(parsed, ArbeskPath::Asset { .. }))
+    parse(path).ok().map(|parsed| {
+        !matches!(
+            parsed,
+            ArbeskPath::Asset { .. } | ArbeskPath::File { .. }
+        )
+    })
 }
 
 pub fn is_arbesk(path: &str) -> bool {
@@ -104,6 +126,46 @@ pub fn asset_path_named(collection_path: &str, asset_id: &str, file_name: &str) 
     )
 }
 
+/// `name` as one plain file name: no `/` or NUL, never empty, `.` or `..`
+/// (what a build is saved as, and the name an asset's other file shows).
+pub(crate) fn safe_name(name: &str) -> String {
+    let safe: String = name
+        .chars()
+        .map(|c| if c == '/' || c == '\0' { '_' } else { c })
+        .collect();
+    if safe.is_empty() || safe == "." || safe == ".." {
+        "_".to_string()
+    } else {
+        safe
+    }
+}
+
+/// The asset at `asset_path`'s other file `id`, named `name` (made safe
+/// first), pinned to `pin` (its CID) when given.
+#[cfg_attr(not(test), allow(dead_code))] // Copying a file out (spec F9, phase 3) makes these.
+pub fn file_path(asset_path: &str, id: &str, pin: Option<&str>, name: &str) -> String {
+    let id = match pin {
+        Some(cid) => format!("{}@{}", encode(id), encode(cid)),
+        None => encode(id),
+    };
+    format!(
+        "{}/{id}~{}",
+        asset_path.trim_end_matches('/'),
+        encode(&safe_name(name))
+    )
+}
+
+/// For an asset's other file: its asset's path and the name its path
+/// shows (decoded); `None` for any other path.
+pub(crate) fn file_parts(path: &str) -> Option<(&str, String)> {
+    let ArbeskPath::File { .. } = parse(path).ok()? else {
+        return None;
+    };
+    let (asset, segment) = path.trim_end_matches('/').rsplit_once('/')?;
+    let (_, name) = segment.split_once('~')?;
+    Some((asset, percent_decode_str(name).decode_utf8().ok()?.into_owned()))
+}
+
 /// Where a copy into Arbesk goes: the collection and the listed name,
 /// from `arbesk://<address>/<token>~<name>/~<encoded name>`.
 pub fn parse_target(path: &str) -> Result<(String, String, String), String> {
@@ -132,7 +194,10 @@ fn encode(text: &str) -> String {
 pub fn parse(path: &str) -> Result<ArbeskPath, String> {
     let refused = || format!("“{path}” is not an Arbesk location.");
     let rest = path.strip_prefix(PREFIX).ok_or_else(refused)?;
-    let mut parts = rest.trim_end_matches('/').split('/');
+    let rest = rest.trim_end_matches('/');
+    // A file's segment always has its `~`, as `file_path` writes it.
+    let named = rest.rsplit('/').next().is_some_and(|last| last.contains('~'));
+    let mut parts = rest.split('/');
     let address = parts
         .next()
         .filter(|a| is_address(a))
@@ -153,7 +218,33 @@ pub fn parse(path: &str) -> Result<ArbeskPath, String> {
             token_id: token.clone(),
             asset_id: asset.clone(),
         }),
+        [token, asset, file] if is_token_id(token) && named => {
+            let (id, pin) = file_id(file).ok_or_else(refused)?;
+            Ok(ArbeskPath::File {
+                address,
+                token_id: token.clone(),
+                asset_id: asset.clone(),
+                id,
+                pin,
+            })
+        }
         _ => Err(refused()),
+    }
+}
+
+/// A file segment's id and the CID it may be pinned to (`<id>@<cid>`):
+/// the id `[a-z0-9-]{1,64}` but `primary`, the CID letters and digits.
+fn file_id(segment: &str) -> Option<(String, Option<String>)> {
+    let (id, pin) = match segment.split_once('@') {
+        Some((id, cid)) => (id, Some(cid)),
+        None => (segment, None),
+    };
+    if !crate::representations::valid_id(id) {
+        return None;
+    }
+    match pin {
+        Some(cid) if cid.is_empty() || !cid.bytes().all(|b| b.is_ascii_alphanumeric()) => None,
+        _ => Some((id.to_string(), pin.map(String::from))),
     }
 }
 
@@ -295,6 +386,66 @@ mod tests {
         ] {
             assert!(parse(&path).is_err(), "{path}");
         }
+    }
+
+    #[test]
+    fn an_assets_other_file_round_trips_pinned_or_not() {
+        let asset = asset_path(&collection_path(ADDRESS, "12", "Set"), "a1", "Box", "gltf");
+        let current = file_path(&asset, "gcode-original-prusa-mk4-petg", None, "Bracket 0.2mm.gcode");
+        assert_eq!(current, format!("{asset}/gcode-original-prusa-mk4-petg~Bracket%200.2mm.gcode"));
+        let file = |pin: Option<&str>| ArbeskPath::File {
+            address: ADDRESS.into(),
+            token_id: "12".into(),
+            asset_id: "a1".into(),
+            id: "gcode-original-prusa-mk4-petg".into(),
+            pin: pin.map(String::from),
+        };
+        assert_eq!(parse(&current).unwrap(), file(None));
+        let pinned = file_path(&asset, "gcode-original-prusa-mk4-petg", Some("bafyG1"), "Bracket.gcode");
+        assert_eq!(pinned, format!("{asset}/gcode-original-prusa-mk4-petg@bafyG1~Bracket.gcode"));
+        assert_eq!(parse(&pinned).unwrap(), file(Some("bafyG1")));
+        // An encoded `@` reads the same as a literal one.
+        assert_eq!(parse(&format!("{asset}/gcode-original-prusa-mk4-petg%40bafyG1~x")).unwrap(), file(Some("bafyG1")));
+        assert_eq!(is_folder(&pinned), Some(false));
+        assert_eq!(is_folder(&asset), Some(false));
+        assert_eq!(parse(&pinned).unwrap().address(), ADDRESS);
+        assert_eq!(file_parts(&current), Some((asset.as_str(), "Bracket 0.2mm.gcode".to_string())));
+        assert_eq!(file_parts(&asset), None);
+    }
+
+    /// A name that would leave the folder it is copied to is made one plain
+    /// file name before it is encoded.
+    #[test]
+    fn a_files_name_is_made_safe_in_its_segment() {
+        let asset = asset_path(&collection_path(ADDRESS, "12", "Set"), "a1", "Box", "gltf");
+        for (name, safe) in [("parts/Bracket.gcode", "parts_Bracket.gcode"), ("..", "_"), (".", "_"), ("", "_"), ("a\0b", "a_b")] {
+            let path = file_path(&asset, "stl", None, name);
+            let segment = path.rsplit('/').next().unwrap();
+            let shown = percent_decode_str(segment.split_once('~').unwrap().1).decode_utf8().unwrap();
+            assert_eq!(shown, safe, "{name:?}");
+            assert!(matches!(parse(&path), Ok(ArbeskPath::File { .. })), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_file_segment_or_a_pending_name_is_refused() {
+        let asset = asset_path(&collection_path(ADDRESS, "12", "Set"), "a1", "Box", "gltf");
+        for segment in [
+            "~Bracket.gcode",
+            "GCODE~x",
+            "my_file~x",
+            "primary~Box.gltf",
+            "stl@~x",
+            "stl@ba-fy~x",
+            "stl@bafy@x~x",
+            &format!("{}~x", "a".repeat(65)),
+            "stl",
+            "stl~x/more~y",
+        ] {
+            let path = format!("{asset}/{segment}");
+            assert!(parse(&path).is_err(), "{path}");
+        }
+        assert!(parse_target(&format!("{asset}/~Bracket.gcode")).is_err());
     }
 
     #[test]

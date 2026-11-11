@@ -202,9 +202,10 @@ impl KindCapabilities {
 /// of that kind its provider answers for. Every place answers the same for
 /// all its paths but Arbesk, whose account, collection and asset differ
 /// (New Collection in an account, copies into a collection, out of an
-/// asset), so it has a row each. Recent, Starred, Network and the Trash are
+/// asset), so it has a row each, and one for an asset's other file (spec
+/// F4: an asset's answers, but no thumbnail of its own). Recent, Starred, Network and the Trash are
 /// the frontend's own views, not places: they have no row.
-pub const KINDS: [(&str, &str); 7] = [
+pub const KINDS: [(&str, &str); 8] = [
     ("folder", "/"),
     ("drive", "gdrive://acct/root~x"),
     ("share", "share://r1/Photos"),
@@ -212,6 +213,7 @@ pub const KINDS: [(&str, &str); 7] = [
     ("arbesk-account", "arbesk://0x00000000000000000000000000000000000000ab"),
     ("arbesk-collection", "arbesk://0x00000000000000000000000000000000000000ab/12~Set"),
     ("arbesk-asset", "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf"),
+    ("arbesk-file", "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf/stl~Box.stl"),
 ];
 
 /// What each kind of place allows, asked of the registered providers
@@ -755,13 +757,15 @@ mod tests {
         // account, collection or asset.
         let registry = testing::plain();
         let schemes: Vec<&str> = KINDS.iter().map(|&(_, path)| registry.provider_for(path).scheme()).collect();
-        assert_eq!(schemes, ["", "gdrive", "share", "sftp", "arbesk", "arbesk", "arbesk"]);
+        assert_eq!(schemes, ["", "gdrive", "share", "sftp", "arbesk", "arbesk", "arbesk", "arbesk"]);
         assert_eq!([KINDS[4].1, KINDS[5].1, KINDS[6].1], [ACCOUNT, ARBESK, ASSET]);
+        assert_eq!(KINDS[7].1, format!("{ASSET}/stl~Box.stl"));
     }
 
     /// The frontend picks an Arbesk path's row by its number of segments
     /// (`locations.ts`' `capabilityRow`): the root, a single segment that
-    /// isn't an address and four or more segments get the account's row,
+    /// isn't an address, a fourth segment without its `~` (not an asset's
+    /// file, `isArbeskFile`) and more segments get the account's row,
     /// and it reads a path's row for its copy flags only (`copiesOf`).
     /// Those agree with what the provider says for such a path; New
     /// Collection doesn't (the account allows it, these paths refuse it).

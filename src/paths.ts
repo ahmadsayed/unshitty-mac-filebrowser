@@ -57,6 +57,17 @@ export function isArbeskAsset(path: string): boolean {
   return isArbeskPath(path) && path.slice(ARBESK_PREFIX.length).split("/").filter(Boolean).length === 3;
 }
 
+/** Whether `path` is one of an Arbesk asset's other files (spec F4), one
+ *  segment below the asset: `…/<asset>~<name>/<file-id>~<name>`, or pinned
+ *  to a CID, `…/<file-id>@<cid>~<name>`. Its segment always has its `~`
+ *  and an id before it, as the backend writes it; nothing lists these
+ *  paths. */
+export function isArbeskFile(path: string): boolean {
+  if (!isArbeskPath(path)) return false;
+  const segments = path.slice(ARBESK_PREFIX.length).split("/").filter(Boolean);
+  return segments.length === 4 && segments[3].indexOf("~") > 0;
+}
+
 /** Whether `path` is an Arbesk collection, the one place files are copied into:
  *  `arbesk://<address>/<token>~<name>`. */
 export function isArbeskCollection(path: string): boolean {

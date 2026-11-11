@@ -749,6 +749,33 @@ export async function arbeskVersions(path: string): Promise<ArbeskVersion[]> {
   return invoke<ArbeskVersion[]>("arbesk_versions", { path });
 }
 
+/** One of an Arbesk asset's other files (a representation), as
+ *  `arbesk_representations` lists it. The model is not one of them. */
+export interface RepresentationInfo {
+  id: string;
+  role: "source" | "mesh" | "view" | "machine" | "other";
+  /** The lower-case extension. */
+  format: string;
+  name: string;
+  /** Its size once decoded. */
+  bytes: number;
+  /** Made from a model or file that has changed since. */
+  stale: boolean;
+  /** What it was made from: `primary` (the model) or another file's id. */
+  derived_from: string | null;
+  tool: Record<string, string | number> | null;
+  profile: Record<string, string | number> | null;
+  stats: Record<string, string | number> | null;
+  /** When it was added (ms). */
+  created_at: number;
+}
+
+/** An Arbesk asset's other files, in stored order, at the save `version`
+ *  (a manifest CID from `arbeskVersions`; the current save without). */
+export async function arbeskRepresentations(path: string, version?: string): Promise<RepresentationInfo[]> {
+  return invoke<RepresentationInfo[]>("arbesk_representations", { path, version: version ?? null });
+}
+
 export async function previewBytes(path: string, limit: number): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("preview_bytes", { path, limit });
 }

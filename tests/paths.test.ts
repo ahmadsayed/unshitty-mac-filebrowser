@@ -4,7 +4,7 @@ import { expect, test } from "vitest";
 import {
   childPath, cloudSegmentName, decodeSegment, homeFolder, isCloudRoot, isKnownPath, isUnder, isWithin, joinCloudPath, joinSharePath, joinSftpPath,
   isCloudPath, isRemotePath, isShareLink, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket,
-  isSharePath, isSftpPath, resolveTypedPath, isArbeskPath, isArbeskAccount, isArbeskAsset, isArbeskCollection, arbeskAccountKey,
+  isSharePath, isSftpPath, resolveTypedPath, isArbeskPath, isArbeskAccount, isArbeskAsset, isArbeskCollection, isArbeskFile, arbeskAccountKey,
 } from "../src/paths";
 
 const HOME = "/Users/me";
@@ -294,6 +294,18 @@ test("an Arbesk asset is the third level, below its collection", () => {
   expect(isArbeskAsset(`${account}/1~S/a~B.gltf/`)).toBe(true);
   for (const path of [account, `${account}/`, `${account}/1~S`, `${account}/1~S/`, "/Users/me/1~S/a~B.gltf", "gdrive://acct/1~S/a~B.gltf", "arbesk://"]) {
     expect(isArbeskAsset(path), path).toBe(false);
+  }
+});
+
+test("an Arbesk asset's other file is the fourth level, below its asset", () => {
+  const asset = "arbesk://0x00000000000000000000000000000000000000ab/1~S/a~B.gltf";
+  for (const path of [`${asset}/stl~B.stl`, `${asset}/gcode-mk4@bafyG1~B.gcode`, `${asset}/stl~`, `${asset}/stl~B.stl/`]) {
+    expect(isArbeskFile(path), path).toBe(true);
+    expect(placeOf(path), path).toBe("arbesk");
+    expect(isArbeskAsset(path), path).toBe(false);
+  }
+  for (const path of [asset, `${asset}/`, `${asset}/x`, `${asset}/~B.stl`, `${asset}/stl~B.stl/more~x`, "/Users/me/1~S/a~B.gltf/stl~B.stl", "gdrive://acct/1~S/a~B/stl~B.stl", "arbesk://"]) {
+    expect(isArbeskFile(path), path).toBe(false);
   }
 });
 
