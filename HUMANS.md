@@ -54,9 +54,8 @@ gh pr checkout <n>              # try a PR's branch locally
 ## Things only you can check
 
 - **The other platform.** Work done on Linux can't be checked on macOS from
-  here, and the reverse. Open issues labelled `needs-verification` list what
-  is left, one checklist line per point (for example #30): tick them off when
-  you're on that machine.
+  here, and the reverse. Each PR's "Not verified" section lists what is
+  left, one line per point: check them when you're on that machine.
 - **A real build.** When a change touches packaging or launching other
   programs, the agent asks you to try the installed app, saying exactly what
   to do and what you should see.
