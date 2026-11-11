@@ -67,10 +67,19 @@ export interface Clip {
   paths: string[];
   dirs: Set<string>;
   mode: "copy" | "cut";
-  /** What the listing said of each copied Arbesk asset's other files (its
-   *  summary, undefined for none), so a paste elsewhere plans the copy
-   *  out from it (performance plan, phase 4). Arbesk assets never move. */
-  summaries?: ReadonlyMap<string, RepresentationsSummary | undefined>;
+  /** What the listing said of each copied Arbesk asset's other files, so
+   *  a paste elsewhere plans the copy out from it while that listing is
+   *  still current (performance plan, phase 4). Arbesk assets never move. */
+  summaries?: KeptSummaries;
+}
+
+/** The copied Arbesk assets' summaries of their other files (undefined for
+ *  none), and where main.ts's write count stood when their listing started:
+ *  a write of this app into their collection since, or the window left and
+ *  back, makes them unknown. */
+export interface KeptSummaries {
+  listed: number;
+  byPath: ReadonlyMap<string, RepresentationsSummary | undefined>;
 }
 
 /** Where Back and Forward go. */

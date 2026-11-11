@@ -337,11 +337,15 @@ Studio meanwhile shows within those seconds. Every listing, Reload among
 them, reads it afresh, and so does every save, attach, remove, Replace,
 New Collection and share, which also forget what was kept: a write never
 builds on a kept answer. A paste into a collection takes the collection's
-names once (from the view when it is open, else one listing) to ask Replace,
-Skip or Keep Both, instead of looking each file up; a copy out of assets
-whose listing shows no other files asks for none of their lists, and for
-several assets asks which files at once, from the formats the listing
-shows, while the lists it needs are read. Revisits, thumbnails
+names once (from the view when it is open and shows what this app last
+put there, else one listing) to ask Replace, Skip or Keep Both, instead of
+looking each file up; a copy out of assets whose listing shows no other
+files asks for none of their lists, and for several assets asks which files
+at once, from the formats the listing shows, while the lists it needs are
+read. That listing counts only while it is current: once this app has
+written to the collection since, or the window has been left and come back
+(another app may have added files), every list is read first, as is one
+that names as many formats as a listing holds (32). Revisits, thumbnails
 after a restart and later previews are therefore much faster than the first
 visit.
 

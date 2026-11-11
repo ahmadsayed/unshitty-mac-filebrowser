@@ -4,7 +4,7 @@
 // and Keep Both ask exactly as before.
 import { beforeAll, expect, test, vi } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, click, dialogHeading, goTo, installFakeCanvas, key, names, open, respond, settle } from "./app";
+import { $, $$, boot, click, dialogHeading, goTo, installFakeCanvas, key, mouse, names, open, respond, settle } from "./app";
 
 const UP = "/Users/me/PasteNames";
 const mockCalls = () =>
@@ -143,4 +143,49 @@ test("a name already there, or landed earlier in the same paste, still asks Repl
   expect(after).toEqual(expect.arrayContaining(["Peg.gltf", "Peg (copy).gltf"]));
   expect(arbeskExistsCalls()).toBe(0);
   expect(mockCalls().count("copy_entry")).toBe(2);
+});
+
+test("a paste made before the view shows an earlier paste's names still asks Replace, Skip or Keep Both", async () => {
+  const calls = globalThis as unknown as { __mockCalls: { hold(cmd: string): void; release(cmd: string): void } };
+  const pointAt = document.elementFromPoint;
+  document.elementFromPoint = () => null;
+  try {
+    await copyFromUp("Gear.glb");
+    await openCollection("Shapes");
+    const shapes = await collectionPath("Shapes");
+    expect(await listed(shapes)).not.toContain("Gear.gltf");
+    mockCalls().reset();
+    calls.__mockCalls.hold("copy_entry");
+    await key("v", { mod: true });
+    await settle(10);
+    await respond("Copy");
+    await vi.waitFor(() => expect(mockCalls().count("copy_entry")).toBe(1), { timeout: 2000 });
+    // A drag in the view while the file lands: the paste's reload waits for the drag to end.
+    await mouse(row("Box.gltf"), "mousedown", { clientX: 50, clientY: 60 });
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 300 }));
+    await settle(10);
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 301, clientY: 301 }));
+    await settle(10);
+    calls.__mockCalls.release("copy_entry");
+    await settle(60);
+    expect(names()).not.toContain("Gear.gltf");
+    // The drag ends on nothing; its reload is still listing when the second paste starts.
+    calls.__mockCalls.hold("list_dir");
+    try {
+      window.dispatchEvent(new MouseEvent("mouseup", { clientX: 301, clientY: 301 }));
+      await settle(10);
+      await key("v", { mod: true });
+      await settle(10);
+      await respond("Copy");
+      await settle(20);
+    } finally {
+      calls.__mockCalls.release("list_dir");
+    }
+    await vi.waitFor(() => expect(dialogHeading()).toBe("Replace file “Gear.gltf”?"), { timeout: 2000 });
+    await respond("Keep Both");
+    await vi.waitFor(async () => expect(await listed(shapes)).toContain("Gear (copy).gltf"), { timeout: 2000 });
+    expect(arbeskExistsCalls()).toBe(0);
+  } finally {
+    document.elementFromPoint = pointAt;
+  }
 });

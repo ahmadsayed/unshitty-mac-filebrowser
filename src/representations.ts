@@ -193,9 +193,14 @@ export function formatCounts(assets: readonly AssetFormats[]): Array<{ format: s
   return [...counts].map(([format, n]) => ({ format, assets: n }));
 }
 
-/** The formats present across `assets`' full lists (`formatCounts`). */
-export function formatsAcross(assets: readonly AssetFiles[]): Array<{ format: string; assets: number }> {
-  return formatCounts(assets.map(formatsOfFiles));
+/** How many distinct formats a listing's summary names at most
+ *  (`MAX_REPRESENTATIONS` in the arbesk crate's representations.rs). */
+export const SUMMARY_FORMATS = 32;
+
+/** Whether `summary` may leave formats out: it names as many as a summary
+ *  holds, so a list stored by another client could have more. */
+export function mayOmitFormats(summary: RepresentationsSummary | undefined): boolean {
+  return (summary?.formats.length ?? 0) >= SUMMARY_FORMATS;
 }
 
 /** Whether a copy that chose `choice` takes any file of an asset whose

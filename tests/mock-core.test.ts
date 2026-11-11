@@ -1919,6 +1919,15 @@ test("Arbesk: a scene names the save it was resolved from; a save from elsewhere
     expect((await invoke<{ id: string }[]>("arbesk_representations", { path: head, version })).map((r) => r.id)).toEqual(["stl"]);
   }
   expect((await invoke<ArrayBuffer>("arbesk_part", { path: head, version: "head-v1", key: "head-src", limit: 1 << 20 })).byteLength).toBeGreaterThan(0);
+  // A list stored by another client with more formats than a summary holds:
+  // the summary names the first 32, the full list has every one (phase 4).
+  hooks.addAsset("1", "wide", "Wide", Array.from({ length: 33 }, (_, i) => ({ id: `f${i}`, format: `f${i}`, name: `Wide.f${i}`, bytes: 10 })));
+  const wide = (await invoke<Array<{ name: string; representations?: { count: number; formats: string[] } }>>("list_dir", {
+    path: `arbesk://${core.ARBESK_MOCK_ADDRESS}/1~Shapes`, showHidden: false,
+  })).find((row) => row.name === "Wide.gltf")!;
+  expect(wide.representations?.count).toBe(33);
+  expect(wide.representations?.formats).toHaveLength(32);
+  expect(await invoke<unknown[]>("arbesk_representations", { path: `arbesk://${core.ARBESK_MOCK_ADDRESS}/1~Shapes/wide~Wide.gltf`, version: null })).toHaveLength(33);
   const account = (await invoke<{ id: string }[]>("arbesk_accounts", {}))[0];
   await invoke("arbesk_disconnect", { account: account.id });
 });
