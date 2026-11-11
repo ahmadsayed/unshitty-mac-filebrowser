@@ -323,6 +323,12 @@ file at once share one download. A cancelled copy or download, and a
 thumbnail the view no longer wants, leave the queue at once.
 Space asks for an asset's model before its version history, which can take a
 read per save; looking up an older save reads its history only back to it.
+A scene's models and links are looked up a level at a time, all of a level
+together, and the preview downloads up to 4 of its models at once (still
+within the preview's 256 MB, shared by the downloads under way); the scene
+shows the same models in the same places as when they came one by one.
+Closing the preview, or stepping to another save, cancels the downloads it
+no longer needs, waiting or under way.
 The deployment's settings are kept for five minutes; a collection's current
 manifest is always read live, so Reload sees the latest. Revisits, thumbnails
 after a restart and later previews are therefore much faster than the first
