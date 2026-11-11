@@ -84,4 +84,6 @@ test("copy out: rows per format, sources in order, Keep Both names within the pa
     "Box.stl", "Box.gltf", "Box (copy 2).stl", "Box (copy 3).stl",
   ]);
   expect(await uniqueNames(["A.stl", "A (copy).stl", "A.stl"], async () => false)).toEqual(["A.stl", "A (copy).stl", "A (copy 2).stl"]);
+  // Ignoring case, as a macOS volume would: Box.STL and box.stl would be one file there.
+  expect(await uniqueNames(["Box.STL", "box.stl", "BOX (COPY).stl"], async () => false)).toEqual(["Box.STL", "box (copy 2).stl", "BOX (COPY).stl"]);
 });

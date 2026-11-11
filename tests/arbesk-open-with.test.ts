@@ -191,3 +191,16 @@ test("the Files… page opens a chosen file with any app, without asking which",
   await settle(30);
   expect(mockApps().opened()[1]).toEqual({ path: `${ARBESK_MOCK_BUILDS}/bracket/Bracket.gltf`, app: "/Applications/PrusaSlicer.app" });
 });
+
+test("a failed read of what the app opens, or of the asset's files, is a toast and opens nothing", async () => {
+  // Never a silent fall back to the model (spec F8).
+  calls().failNext("app_formats", "Failed: The applications could not be read.");
+  await openWith("Bracket.gltf", "Text Editor");
+  expect(toasts()).toContain("Could not open “Bracket.gltf”: The applications could not be read.");
+  expect(mockApps().opened()).toEqual([]);
+  calls().failNext("arbesk_representations", "Failed: The gateway did not answer.");
+  await openWith("Bracket.gltf", "Text Editor");
+  expect(toasts()).toContain("Could not open “Bracket.gltf”: The gateway did not answer.");
+  expect(mockApps().opened()).toEqual([]);
+  expect(calls().count("open_with")).toBe(0);
+});

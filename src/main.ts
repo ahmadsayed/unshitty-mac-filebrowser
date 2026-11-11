@@ -3164,10 +3164,17 @@ async function copyLocation(): Promise<void> {
 
 function setClipboard(mode: "copy" | "cut"): void {
   const sel = selectedEntries();
-  if (sel.length === 0 || refuse(mode, hereFor(sel.map((e) => e.path)))) return;
-  clipboard = { paths: sel.map((e) => e.path), dirs: new Set(sel.filter((e) => e.is_dir).map((e) => e.path)), mode };
+  if (sel.length === 0) return;
+  putOnClipboard(sel.map((e) => e.path), new Set(sel.filter((e) => e.is_dir).map((e) => e.path)), mode);
+}
+
+/** Copy or Cut of `paths` (`dirs` the folders among them), as the
+ *  item-actions rule allows it: every way onto the clipboard goes here. */
+function putOnClipboard(paths: string[], dirs: Set<string>, mode: "copy" | "cut"): void {
+  if (refuse(mode, hereFor(paths))) return;
+  clipboard = { paths, dirs, mode };
   // Paths also go to the system clipboard as text, handy for terminals.
-  navigator.clipboard?.writeText(clipboard.paths.join("\n")).catch(() => {});
+  navigator.clipboard?.writeText(paths.join("\n")).catch(() => {});
   refreshCutMarks();
 }
 
@@ -3224,10 +3231,13 @@ function askConflict(name: string, isDir: boolean, destDir: string, remaining: n
   });
 }
 
-/** "name (copy).txt", then "name (copy 2).txt", … — the first one that's free. */
-async function freeCopyName(dir: string, name: string, isDir: boolean): Promise<string> {
+/** "name (copy).txt", then "name (copy 2).txt", … — the first one that's
+ *  free in `dir` and not `reserved` (lower-cased names a paste still
+ *  plans to write, spec F9). */
+async function freeCopyName(dir: string, name: string, isDir: boolean, reserved?: ReadonlySet<string>): Promise<string> {
   for (let n = 1; ; n++) {
     const candidate = copyNameAt(name, n, isDir);
+    if (reserved?.has(candidate.toLowerCase())) continue;
     if (!(await pathExists(joinPath(dir, candidate)))) return candidate;
   }
 }
@@ -3290,14 +3300,27 @@ function needsCopyChoice(paths: readonly string[], move: (path: string) => boole
   return out && paths.some((path) => isArbeskAsset(path) && !move(path));
 }
 
+/** A failed read of one asset's list of files: which asset, and why. */
+class AssetFilesError {
+  constructor(readonly path: string, readonly reason: unknown) {}
+}
+
 /** Each asset's other files, at most 4 asked at a time (one `tokenURI`
- *  read each, the manifests from the cache). */
-async function filesOfAssets(assets: readonly string[]): Promise<AssetFiles[]> {
+ *  read each, the manifests from the cache). No new read starts once
+ *  `batch` is cancelled or a read failed; a failure rejects with an
+ *  `AssetFilesError` naming its asset. */
+async function filesOfAssets(assets: readonly string[], batch: { cancelled: boolean }): Promise<AssetFiles[]> {
   const found: AssetFiles[] = new Array(assets.length);
   let next = 0;
+  let failed = false;
   const worker = async () => {
-    for (let i = next++; i < assets.length; i = next++) {
-      found[i] = { path: assets[i], name: basename(assets[i]), files: await arbeskRepresentations(assets[i]) };
+    for (let i = next++; i < assets.length && !batch.cancelled && !failed; i = next++) {
+      try {
+        found[i] = { path: assets[i], name: basename(assets[i]), files: await arbeskRepresentations(assets[i]) };
+      } catch (err) {
+        failed = true;
+        throw new AssetFilesError(assets[i], err);
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(4, assets.length) }, worker));
@@ -3322,10 +3345,10 @@ async function planArbeskCopy(
   batch.measuring = true;
   const assets = paths.filter(isArbeskAsset);
   let read: AssetFiles[] = [];
-  let failure: unknown = null;
+  let failure: AssetFilesError | null = null;
   let choice: CopyChoice | null = null;
   try {
-    read = await filesOfAssets(assets);
+    read = await filesOfAssets(assets, batch);
     if (!batch.cancelled && read.some((asset) => asset.files.length > 0)) {
       choice = await chooseFilesToCopy(read, (asset) => iconEntryOf(asset.name));
     } else if (!batch.cancelled) {
@@ -3333,7 +3356,7 @@ async function planArbeskCopy(
       return { paths, names: undefined };
     }
   } catch (err) {
-    failure = err;
+    failure = err instanceof AssetFilesError ? err : new AssetFilesError(assets[0], err);
   } finally {
     batch.measuring = false;
   }
@@ -3341,7 +3364,7 @@ async function planArbeskCopy(
   const byAsset = new Map(read.map((asset) => [asset.path, asset]));
   const sources = choice ? paths.flatMap((path) => (byAsset.has(path) ? copySources([byAsset.get(path)!], choice) : [{ path, name: basename(path) }])) : [];
   if (sources.length === 0) {
-    if (failure !== null) showToast(`Could not copy “${basename(assets[0])}”: ${cleanError(failure)}`);
+    if (failure !== null) showToast(`Could not copy “${basename(failure.path)}”: ${cleanError(failure.reason)}`);
     endOperation(op);
     return null;
   }
@@ -3531,6 +3554,8 @@ async function transferBatch(
   let anyMove = false;
   let applyToAll: ConflictChoice | null = null;
   const signIn = signInAgainOnce(destDir);
+  // Keep Both never takes a name the paste plans for another file (F9).
+  const reserved = names && new Set([...names.values()].map((name) => name.toLowerCase()));
 
   for (let i = 0; i < paths.length && !batch.cancelled; i++) {
     const from = paths[i];
@@ -3551,7 +3576,7 @@ async function transferBatch(
       // A copy into its own folder makes a duplicate, as in GNOME Files;
       // moving into the same folder does nothing.
       if (moving) continue;
-      to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
+      to = joinPath(destDir, await freeCopyName(destDir, name, isDir, reserved));
     } else if (await pathExists(to)) {
       let choice: ConflictChoice | null = applyToAll;
       if (!choice) {
@@ -3564,7 +3589,7 @@ async function transferBatch(
         break;
       }
       if (choice === "skip") continue;
-      if (choice === "keepboth") to = joinPath(destDir, await freeCopyName(destDir, name, isDir));
+      if (choice === "keepboth") to = joinPath(destDir, await freeCopyName(destDir, name, isDir, reserved));
       else overwrite = true;
     }
 
@@ -5217,9 +5242,9 @@ function togglePreview(): void {
 }
 
 /** "Open With…" for the folder on screen, as GNOME's background and path-bar
- * menus offer it. Only called for local folders. */
+ * menus offer it, through the same rule as an item's. */
 function openCurrentFolderWithItem(): MenuItem {
-  return { label: "Open With…", action: () => showOpenWith(folderEntry(location)) };
+  return { label: "Open With…", action: () => openItemWith(folderEntry(location)) };
 }
 
 /** Open With… on an item, as `item-actions.ts`' rule allows it. */
@@ -5299,13 +5324,10 @@ function filesActions(asset: Entry): FilesActions {
   const named = (choice: FileChoice): Entry =>
     choice.kind === "model" ? asset : { ...asset, name: choice.rep.name, path: choice.rep.path, representations: undefined };
   return {
-    openWith: (choice) => showOpenWith(asset, choice, named(choice)),
-    copy: (choice) => {
-      const path = choice.kind === "model" ? asset.path : choice.rep.path;
-      clipboard = { paths: [path], dirs: new Set(), mode: "copy" };
-      navigator.clipboard?.writeText(path).catch(() => {});
-      refreshCutMarks();
+    openWith: (choice) => {
+      if (!refuse("openWith", hereFor([asset.path]))) showOpenWith(asset, choice, named(choice));
     },
+    copy: (choice) => putOnClipboard([choice.kind === "model" ? asset.path : choice.rep.path], new Set(), "copy"),
   };
 }
 

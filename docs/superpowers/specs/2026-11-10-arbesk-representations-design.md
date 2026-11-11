@@ -547,8 +547,9 @@ files, a dialog asks before anything is copied:
   (checked), then one row per format present across the assets (*G-code
   (3 assets)*, *STL (2 assets)*). The choice applies to each asset.
 
-A failed read of an asset's list is a toast (*Could not copy “Box.gltf”:
-…*) and copies nothing. The Files… page's Copy of the model row puts the
+A failed read of an asset's list is a toast naming that asset (*Could not
+copy “Box.gltf”: …*) and copies nothing. A cancel of the paste's row while
+the lists are read starts no further read. The Files… page's Copy of the model row puts the
 asset on the clipboard, so its paste asks too, the model already chosen.
 
 The paste's sources become the chosen asset paths (the model) and
@@ -565,8 +566,11 @@ is already safe, F4, so this is the second guard), and
 targetName>`. The F9 dialog fills it: names repeated **within** one paste
 (a `Box.stl` from two assets, or a representation named like its model)
 get the app's Keep Both naming (`Box (copy).stl`, as `freeCopyName` makes it,
-checked against the other names of the paste as well as the folder), and
-the clash check uses the mapped name. **Name clashes still ask Replace /
+checked against the other names of the paste as well as the folder; names
+within the paste are compared ignoring case, as a macOS volume does), and
+the clash check uses the mapped name. Keep Both on a clash, too, skips every
+name the paste plans to write, so a later file of the same paste is never
+asked about. **Name clashes still ask Replace /
 Skip / Keep Both** for each file already in the target folder, so the
 dialog only asks about files that were there before. An asset without
 other files copies as today, with no dialog. Cancel copies nothing.

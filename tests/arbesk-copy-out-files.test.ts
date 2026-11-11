@@ -3,15 +3,17 @@
 // leaving the collection asks too, as does a drag out of it); the
 // targets' names (one plain file name, repeats made unique, clashes with
 // the folder still asked); a pinned file that changed since Copy refused.
-import { beforeAll, expect, test } from "vitest";
+import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { ARBESK_MOCK_ADDRESS, invoke } from "../dev/mock-tauri/core";
-import { $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, installFakeCanvas, key, mouse, names, respond, settle, toasts } from "./app";
+import { $, $$, boot, chooseMenu, click, closeOverlays, dialogHeading, goTo, installFakeCanvas, key, mouse, names, respond, settle, toasts } from "./app";
 
 type MockArbesk = {
   addAsset(token: string, id: string, name: string, files: Array<{ id: string; format: string; name: string; bytes: number }>): void;
   changeFile(token: string, asset: string, file: string): void;
 };
 const mockArbesk = () => (globalThis as unknown as { __mockArbesk: MockArbesk }).__mockArbesk;
+type MockCalls = { count(cmd: string): number; hold(cmd: string): void; release(cmd: string): void; releaseLast(cmd: string): void; failNext(cmd: string, error: string): void; reset(): void };
+const calls = () => (globalThis as unknown as { __mockCalls: MockCalls }).__mockCalls;
 
 const HOME = "/Users/me";
 const SHAPES = `arbesk://${ARBESK_MOCK_ADDRESS}/1~Shapes`;
@@ -35,9 +37,17 @@ beforeAll(async () => {
   ]);
   const flow = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
   await invoke("arbesk_connect_finish", { flowId: flow.flow_id });
-  for (const dir of ["Out1", "Out2", "Out3", "Out4", "Out5", "Out6"]) await invoke("make_dir", { path: `${HOME}/${dir}` });
+  // Enough assets that a paste of all of them reads more lists than it reads at once.
+  for (const n of [1, 2, 3, 4]) mockArbesk().addAsset("1", `part${n}`, `Part${n}`, [{ id: "stl", format: "stl", name: `Part${n}.stl`, bytes: 100 }]);
+  for (const dir of ["Out1", "Out2", "Out3", "Out4", "Out5", "Out6", "Out7", "Out8"]) await invoke("make_dir", { path: `${HOME}/${dir}` });
   await boot();
   await key("1", { mod: true });
+});
+
+afterEach(async () => {
+  calls().reset();
+  await settle(10);
+  await closeOverlays();
 });
 
 /** Select `picks` in Shapes and copy them. */
@@ -180,4 +190,66 @@ test("the Files… page's Copy takes one file; once it changed in Arbesk, the pa
   await settle(40);
   expect(toasts()).toContain("Could not copy “Bracket.stl”: “Bracket.stl” changed in Arbesk since it was copied.");
   expect(names()).toEqual(["Bracket.stl"]);
+});
+
+test("Keep Both never takes a name the paste plans for another file", async () => {
+  await copyFromShapes(["Box.gltf"]);
+  await pasteIn("Out5");
+  await click(box("Box.gltf"));
+  await click(box("Box.stl"));
+  await respond("Copy");
+  await settle(40);
+  expect(names()).toEqual(["Box.stl"]);
+  // Two assets with a Box.stl: the second is planned as "Box (copy).stl", so
+  // Keep Both for the first's clash takes the next name, with no question
+  // about the file this paste just wrote.
+  await copyFromShapes(["Box.gltf", "Odd.gltf"]);
+  await pasteIn("Out5");
+  await click(box("Models"));
+  await click(box("STL (2 assets)"));
+  await respond("Copy");
+  await settle(30);
+  expect(dialogHeading()).toBe("Replace file “Box.stl”?");
+  await respond("Keep Both");
+  await settle(40);
+  expect(dialogHeading()).toBeUndefined();
+  expect(names().sort()).toEqual(["Box (copy 2).stl", "Box (copy).stl", "Box.stl"]);
+});
+
+test("a failed read of an asset's list names that asset and copies nothing", async () => {
+  await copyFromShapes(["Box.gltf", "Odd.gltf"]);
+  calls().reset();
+  calls().hold("arbesk_representations");
+  await goTo(`${HOME}/Out7`);
+  await key("v", { mod: true });
+  await vi.waitFor(() => expect(calls().count("arbesk_representations")).toBe(2), { timeout: 2000 });
+  // The second asset's read (Odd.gltf) fails first.
+  calls().failNext("arbesk_representations", "Failed: The gateway did not answer.");
+  calls().releaseLast("arbesk_representations");
+  await settle(20);
+  calls().release("arbesk_representations");
+  await settle(30);
+  expect(toasts()).toContain("Could not copy “Odd.gltf”: The gateway did not answer.");
+  expect(dialogHeading()).toBeUndefined();
+  expect(names()).toEqual([]);
+  expect(calls().count("copy_entry")).toBe(0);
+});
+
+test("a cancel while the lists are read starts no further reads", async () => {
+  await copyFromShapes(["Box.gltf", "Odd.gltf", "Part1.gltf", "Part2.gltf", "Part3.gltf", "Part4.gltf"]);
+  calls().reset();
+  calls().hold("arbesk_representations");
+  await goTo(`${HOME}/Out8`);
+  await key("v", { mod: true });
+  await vi.waitFor(() => expect(calls().count("arbesk_representations")).toBe(4), { timeout: 2000 });
+  await click($("#btn-operations"));
+  await settle(5);
+  await click($(".operation-row .operation-cancel"));
+  await settle(10);
+  expect($$(".operation-row")).toHaveLength(0);
+  calls().release("arbesk_representations");
+  await settle(40);
+  expect(calls().count("arbesk_representations")).toBe(4);
+  expect(dialogHeading()).toBeUndefined();
+  expect(names()).toEqual([]);
 });

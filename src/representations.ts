@@ -190,21 +190,24 @@ export function copySources(assets: readonly AssetFiles[], choice: CopyChoice): 
 
 /** The names repeated within one paste after their first: each gets the
  *  next Keep Both name `taken` (the folder, asked by the caller) and the
- *  paste's other names leave free. Names are compared as given. */
+ *  paste's other names leave free. Names are compared ignoring case, as a
+ *  macOS volume does: on a case-sensitive one that only renames a file
+ *  that could have kept its name, never loses one. */
 export async function uniqueNames(names: readonly string[], taken: (name: string) => Promise<boolean>): Promise<string[]> {
-  const used = new Set(names);
+  const key = (name: string) => name.toLowerCase();
+  const used = new Set(names.map(key));
   const seen = new Set<string>();
   const out: string[] = [];
   for (const name of names) {
-    if (!seen.has(name)) {
-      seen.add(name);
+    if (!seen.has(key(name))) {
+      seen.add(key(name));
       out.push(name);
       continue;
     }
     let n = 1;
     let candidate = copyNameAt(name, n);
-    while (used.has(candidate) || (await taken(candidate))) candidate = copyNameAt(name, ++n);
-    used.add(candidate);
+    while (used.has(key(candidate)) || (await taken(candidate))) candidate = copyNameAt(name, ++n);
+    used.add(key(candidate));
     out.push(candidate);
   }
   return out;
