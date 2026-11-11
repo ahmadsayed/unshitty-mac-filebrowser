@@ -1656,8 +1656,10 @@ type MockAsset = {
   /** The newest manifest's stored `version`, as any client may write it;
    *  not given, it is numbered as besk numbers saves (one per save). */
   version?: unknown;
-  /** A scene's parts, each at the x offsets of its copies (tinted when a colour is given). */
-  scene?: Array<{ key: string; format: "glb" | "3mf"; copies: Array<{ x: number; color?: string }> }>;
+  /** A scene's parts, each at the x offsets of its copies (tinted when a
+   *  colour is given); `bytes`, a part's size as built, refused past the
+   *  limit it is asked with (the sample model is sent all the same). */
+  scene?: MockScenePart[];
   /** Its other files, as Arbesk stores the entries (an invalid one
    *  included), in the newest save. */
   representations?: MockRepresentation[];
@@ -1672,6 +1674,8 @@ type MockAsset = {
    *  held its own. Filled as each save is superseded. */
   models?: Record<number, number>;
 };
+
+type MockScenePart = { key: string; format: "glb" | "3mf"; bytes?: number; copies: Array<{ x: number; color?: string }> };
 
 /** A representation entry as stored, loosely typed as another client may write it. */
 type MockRepresentation = Record<string, unknown>;
@@ -2142,6 +2146,32 @@ const arbeskSession = { signedIn: true, expireNext: false };
     keepEarlierFiles(found);
     newFilesVersion(found);
   },
+  /** For scene tests: a glTF asset `id` named `name` in collection
+   *  `token` whose scene is `parts`. What takes it out again. */
+  addScene(token: string, id: string, name: string, parts: MockScenePart[]): () => void {
+    const assets = ARBESK_COLLECTIONS.find((c) => c.token === token)!.assets;
+    const asset: MockAsset = { id, name, ext: "gltf", scene: parts };
+    assets.push(asset);
+    return () => void assets.splice(assets.indexOf(asset), 1);
+  },
+  /** Hold every `arbesk_part` call until `releasePart` names its key
+   *  (calls can answer out of order) or its ticket is cancelled; false
+   *  releases them all. */
+  holdParts(hold: boolean): void {
+    partsHeld = hold;
+    if (!hold) heldParts.splice(0).forEach((call) => call.resolve());
+  },
+  /** Release the held calls for part `key`. */
+  releasePart(key: string): void {
+    for (const call of heldParts.filter((c) => c.key === key)) {
+      heldParts.splice(heldParts.indexOf(call), 1);
+      call.resolve();
+    }
+  },
+  /** The held calls, in the order they were asked: their part, limit and ticket. */
+  heldParts: () => heldParts.map(({ key, limit, ticket }) => ({ key, limit, ticket })),
+  /** The tickets `cancel_arbesk_parts` was given, in order. */
+  cancelledParts: () => [...cancelledParts],
   /** As a save elsewhere would: the file `file` of asset `asset` now holds other bytes (another CID). */
   changeFile(token: string, asset: string, file: string): void {
     const found = ARBESK_COLLECTIONS.find((c) => c.token === token)?.assets.find((a) => a.id === asset);
@@ -2486,14 +2516,36 @@ function arbeskScene(path: string, version: string | null = null) {
   };
 }
 
-/** One part's bytes, as the preview loads them: a GLB or a 3MF. */
-function arbeskPart(path: string, version: string | null, key: string, limit: number): ArrayBuffer {
+/** Tests hold part calls to answer them late and out of order (`holdParts`,
+ *  `releasePart`); a cancelled ticket answers "Cancelled." as the backend's
+ *  stop does (`cancel_arbesk_parts`). */
+let partsHeld = false;
+const heldParts: Array<{ key: string; limit: number; ticket?: number; resolve: () => void }> = [];
+const cancelledParts: number[] = [];
+
+/** One part's bytes, as the preview loads them: a GLB or a 3MF; refused
+ *  past `limit` (by its declared `bytes` when it has them). `ticket` names
+ *  it for `cancel_arbesk_parts`. */
+async function arbeskPart(path: string, version: string | null, key: string, limit: number, ticket?: number): Promise<ArrayBuffer> {
+  if (partsHeld) await new Promise<void>((resolve) => heldParts.push({ key, limit, ticket, resolve }));
+  if (ticket !== undefined && cancelledParts.includes(ticket)) throw "Cancelled.";
   const part = arbeskScene(path, version).parts.find((p) => p.key === key);
   if (!part) throw "This part is not in the asset.";
-  if (arbeskAsset(path).huge) throw "This file is too large to preview.";
+  const asset = arbeskAsset(path);
+  if (asset.huge) throw "This file is too large to preview.";
   const bytes = part.format === "3mf" ? sample3mf() : sampleGlb();
-  if (bytes.length > limit) throw "This file is too large to preview.";
+  const declared = asset.scene?.find((p) => p.key === key)?.bytes ?? bytes.length;
+  if (declared > limit) throw "This file is too large to preview.";
   return bytes.slice().buffer;
+}
+
+/** `cancel_arbesk_parts`: each ticket's call, held or not yet answered, answers "Cancelled.". */
+function cancelArbeskParts(tickets: number[]): void {
+  for (const ticket of tickets) {
+    cancelledParts.push(ticket);
+    const held = heldParts.findIndex((call) => call.ticket === ticket);
+    if (held >= 0) heldParts.splice(held, 1)[0].resolve();
+  }
 }
 
 const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
@@ -2505,7 +2557,8 @@ const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
   arbesk_attach_plan: (a) => arbeskAttachPlan(str(a, "path"), a.files as string[]),
   arbesk_attach: gated(arbeskAttach),
   arbesk_detach: gated(arbeskDetach),
-  arbesk_part: (a) => arbeskPart(str(a, "path"), (a.version as string | null | undefined) ?? null, str(a, "key"), Number(a.limit)),
+  arbesk_part: (a) => arbeskPart(str(a, "path"), (a.version as string | null | undefined) ?? null, str(a, "key"), Number(a.limit), (a.ticket as number | null | undefined) ?? undefined),
+  cancel_arbesk_parts: (a) => cancelArbeskParts(a.tickets as number[]),
   arbesk_accounts: () => arbeskAccountList.map((account) => ({ ...account })),
   arbesk_connect_start: (a) => {
     const email = str(a, "email").trim().toLowerCase();

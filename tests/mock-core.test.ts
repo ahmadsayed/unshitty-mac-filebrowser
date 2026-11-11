@@ -1483,6 +1483,60 @@ test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend'
   delete (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
 });
 
+test("arbesk_part holds and answers out of order, refuses past its limit, and a cancelled ticket answers Cancelled.: cancel_arbesk_parts (performance plan, phase 3)", async () => {
+  const { ARBESK_MOCK_ADDRESS: address } = await import("../dev/mock-tauri/core");
+  type Held = { key: string; limit: number; ticket?: number };
+  const mock = (globalThis as unknown as {
+    __mockArbesk: {
+      addScene(token: string, id: string, name: string, parts: Array<{ key: string; format: string; bytes?: number; copies: Array<{ x: number }> }>): () => void;
+      holdParts(hold: boolean): void;
+      releasePart(key: string): void;
+      heldParts(): Held[];
+      cancelledParts(): number[];
+    };
+  }).__mockArbesk;
+  const start = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  const account = await invoke<{ id: string }>("arbesk_connect_finish", { flowId: start.flow_id });
+  const remove = mock.addScene("2", "row", "Row", [
+    { key: "row-a", format: "glb", copies: [{ x: 0 }] },
+    { key: "row-b", format: "3mf", bytes: 5000, copies: [{ x: 50 }, { x: 100 }] },
+    { key: "row-c", format: "glb", copies: [{ x: 150 }] },
+  ]);
+  const path = `arbesk://${address}/2~Untitled%20Collection/row~Row.gltf`;
+  const scene = await invoke<{ parts: Array<{ key: string; placements: unknown[] }> }>("arbesk_scene", { path });
+  expect(scene.parts.map((p) => [p.key, p.placements.length])).toEqual([["row-a", 1], ["row-b", 2], ["row-c", 1]]);
+  // A part's declared size decides: refused past the limit, sent within it.
+  await expect(invoke("arbesk_part", { path, key: "row-b", limit: 4999 })).rejects.toBe("This file is too large to preview.");
+  expect((await invoke<ArrayBuffer>("arbesk_part", { path, key: "row-b", limit: 5000 })).byteLength).toBeGreaterThan(0);
+
+  mock.holdParts(true);
+  const answered: string[] = [];
+  const ask = (key: string, ticket: number) =>
+    invoke<ArrayBuffer>("arbesk_part", { path, key, limit: 1 << 20, ticket }).then(
+      () => answered.push(key),
+      (error: unknown) => answered.push(`${key}: ${String(error)}`),
+    );
+  const calls = [ask("row-a", 1), ask("row-b", 2), ask("row-c", 3)];
+  await new Promise((r) => setTimeout(r, 0));
+  expect(mock.heldParts()).toEqual([
+    { key: "row-a", limit: 1 << 20, ticket: 1 },
+    { key: "row-b", limit: 1 << 20, ticket: 2 },
+    { key: "row-c", limit: 1 << 20, ticket: 3 },
+  ]);
+  mock.releasePart("row-c");
+  await calls[2];
+  await invoke("cancel_arbesk_parts", { tickets: [2, 99] });
+  await calls[1];
+  expect(mock.cancelledParts()).toEqual([2, 99]);
+  expect(mock.heldParts().map((call) => call.key)).toEqual(["row-a"]);
+  mock.holdParts(false);
+  await calls[0];
+  expect(answered).toEqual(["row-c", "row-b: Cancelled.", "row-a"]);
+  remove();
+  await expect(invoke("arbesk_scene", { path })).rejects.toBeTruthy();
+  await invoke("arbesk_disconnect", { account: account.id });
+});
+
 test("arbesk_create_collection mints a named collection in the account only", async () => {
   const { ARBESK_MOCK_ADDRESS: address } = await import("../dev/mock-tauri/core");
   const mock = (globalThis as unknown as { __mockArbesk: { signedIn: boolean } }).__mockArbesk;

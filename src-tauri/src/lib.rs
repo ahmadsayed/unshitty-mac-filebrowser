@@ -3,6 +3,7 @@ mod config_store;
 mod downloads;
 mod engine;
 mod file_icons;
+mod part_tickets;
 mod place;
 mod placement;
 mod platform;
@@ -771,20 +772,26 @@ fn arbesk_exported(registry: &places::Registry, path: &str, cx: &places::Cx) -> 
 }
 
 /// One part of an Arbesk asset's scene, as the preview loads it (a GLB or a
-/// 3MF), at most `limit` bytes.
+/// 3MF), at most `limit` bytes. `ticket`, when given, names the fetch for
+/// `cancel_arbesk_parts` (performance plan, phase 3): a cancelled part
+/// stops waiting for a read permit and reading, and answers "Cancelled.".
 #[tauri::command]
 async fn arbesk_part(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     path: String,
     version: Option<String>,
     key: String,
     limit: u64,
+    ticket: Option<u64>,
 ) -> Result<tauri::ipc::Response, String> {
     let limit = limit.clamp(1, 512 * 1024 * 1024);
+    let running = ticket.map(|t| app.state::<part_tickets::PartTickets>().start(window.label(), t));
     let bytes = blocking(move || {
         let registry = app.state::<places::Registry>();
         let preview = arbesk_ext(&registry, |ext| ext.preview)?;
-        let cx = places_cx(&app, progress::Progress::default());
+        let progress = running.as_ref().map(part_tickets::PartTicket::progress).unwrap_or_default();
+        let cx = places_cx(&app, progress);
         let file = preview.part(&path, version.as_deref(), &key, &cx)?;
         fs_ops::preview_bytes(file.to_string_lossy().into_owned(), limit)
     })
@@ -1886,6 +1893,17 @@ fn cancel_thumbnails(
     requests.cancel(window.label(), &tickets);
 }
 
+/// Cancel this window's Arbesk part fetches with these tickets: the
+/// preview that asked for them was closed or moved to another save.
+#[tauri::command]
+fn cancel_arbesk_parts(
+    window: tauri::WebviewWindow,
+    parts: tauri::State<part_tickets::PartTickets>,
+    tickets: Vec<u64>,
+) {
+    parts.cancel(window.label(), &tickets);
+}
+
 /// Mounted volumes for the sidebar: `/Volumes` on macOS, the udisks2 mount
 /// folders and `/mnt` on Linux.
 #[tauri::command]
@@ -2486,6 +2504,7 @@ pub fn run() {
             app.manage(VersionsState::new(config_dir.join("versioned.json")));
             app.manage(progress::Registry::default());
             app.manage(thumbnails::Requests::default());
+            app.manage(part_tickets::PartTickets::default());
             app.manage(file_icons::Icons::new(Some(home.clone()), desktop_icon_theme()));
             app.manage(Searches::default());
             app.manage(share::file_share::FileShares::new(
@@ -2626,6 +2645,7 @@ pub fn run() {
             forget_recent,
             thumbnail,
             cancel_thumbnails,
+            cancel_arbesk_parts,
             icon_ids,
             app_icon_ids,
             file_share_prepare,

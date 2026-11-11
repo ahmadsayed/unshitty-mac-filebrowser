@@ -739,9 +739,16 @@ export async function arbeskScene(path: string, version: string | null = null): 
   return invoke<ArbeskScene>("arbesk_scene", { path, version });
 }
 
-/** One part of an Arbesk scene, as the preview loads it, at most `limit` bytes. */
-export async function arbeskPart(path: string, key: string, limit: number, version: string | null = null): Promise<ArrayBuffer> {
-  return invoke<ArrayBuffer>("arbesk_part", { path, version, key, limit });
+/** One part of an Arbesk scene, as the preview loads it, at most `limit`
+ *  bytes. `ticket` names the fetch for `cancelArbeskParts`. */
+export async function arbeskPart(path: string, key: string, limit: number, version: string | null = null, ticket?: number): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("arbesk_part", { path, version, key, limit, ticket });
+}
+
+/** Stop the part fetches with these tickets, waiting or reading: their
+ *  preview was closed or moved on. Each answers "Cancelled.". */
+export async function cancelArbeskParts(tickets: number[]): Promise<void> {
+  return invoke<void>("cancel_arbesk_parts", { tickets });
 }
 
 /** One save of an Arbesk asset: its manifest's CID, when (ms), if known,
