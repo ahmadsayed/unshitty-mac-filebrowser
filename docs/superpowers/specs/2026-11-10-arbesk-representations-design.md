@@ -1,7 +1,7 @@
 # Other files of an Arbesk asset (representations) — design
 
-Date: 2026-11-10 · Status: proposed (owner asked for full automation: every
-decision below is taken; nothing waits on an answer). Builds on Arbesk's asset representations design (in the Arbesk repository,
+Date: 2026-11-10 · Status: done (all five phases built; owner asked for
+full automation: every decision below is taken; nothing waits on an answer). Builds on Arbesk's asset representations design (in the Arbesk repository,
 `docs/superpowers/specs/2026-11-10-asset-representations-design.md`, R1–R8,
 merged in Arbesk #139) and on this app's
 [provider crates](2026-11-10-provider-crates-design.md),
@@ -848,6 +848,44 @@ read) and compares with that; if it has none (the first version) its files
 read as added; if that read fails it shows no change rather than claiming
 *Added …* for every file.
 
+As built (phase 5):
+
+- The fetch is a command of its own, **`arbesk_file(path, version, id,
+  op)`**, over `ext::Representations::file`, its `version` required (a
+  manifest CID from `arbesk_versions`), so nothing in the preview can
+  fetch the current save by mistake; the file page's Open With… passes
+  the save on to F8's step 3 (`openAssetWith`'s `version`), which fetches
+  through it instead of `arbesk_export`.
+- The switcher is asked for only when the listing's summary says the
+  asset has files now (no request for an asset without), and for every
+  version stepped to (an older save may have files the newest dropped).
+  When the asset's saves can't be read, there is no save CID to fetch
+  from, so there is no switcher.
+- The menu's model row is titled with the asset's listed name over
+  *Model*, as the Files… page's is; the shown row is marked as the
+  version menu marks its own. The button is a header menu button
+  (`aria-haspopup`): Tab reaches it, Space or Enter opens the menu, the
+  arrow keys move in it; Space in the view still closes the preview, and
+  Space or Escape on a 3D model and Escape on any header button keep
+  their meaning. Drawn again after a pick, it keeps the keyboard.
+- A glTF representation whose buffers or images name anything but a
+  `data:` URI (F10 refuses adding one; another client may have) can't be
+  drawn from one file, so it gets the file page.
+- A fetch the preview moved on from is not cancelled: it finishes into the
+  app cache and is dropped, as a scene's parts are. A cancel sent after a
+  command ended would be remembered for an operation id that never comes
+  back (`progress::Registry::cancel`), and `operations_running` would then
+  hold up Restart.
+- A version's changes are joined with ` · ` as one dim second line under
+  its row (`MenuItem.subtitle`, new in `ui.ts`), cut with an ellipsis
+  rather than widening the list. The wording is besk's `changeText`,
+  checked case for case against besk's own `representationChanges` (the
+  `changes` cases of `representations-stale.json`, from the same
+  generator, Arbesk commit `54e1659`), including besk's `Map` reading of a
+  duplicate id. Adding `changes` to `places::Version` changes its struct
+  literal, so the one test that builds it (`records.rs`) names
+  `changes: vec![]`; its JSON assertions are unchanged.
+
 ### Data safety
 
 **F15. Every write this app makes to an asset carries the list forward.**
@@ -933,7 +971,10 @@ those tests.) The mock serves:
   `arbesk_attach` and `arbesk_detach` (each a new mock version:
   version + 1, prev, the session check, a `conflictNext` switch that fails
   the next write with the CONFLICT words and changes nothing,
-  `failUploadNext` likewise); `arbesk_versions` with `changes`;
+  `failUploadNext` likewise); `arbesk_versions` with `changes` (as built: each save keeps its own list,
+`MockAsset.earlier` by save number, which a write fills before it adds a
+save; Bracket's first save had the source and the G-code, its second
+added the STL and the 3MF), `arbesk_file`;
   `file_properties` for an asset (with `version`); and the capabilities
   table with `can_attach` and the `arbesk-file` row. `arbeskIds` returns
   the file id and pin of an F4 path. *PrusaSlicer*, *Blender* and *Text
@@ -1040,7 +1081,9 @@ from a summary) and
 `tests/preview-representations.test.ts` (the switcher per version, an STL
 previewed, a `.blend` on the file page, the earlier version's file opened
 after its id was replaced, the version menu's change text and none for an
-oldest version whose predecessor can't be read). `tests/paths.test.ts`
+oldest version whose predecessor can't be read: as built, that last case
+is the backend's, in `service.rs`, since the mock has no unreadable save;
+the frontend checks a save sent without `changes` shows none). `tests/paths.test.ts`
 (`isArbeskFile`), `tests/locations.test.ts` (`arbesk-file`,
 `hasLocalFileFacts`), `tests/item-actions.test.ts` (`openWith`, `attach`,
 `properties` by Arbesk row), `tests/capabilities.test.ts`,
@@ -1127,7 +1170,9 @@ Properties), `src-tauri/Cargo.toml` (as built: only the `NSURL` and
 `NSArray` features of `objc2-foundation` named, no new crate),
 `crates/places/src/{info,records}.rs` (`FileProperties.version`,
 `Version.changes`),
-`src/{api,icons,main,open-with,item-actions,locations,paths,capabilities,preview-versions}.ts`,
+`src/{api,icons,main,open-with,item-actions,locations,paths,capabilities,preview-versions,ui}.ts`
+(as built: `ui.ts` for a menu row's subtitle), `index.html` (the switcher's
+place in the preview's header), `tests/preview-representations.test.ts`,
 `tests/support/item-actions-matrix.ts`,
 `src/styles.css`, `src/themes/{gnome,macos}.css`, `dev/mock-tauri/core.ts`,
 `dev/mock-tauri/models.ts`, `tests/capabilities.json`,

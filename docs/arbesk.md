@@ -232,6 +232,27 @@ In the window:
   still asks Replace, Skip or Keep Both. Each file is copied as it was when
   the dialog was shown: if it changed in Arbesk since, its copy is refused
   (*“Bracket.gcode” changed in Arbesk since it was copied.*).
+- **Space** on an asset with other files puts a menu button beside the
+  version control in the preview's header, saying what is shown (*Model*,
+  *STL*, *G-code*…, with the out-of-date dot when the file shown is). Its
+  menu lists the model and each file of the version on screen, with the
+  same line as the Files… page: each version keeps its own files, so
+  stepping to an older one lists what it had, and shows its model again.
+  An STL, 3MF, GLB or single-file glTF is fetched and shown as a 3D model;
+  any other file (a `.blend`, a G-code) shows its page: its icon, name,
+  that line, the *Out of date* tag and **Open With…**. Everything the
+  preview fetches comes from the version on screen, never from the asset
+  as it is now, so a file replaced since is the one that version held.
+  The button is a menu button like any other: Tab reaches it, Space or
+  Enter opens its menu, the arrow keys move in it, and Space in the view
+  still closes the preview. **Open** still opens the asset in the Studio.
+- The version menu says what each save changed in the files, in besk's
+  words (*Added G-code (Original Prusa MK4, PETG)*, *Replaced STL*,
+  *Removed Blender file*): each save is compared with the one before it,
+  the oldest one shown with its own predecessor too (one more read, from
+  the cache), and the asset's first save lists its files as added. When
+  that predecessor can't be read, the row says nothing rather than claim
+  every file was added.
 
 Underneath:
 
