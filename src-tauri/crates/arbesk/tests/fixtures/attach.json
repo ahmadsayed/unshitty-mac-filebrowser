@@ -1,0 +1,815 @@
+{
+  "about": "The next asset manifest `besk attach` writes for each case, made by scripts/make-attach-fixture.ts from Arbesk's own attachRepresentation; attach.rs' test builds the same from `current` and compares.",
+  "arbesk_commit": "54e16595df395ae043c2323c0a326353336ad5ba",
+  "cases": [
+    {
+      "name": "an STL replaces the stored one",
+      "cid": "bafyBase",
+      "listed": "Box.gltf",
+      "asset_id": "a1",
+      "now": 1762000000000,
+      "current": {
+        "type": "asset",
+        "name": "Box",
+        "asset_id": "a1",
+        "version": 3,
+        "timestamp": 1000,
+        "scene": {
+          "nodes": [
+            {
+              "node_id": "node_1",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ],
+              "source": {
+                "cid": "bafySrc",
+                "format": "gltf",
+                "path": "composite.gltf"
+              }
+            }
+          ]
+        },
+        "thumbnail": {
+          "cid": "bafyThumb",
+          "mime": "image/webp"
+        },
+        "future": {
+          "kept": true
+        },
+        "representations": [
+          {
+            "id": "stl",
+            "role": "mesh",
+            "format": "stl",
+            "name": "Box.stl",
+            "cid": "bafyOldStl",
+            "bytes": 3,
+            "encoding": "raw",
+            "created_at": 1,
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafyOld",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "id": "plan",
+            "role": "someday",
+            "format": "json",
+            "newer": [
+              1,
+              2
+            ]
+          }
+        ]
+      },
+      "files": [
+        {
+          "name": "Box.stl",
+          "format": "stl",
+          "bytes": 10,
+          "cid": "bafyRaw1"
+        }
+      ],
+      "next": {
+        "type": "asset",
+        "name": "Box",
+        "asset_id": "a1",
+        "version": 4,
+        "timestamp": 1762000000000,
+        "scene": {
+          "nodes": [
+            {
+              "node_id": "node_1",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ],
+              "source": {
+                "cid": "bafySrc",
+                "format": "gltf",
+                "path": "composite.gltf"
+              }
+            }
+          ]
+        },
+        "thumbnail": {
+          "cid": "bafyThumb",
+          "mime": "image/webp"
+        },
+        "future": {
+          "kept": true
+        },
+        "representations": [
+          {
+            "id": "stl",
+            "role": "mesh",
+            "format": "stl",
+            "name": "Box.stl",
+            "cid": "bafyRaw1",
+            "bytes": 10,
+            "encoding": "raw",
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafySrc",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ]
+            },
+            "created_at": 1762000000000
+          },
+          {
+            "id": "plan",
+            "role": "someday",
+            "format": "json",
+            "newer": [
+              1,
+              2
+            ]
+          }
+        ],
+        "prev_asset_manifest_cid": "bafyBase"
+      }
+    },
+    {
+      "name": "a source file is made from nothing",
+      "cid": "bafyBase",
+      "listed": "Box.gltf",
+      "asset_id": "a1",
+      "now": 1762000000000,
+      "current": {
+        "type": "asset",
+        "name": "Box",
+        "asset_id": "a1",
+        "version": 3,
+        "timestamp": 1000,
+        "scene": {
+          "nodes": [
+            {
+              "node_id": "node_1",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ],
+              "source": {
+                "cid": "bafySrc",
+                "format": "gltf",
+                "path": "composite.gltf"
+              }
+            }
+          ]
+        },
+        "thumbnail": {
+          "cid": "bafyThumb",
+          "mime": "image/webp"
+        },
+        "future": {
+          "kept": true
+        },
+        "representations": [
+          {
+            "id": "stl",
+            "role": "mesh",
+            "format": "stl",
+            "name": "Box.stl",
+            "cid": "bafyOldStl",
+            "bytes": 3,
+            "encoding": "raw",
+            "created_at": 1,
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafyOld",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "id": "plan",
+            "role": "someday",
+            "format": "json",
+            "newer": [
+              1,
+              2
+            ]
+          }
+        ]
+      },
+      "files": [
+        {
+          "name": "Box.blend",
+          "format": "blend",
+          "bytes": 12,
+          "cid": "bafyRaw1"
+        }
+      ],
+      "next": {
+        "type": "asset",
+        "name": "Box",
+        "asset_id": "a1",
+        "version": 4,
+        "timestamp": 1762000000000,
+        "scene": {
+          "nodes": [
+            {
+              "node_id": "node_1",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ],
+              "source": {
+                "cid": "bafySrc",
+                "format": "gltf",
+                "path": "composite.gltf"
+              }
+            }
+          ]
+        },
+        "thumbnail": {
+          "cid": "bafyThumb",
+          "mime": "image/webp"
+        },
+        "future": {
+          "kept": true
+        },
+        "representations": [
+          {
+            "id": "stl",
+            "role": "mesh",
+            "format": "stl",
+            "name": "Box.stl",
+            "cid": "bafyOldStl",
+            "bytes": 3,
+            "encoding": "raw",
+            "created_at": 1,
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafyOld",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "id": "plan",
+            "role": "someday",
+            "format": "json",
+            "newer": [
+              1,
+              2
+            ]
+          },
+          {
+            "id": "source",
+            "role": "source",
+            "format": "blend",
+            "name": "Box.blend",
+            "cid": "bafyRaw1",
+            "bytes": 12,
+            "encoding": "raw",
+            "created_at": 1762000000000
+          }
+        ],
+        "prev_asset_manifest_cid": "bafyBase"
+      }
+    },
+    {
+      "name": "a G-code is stored brotli-framed",
+      "cid": "bafyBase",
+      "listed": "Box.gltf",
+      "asset_id": "a1",
+      "now": 1762000000000,
+      "current": {
+        "type": "asset",
+        "name": "Box",
+        "asset_id": "a1",
+        "version": 3,
+        "timestamp": 1000,
+        "scene": {
+          "nodes": [
+            {
+              "node_id": "node_1",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ],
+              "source": {
+                "cid": "bafySrc",
+                "format": "gltf",
+                "path": "composite.gltf"
+              }
+            }
+          ]
+        },
+        "thumbnail": {
+          "cid": "bafyThumb",
+          "mime": "image/webp"
+        },
+        "future": {
+          "kept": true
+        },
+        "representations": [
+          {
+            "id": "stl",
+            "role": "mesh",
+            "format": "stl",
+            "name": "Box.stl",
+            "cid": "bafyOldStl",
+            "bytes": 3,
+            "encoding": "raw",
+            "created_at": 1,
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafyOld",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "id": "plan",
+            "role": "someday",
+            "format": "json",
+            "newer": [
+              1,
+              2
+            ]
+          }
+        ]
+      },
+      "files": [
+        {
+          "name": "Box.gcode",
+          "format": "gcode",
+          "bytes": 450,
+          "cid": "bafyRaw1"
+        }
+      ],
+      "next": {
+        "type": "asset",
+        "name": "Box",
+        "asset_id": "a1",
+        "version": 4,
+        "timestamp": 1762000000000,
+        "scene": {
+          "nodes": [
+            {
+              "node_id": "node_1",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ],
+              "source": {
+                "cid": "bafySrc",
+                "format": "gltf",
+                "path": "composite.gltf"
+              }
+            }
+          ]
+        },
+        "thumbnail": {
+          "cid": "bafyThumb",
+          "mime": "image/webp"
+        },
+        "future": {
+          "kept": true
+        },
+        "representations": [
+          {
+            "id": "stl",
+            "role": "mesh",
+            "format": "stl",
+            "name": "Box.stl",
+            "cid": "bafyOldStl",
+            "bytes": 3,
+            "encoding": "raw",
+            "created_at": 1,
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafyOld",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "id": "plan",
+            "role": "someday",
+            "format": "json",
+            "newer": [
+              1,
+              2
+            ]
+          },
+          {
+            "id": "gcode",
+            "role": "machine",
+            "format": "gcode",
+            "name": "Box.gcode",
+            "cid": "bafyRaw1",
+            "bytes": 450,
+            "encoding": "brotli",
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafySrc",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ]
+            },
+            "created_at": 1762000000000
+          }
+        ],
+        "prev_asset_manifest_cid": "bafyBase"
+      }
+    },
+    {
+      "name": "a bare glTF composite is wrapped",
+      "cid": "bafyBase",
+      "listed": "Box.gltf",
+      "asset_id": "a1",
+      "now": 1762000000000,
+      "current": {
+        "asset": {
+          "version": "2.0"
+        },
+        "nodes": [
+          {
+            "mesh": 0
+          }
+        ],
+        "arbesk": {
+          "parts": [
+            "bafyPart"
+          ]
+        }
+      },
+      "files": [
+        {
+          "name": "Box.stl",
+          "format": "stl",
+          "bytes": 6,
+          "cid": "bafyRaw1"
+        }
+      ],
+      "next": {
+        "type": "asset",
+        "name": "Box",
+        "asset_id": "a1",
+        "version": 2,
+        "scene": {
+          "nodes": [
+            {
+              "node_id": "node_1",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              "source": {
+                "cid": "bafyBase",
+                "format": "gltf",
+                "path": "composite.gltf"
+              }
+            }
+          ]
+        },
+        "prev_asset_manifest_cid": "bafyBase",
+        "timestamp": 1762000000000,
+        "representations": [
+          {
+            "id": "stl",
+            "role": "mesh",
+            "format": "stl",
+            "name": "Box.stl",
+            "cid": "bafyRaw1",
+            "bytes": 6,
+            "encoding": "raw",
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafyBase",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            },
+            "created_at": 1762000000000
+          }
+        ]
+      }
+    },
+    {
+      "name": "a bare 3MF composite is wrapped",
+      "cid": "bafyBase",
+      "listed": "Box.3mf",
+      "asset_id": "a1",
+      "now": 1762000000000,
+      "current": {
+        "arbesk_format": "composite-3mf",
+        "name": "Bracket",
+        "version": 2,
+        "parts": [
+          "bafyPart"
+        ]
+      },
+      "files": [
+        {
+          "name": "Bracket.3mf",
+          "format": "3mf",
+          "bytes": 4,
+          "cid": "bafyRaw1"
+        }
+      ],
+      "next": {
+        "type": "asset",
+        "name": "Bracket",
+        "asset_id": "a1",
+        "version": 3,
+        "scene": {
+          "nodes": [
+            {
+              "node_id": "node_1",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              "source": {
+                "cid": "bafyBase",
+                "format": "3mf",
+                "path": "composite.3mf.json"
+              }
+            }
+          ]
+        },
+        "prev_asset_manifest_cid": "bafyBase",
+        "timestamp": 1762000000000,
+        "representations": [
+          {
+            "id": "3mf",
+            "role": "mesh",
+            "format": "3mf",
+            "name": "Bracket.3mf",
+            "cid": "bafyRaw1",
+            "bytes": 4,
+            "encoding": "raw",
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafyBase",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            },
+            "created_at": 1762000000000
+          }
+        ]
+      }
+    }
+  ]
+}

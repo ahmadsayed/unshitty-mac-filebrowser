@@ -646,6 +646,65 @@ async fn arbesk_representations(
     .await?
 }
 
+/// What adding the local `files` to the Arbesk asset at `path` would do
+/// (spec F10): each file as it would be recorded and its clash with a
+/// stored entry, before anything is asked or written.
+#[tauri::command]
+async fn arbesk_attach_plan(app: tauri::AppHandle, path: String, files: Vec<String>) -> Result<places::Json, String> {
+    blocking(move || {
+        let registry = app.state::<places::Registry>();
+        arbesk_ext(&registry, |ext| ext.representations)?.plan_attach(&path, &files).map_err(String::from)
+    })
+    .await?
+}
+
+/// Add local files to the Arbesk asset at `path` as one new version (spec
+/// F10, F11): `files`, each `{ path, choice? }` with what was answered for
+/// a clash. Operation `op`: progress over the uploaded bytes, cancelled
+/// until the collection manifest is uploaded. The asset's files afterwards.
+#[tauri::command]
+async fn arbesk_attach(
+    app: tauri::AppHandle,
+    path: String,
+    files: serde_json::Value,
+    op: String,
+    on_progress: Channel<ProgressUpdate>,
+) -> Result<places::Json, String> {
+    blocking(move || {
+        let tracking = track(&app, &op, on_progress);
+        let cx = places_cx(&app, tracking.progress.clone());
+        let registry = app.state::<places::Registry>();
+        let result = arbesk_ext(&registry, |ext| ext.representations)
+            .and_then(|reps| reps.attach(&path, &files, &cx).map_err(String::from));
+        tracking.finish();
+        result
+    })
+    .await?
+}
+
+/// Remove the file `id` from the Arbesk asset at `path` as one new version
+/// (spec F12); operation `op`, as `arbesk_attach`. The asset's files
+/// afterwards.
+#[tauri::command]
+async fn arbesk_detach(
+    app: tauri::AppHandle,
+    path: String,
+    id: String,
+    op: String,
+    on_progress: Channel<ProgressUpdate>,
+) -> Result<places::Json, String> {
+    blocking(move || {
+        let tracking = track(&app, &op, on_progress);
+        let cx = places_cx(&app, tracking.progress.clone());
+        let registry = app.state::<places::Registry>();
+        let result = arbesk_ext(&registry, |ext| ext.representations)
+            .and_then(|reps| reps.detach(&path, &id, &cx).map_err(String::from));
+        tracking.finish();
+        result
+    })
+    .await?
+}
+
 /// The file Open With hands an application for an Arbesk asset (spec F8):
 /// the asset's own `.gltf`/`.3mf` built in the app cache, or one of its
 /// other files (its pinned path, spec F4) fetched and decoded there, by
@@ -2489,6 +2548,9 @@ pub fn run() {
             arbesk_versions,
             arbesk_representations,
             arbesk_export,
+            arbesk_attach_plan,
+            arbesk_attach,
+            arbesk_detach,
             app_formats,
             arbesk_part,
             rename_many,

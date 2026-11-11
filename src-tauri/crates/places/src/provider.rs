@@ -35,6 +35,9 @@ pub enum Operation {
     Trash,
     CopyIn,
     CopyOut,
+    /// Adding files to an item as its other files (an Arbesk asset's
+    /// representations, spec F13): `can_attach` is whether it isn't refused.
+    Attach,
     /// A feature only items on this computer have (the local-only gate,
     /// D10): its message is the place's “This action is not available for
     /// …” text, as `place::local` words it today.
@@ -103,11 +106,16 @@ impl Capabilities {
                 refused(Operation::Trash),
                 refused(Operation::CopyIn),
                 refused(Operation::CopyOut),
+                refused(Operation::Attach),
                 Refused { operation: Operation::LocalOnly, message: local_only.to_string() },
             ],
         }
     }
 }
+
+/// The words a place that keeps no other files of an item refuses adding
+/// them with (spec F13): only an Arbesk asset takes them.
+pub const ADD_TO_AN_ASSET: &str = "Add files to an asset.";
 
 // ---- Arguments and results ---------------------------------------------------
 
@@ -523,6 +531,17 @@ pub mod ext {
         /// The other file `id` of the item at `path`, at the save
         /// `version` (the current one without), on this computer.
         fn file(&self, path: &str, version: Option<&str>, id: &str, cx: &Cx) -> Result<PathBuf>;
+        /// What adding the local `files` to the item at `path` would do,
+        /// before anything is asked or written: each file as it would be
+        /// recorded and any clash with one the item has.
+        fn plan_attach(&self, path: &str, files: &[String]) -> Result<Json>;
+        /// Add local files to the item at `path` as one new version: each
+        /// file and what was answered for it, in the provider's shape
+        /// (`files`); the item's files afterwards.
+        fn attach(&self, path: &str, files: &serde_json::Value, cx: &Cx) -> Result<Json>;
+        /// Remove the other file `id` from the item at `path` as one new
+        /// version; the item's files afterwards.
+        fn detach(&self, path: &str, id: &str, cx: &Cx) -> Result<Json>;
     }
 
     /// Features that only make sense for items on this computer (Make Link,

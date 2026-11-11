@@ -63,7 +63,7 @@ mod tests {
         assert!(!(caps.knows_counts || caps.searchable || caps.has_thumbnails));
         assert_eq!((caps.rename_atomic, caps.replace, caps.names_unique, caps.put_is_whole), (false, Replace::Trash, true, false));
         let words = |operation| caps.refused.iter().find(|r| r.operation == operation).map(|r| r.message.as_str());
-        for operation in [Operation::Create, Operation::Rename, Operation::Trash, Operation::CopyIn, Operation::CopyOut] {
+        for operation in [Operation::Create, Operation::Rename, Operation::Trash, Operation::CopyIn, Operation::CopyOut, Operation::Attach] {
             assert_eq!(words(operation), Some(READ_ONLY), "{operation:?}");
         }
         assert_eq!(words(Operation::LocalOnly), Some(LOCAL_ONLY));

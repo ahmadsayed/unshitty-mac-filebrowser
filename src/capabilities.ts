@@ -11,7 +11,8 @@
 // so the three can't drift.
 
 /** What a kind of place allows: the booleans of the backend's
- *  `places::Capabilities` for it (`can_copy_in`: no copy-in refusal). */
+ *  `places::Capabilities` for it (`can_copy_in`: no copy-in refusal;
+ *  `can_attach`: files can be added to an item of it, spec F13). */
 export interface PlaceCapabilities {
   read_only: boolean;
   can_create: boolean;
@@ -19,6 +20,7 @@ export interface PlaceCapabilities {
   can_trash: boolean;
   can_copy_in: boolean;
   can_copy_out: boolean;
+  can_attach: boolean;
   knows_sizes: boolean;
   knows_counts: boolean;
   searchable: boolean;
@@ -37,7 +39,7 @@ export type CapabilityTable = Record<CapabilityRow, PlaceCapabilities>;
 const ROWS: readonly CapabilityRow[] = ["folder", "drive", "share", "sftp", "arbesk-account", "arbesk-collection", "arbesk-asset", "arbesk-file"];
 const FLAGS: readonly (keyof PlaceCapabilities)[] = [
   "read_only", "can_create", "can_rename", "can_trash", "can_copy_in",
-  "can_copy_out", "knows_sizes", "knows_counts", "searchable", "has_thumbnails",
+  "can_copy_out", "can_attach", "knows_sizes", "knows_counts", "searchable", "has_thumbnails",
 ];
 
 /** A row from its flags, in `FLAGS`' order. */
@@ -51,15 +53,15 @@ const F = false;
 /** The table before the backend answers: the backend's own, as
  *  `tests/capabilities.json` pins it. */
 export const BUILT_IN_CAPABILITIES: CapabilityTable = {
-  //                     read_only create rename trash copy_in copy_out sizes counts search thumbnails
-  folder: row(             F,       T,     T,     T,    T,      T,       T,    T,     T,     T),
-  drive: row(              F,       T,     T,     T,    T,      T,       T,    F,     F,     T),
-  share: row(              T,       F,     F,     F,    F,      F,       T,    F,     F,     F),
-  sftp: row(               T,       F,     F,     F,    F,      F,       T,    F,     F,     F),
-  "arbesk-account": row(   T,       T,     F,     F,    F,      F,       F,    F,     F,     T),
-  "arbesk-collection": row(T,       F,     F,     F,    T,      F,       F,    F,     F,     T),
-  "arbesk-asset": row(     T,       F,     F,     F,    F,      T,       F,    F,     F,     T),
-  "arbesk-file": row(      T,       F,     F,     F,    F,      T,       F,    F,     F,     F),
+  //                     read_only create rename trash copy_in copy_out attach sizes counts search thumbnails
+  folder: row(             F,       T,     T,     T,    T,      T,       F,     T,    T,     T,     T),
+  drive: row(              F,       T,     T,     T,    T,      T,       F,     T,    F,     F,     T),
+  share: row(              T,       F,     F,     F,    F,      F,       F,     T,    F,     F,     F),
+  sftp: row(               T,       F,     F,     F,    F,      F,       F,     T,    F,     F,     F),
+  "arbesk-account": row(   T,       T,     F,     F,    F,      F,       F,     F,    F,     F,     T),
+  "arbesk-collection": row(T,       F,     F,     F,    T,      F,       F,     F,    F,     F,     T),
+  "arbesk-asset": row(     T,       F,     F,     F,    F,      T,       T,     F,    F,     F,     T),
+  "arbesk-file": row(      T,       F,     F,     F,    F,      T,       F,     F,    F,     F,     F),
 };
 
 let table: CapabilityTable = BUILT_IN_CAPABILITIES;

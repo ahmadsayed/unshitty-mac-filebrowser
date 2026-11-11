@@ -108,7 +108,12 @@ pub fn capabilities() -> Capabilities {
         replace: Replace::Trash,
         names_unique: false,
         put_is_whole: true,
-        refused: vec![Refused { operation: Operation::LocalOnly, message: service::unsupported() }],
+        refused: vec![
+            // Adding other files is Arbesk's; Drive says what it says of
+            // every feature it lacks.
+            Refused { operation: Operation::Attach, message: service::unsupported() },
+            Refused { operation: Operation::LocalOnly, message: service::unsupported() },
+        ],
     }
 }
 
@@ -218,8 +223,9 @@ mod tests {
     #[test]
     fn drive_refuses_what_only_this_computer_does_in_its_own_words() {
         let caps = capabilities();
-        assert_eq!(caps.refused.len(), 1);
-        assert_eq!(caps.refused[0].message, "This action is not available for Google Drive items yet.");
+        let refused: Vec<_> = caps.refused.iter().map(|r| (r.operation, r.message.as_str())).collect();
+        let words = "This action is not available for Google Drive items yet.";
+        assert_eq!(refused, [(Operation::Attach, words), (Operation::LocalOnly, words)]);
         assert_eq!((caps.rename_atomic, caps.names_unique, caps.put_is_whole), (false, false, true));
     }
 

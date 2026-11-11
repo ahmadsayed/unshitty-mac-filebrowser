@@ -165,7 +165,9 @@ impl<S: Reach<CloudState>> places_gdrive::Reach for DriveState<S> {
 /// The booleans of a place's `places::Capabilities` the frontend reads,
 /// for one kind of place it tells apart. Only the booleans: the frontend
 /// keeps its own toasts (D5), so no refusal wording goes with them, and
-/// `can_copy_in` is whether the place has no copy-in refusal.
+/// `can_copy_in` is whether the place has no copy-in refusal, and
+/// `can_attach` whether it has no refusal to add files to an item (spec
+/// F13: only an Arbesk asset takes them).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct KindCapabilities {
     pub read_only: bool,
@@ -174,6 +176,7 @@ pub struct KindCapabilities {
     pub can_trash: bool,
     pub can_copy_in: bool,
     pub can_copy_out: bool,
+    pub can_attach: bool,
     pub knows_sizes: bool,
     pub knows_counts: bool,
     pub searchable: bool,
@@ -189,6 +192,7 @@ impl KindCapabilities {
             can_trash: caps.can_trash,
             can_copy_in: !caps.refused.iter().any(|r| r.operation == places::Operation::CopyIn),
             can_copy_out: caps.can_copy_out,
+            can_attach: !caps.refused.iter().any(|r| r.operation == places::Operation::Attach),
             knows_sizes: caps.knows_sizes,
             knows_counts: caps.knows_counts,
             searchable: caps.searchable,
@@ -476,6 +480,9 @@ mod tests {
                 _ => place::copy(path, "/Users/me/b").err(),
             };
             assert_eq!(refusal(&caps, Operation::CopyOut), copy_out, "{path}");
+            // Files are added only to an Arbesk asset (spec F13).
+            let asset = matches!(arbesk::parse(path), Ok(arbesk::Location::Asset { .. }));
+            assert_eq!(refusal(&caps, Operation::Attach).is_none(), asset && kind == Kind::Arbesk, "{path} Attach");
             // A path that isn't local keeps its kind's booleans; only its
             // refusals say it isn't one.
             if kind != Kind::Local || place::local(path).is_ok() {
@@ -782,6 +789,7 @@ mod tests {
             assert_eq!(registry.provider_for(path).scheme(), "arbesk", "{path}");
             let caps = KindCapabilities::of(&registry.provider_for(path).capabilities(path));
             assert_eq!((caps.can_copy_in, caps.can_copy_out), (account.can_copy_in, account.can_copy_out), "{path}");
+            assert!(!caps.can_attach && !account.can_attach, "{path}");
             assert!(!caps.can_create && account.can_create, "{path}");
         }
     }
