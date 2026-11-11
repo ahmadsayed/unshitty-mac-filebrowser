@@ -41,7 +41,7 @@ Closes #
 ## Not verified
 
 <!-- What could not be checked here (macOS from Linux, a real launch, real shares…)
-     and the needs-verification issue that tracks it. "Nothing" if all was checked. -->
+     one line per point. "Nothing" if all was checked. -->
 
 ## Follow-up
 
