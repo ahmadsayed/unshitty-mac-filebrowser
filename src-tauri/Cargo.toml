@@ -59,7 +59,7 @@ similar = "3.2.0"
 # iroh without "portmapper": sharing never asks the router to forward a port
 # (UPnP, NAT-PMP, PCP). Peers behind strict NATs go through the relay instead.
 iroh = { version = "1", default-features = false, features = ["metrics", "fast-apple-datapath", "tls-ring"] }
-iroh-blobs = { version = "0.103", default-features = false, features = ["fs-store"] }
+iroh-blobs = { version = "0.104", default-features = false, features = ["fs-store"] }
 bao-tree = "0.16"
 n0-future = "0.3"
 postcard = { version = "1", features = ["use-std"] }
