@@ -171,8 +171,10 @@ Nothing shows these files yet; what is in place underneath:
   entry says (a raw file is never unpacked), at most 256 MB (*This file is
   too large to open.*), and checked against the size its entry records
   (*Arbesk sent a damaged file.*). The download shows its progress as it
-  arrives and Cancel stops it; a large file is given time as an upload is
-  (four minutes, plus its size at 64 KB/s). A name too long for the disk
+  arrives and Cancel stops it within a moment, even while the gateway sends
+  nothing; a large file is given time as an upload is (four minutes, plus
+  its size at 64 KB/s). A second open of a file whose download is under way
+  waits for it and then reuses its copy, and Cancel stops that wait too. A name too long for the disk
   is shortened, keeping its extension. An unchanged copy is reused, an edited
   one is kept and a fresh copy goes beside it, and copies are pruned after
   a week like other downloads (edited ones go to the Trash). Edits to an

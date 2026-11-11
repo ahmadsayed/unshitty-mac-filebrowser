@@ -62,23 +62,37 @@ export function isArbeskAsset(path: string): boolean {
  *  takes before the segment's `~`. */
 const ARBESK_FILE_ID = /^([a-z0-9-]{1,64})(@[A-Za-z0-9]+)?$/;
 
+/** A wallet address, as the backend's `is_address`: `0x` and 40 hex digits. */
+const ARBESK_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+/** The decoded id before a segment's first `~`, as the backend's
+ *  `segment_id`: null when it is empty or either half is badly
+ *  percent-encoded or not UTF-8. */
+function arbeskSegmentId(segment: string): string | null {
+  const tilde = segment.indexOf("~");
+  const id = tilde < 0 ? segment : segment.slice(0, tilde);
+  try {
+    if (tilde >= 0) decodeURIComponent(segment.slice(tilde + 1));
+    return decodeURIComponent(id) || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether `path` is one of an Arbesk asset's other files (spec F4), one
  *  segment below the asset: `…/<asset>~<name>/<file-id>~<name>`, or pinned
- *  to a CID, `…/<file-id>@<cid>~<name>`. Its segment always has its `~`
- *  and, decoded, a valid id (and pin) before it, as the backend parses it,
- *  so both pick the same capability row; nothing lists these paths. */
+ *  to a CID, `…/<file-id>@<cid>~<name>`. Checked as the backend's `parse`
+ *  checks it (an address, no empty segment, every segment's halves well
+ *  encoded, a numeric token, the file's segment with its `~` and a valid id
+ *  and pin before it), so both pick the same capability row; nothing lists
+ *  these paths. */
 export function isArbeskFile(path: string): boolean {
   if (!isArbeskPath(path)) return false;
-  const segments = path.slice(ARBESK_PREFIX.length).split("/").filter(Boolean);
-  const tilde = segments.length === 4 ? segments[3].indexOf("~") : -1;
-  if (tilde <= 0) return false;
-  let id: string;
-  try {
-    id = decodeURIComponent(segments[3].slice(0, tilde));
-  } catch {
-    return false;
-  }
-  const match = ARBESK_FILE_ID.exec(id);
+  const segments = path.slice(ARBESK_PREFIX.length).replace(/\/+$/, "").split("/");
+  if (segments.length !== 4 || !ARBESK_ADDRESS.test(segments[0]) || !segments[3].includes("~")) return false;
+  const [token, asset, file] = segments.slice(1).map(arbeskSegmentId);
+  if (token === null || !/^[0-9]+$/.test(token) || asset === null || file === null) return false;
+  const match = ARBESK_FILE_ID.exec(file);
   return match !== null && match[1] !== "primary";
 }
 

@@ -305,8 +305,12 @@ test("an Arbesk asset's other file is the fourth level, below its asset", () => 
     expect(isArbeskAsset(path), path).toBe(false);
   }
   // Not an id (or a pin) the backend parses: the account's row answers.
-  const malformed = ["GCODE~x", "primary~x", "primary@bafy1~x", "my_file~x", "stl@~x", "stl@ba-fy~x", "%E0~x", `${"a".repeat(65)}~x`];
-  for (const path of [asset, `${asset}/`, `${asset}/x`, `${asset}/~B.stl`, `${asset}/stl~B.stl/more~x`, ...malformed.map((file) => `${asset}/${file}`), "/Users/me/1~S/a~B.gltf/stl~B.stl", "gdrive://acct/1~S/a~B/stl~B.stl", "arbesk://"]) {
+  const malformed = ["GCODE~x", "primary~x", "primary@bafy1~x", "my_file~x", "stl@~x", "stl@ba-fy~x", "%E0~x", `${"a".repeat(65)}~x`, "stl~%E0.stl", "stl~50%.stl"];
+  // Nor is a path whose other segments the backend refuses: a bad address, a
+  // token that isn't a number, an empty segment, a badly encoded name.
+  const account = "arbesk://0x00000000000000000000000000000000000000ab";
+  const elsewhere = ["arbesk://0xab/1~S/a~B.gltf/stl~x", `${account}/abc~S/a~B.gltf/stl~x`, `${account}//1~S/a~B.gltf/stl~x`, `${account}/1~S//a~B.gltf/stl~x`, `${account}/1~S%/a~B.gltf/stl~x`, `${account}/1~S/~B.gltf/stl~x`];
+  for (const path of [asset, `${asset}/`, `${asset}/x`, `${asset}/~B.stl`, `${asset}/stl~B.stl/more~x`, ...malformed.map((file) => `${asset}/${file}`), ...elsewhere, "/Users/me/1~S/a~B.gltf/stl~B.stl", "gdrive://acct/1~S/a~B/stl~B.stl", "arbesk://"]) {
     expect(isArbeskFile(path), path).toBe(false);
   }
 });

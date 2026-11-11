@@ -621,7 +621,7 @@ fn build_file(
     make: impl FnOnce() -> Result<Vec<u8>, String>,
 ) -> Result<PathBuf, String> {
     let target = dir.join(name);
-    let _held = builds.hold(dir.to_path_buf());
+    let _held = builds.hold(dir.to_path_buf(), progress)?;
     if crate::cache::is_unchanged(&target) {
         return Ok(target);
     }
@@ -708,16 +708,23 @@ struct Held<'a> {
 }
 
 impl Builds {
-    fn hold(&self, folder: PathBuf) -> Held<'_> {
+    /// `folder`, once no other build holds it. The wait looks at `progress`
+    /// every [`crate::http::TICK`]: a cancel stops it, so a second open of
+    /// a file whose large download is under way can still be cancelled.
+    fn hold(&self, folder: PathBuf, progress: &Progress) -> Result<Held<'_>, String> {
         let mut busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
         while busy.contains(&folder) {
-            busy = self.done.wait(busy).unwrap_or_else(|e| e.into_inner());
+            progress.check()?;
+            busy = match self.done.wait_timeout(busy, crate::http::TICK) {
+                Ok((busy, _)) => busy,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
         }
         busy.insert(folder.clone());
-        Held {
+        Ok(Held {
             builds: self,
             folder,
-        }
+        })
     }
 }
 
@@ -1426,6 +1433,53 @@ mod tests {
         assert_eq!(http.chunks.load(std::sync::atomic::Ordering::SeqCst), 2, "nothing read past the cancel");
         assert_eq!(progress.snapshot().bytes, 8);
         assert!(!cache.path().join("arbesk/files/bafyBin").read_dir().is_ok_and(|mut d| d.next().is_some()));
+    }
+
+    /// Spec F5: a cancel stops a download whose gateway has gone silent,
+    /// within a tick, without waiting for the next chunk or the timeout.
+    #[test]
+    fn a_cancel_stops_a_stalled_download() {
+        let body: Vec<u8> = (0..40).collect();
+        let world = world_with(json!([other_file("bin", "Part.bin", "bafyBin", 40)]), &[("bafyBin", &body)]);
+        let cache = tempfile::tempdir().unwrap();
+        let progress = Progress::default();
+        let stall = |n| if n == 1 { std::thread::sleep(std::time::Duration::from_secs(10)) };
+        let http = http_of(world).in_chunks(8, stall);
+        let cancel = progress.clone();
+        let started = std::time::Instant::now();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            cancel.cancel();
+        });
+        assert_eq!(fetched(&http, "bin", cache.path(), &progress).unwrap_err(), crate::progress::CANCELLED);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "{:?}", started.elapsed());
+        canceller.join().unwrap();
+        assert_eq!(progress.snapshot().bytes, 8);
+    }
+
+    /// A second build of a folder another build holds waits for it, and a
+    /// cancel stops that wait at once.
+    #[test]
+    fn a_cancel_stops_the_wait_for_another_build() {
+        let builds = Builds::default();
+        let dir = tempfile::tempdir().unwrap();
+        let held = builds.hold(dir.path().to_path_buf(), &Progress::default()).unwrap();
+        let progress = Progress::default();
+        let started = std::time::Instant::now();
+        let waited = std::thread::scope(|scope| {
+            let cancel = progress.clone();
+            scope.spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                cancel.cancel();
+            });
+            build_file(dir.path(), "x.bin", &progress, &builds, || Ok(b"x".to_vec()))
+        });
+        assert_eq!(waited.unwrap_err(), crate::progress::CANCELLED);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "{:?}", started.elapsed());
+        assert!(!dir.path().join("x.bin").exists(), "nothing built while another build held it");
+        drop(held);
+        let built = build_file(dir.path(), "x.bin", &Progress::default(), &builds, || Ok(b"x".to_vec()));
+        assert_eq!(std::fs::read(built.unwrap()).unwrap(), b"x");
     }
 
     /// A CID that isn't one never decides a cache path, even where a

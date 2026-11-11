@@ -331,7 +331,10 @@ as for Drive downloads. Progress and Cancel work as for an opened Drive
 file (`open_target`, `lib.rs:520`): the provider reports progress for
 these fetches chunk by chunk as they arrive (the total is the decoded
 `bytes`; what decoding adds is counted at the end), and a cancel stops the
-download between chunks. The file name is the entry's `name` made safe with
+download between chunks, or within a moment while the gateway sends
+nothing (the read runs on a thread of its own, and the caller looks at the
+cancel every 200 ms). A second open of the same file waits for the first
+(one build per folder), and a cancel stops that wait too. The file name is the entry's `name` made safe with
 `file_name`'s rules (`service.rs:847`: no `/` or NUL, never empty, `.`
 or `..`), then cut to 200 bytes at a character boundary, keeping its
 extension (a valid 255-unit name may take 765 bytes of UTF-8; the `.part`

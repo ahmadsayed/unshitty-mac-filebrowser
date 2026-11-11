@@ -564,15 +564,18 @@ mod tests {
         let gateway = gateway_over(&http, dir.path());
         let mut heard = Vec::new();
         let whole = gateway.raw("bafyRep", 20, 20, &mut |n| {
-            heard.push(n);
+            // An empty piece is a tick while nothing arrives.
+            if n > 0 {
+                heard.push(n);
+            }
             Ok(())
         });
         assert_eq!((whole.unwrap(), heard), (body, vec![4; 5]));
         let read = |http: &FakeHttp| http.chunks.swap(0, std::sync::atomic::Ordering::SeqCst);
         read(&http);
         let mut calls = 0;
-        let cancelled = gateway.raw("bafyRep", 20, 20, &mut |_| {
-            calls += 1;
+        let cancelled = gateway.raw("bafyRep", 20, 20, &mut |n| {
+            calls += usize::from(n > 0);
             if calls == 2 { Err(crate::progress::CANCELLED.into()) } else { Ok(()) }
         });
         assert_eq!(cancelled.unwrap_err(), crate::progress::CANCELLED);

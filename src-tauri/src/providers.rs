@@ -774,8 +774,10 @@ mod tests {
     fn the_arbesk_root_and_a_malformed_path_copy_as_the_account() {
         let registry = testing::plain();
         let account = KindCapabilities::of(&registry.provider_for(ACCOUNT).capabilities(ACCOUNT));
-        let bad_files = ["x", "GCODE~x", "primary~x", "my_file~x", "stl@~x", "stl@ba-fy~x", "~x"].map(|file| format!("{ASSET}/{file}"));
-        let paths = ["arbesk://", "arbesk://not-an-address"].into_iter().map(String::from).chain(bad_files);
+        let bad_files = ["x", "GCODE~x", "primary~x", "my_file~x", "stl@~x", "stl@ba-fy~x", "~x", "stl~%E0.stl", "stl~50%.stl"].map(|file| format!("{ASSET}/{file}"));
+        // `tests/paths.test.ts` refuses the same paths as an asset's other file.
+        let elsewhere = ["abc~S/a~B.gltf/stl~x", "/1~S/a~B.gltf/stl~x", "1~S//a~B.gltf/stl~x", "1~S%/a~B.gltf/stl~x"].map(|rest| format!("{ACCOUNT}/{rest}"));
+        let paths = ["arbesk://", "arbesk://not-an-address", "arbesk://0xab/1~S/a~B.gltf/stl~x"].into_iter().map(String::from).chain(bad_files).chain(elsewhere);
         for path in paths.collect::<Vec<_>>().iter().map(String::as_str) {
             assert_eq!(registry.provider_for(path).scheme(), "arbesk", "{path}");
             let caps = KindCapabilities::of(&registry.provider_for(path).capabilities(path));
