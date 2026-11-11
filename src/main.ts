@@ -18,7 +18,7 @@ import {
   recentFiles, addRecent, forgetRecent, loadStarred, saveStarred, starredFiles,
   trashInfo, restoreEntry, deletePermanently, emptyTrash, cancelOperation, measure, listVolumes, trashDir, fileProperties, folderSize,
   cancelFolderSize, newFolderWalk, makeVersionedDir, versionedRoot,
-  previewBytes, previewText, thumbnail, arbeskScene, arbeskPart, arbeskVersions, listVersions, versionCount, openVersion,
+  previewBytes, previewText, thumbnail, arbeskScene, arbeskPart, cancelArbeskParts, arbeskVersions, listVersions, versionCount, openVersion,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
   arbeskAccounts, arbeskConnectStart, arbeskConnectFinish, arbeskConnectCancel, arbeskDisconnect, arbeskSignedIn, arbeskCreateCollection, arbeskShareCollection,
   type ArbeskShared, type ArbeskRole, type ArbeskScene,
@@ -61,6 +61,7 @@ import { companionPath, gltfCompanions, gltfExternalUris, isGlb, modelFormat, ty
 import { accountOf, fromArbesk, fromDrive, PROVIDERS, providerOf, withAccount, withoutAccount, type Account, type ProviderActions, type ProviderId } from "./providers";
 import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
+import { fetchParts } from "./arbesk-parts";
 import { acceptsNewItems, arbeskPasteRefusal, attachRefusal, takesFiles, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, hasLocalFileFacts, knowsSizes, takesDrops, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
 import { childPath, cloudAccountKey, homeFolder, isArbeskAccount, isArbeskAsset, isArbeskCollection, arbeskFilePin, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
@@ -4855,6 +4856,7 @@ function closePreview(): void {
  *  what was loading for the old content is stale from now on. The new seq. */
 function resetPreviewBody(): number {
   previewSeq += 1;
+  cancelPartFetches(partTickets);
   previewLoaded();
   previewBody.replaceChildren();
   if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -5137,29 +5139,56 @@ async function previewArbeskScene(entry: Entry, seq: number, version: string | n
   }
 }
 
+/** The preview's part fetches under way, by ticket: a closed or stepped
+ *  preview cancels them (performance plan, phase 3). */
+const partTickets = new Set<number>();
+// From the clock at load: a reload never reuses a ticket the backend may
+// still hold a cancel for (`part_tickets.rs`).
+let partTicketSeq = Date.now();
+
+/** Stop these part fetches, queued or reading. */
+function cancelPartFetches(tickets: Iterable<number>): void {
+  const stopped = [...tickets];
+  if (stopped.length === 0) return;
+  stopped.forEach((ticket) => partTickets.delete(ticket));
+  void cancelArbeskParts(stopped).catch(() => undefined);
+}
+
+/** One part's bytes under a ticket of its own, kept in `mine` while it runs. */
+async function fetchArbeskPart(path: string, key: string, limit: number, version: string, mine: Set<number>): Promise<ArrayBuffer> {
+  const ticket = ++partTicketSeq;
+  partTickets.add(ticket);
+  mine.add(ticket);
+  try {
+    return await arbeskPart(path, key, limit, version, ticket);
+  } finally {
+    partTickets.delete(ticket);
+    mine.delete(ticket);
+  }
+}
+
 /** Each part of the scene at `path`, loaded once, at most MODEL_PREVIEW_LIMIT
  *  bytes in all, from the save the scene was resolved from (its CID); none
- *  more once the preview has moved on. */
+ *  more once the preview has moved on. A few are fetched at once
+ *  (`fetchParts`: the limit reserved per call in flight) and parsed one at
+ *  a time in the scene's order, so the parts and their placements are the
+ *  ones fetching them in turn gives. */
 async function loadArbeskParts(path: string, scene: Promise<ArbeskScene>, seq: number, viewer: typeof import("./model-viewer")) {
   const { parts: stored, cid: version } = await scene;
-  const parts: { object: import("three").Object3D; placements: import("./model-viewer").ScenePlacement[] }[] = [];
-  let left = MODEL_PREVIEW_LIMIT;
-  let tooLarge = false;
-  for (const part of stored) {
-    if (previewStale(seq)) break;
-    if (left <= 0) {
-      tooLarge = true;
-      break;
-    }
-    try {
-      const bytes = await arbeskPart(path, part.key, left, version);
-      left -= bytes.byteLength;
-      parts.push({ object: await viewer.loadScenePart(bytes), placements: part.placements });
-    } catch (err) {
-      tooLarge ||= /too large/i.test(String(err));
-    }
-  }
-  return { parts, tooLarge };
+  const loaded: ({ object: import("three").Object3D; placements: import("./model-viewer").ScenePlacement[] } | undefined)[] = [];
+  const mine = new Set<number>();
+  const { tooLarge } = await fetchParts({
+    count: stored.length,
+    budget: MODEL_PREVIEW_LIMIT,
+    fetch: (index, limit) => fetchArbeskPart(path, stored[index].key, limit, version, mine),
+    take: async (index, bytes) => {
+      loaded[index] = { object: await viewer.loadScenePart(bytes), placements: stored[index].placements };
+    },
+    stale: () => previewStale(seq),
+  });
+  // Calls still under way once the budget ran out are no longer wanted.
+  cancelPartFetches(mine);
+  return { parts: loaded.filter((part) => part !== undefined), tooLarge };
 }
 
 /** The files a .gltf names in its own folder or below, by the URI it names

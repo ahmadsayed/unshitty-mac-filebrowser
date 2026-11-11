@@ -10,6 +10,9 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::ipfs::in_parallel;
+use crate::limiter::READS;
+
 pub use crate::compose::Format;
 
 /// A 4×4 matrix, column-major, as the manifest's `transform_matrix`.
@@ -164,6 +167,203 @@ pub fn resolve(asset_cid: &str, links: &dyn Links) -> Scene {
     walk.scene
 }
 
+/// [`resolve`], with its reads made a level at a time (performance plan,
+/// phase 3): each level's distinct sources and links are read together,
+/// through the limiter ([`in_parallel`]: a permit per read), and only then
+/// does the walk run, depth first as [`resolve`] does, answered from what
+/// was read. So the parts, their order, their placements and what is left
+/// out are the ones [`resolve`] gives; a question the levels didn't
+/// answer (none should be left) is asked then, as [`resolve`] would.
+pub fn resolve_together(asset_cid: &str, links: &(dyn Links + Sync)) -> Scene {
+    resolve(asset_cid, &Known::read(asset_cid, links))
+}
+
+/// What one level of a scene asks: a stored source's format, or the
+/// asset a link names (and that asset's manifest, unless already read).
+enum Ask {
+    Format(String),
+    Link(Value),
+}
+
+/// The answer to an [`Ask`].
+enum Answer {
+    Format(String, Result<Format, String>),
+    Link(String, Result<String, String>, Option<Result<Value, String>>),
+}
+
+/// A scene's reads, made a level at a time: every answer kept, a failed
+/// read as its failure for the walk's first ask (read again after, as
+/// [`resolve`] does), so the walk leaves out what [`resolve`] leaves out.
+struct Known<'a> {
+    links: &'a (dyn Links + Sync),
+    manifests: HashMap<String, Result<Value, String>>,
+    /// By the link, as [`Walk`] keys them.
+    linked: HashMap<String, Result<String, String>>,
+    formats: HashMap<String, Result<Format, String>>,
+    /// The failures already answered to the walk, by kind and key.
+    spent: Mutex<HashSet<String>>,
+}
+
+impl<'a> Known<'a> {
+    /// The asset at `asset_cid` and every level below it, down to
+    /// [`MAX_LINK_DEPTH`] links, as the walk will reach them. A manifest
+    /// is read at the shallowest level it is linked from, where its own
+    /// links are followed if any level may follow them.
+    fn read(asset_cid: &str, links: &'a (dyn Links + Sync)) -> Self {
+        let mut known = Known {
+            links,
+            manifests: HashMap::new(),
+            linked: HashMap::new(),
+            formats: HashMap::new(),
+            spent: Mutex::default(),
+        };
+        known
+            .manifests
+            .insert(asset_cid.to_string(), links.manifest(asset_cid));
+        let mut level = vec![asset_cid.to_string()];
+        for depth in 0..=MAX_LINK_DEPTH {
+            let asks = known.asks(&level, depth);
+            if asks.is_empty() {
+                break;
+            }
+            let answers = in_parallel(&asks, READS, |ask| known.answer(ask));
+            level = known.take(answers);
+        }
+        known
+    }
+
+    /// What the manifests of `level` (at `depth`) ask that isn't known:
+    /// each distinct source's format and each distinct link, once.
+    fn asks(&self, level: &[String], depth: usize) -> Vec<Ask> {
+        let mut formats = HashSet::new();
+        let mut links = HashSet::new();
+        let mut asks = Vec::new();
+        let mut format = |cid: &str, asks: &mut Vec<Ask>| {
+            if !self.formats.contains_key(cid) && formats.insert(cid.to_string()) {
+                asks.push(Ask::Format(cid.to_string()));
+            }
+        };
+        for cid in level {
+            let Some(Ok(manifest)) = self.manifests.get(cid) else {
+                continue;
+            };
+            if is_stored_model(manifest) {
+                format(cid, &mut asks);
+                continue;
+            }
+            for node in nodes(manifest) {
+                if let Some(child_ref) = node.get("child_ref") {
+                    let key = child_ref.to_string();
+                    if depth < MAX_LINK_DEPTH && !self.linked.contains_key(&key) && links.insert(key) {
+                        asks.push(Ask::Link(child_ref.clone()));
+                    }
+                } else if let Some(source) = node.pointer("/source/cid").and_then(Value::as_str) {
+                    if raw_format(&node["source"]).is_none() {
+                        format(source, &mut asks);
+                    }
+                }
+            }
+        }
+        asks
+    }
+
+    /// One ask answered; a link's manifest read with it unless known.
+    fn answer(&self, ask: &Ask) -> Answer {
+        match ask {
+            Ask::Format(cid) => Answer::Format(cid.clone(), self.links.format(cid)),
+            Ask::Link(child_ref) => {
+                let cid = self.links.linked(child_ref);
+                let manifest = match &cid {
+                    Ok(cid) if !self.manifests.contains_key(cid) => Some(self.links.manifest(cid)),
+                    _ => None,
+                };
+                Answer::Link(child_ref.to_string(), cid, manifest)
+            }
+        }
+    }
+
+    /// `answers` kept: the manifests read for the first time, the next level.
+    fn take(&mut self, answers: Vec<Answer>) -> Vec<String> {
+        let mut next = Vec::new();
+        for answer in answers {
+            match answer {
+                Answer::Format(cid, format) => {
+                    self.formats.insert(cid, format);
+                }
+                Answer::Link(key, cid, manifest) => {
+                    if let (Ok(cid), Some(manifest)) = (&cid, manifest) {
+                        if !self.manifests.contains_key(cid) {
+                            self.manifests.insert(cid.clone(), manifest);
+                            next.push(cid.clone());
+                        }
+                    }
+                    self.linked.insert(key, cid);
+                }
+            }
+        }
+        next
+    }
+}
+
+impl Links for Known<'_> {
+    fn manifest(&self, cid: &str) -> Result<Value, String> {
+        self.known("manifest", cid, self.manifests.get(cid), || self.links.manifest(cid))
+    }
+
+    fn linked(&self, child_ref: &Value) -> Result<String, String> {
+        let key = child_ref.to_string();
+        self.known("linked", &key, self.linked.get(&key), || self.links.linked(child_ref))
+    }
+
+    fn format(&self, source_cid: &str) -> Result<Format, String> {
+        self.known("format", source_cid, self.formats.get(source_cid), || {
+            self.links.format(source_cid)
+        })
+    }
+}
+
+impl Known<'_> {
+    /// What was read for `kind` `key`: a success every time; a failure only
+    /// the first time the walk asks (the level's read stood in for that
+    /// ask), and read again after, as [`resolve`] reads again what failed
+    /// (a gateway caches only what it read). So a read that fails once and
+    /// then works leaves out what [`resolve`] leaves out, no more.
+    fn known<T: Clone>(
+        &self,
+        kind: &str,
+        key: &str,
+        known: Option<&Result<T, String>>,
+        read: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        match known {
+            Some(Ok(answer)) => Ok(answer.clone()),
+            Some(Err(failed)) if self.spent_failure(kind, key) => Err(failed.clone()),
+            _ => read(),
+        }
+    }
+
+    /// Whether this is the first time the walk is answered `kind` `key`'s failure.
+    fn spent_failure(&self, kind: &str, key: &str) -> bool {
+        let mut spent = self.spent.lock().unwrap_or_else(|e| e.into_inner());
+        spent.insert(format!("{kind} {key}"))
+    }
+}
+
+/// A manifest that is itself the stored model (older assets).
+fn is_stored_model(manifest: &Value) -> bool {
+    ["buffers", "meshes", "arbesk_format"]
+        .iter()
+        .any(|key| manifest.get(key).is_some())
+}
+
+/// A manifest's scene nodes.
+fn nodes(manifest: &Value) -> &[Value] {
+    manifest
+        .pointer("/scene/nodes")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
 struct Walk<'a> {
     links: &'a dyn Links,
     scene: Scene,
@@ -179,11 +379,7 @@ impl Walk<'_> {
         let Ok(manifest) = self.links.manifest(cid) else {
             return;
         };
-        // A manifest that is itself the stored model (older assets).
-        if ["buffers", "meshes", "arbesk_format"]
-            .iter()
-            .any(|key| manifest.get(key).is_some())
-        {
+        if is_stored_model(&manifest) {
             self.place(cid, parent, &Value::Null, None);
             return;
         }
@@ -191,12 +387,7 @@ impl Walk<'_> {
         let millimetres = manifest["timestamp"]
             .as_i64()
             .is_some_and(|t| t < LEGACY_3MF_CUTOFF_MS);
-        let nodes = manifest
-            .pointer("/scene/nodes")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        for node in &nodes {
+        for node in nodes(&manifest) {
             self.node(node, parent, depth, millimetres);
         }
         self.seen.remove(cid);
@@ -335,6 +526,8 @@ mod tests {
         /// How many times `linked` and `format` were asked.
         asked: std::cell::Cell<usize>,
         formats_asked: std::cell::Cell<usize>,
+        /// Manifests and sources whose first read fails (a gateway hiccup).
+        fail_once: std::cell::RefCell<HashSet<String>>,
     }
 
     impl Fake {
@@ -353,6 +546,9 @@ mod tests {
 
     impl Links for Fake {
         fn manifest(&self, cid: &str) -> Result<Value, String> {
+            if self.fail_once.borrow_mut().remove(cid) {
+                return Err(format!("{cid} timed out"));
+            }
             self.manifests
                 .get(cid)
                 .cloned()
@@ -368,6 +564,9 @@ mod tests {
         }
         fn format(&self, source_cid: &str) -> Result<Format, String> {
             self.formats_asked.set(self.formats_asked.get() + 1);
+            if self.fail_once.borrow_mut().remove(source_cid) {
+                return Err(format!("{source_cid} timed out"));
+            }
             self.formats
                 .get(source_cid)
                 .copied()
@@ -718,4 +917,197 @@ mod tests {
         stored.source("bafyC3", Format::ThreeMf);
         assert!(!resolve("bafyB", &stored).parts[0].raw);
     }
+
+    /// [`Fake`] as a gateway: each read takes a while and is counted while
+    /// in flight (`peak`: the most at once).
+    struct Slow {
+        fake: Mutex<Fake>,
+        running: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Slow {
+        fn new(fake: Fake) -> Self {
+            Slow {
+                fake: Mutex::new(fake),
+                running: Default::default(),
+                peak: Default::default(),
+            }
+        }
+
+        fn read<R>(&self, read: impl FnOnce(&Fake) -> R) -> R {
+            use std::sync::atomic::Ordering::SeqCst;
+            let now = self.running.fetch_add(1, SeqCst) + 1;
+            self.peak.fetch_max(now, SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let answer = read(&self.fake.lock().unwrap());
+            self.running.fetch_sub(1, SeqCst);
+            answer
+        }
+    }
+
+    impl Links for Slow {
+        fn manifest(&self, cid: &str) -> Result<Value, String> {
+            self.read(|fake| fake.manifest(cid))
+        }
+        fn linked(&self, child_ref: &Value) -> Result<String, String> {
+            self.read(|fake| fake.linked(child_ref))
+        }
+        fn format(&self, source_cid: &str) -> Result<Format, String> {
+            self.read(|fake| fake.format(source_cid))
+        }
+    }
+
+    /// A scene of everything a walk meets: several sources (one placed
+    /// twice, one unknown, one raw), a link placed twice, a nested link,
+    /// a link back to itself, one that can't be resolved, a linked asset
+    /// that is the model itself, and a 3MF placed in millimetres.
+    fn busy_scene() -> Fake {
+        let mut fake = Fake::default();
+        let raw = json!({ "source": { "cid": "bafyRaw", "path": "asset.glb", "format": "glb" } });
+        let nodes = json!([
+            source_node("bafyS1", Some(translation(1.0, 0.0, 0.0))),
+            link_node("chair", translation(2.0, 0.0, 0.0)),
+            source_node("bafyS2", None),
+            source_node("bafyOdd", None),
+            link_node("lamp", translation(0.0, 3.0, 0.0)),
+            raw,
+            link_node("missing", IDENTITY),
+            source_node("bafyS1", Some(translation(5.0, 0.0, 0.0))),
+            link_node("chair", translation(-2.0, 0.0, 0.0)),
+            link_node("old", IDENTITY),
+            three_mf_node(500.0),
+            source_node("bafyS3", None),
+        ]);
+        fake.manifests.insert(
+            "bafyRoot".into(),
+            json!({ "timestamp": LEGACY_3MF_CUTOFF_MS - 1, "scene": { "nodes": nodes } }),
+        );
+        fake.asset(
+            "bafyChair",
+            json!([source_node("bafyS4", None), source_node("bafyS2", None)]),
+        );
+        fake.asset(
+            "bafyLamp",
+            json!([
+                link_node("bulb", translation(0.0, 1.0, 0.0)),
+                link_node("root", IDENTITY),
+                source_node("bafyS5", None)
+            ]),
+        );
+        fake.asset("bafyBulb", json!([source_node("bafyS6", None), link_node("chair", IDENTITY)]));
+        fake.manifests
+            .insert("bafyOld".into(), json!({ "buffers": [], "meshes": [] }));
+        for (link, cid) in [
+            ("chair", "bafyChair"),
+            ("lamp", "bafyLamp"),
+            ("bulb", "bafyBulb"),
+            ("root", "bafyRoot"),
+            ("old", "bafyOld"),
+        ] {
+            fake.link(link, cid);
+        }
+        for source in ["bafyS1", "bafyS2", "bafyS4", "bafyS5", "bafyOld"] {
+            fake.source(source, Format::Gltf);
+        }
+        for source in ["bafyS3", "bafyS6", "bafy3"] {
+            fake.source(source, Format::ThreeMf);
+        }
+        fake
+    }
+
+    /// Performance plan, phase 3: a scene's sources and links are read
+    /// together, and the scene is the one the depth-first walk gives.
+    #[test]
+    fn a_scenes_reads_go_together_and_give_the_same_scene() {
+        let serial = resolve("bafyRoot", &busy_scene());
+        let slow = Slow::new(busy_scene());
+        let together = resolve_together("bafyRoot", &slow);
+        assert_eq!(together, serial);
+        let keys: Vec<&str> = together.parts.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["bafyS1", "bafyS4", "bafyS2", "bafyS6", "bafyS5", "bafyRaw", "bafyOld", "bafy3", "bafyS3"]
+        );
+        let peak = slow.peak.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(peak > 1, "{peak}: the reads ran one at a time");
+        // A link is still asked once, a source's format once.
+        let fake = slow.fake.lock().unwrap();
+        assert_eq!((fake.asked.get(), fake.formats_asked.get()), (6, 8));
+    }
+
+    /// A read that fails once and then works: the walk reads it again at
+    /// its next place, as the depth-first walk does, so a source and a
+    /// linked asset each placed twice keep their second placement.
+    #[test]
+    fn a_read_that_fails_once_is_read_again_as_the_walk_does() {
+        let flaky = || {
+            let mut fake = Fake::default();
+            fake.asset(
+                "bafyRoot",
+                json!([
+                    source_node("bafyS1", Some(translation(1.0, 0.0, 0.0))),
+                    link_node("chair", translation(2.0, 0.0, 0.0)),
+                    source_node("bafyS1", Some(translation(5.0, 0.0, 0.0))),
+                    link_node("chair", translation(-2.0, 0.0, 0.0)),
+                ]),
+            );
+            fake.asset("bafyChair", json!([source_node("bafyS2", None)]));
+            fake.link("chair", "bafyChair");
+            fake.source("bafyS1", Format::Gltf);
+            fake.source("bafyS2", Format::Gltf);
+            for cid in ["bafyS1", "bafyChair"] {
+                fake.fail_once.borrow_mut().insert(cid.into());
+            }
+            fake
+        };
+        let serial = resolve("bafyRoot", &flaky());
+        let placed: Vec<(&str, usize)> = serial
+            .parts
+            .iter()
+            .map(|part| (part.key.as_str(), part.placements.len()))
+            .collect();
+        assert_eq!(placed, [("bafyS1", 1), ("bafyS2", 1)]);
+        let slow = Slow::new(flaky());
+        assert_eq!(resolve_together("bafyRoot", &slow), serial);
+        // The level's failed read stood in for the walk's first ask: S1's
+        // format is read twice, as the depth-first walk reads it.
+        assert_eq!(slow.fake.lock().unwrap().formats_asked.get(), 3);
+    }
+
+    /// The depth limit, the placement cap, a cycle and what can't be read
+    /// leave out the same as the depth-first walk.
+    #[test]
+    fn reading_together_leaves_out_what_the_walk_leaves_out() {
+        let deep = |levels: usize| {
+            let mut fake = Fake::default();
+            for level in 0..levels {
+                fake.asset(
+                    &format!("bafyL{level}"),
+                    json!([link_node(&format!("l{}", level + 1), IDENTITY), source_node(&format!("bafyS{level}"), None)]),
+                );
+                fake.link(&format!("l{}", level + 1), &format!("bafyL{}", level + 1));
+                fake.source(&format!("bafyS{level}"), Format::Gltf);
+            }
+            fake.asset(&format!("bafyL{levels}"), json!([source_node("bafyEnd", None)]));
+            fake.source("bafyEnd", Format::Gltf);
+            fake
+        };
+        let capped = || {
+            let mut fake = Fake::default();
+            fake.asset("bafyL0", json!(vec![link_node("row", IDENTITY); 60]));
+            fake.asset("bafyRow", json!(vec![source_node("bafyS", None); 60]));
+            fake.link("row", "bafyRow");
+            fake.source("bafyS", Format::Gltf);
+            fake
+        };
+        let cases: [&dyn Fn() -> Fake; 4] = [&|| deep(5), &|| deep(7), &capped, &Fake::default];
+        for case in cases {
+            let serial = resolve("bafyL0", &case());
+            assert_eq!(resolve_together("bafyL0", &Slow::new(case())), serial);
+        }
+        assert_eq!(resolve("bafyL0", &deep(5)).parts.len(), 6);
+        assert_eq!(resolve("bafyL0", &deep(7)).parts.len(), 6);
+    }
+
 }

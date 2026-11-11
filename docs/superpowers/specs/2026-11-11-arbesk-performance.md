@@ -227,6 +227,71 @@ parts strictly one after another (`loadArbeskParts`, `src/main.ts:5101-5121`:
 **Gain.** 10 × 4 parts: about 20 rounds become 5; 30 single-part models:
 30 become 4.
 
+**As built.**
+- `scene::resolve_together` (what `service::scene_at` uses) reads first,
+  then walks: `Known::read` takes the scene a level at a time from the
+  asset's manifest, and asks each level's distinct source formats and
+  links together through `in_parallel` (`READS` threads, a limiter
+  permit per read); a link's job reads its `tokenURI` and collection, then
+  the linked asset's manifest unless it is already read. A manifest is read
+  at the shallowest level it is linked from, and its links are followed
+  while that level is under `MAX_LINK_DEPTH`. Then the unchanged
+  depth-first `resolve` walks those answers (`Known` is its `Links`: a
+  failed read answers the walk's first ask with its failure and is read
+  again at each later ask, as the serial walk reads again what failed (the
+  gateway caches only what it read), so a read that fails once and then
+  works leaves out no more than before; anything not read is asked then,
+  as before), so the parts, their order, placements and omissions are the
+  ones the serial walk gives. The one difference in what is read: a scene
+  past the 2,000-placement cap may have the format of a source read that
+  the walk, stopped by the cap, never asks for.
+- Phase 2's rule holds as built: `Client::part` resolves under the part's
+  stop and keeps no scene resolved once stopped.
+- `arbesk_part` takes a `ticket` (`part_tickets::PartTickets`, one
+  `Progress` per window and ticket) and `cancel_arbesk_parts(tickets)`
+  cancels it: the fetch, waiting for a limiter permit or reading, stops and
+  answers "Cancelled.". `arbesk_part` is async and registers its ticket
+  only when the runtime first runs it, while the cancel runs at once, so a
+  cancel can overtake its call: a cancel of a ticket not running is kept
+  (the last 64) and that part starts cancelled. The frontend numbers its
+  tickets from `Date.now()` at load, so a reload never reuses one a kept
+  cancel names. `PartTickets` repeats `thumbnails::Requests`' shape rather
+  than sharing a generic registry with it: thumbnails keep their own
+  cancel behaviour (a cancel before start still reaches nothing there),
+  which this phase leaves as it was; one registry for both is a follow-up.
+- The frontend's window is `src/arbesk-parts.ts` (`fetchParts`,
+  `PARTS_AT_ONCE` = 4). The limit is reserved per call in flight: a call
+  gets its share of what the calls in flight and the parts landed but not
+  yet parsed leave of `MODEL_PREVIEW_LIMIT`, split among the slots it can
+  still fill. Parts are parsed one at a time in the scene's order, each
+  part's bytes counted whether or not it parses, as before. A part refused
+  as too large for a share smaller than what was left when its turn came
+  is asked again alone once the calls in flight have landed, the parts
+  after it let go (the backend keeps them built and answers them again
+  from its cache): so what shows and *This file is too large to preview.*
+  are what fetching one after another gives, and what is held and on its
+  way never passes the limit. `loadArbeskParts` gives each call a ticket;
+  `resetPreviewBody` (a closed or stepped preview) cancels the tickets
+  under way, and calls still running once the budget ran out are cancelled
+  too. A stale preview starts no more calls.
+- Mock: `arbesk_part` honours its ticket (`cancel_arbesk_parts`);
+  `__mockArbesk.addScene` adds a scene asset (a part may declare its size,
+  `bytes`, refused past the limit), `holdParts`/`releasePart` hold the calls
+  and answer them in any order, `heldParts` and `cancelledParts` show them.
+- Tests: the Rust `a_scenes_reads_go_together_and_give_the_same_scene`,
+  `reading_together_leaves_out_what_the_walk_leaves_out`,
+  `a_scenes_sources_and_links_are_read_together` (the fake gateway's peak
+  in flight above 1, the scene equal to a serial walk's) and
+  `a_read_that_fails_once_is_read_again_as_the_walk_does`, and
+  `part_tickets`' own (`a_cancel_before_its_part_starts_starts_it_cancelled`
+  among them); the frontend's `tests/arbesk-parts.test.ts` (random
+  scenes answered out of order against the one-at-a-time loop: same parts,
+  same *too large*, the limit never passed) and
+  `tests/arbesk-scene-parts.test.ts` (order and placements kept when calls
+  answer out of order, the limit with calls in flight, a closed preview
+  cancelling its calls, one failed part leaving the others), and the
+  mock's case in `tests/mock-core.test.ts`.
+
 ## Phase 4: fewer chain reads, one name list per paste
 
 **Now.** Every per-asset action re-reads `tokenURI` (never cached): a scene

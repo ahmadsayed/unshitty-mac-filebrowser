@@ -51,7 +51,8 @@ It owns no rules: it asks small modules that have no DOM.
   the Space preview's buttons from those rules, and `preview-versions.ts`
   its version control for a Keep Versions file or an Arbesk asset. `models.ts` says which files
   the preview shows as 3D models; `model-viewer.ts` (three.js, loaded only
-  then) reads and draws them.
+  then) reads and draws them; `arbesk-parts.ts` fetches an Arbesk scene's
+  parts a few at a time within the preview's byte limit.
 - **View state and stored paths.** `selection.ts` (selection, cursor,
   anchor), `search.ts` (`SearchSession`: the walk, its pause, its limit,
   late answers), `folder-summaries.ts` (item counts and version badges),
@@ -75,7 +76,10 @@ providers (`providers::capability_table`); `tests/capabilities.json` pins it,
 and the frontend's built-in copy and the mock's answer against it.
 
 **In the backend.** `lib.rs` registers thin commands and runs slow work on
-Tauri's blocking pool (`blocking`). The read commands (listing,
+Tauri's blocking pool (`blocking`). It manages the cancel registries a
+window's tickets name: `thumbnails::Requests` for thumbnails
+(`cancel_thumbnails`) and `part_tickets::PartTickets` for the preview's
+Arbesk part fetches (`cancel_arbesk_parts`). The read commands (listing,
 existence, path info, thumbnails, opening, the preview's file) ask the
 registry directly and never call `place.rs`. `place.rs` is a narrow gate,
 not a router: it gates the commands that work on this computer only

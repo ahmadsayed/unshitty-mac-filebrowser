@@ -16,7 +16,7 @@ use crate::http::Http;
 use crate::ipfs::{FileCache, Gateway, ManifestCache, STORAGE_UNREACHABLE, in_parallel};
 use crate::limiter::READS;
 use crate::location::{ArbeskPath, asset_path_named, collection_path, parse, safe_name};
-use crate::scene::{Links, Scene, resolve};
+use crate::scene::{Links, Scene, resolve_together};
 use crate::Entry;
 use crate::progress::Progress;
 use crate::representations;
@@ -576,7 +576,9 @@ pub fn scene_at(
                 .0
         }
     };
-    let resolved = resolve(&cid, &reader);
+    // Each level's sources and links are read together (performance
+    // plan, phase 3); the scene is the one a depth-first walk gives.
+    let resolved = resolve_together(&cid, &reader);
     Ok((cid, resolved))
 }
 
@@ -1805,6 +1807,52 @@ mod tests {
         );
         assert_eq!(resolved.parts[1].placements[0].matrix[12], 2.57);
         assert!(scene(&http, &site(), &rooms(), None, cache.path()).is_err());
+    }
+
+    /// Performance plan, phase 3: a scene's sources and links are read
+    /// together through the gateway, and the scene is the one a walk
+    /// reading one thing at a time gives: same parts, order, placements,
+    /// and what can't be read left out.
+    #[test]
+    fn a_scenes_sources_and_links_are_read_together() {
+        let set = || {
+            let mut w = world();
+            let link = |asset: &str, x: f64| {
+                json!({ "transform_matrix": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, 0.0, 0.0, 1.0],
+                "child_ref": { "collection": { "chainId": 84532, "tokenId": "1" }, "assetID": asset } })
+            };
+            w.put("bafySet", json!({ "name": "Set", "timestamp": STAMP_MS, "scene": { "nodes": [
+                { "source": { "cid": "bafySrcTable", "format": "gltf" } },
+                link("a1", 1.0), link("a2", 2.0), link("a4", 3.0), link("a5", 4.0),
+                { "source": { "cid": "bafySrc3mf", "format": "3mf", "path": "composite.3mf.json" } },
+                { "source": { "cid": "bafyNowhere", "format": "gltf" } },
+                link("a1", 5.0)
+            ] } }));
+            w.add_asset("4", "s1", "bafySet");
+            w
+        };
+        let one_at_a_time = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(set())));
+        let site = site();
+        let reader = Reader::open(&http, &site, one_at_a_time.path()).unwrap();
+        let walked = crate::scene::resolve("bafySet", &reader);
+        let cache = tempfile::tempdir().unwrap();
+        let delay = std::time::Duration::from_millis(20);
+        let watched = testing::Watched::new(set(), delay, &[]);
+        let path = asset_path(&rooms(), "s1", "Set", "gltf");
+        let together = scene(&watched, &site, &path, None, cache.path()).unwrap();
+        assert_eq!(together, walked);
+        let parts: Vec<(&str, usize)> = together
+            .parts
+            .iter()
+            .map(|p| (p.key.as_str(), p.placements.len()))
+            .collect();
+        assert_eq!(
+            parts,
+            [("bafySrcTable", 1), ("bafySrcGltf", 2), ("bafySrc3mf", 2)]
+        );
+        let peak = watched.peak.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(peak > 1, "{peak}: the scene's reads ran one at a time");
     }
 
     #[test]
