@@ -4,7 +4,7 @@
 // that show them are representation-dialogs.ts, tested here directly
 // (tests/representations.test.ts).
 
-import type { RepresentationInfo } from "./api";
+import type { RepresentationInfo, RepresentationsSummary } from "./api";
 import { formatSize } from "./format";
 
 /** besk's `FORMAT_LABELS` (packages/besk/src/representations.ts); any
@@ -163,14 +163,45 @@ export interface CopyChoice {
   formats?: ReadonlySet<string>;
 }
 
+/** One asset of a copy out by its other files' distinct formats, in
+ *  stored order: as its full list gives them, or its listing's summary
+ *  (performance plan, phase 4). */
+export interface AssetFormats {
+  path: string;
+  name: string;
+  formats: readonly string[];
+}
+
+/** `asset`'s formats as its full list gives them. */
+export function formatsOfFiles(asset: AssetFiles): AssetFormats {
+  return { path: asset.path, name: asset.name, formats: [...new Set(asset.files.map((rep) => rep.format))] };
+}
+
+/** The asset at `path` by the formats its listing's summary names (none
+ *  when the listing gave it no summary: it has no other files). */
+export function formatsOfSummary(path: string, name: string, summary: RepresentationsSummary | undefined): AssetFormats {
+  return { path, name, formats: summary?.formats ?? [] };
+}
+
 /** The formats present across `assets`, in first-seen order, with how
- *  many assets hold each. */
-export function formatsAcross(assets: readonly AssetFiles[]): Array<{ format: string; assets: number }> {
+ *  many assets hold each: the several-asset copy dialog's rows. */
+export function formatCounts(assets: readonly AssetFormats[]): Array<{ format: string; assets: number }> {
   const counts = new Map<string, number>();
   for (const asset of assets) {
-    for (const format of new Set(asset.files.map((rep) => rep.format))) counts.set(format, (counts.get(format) ?? 0) + 1);
+    for (const format of new Set(asset.formats)) counts.set(format, (counts.get(format) ?? 0) + 1);
   }
   return [...counts].map(([format, n]) => ({ format, assets: n }));
+}
+
+/** The formats present across `assets`' full lists (`formatCounts`). */
+export function formatsAcross(assets: readonly AssetFiles[]): Array<{ format: string; assets: number }> {
+  return formatCounts(assets.map(formatsOfFiles));
+}
+
+/** Whether a copy that chose `choice` takes any file of an asset whose
+ *  summary is `summary`: only then is its full list read. */
+export function choiceTakesFrom(summary: RepresentationsSummary | undefined, choice: CopyChoice): boolean {
+  return !!summary && summary.count > 0 && summary.formats.some((format) => !!choice.formats?.has(format));
 }
 
 /** A copy's sources and their target names: per asset, in order, its path

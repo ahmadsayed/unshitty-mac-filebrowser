@@ -27,12 +27,12 @@ import {
   setPermissions,
   shareIdentity, setShareName, shareFolder, shareInfo, listShares, createShareLink,
   shareLinkFor, shareLinkRequiresPassphrase, removeShareAccess, stopSharing, addReceived, listReceived, removeReceived,
-  type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
+  type Entry, type RepresentationsSummary, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
 import { appFormats, arbeskAttach, arbeskAttachPlan, arbeskDetach, arbeskExport, arbeskFile, arbeskRepresentations, capabilities, openWith, type AppChoice, type AttachChoice, type Attached, type PlannedFile, type RepresentationInfo } from "./api";
-import { askAttachClash, chooseFileToOpen, chooseFilesToCopy, confirmAttach, confirmRemoveFile, iconEntry, showFilesDialog, type ClashChoice, type FilesActions, type FilesPage } from "./representation-dialogs";
-import { assetFormat, copyNameAt, copySources, onlyChoice, openWithCandidates, uniqueNames, type AssetFiles, type CopyChoice, type FileChoice } from "./representations";
+import { askAttachClash, chooseFileToOpen, chooseFilesToCopy, chooseFormatsToCopy, confirmAttach, confirmRemoveFile, iconEntry, showFilesDialog, type ClashChoice, type FilesActions, type FilesPage } from "./representation-dialogs";
+import { assetFormat, choiceTakesFrom, copyNameAt, copySources, formatsOfSummary, onlyChoice, openWithCandidates, uniqueNames, type AssetFiles, type CopyChoice, type FileChoice } from "./representations";
 import { loadCapabilities } from "./capabilities";
 import { entryIcon, filesEmblemOf, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { appIconKey } from "./native-icons";
@@ -3170,14 +3170,20 @@ async function copyLocation(): Promise<void> {
 function setClipboard(mode: "copy" | "cut"): void {
   const sel = selectedEntries();
   if (sel.length === 0) return;
-  putOnClipboard(sel.map((e) => e.path), new Set(sel.filter((e) => e.is_dir).map((e) => e.path)), mode);
+  putOnClipboard(sel.map((e) => e.path), new Set(sel.filter((e) => e.is_dir).map((e) => e.path)), mode, summariesOf(sel));
+}
+
+/** Each Arbesk asset's summary of its other files among `listed`, as its
+ *  listing gave it (performance plan, phase 4). */
+function summariesOf(listed: readonly Entry[]): Map<string, RepresentationsSummary | undefined> {
+  return new Map(listed.filter((entry) => isArbeskAsset(entry.path)).map((entry) => [entry.path, entry.representations]));
 }
 
 /** Copy or Cut of `paths` (`dirs` the folders among them), as the
  *  item-actions rule allows it: every way onto the clipboard goes here. */
-function putOnClipboard(paths: string[], dirs: Set<string>, mode: "copy" | "cut"): void {
+function putOnClipboard(paths: string[], dirs: Set<string>, mode: "copy" | "cut", summaries?: Clip["summaries"]): void {
   if (refuse(mode, hereFor(paths))) return;
-  clipboard = { paths, dirs, mode };
+  clipboard = { paths, dirs, mode, summaries };
   // Paths also go to the system clipboard as text, handy for terminals.
   navigator.clipboard?.writeText(paths.join("\n")).catch(() => {});
   refreshCutMarks();
@@ -3284,7 +3290,9 @@ function transferOperation(paths: string[], moving: boolean, destDir: string, ca
  * Batches queue behind each other and show in the operations popover.
  * Resolves true when every item was handled (none failed, nothing cancelled).
  */
-async function runTransfer(paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string): Promise<boolean> {
+async function runTransfer(
+  paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string, summaries?: Clip["summaries"],
+): Promise<boolean> {
   if (isPseudo(destDir)) return false;
   if (placeOf(destDir) === "arbesk" && !(await readyForArbesk(paths, dirs, paths.some(move), destDir))) return false;
   // The user's selection as of this paste; see transferBatch's end.
@@ -3298,7 +3306,7 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
     else void cancelOperation(op.id).catch(() => {});
   });
   // Arbesk assets with other files ask which files first (spec F9).
-  const plan = needsCopyChoice(paths, move, destDir) ? await planArbeskCopy(paths, destDir, op, batch) : { paths, names: undefined };
+  const plan = needsCopyChoice(paths, move, destDir) ? await planArbeskCopy(paths, destDir, op, batch, summaries) : { paths, names: undefined };
   if (!plan) return false;
   const run = transferChain.then(async () => {
     if (batch.cancelled) return false;
@@ -3331,16 +3339,21 @@ class AssetFilesError {
   constructor(readonly path: string, readonly reason: unknown) {}
 }
 
-/** Each asset's other files, at most 4 asked at a time (one `tokenURI`
- *  read each, the manifests from the cache). No new read starts once
- *  `batch` is cancelled or a read failed; a failure rejects with an
- *  `AssetFilesError` naming its asset. */
-async function filesOfAssets(assets: readonly string[], batch: { cancelled: boolean }): Promise<AssetFiles[]> {
+/** Each asset's other files, at most 4 asked at a time (the collection's
+ *  `tokenURI` shared through the backend's memo, the manifests from the
+ *  cache). No new read starts once `batch` is cancelled or a read failed,
+ *  nor for an asset no longer `wanted` when its turn comes (left out of
+ *  the answer); a failure rejects with an `AssetFilesError` naming its
+ *  asset. */
+async function filesOfAssets(
+  assets: readonly string[], batch: { cancelled: boolean }, wanted: (path: string) => boolean = () => true,
+): Promise<AssetFiles[]> {
   const found: AssetFiles[] = new Array(assets.length);
   let next = 0;
   let failed = false;
   const worker = async () => {
     for (let i = next++; i < assets.length && !batch.cancelled && !failed; i = next++) {
+      if (!wanted(assets[i])) continue;
       try {
         found[i] = { path: assets[i], name: basename(assets[i]), files: await arbeskRepresentations(assets[i]) };
       } catch (err) {
@@ -3350,42 +3363,129 @@ async function filesOfAssets(assets: readonly string[], batch: { cancelled: bool
     }
   };
   await Promise.all(Array.from({ length: Math.min(4, assets.length) }, worker));
-  return found;
+  return found.filter(Boolean);
+}
+
+/** What asking which files a copy out takes came to: copy as asked
+ *  (`plain`: no asset has other files), the lists read and the choice, or
+ *  the failed read. */
+interface FilesAsked {
+  plain: boolean;
+  read: AssetFiles[];
+  choice: CopyChoice | null;
+  failure: AssetFilesError | null;
+}
+
+const PLAIN: FilesAsked = { plain: true, read: [], choice: null, failure: null };
+
+const failedRead = (err: unknown, path: string): FilesAsked =>
+  ({ plain: false, read: [], choice: null, failure: err instanceof AssetFilesError ? err : new AssetFilesError(path, err) });
+
+/** The copy dialog's file icon for an asset or a row by its name. */
+const copyIconOf = (asset: { name: string }) => iconEntryOf(asset.name);
+
+/** As before phase 4: every asset's list read, then, when any has files,
+ *  the dialog built from those lists. */
+async function askFromLists(assets: readonly string[], batch: { cancelled: boolean }): Promise<FilesAsked> {
+  try {
+    const read = await filesOfAssets(assets, batch);
+    if (batch.cancelled) return { ...PLAIN, plain: false };
+    if (!read.some((asset) => asset.files.length > 0)) return PLAIN;
+    return { plain: false, read, choice: await chooseFilesToCopy(read, copyIconOf), failure: null };
+  } catch (err) {
+    return failedRead(err, assets[0]);
+  }
 }
 
 /**
- * Before a copy of Arbesk assets out (spec F9): read each asset's other
- * files under the paste's row (asked at paste time, so a drop from another
- * window works too); when any has some, ask which to copy. The sources
- * become, per asset in order, its path (the model) and each chosen file's
- * pinned path, with their target names: repeated names within the paste
- * get Keep Both's naming. Null when nothing should be copied (Cancel, a
- * cancelled row, a failed read: a toast).
+ * Performance plan, phase 4: what the listing said of each asset's other
+ * files (`known`) decides. No asset with files: no read, no question. One
+ * asset with files: its list read, then asked as before. Several assets:
+ * the dialog is built at once from the summaries' formats (the rows the
+ * lists give) while the lists of the assets with files are read, at most 4
+ * at a time; once the choice is made, only the assets it takes a format
+ * of are still read. A failed read (or a cancelled row) closes the dialog;
+ * after the choice, a failed read still copies nothing.
+ */
+async function askFromSummaries(
+  assets: readonly string[], batch: { cancelled: boolean }, known: ReadonlyMap<string, RepresentationsSummary | undefined>,
+): Promise<FilesAsked> {
+  const withFiles = assets.filter((path) => (known.get(path)?.count ?? 0) > 0);
+  if (withFiles.length === 0) return PLAIN;
+  if (assets.length === 1) return askFromLists(assets, batch);
+  let choice: CopyChoice | null = null;
+  const wanted = (path: string) => choice === null || choiceTakesFrom(known.get(path), choice);
+  const reading = filesOfAssets(withFiles, batch, wanted);
+  // The dialog goes when a read fails, or once the reads end cancelled.
+  let withdrawn = false;
+  const withdraw = reading.then(
+    () => (batch.cancelled ? void (withdrawn = true) : new Promise<never>(() => {})),
+    () => void (withdrawn = true),
+  );
+  const formats = assets.map((path) => formatsOfSummary(path, basename(path), known.get(path)));
+  choice = await chooseFormatsToCopy(formats, copyIconOf, withdraw);
+  if (choice === null && !withdrawn) {
+    // Cancel: nothing is copied, and a read still under way says nothing.
+    reading.catch(() => {});
+    return { ...PLAIN, plain: false };
+  }
+  try {
+    const read = new Map((await reading).map((asset) => [asset.path, asset]));
+    // Every asset takes part, its list or none: the choice of Models applies to each.
+    return { plain: false, read: assets.map((path) => read.get(path) ?? { path, name: basename(path), files: [] }), choice, failure: null };
+  } catch (err) {
+    return failedRead(err, withFiles[0]);
+  }
+}
+
+/** The summaries of `assets` as the listing gave them (performance plan,
+ *  phase 4): the clipboard's, else the folder on screen's; null when any
+ *  isn't known (a paste or drop from another window, a search result),
+ *  so the lists are read as before. */
+function knownSummaries(
+  assets: readonly string[], kept?: Clip["summaries"],
+): Map<string, RepresentationsSummary | undefined> | null {
+  const shown = new Map(entries.map((entry) => [entry.path, entry]));
+  const known = new Map<string, RepresentationsSummary | undefined>();
+  for (const path of assets) {
+    const entry = shown.get(path);
+    if (kept?.has(path)) known.set(path, kept.get(path));
+    else if (entry) known.set(path, entry.representations);
+    else return null;
+  }
+  return known;
+}
+
+/**
+ * Before a copy of Arbesk assets out (spec F9): find out each asset's
+ * other files under the paste's row (at paste time, so a drop from another
+ * window works too: there, every list is read) and, when any has some, ask
+ * which to copy (`askFromSummaries`, `askFromLists`). The sources become,
+ * per asset in order, its path (the model) and each chosen file's pinned
+ * path, with their target names: repeated names within the paste get Keep
+ * Both's naming. Null when nothing should be copied (Cancel, a cancelled
+ * row, a failed read: a toast).
  */
 async function planArbeskCopy(
-  paths: string[], destDir: string, op: Operation, batch: { cancelled: boolean; measuring: boolean },
+  paths: string[], destDir: string, op: Operation, batch: { cancelled: boolean; measuring: boolean }, summaries?: Clip["summaries"],
 ): Promise<{ paths: string[]; names?: Map<string, string> } | null> {
   const queued = op.state;
   setOperationState(op, "preparing");
   // Nothing runs yet: a Cancel takes the row away at once (runTransfer's).
   batch.measuring = true;
   const assets = paths.filter(isArbeskAsset);
-  let read: AssetFiles[] = [];
-  let failure: AssetFilesError | null = null;
-  let choice: CopyChoice | null = null;
+  const known = knownSummaries(assets, summaries);
+  let asked: FilesAsked;
   try {
-    read = await filesOfAssets(assets, batch);
-    if (!batch.cancelled && read.some((asset) => asset.files.length > 0)) {
-      choice = await chooseFilesToCopy(read, (asset) => iconEntryOf(asset.name));
-    } else if (!batch.cancelled) {
-      setOperationState(op, queued);
-      return { paths, names: undefined };
-    }
-  } catch (err) {
-    failure = err instanceof AssetFilesError ? err : new AssetFilesError(assets[0], err);
+    asked = known ? await askFromSummaries(assets, batch, known) : await askFromLists(assets, batch);
   } finally {
     batch.measuring = false;
   }
+  if (asked.plain && !batch.cancelled) {
+    setOperationState(op, queued);
+    return { paths, names: undefined };
+  }
+  const { read, choice, failure } = asked;
   if (batch.cancelled) return null;
   const byAsset = new Map(read.map((asset) => [asset.path, asset]));
   const sources = choice ? paths.flatMap((path) => (byAsset.has(path) ? copySources([byAsset.get(path)!], choice) : [{ path, name: basename(path) }])) : [];
@@ -3645,10 +3745,10 @@ async function transferBatch(
 
 async function paste(destDir: string): Promise<void> {
   if (!clipboard) return;
-  const { paths, dirs, mode } = clipboard;
+  const { paths, dirs, mode, summaries } = clipboard;
   if (refuse("paste", { kind: locationKind(destDir, trashPath), items: [], paths, dir: destDir, moving: mode === "cut", dirs })) return;
   const pasting = clipboard;
-  const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir);
+  const complete = await runTransfer(paths, dirs, () => mode === "cut", destDir, summaries);
   // A cut is only consumed once every item has been dealt with. Its paths
   // follow the items it moved (src/path-refs.ts): it's known by its object.
   if (mode === "cut" && complete && clipboard === pasting) {
