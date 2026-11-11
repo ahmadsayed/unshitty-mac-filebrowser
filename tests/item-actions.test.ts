@@ -115,6 +115,31 @@ test("properties: of Arbesk's rows only an asset, read from its path (spec F7)",
   expect(refusal("properties", { kind: "starred", items: ["folder", "arbesk"], paths: ["/Users/me/a.txt", `${account}/1~S/a~B.gltf`] })).toBeNull();
 });
 
+test("openWith: one item on this computer, by its kind; never several (spec F8)", () => {
+  // prettier-ignore
+  //                       recent starred network trash in-trash share sftp arbesk drive folder
+  const cells: string[] = [Y,    Y,      N,      Y,    Y,       N,    N,   N,     N,    Y];
+  expect(KINDS.map((item) => refusal("openWith", { kind: "folder", items: [item] }))).toEqual(cells.map((cell) => SHOWN[cell]));
+  expect(refusal("openWith", { kind: "folder", items: ["folder", "folder"] })).toBe("");
+  expect(refusal("openWith", { kind: "folder", items: [] })).toBe("");
+});
+
+test("openWith: of Arbesk's rows only an asset, read from its path (spec F8)", () => {
+  const account = "arbesk://0x00000000000000000000000000000000000000ab";
+  const of = (path: string): Here => ({ kind: "arbesk", items: ["arbesk"], paths: [path] });
+  // prettier-ignore
+  const rows: Array<[string, string, string | null]> = [
+    ["arbesk-account", account, ""],
+    ["arbesk-collection", `${account}/1~S`, ""],
+    ["arbesk-asset", `${account}/1~S/a~B.gltf`, null],
+    ["arbesk-file", `${account}/1~S/a~B.gltf/stl~B.stl`, ""],
+  ];
+  for (const [, path, verdict] of rows) expect(refusal("openWith", of(path))).toBe(verdict);
+  // Without its path, the cell; two assets are never opened together.
+  expect(refusal("openWith", { kind: "arbesk", items: ["arbesk"] })).toBe("");
+  expect(refusal("openWith", { kind: "arbesk", items: ["arbesk", "arbesk"], paths: [`${account}/1~S/a~B.gltf`, `${account}/1~S/b~C.gltf`] })).toBe("");
+});
+
 test("openLocation: for an item shown away from its folder, never in the Trash", () => {
   const away: Here = { kind: "recent", items: ["folder"], elsewhere: true };
   expect(allows("openLocation", away)).toBe(true);

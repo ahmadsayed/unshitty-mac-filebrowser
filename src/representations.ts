@@ -92,3 +92,120 @@ export function staleReason(rep: RepresentationInfo, listed: readonly Representa
   }
   return "Made from a file File Browser can't find in this asset";
 }
+
+// ---------------------------------------------------------------------------
+// Open With (spec F8)
+// ---------------------------------------------------------------------------
+
+/** One of an asset's files a task can take: its model, or another file. */
+export type FileChoice = { kind: "model" } | { kind: "file"; rep: RepresentationInfo };
+
+/** The model's format: its listed name's extension (`gltf`, `3mf`). */
+export function assetFormat(assetName: string): string {
+  const dot = assetName.lastIndexOf(".");
+  return dot > 0 ? assetName.slice(dot + 1).toLowerCase() : "";
+}
+
+/** The asset's files an application opens, by the formats it declares
+ *  (`opens`, from `app_formats`): the model first when its format is one,
+ *  then each file whose format is, in stored order. */
+export function openWithCandidates(model: string, files: readonly RepresentationInfo[], opens: readonly string[]): FileChoice[] {
+  const choices: FileChoice[] = opens.includes(model) ? [{ kind: "model" }] : [];
+  for (const rep of files) if (opens.includes(rep.format)) choices.push({ kind: "file", rep });
+  return choices;
+}
+
+/** Which file an application gets without asking: the model when it
+ *  declares none of them (as GNOME Files hands any file to the app the
+ *  user chose), the one it opens, or null when it opens several. */
+export function onlyChoice(candidates: readonly FileChoice[]): FileChoice | null {
+  if (candidates.length === 0) return { kind: "model" };
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+/** The choice selected first: the first that is not out of date (the
+ *  model never is), else the first. */
+export function defaultChoice(candidates: readonly FileChoice[]): number {
+  const fresh = candidates.findIndex((choice) => choice.kind === "model" || !choice.rep.stale);
+  return Math.max(0, fresh);
+}
+
+// ---------------------------------------------------------------------------
+// Copy out (spec F9)
+// ---------------------------------------------------------------------------
+
+/** "name (copy).txt", then "name (copy 2).txt", …: Keep Both's `n`th name. */
+export function copyNameAt(name: string, n: number, isDir = false): string {
+  const dot = isDir ? -1 : name.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  return `${stem} (copy${n > 1 ? ` ${n}` : ""})${ext}`;
+}
+
+/** "G-code (3 assets)", "STL (1 asset)": a format's row when several assets are copied. */
+export function formatRowLabel(format: string, assets: number): string {
+  return `${formatLabel(format)} (${assets} ${assets === 1 ? "asset" : "assets"})`;
+}
+
+/** One asset of a copy out, with its other files. */
+export interface AssetFiles {
+  path: string;
+  name: string;
+  files: readonly RepresentationInfo[];
+}
+
+/** What a copy dialog chose: for one asset, the model and each file by
+ *  index; for several, the models and each format. */
+export interface CopyChoice {
+  model: boolean;
+  /** One asset: the chosen files' indexes in its list. */
+  files?: ReadonlySet<number>;
+  /** Several assets: the chosen formats. */
+  formats?: ReadonlySet<string>;
+}
+
+/** The formats present across `assets`, in first-seen order, with how
+ *  many assets hold each. */
+export function formatsAcross(assets: readonly AssetFiles[]): Array<{ format: string; assets: number }> {
+  const counts = new Map<string, number>();
+  for (const asset of assets) {
+    for (const format of new Set(asset.files.map((rep) => rep.format))) counts.set(format, (counts.get(format) ?? 0) + 1);
+  }
+  return [...counts].map(([format, n]) => ({ format, assets: n }));
+}
+
+/** A copy's sources and their target names: per asset, in order, its path
+ *  (the model, when chosen) and each chosen file's pinned path. A file is
+ *  named as listed; the model by the asset's listed name. */
+export function copySources(assets: readonly AssetFiles[], choice: CopyChoice): Array<{ path: string; name: string }> {
+  const sources: Array<{ path: string; name: string }> = [];
+  for (const asset of assets) {
+    if (choice.model) sources.push({ path: asset.path, name: asset.name });
+    asset.files.forEach((rep, i) => {
+      const chosen = choice.files ? choice.files.has(i) : !!choice.formats?.has(rep.format);
+      if (chosen) sources.push({ path: rep.path, name: rep.name });
+    });
+  }
+  return sources;
+}
+
+/** The names repeated within one paste after their first: each gets the
+ *  next Keep Both name `taken` (the folder, asked by the caller) and the
+ *  paste's other names leave free. Names are compared as given. */
+export async function uniqueNames(names: readonly string[], taken: (name: string) => Promise<boolean>): Promise<string[]> {
+  const used = new Set(names);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of names) {
+    if (!seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+      continue;
+    }
+    let n = 1;
+    let candidate = copyNameAt(name, n);
+    while (used.has(candidate) || (await taken(candidate))) candidate = copyNameAt(name, ++n);
+    used.add(candidate);
+    out.push(candidate);
+  }
+  return out;
+}

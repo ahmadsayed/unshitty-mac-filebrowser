@@ -12,6 +12,11 @@ export interface OpenWithHooks {
   errorText(err: unknown): string;
   /** The file was handed to an application. */
   opened(entry: Entry): void;
+  /** Opens the item with `app` itself instead of handing its path over
+   *  (an Arbesk asset: which file, then a fetch, spec F8). The chooser
+   *  closes first, with no busy state or retry of its own; `opened` isn't
+   *  called, so what it fetched never lands in Recent. */
+  launch?(app: AppChoice): Promise<void>;
 }
 
 /** The applications in order, each id once. */
@@ -166,10 +171,17 @@ class Chooser {
     this.dialog?.setResponseEnabled("open", !!this.selected);
   }
 
-  /** Open the file with the selected application; a failure keeps the dialog for a retry. */
+  /** Open the file with the selected application; a failure keeps the
+   *  dialog for a retry. With a `launch` hook, the dialog closes and the
+   *  hook does the rest. */
   launch(): void {
     const row = this.selected;
     if (!row || this.dialog.busy) return;
+    if (this.hooks.launch) {
+      this.dialog.close();
+      void this.hooks.launch(row.app);
+      return;
+    }
     this.message.textContent = "";
     void this.dialog.run(() =>
       openWith(this.entry.path, row.app.id)

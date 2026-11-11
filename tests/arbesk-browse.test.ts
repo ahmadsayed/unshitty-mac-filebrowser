@@ -77,7 +77,7 @@ test("an asset shows the thumbnail it was saved with, and one saved without keep
 test("nothing in Arbesk can be written, renamed or cut", async () => {
   await click(row("Box.gltf"));
   await rightClick(row("Box.gltf"));
-  expect(menuLabels()).toEqual(["Open", "Copy", "Properties"]);
+  expect(menuLabels()).toEqual(["Open", "Open With…", "Copy", "Properties"]);
   await closeOverlays();
 
   await click(row("Box.gltf"));
@@ -126,10 +126,17 @@ test("Copy and Paste take assets out to a folder, asking when a name is taken", 
   await goTo("/Users/me/Models");
   await key("v", { mod: true });
   await settle(30);
+  // Box.gltf has an STL too, so it asks which files first (spec F9); the
+  // models are chosen already.
+  expect(dialogHeading()).toBe("Copy Which Files?");
+  await key("Enter");
+  await settle(30);
   expect(names().sort()).toEqual(["Box.3mf", "Box.gltf"]);
 
   // Again: the names are taken, so it asks; Enter keeps both.
   await key("v", { mod: true });
+  await settle(30);
+  await key("Enter");
   await settle(30);
   expect(dialogHeading()).toMatch(/Replace/);
   expect($(".dialog-layer .dialog-text").textContent).toBe(

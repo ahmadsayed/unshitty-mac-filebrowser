@@ -13,8 +13,8 @@
 // Trash, copy out, paste through `can_copy_in`, cut), it reads them, through `locations.ts` or
 // `byPlace`, and keeps cells only for the frontend's own views (Recent,
 // Starred, Network, the Trash). Delete Permanently, Star, Add to Bookmarks,
-// Properties and Open Item Location have no matching capability and keep
-// their tables. The toasts are the frontend's own either way.
+// Properties, Open With and Open Item Location have no matching capability
+// and keep their tables. The toasts are the frontend's own either way.
 
 import { capabilitiesOf, type PlaceCapabilities } from "./capabilities";
 import { arbeskPasteRefusal, capabilityRow, copyOutRefusalOf, isPseudoKind, isReadOnlyKind, isTrashKind, kindTakesPastes, type LocationKind, type ViewKind } from "./locations";
@@ -29,6 +29,7 @@ export type SharedAction =
   | "star"
   | "bookmark"
   | "properties"
+  | "openWith"
   | "openLocation";
 
 /** Where an action is asked for. */
@@ -164,6 +165,31 @@ const properties = (here: Here): Verdict => {
   return OK;
 };
 
+/** Open With…, by the item's kind: a file or folder on this computer
+ *  (the app is handed the path itself); Drive, shares, servers and the
+ *  frontend's Network hand no local path over. Arbesk's cell answers an
+ *  item whose path isn't known; with its path, its row decides (spec F8). */
+const OPEN_WITH_ITEM: Record<LocationKind, Verdict> = {
+  folder: OK, recent: OK, starred: OK, trash: OK, "in-trash": OK,
+  drive: QUIET, share: QUIET, sftp: QUIET, arbesk: QUIET, network: QUIET,
+};
+
+/** Of Arbesk's rows, only an asset opens with an application: its model
+ *  or one of its other files, fetched first (spec F8). */
+const ARBESK_OPEN_WITH: Record<"arbesk-account" | "arbesk-collection" | "arbesk-asset" | "arbesk-file", Verdict> = {
+  "arbesk-asset": OK,
+  "arbesk-account": QUIET, "arbesk-collection": QUIET, "arbesk-file": QUIET,
+};
+
+/** Open With…: a single item, by `OPEN_WITH_ITEM`, an Arbesk one by its
+ *  row read from its path (as `propertiesOf`). */
+const openWith = (here: Here): Verdict => {
+  if (here.items.length !== 1) return QUIET;
+  const [kind, path] = [here.items[0], here.paths?.[0]];
+  if (kind !== "arbesk" || path === undefined) return OPEN_WITH_ITEM[kind];
+  return ARBESK_OPEN_WITH[capabilityRow(kind, path) as keyof typeof ARBESK_OPEN_WITH];
+};
+
 /** The first refusal among the items, by `grid`. */
 function firstItemVerdict(grid: Grid, here: Here): Verdict {
   for (const kind of here.items) if (grid(kind) !== OK) return grid(kind);
@@ -196,6 +222,7 @@ const RULES: Record<SharedAction, (here: Here) => Verdict> = {
   star: (here) => STAR[here.kind],
   bookmark: (here) => BOOKMARK[here.kind],
   properties,
+  openWith,
   // Only for an item shown away from its folder, and never in the Trash,
   // where Restore From Trash is the way back.
   openLocation: (here) =>

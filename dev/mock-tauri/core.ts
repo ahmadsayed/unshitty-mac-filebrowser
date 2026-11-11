@@ -2020,6 +2020,18 @@ const arbeskSession = { signedIn: true, expireNext: false };
     ARBESK_COLLECTIONS.push({ token: "9", name: "Many", assets });
     return `arbesk://${ARBESK_MOCK_ADDRESS}/${arbeskSegment("9", "Many")}`;
   },
+  /** For copy-out tests: a glTF asset `id` named `name` in collection
+   *  `token`, with `files` (each a mesh, made from nothing). */
+  addAsset(token: string, id: string, name: string, files: Array<{ id: string; format: string; name: string; bytes: number }>): void {
+    const representations = files.map((file) => mockRep(id, file.id, "mesh", file.format, file.name, file.bytes));
+    ARBESK_COLLECTIONS.find((c) => c.token === token)!.assets.push({ id, name, ext: "gltf", representations });
+  },
+  /** As a save elsewhere would: the file `file` of asset `asset` now holds other bytes (another CID). */
+  changeFile(token: string, asset: string, file: string): void {
+    const found = ARBESK_COLLECTIONS.find((c) => c.token === token)?.assets.find((a) => a.id === asset);
+    const rep = found?.representations?.find((r) => r.id === file);
+    if (rep) rep.cid = `${String(rep.cid)}x2`;
+  },
 };
 let arbeskAssetSeq = 0;
 let arbeskCollectionSeq = 2;

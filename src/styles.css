@@ -1172,6 +1172,9 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   z-index: 100;
 }
 
+/* A menu opened from inside a dialog (a Files… row's menu) goes over it. */
+.dialog-layer ~ .popover-layer { z-index: 250; }
+
 .popover {
   position: fixed;
   min-width: 180px;
@@ -1550,6 +1553,19 @@ kbd {
 .files-row-icon { flex: none; width: 32px; height: 32px; }
 .files-row-icon .fc { width: 100%; height: 100%; display: block; }
 .files-row .action-row-subtitle { white-space: normal; }
+/* A Files… row's menu button (Open With…, Copy). */
+.files-row-menu { margin-right: -6px; }
+/* Which file to open, which files to copy: the whole row picks. */
+.files-row.choice-row:hover { background: var(--hover); }
+.files-row.choice-row:active { background: var(--active); }
+.choice-row input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent-bg);
+}
+.all-files-row { min-height: 44px; }
 .out-of-date-tag {
   flex: none;
   padding: 2px 8px;

@@ -30,8 +30,9 @@ import {
   type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
-import { arbeskRepresentations, capabilities } from "./api";
-import { showFilesDialog } from "./representation-dialogs";
+import { appFormats, arbeskExport, arbeskRepresentations, capabilities, openWith, type AppChoice } from "./api";
+import { chooseFileToOpen, chooseFilesToCopy, showFilesDialog, type FilesActions } from "./representation-dialogs";
+import { assetFormat, copyNameAt, copySources, onlyChoice, openWithCandidates, uniqueNames, type AssetFiles, type CopyChoice, type FileChoice } from "./representations";
 import { loadCapabilities } from "./capabilities";
 import { entryIcon, filesEmblemOf, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { appIconKey } from "./native-icons";
@@ -2247,14 +2248,17 @@ function openItemMenu(at: Anchor): void {
   openMenu(at, ITEM_MENUS[hereKind()](sel, single));
 }
 
-/** An Arbesk asset: Open goes to Arbesk's Studio, Copy takes its file out
- *  (built first), Properties shows its version and other files; no Copy
- *  Location (an arbesk:// address means nothing outside the app). A
- *  collection can be shared by email. */
+/** An Arbesk asset: Open goes to Arbesk's Studio, Open With… hands one of
+ *  its files to an application (fetched first, spec F8), Copy takes its
+ *  file out (built first), Properties shows its version and other files;
+ *  no Copy Location (an arbesk:// address means nothing outside the app).
+ *  A collection can be shared by email. */
 function arbeskItemMenu(sel: Entry[]): MenuItem[] {
   const single = sel.length === 1 ? sel[0] : null;
+  const asset = single && isArbeskAsset(single.path) ? single : null;
   return [
     { label: "Open", action: activateSelection },
+    ...(asset ? [{ label: "Open With…", action: () => openItemWith(asset) }] : []),
     // Collections can't be copied yet.
     { label: "Copy", disabled: sel.some((entry) => entry.is_dir), action: () => setClipboard("copy") },
     ...(single && isArbeskCollection(single.path)
@@ -2549,10 +2553,11 @@ function showCompressDialog(sel: Entry[]): void {
 function previewAndOpenWithItems(single: Entry | null): MenuItem[] {
   const local = single && !isRemotePath(single.path) ? single : null;
   const file = local && !local.is_dir ? local : null;
+  const openable = single && allows("openWith", hereFor([single.path])) ? single : null;
   return [
     ...macDmgItems(single, isMac && !inTrash()),
     { label: "Preview", disabled: !file, action: () => file && void showPreview(file) },
-    { label: "Open With…", disabled: !local, action: () => local && void showOpenWith(local) },
+    { label: "Open With…", disabled: !openable, action: () => openable && openItemWith(openable) },
     ...linuxProgramItems(single, /Linux/.test(navigator.userAgent) && !inTrash()),
   ];
 }
@@ -3081,7 +3086,7 @@ async function showProperties(entry: Entry): Promise<void> {
             })
           )
           .then((files) => {
-            if (files && extra.isConnected) showFilesDialog(entry, files);
+            if (files && extra.isConnected) showFilesDialog(entry, files, filesActions(entry));
           });
         return false;
       }
@@ -3221,10 +3226,8 @@ function askConflict(name: string, isDir: boolean, destDir: string, remaining: n
 
 /** "name (copy).txt", then "name (copy 2).txt", … — the first one that's free. */
 async function freeCopyName(dir: string, name: string, isDir: boolean): Promise<string> {
-  const dot = isDir ? -1 : name.lastIndexOf(".");
-  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
   for (let n = 1; ; n++) {
-    const candidate = `${stem} (copy${n > 1 ? ` ${n}` : ""})${ext}`;
+    const candidate = copyNameAt(name, n, isDir);
     if (!(await pathExists(joinPath(dir, candidate)))) return candidate;
   }
 }
@@ -3258,12 +3261,15 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
     if (!batch.started || batch.measuring) endOperation(op);
     else void cancelOperation(op.id).catch(() => {});
   });
+  // Arbesk assets with other files ask which files first (spec F9).
+  const plan = needsCopyChoice(paths, move, destDir) ? await planArbeskCopy(paths, destDir, op, batch) : { paths, names: undefined };
+  if (!plan) return false;
   const run = transferChain.then(async () => {
     if (batch.cancelled) return false;
     batch.started = true;
     transfersRunning++;
     try {
-      return await transferBatch(paths, dirs, move, destDir, op, batch, intent);
+      return await transferBatch(plan.paths, dirs, move, destDir, op, batch, intent, plan.names);
     } finally {
       transfersRunning--;
       endOperation(op);
@@ -3272,6 +3278,90 @@ async function runTransfer(paths: string[], dirs: Set<string>, move: (path: stri
   transferChain = run.catch(() => {});
   return run;
 }
+
+// ---------------------------------------------------------------------------
+// Copying an Arbesk asset's files out (spec F9)
+// ---------------------------------------------------------------------------
+
+/** A copy (never a move) of Arbesk assets to this computer or Drive, the
+ *  routes copy out has: their other files may go too. */
+function needsCopyChoice(paths: readonly string[], move: (path: string) => boolean, destDir: string): boolean {
+  const out = placeOf(destDir) === "local" || placeOf(destDir) === "drive";
+  return out && paths.some((path) => isArbeskAsset(path) && !move(path));
+}
+
+/** Each asset's other files, at most 4 asked at a time (one `tokenURI`
+ *  read each, the manifests from the cache). */
+async function filesOfAssets(assets: readonly string[]): Promise<AssetFiles[]> {
+  const found: AssetFiles[] = new Array(assets.length);
+  let next = 0;
+  const worker = async () => {
+    for (let i = next++; i < assets.length; i = next++) {
+      found[i] = { path: assets[i], name: basename(assets[i]), files: await arbeskRepresentations(assets[i]) };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, assets.length) }, worker));
+  return found;
+}
+
+/**
+ * Before a copy of Arbesk assets out (spec F9): read each asset's other
+ * files under the paste's row (asked at paste time, so a drop from another
+ * window works too); when any has some, ask which to copy. The sources
+ * become, per asset in order, its path (the model) and each chosen file's
+ * pinned path, with their target names: repeated names within the paste
+ * get Keep Both's naming. Null when nothing should be copied (Cancel, a
+ * cancelled row, a failed read: a toast).
+ */
+async function planArbeskCopy(
+  paths: string[], destDir: string, op: Operation, batch: { cancelled: boolean; measuring: boolean },
+): Promise<{ paths: string[]; names?: Map<string, string> } | null> {
+  const queued = op.state;
+  setOperationState(op, "preparing");
+  // Nothing runs yet: a Cancel takes the row away at once (runTransfer's).
+  batch.measuring = true;
+  const assets = paths.filter(isArbeskAsset);
+  let read: AssetFiles[] = [];
+  let failure: unknown = null;
+  let choice: CopyChoice | null = null;
+  try {
+    read = await filesOfAssets(assets);
+    if (!batch.cancelled && read.some((asset) => asset.files.length > 0)) {
+      choice = await chooseFilesToCopy(read, (asset) => iconEntryOf(asset.name));
+    } else if (!batch.cancelled) {
+      setOperationState(op, queued);
+      return { paths, names: undefined };
+    }
+  } catch (err) {
+    failure = err;
+  } finally {
+    batch.measuring = false;
+  }
+  if (batch.cancelled) return null;
+  const byAsset = new Map(read.map((asset) => [asset.path, asset]));
+  const sources = choice ? paths.flatMap((path) => (byAsset.has(path) ? copySources([byAsset.get(path)!], choice) : [{ path, name: basename(path) }])) : [];
+  if (sources.length === 0) {
+    if (failure !== null) showToast(`Could not copy “${basename(assets[0])}”: ${cleanError(failure)}`);
+    endOperation(op);
+    return null;
+  }
+  setOperationState(op, queued);
+  // Each target named as transferBatch would name it, an Arbesk one made a
+  // safe local name; then the names repeated within the paste made unique.
+  const named = sources.map(({ path, name }) => (placeOf(path) === "arbesk" && !isCloud(destDir) ? safeLocalName(name) : targetBase(path, destDir)));
+  const unique = await uniqueNames(named, (name) => pathExists(joinPath(destDir, name)));
+  return { paths: sources.map((source) => source.path), names: new Map(sources.map((source, i) => [source.path, unique[i]])) };
+}
+
+/** A copy's target name for `from` in `destDir` before any clash: its own
+ *  name, made one plain local name when it comes from Drive or Arbesk. */
+function targetBase(from: string, destDir: string): string {
+  const unsafe = (isCloud(from) || placeOf(from) === "arbesk") && !isCloud(destDir);
+  return unsafe ? safeLocalName(basename(from)) : basename(from);
+}
+
+/** An entry shaped only to pick a file's icon by its name. */
+const iconEntryOf = (name: string): Entry => ({ name, path: name, is_dir: false, size: 0, modified: 0, is_hidden: false, is_symlink: false });
 
 // ---------------------------------------------------------------------------
 // Copying into Arbesk (spec 2026-11-09-arbesk-copy-in, D1, D2, D4)
@@ -3433,6 +3523,7 @@ function showLanded(destDir: string): void {
 async function transferBatch(
   paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string,
   op: Operation, batch: { cancelled: boolean; measuring: boolean }, intent: number,
+  names?: ReadonlyMap<string, string>,
 ): Promise<boolean> {
   await measureBatch(op, paths, batch);
   const done: string[] = [];
@@ -3443,8 +3534,9 @@ async function transferBatch(
 
   for (let i = 0; i < paths.length && !batch.cancelled; i++) {
     const from = paths[i];
-    // A Drive name can be "a/b" or "..": locally it must stay one plain name.
-    const base = isCloud(from) && !isCloud(destDir) ? safeLocalName(basename(from)) : basename(from);
+    // A Drive or Arbesk name can be "a/b" or "..": locally it must stay one
+    // plain name. A copy out of Arbesk names each file as planned (F9).
+    const base = names?.get(from) ?? targetBase(from, destDir);
     // A .glb is stored as glTF: its listed name, which a clash is checked against.
     const name = placeOf(destDir) === "arbesk" ? arbeskTargetName(base) : base;
     const isDir = dirs.has(from);
@@ -5130,9 +5222,19 @@ function openCurrentFolderWithItem(): MenuItem {
   return { label: "Open With…", action: () => showOpenWith(folderEntry(location)) };
 }
 
-/** "Open With…" (src/open-with.ts), with the app's icons and Recent. */
-function showOpenWith(entry: Entry): void {
-  showOpenWithDialog(entry, {
+/** Open With… on an item, as `item-actions.ts`' rule allows it. */
+function openItemWith(entry: Entry): void {
+  if (refuse("openWith", hereFor([entry.path]))) return;
+  showOpenWith(entry);
+}
+
+/** "Open With…" (src/open-with.ts), with the app's icons and Recent. For
+ *  an Arbesk asset the chosen application gets one of its files, fetched
+ *  first (`openAssetWith`): `chosen` when the Files… page named it, else
+ *  the one the application opens, asked when it opens several (spec F8). */
+function showOpenWith(entry: Entry, chosen?: FileChoice, title = entry): void {
+  const arbesk = isArbeskAsset(entry.path);
+  showOpenWithDialog(title, {
     icon(span, app) {
       const bundle = { name: `${app.name}.app`, path: "", is_dir: true, size: 0, modified: 0, is_hidden: false, is_symlink: false };
       itemIcons.dialogIcon(span, bundle, 28, appIconKey(app.id));
@@ -5141,7 +5243,70 @@ function showOpenWith(entry: Entry): void {
     opened(file) {
       if (!isRemotePath(file.path)) addRecent(file.path).catch(() => {});
     },
+    ...(arbesk ? { launch: (app: AppChoice) => openAssetWith(entry, app, chosen) } : {}),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Open With for an Arbesk asset (spec F8)
+// ---------------------------------------------------------------------------
+
+/** Which of `asset`'s files `app` gets: the one it opens, the model when
+ *  it declares none, or the user's choice when it opens several (null:
+ *  cancelled). The files' list is asked only when the app opens one of
+ *  the formats the listing's summary names. */
+async function fileForApp(asset: Entry, app: AppChoice): Promise<FileChoice | null> {
+  const model = assetFormat(asset.name);
+  const kept = asset.representations?.formats ?? [];
+  const opens = await appFormats(app.id, [model, ...kept]);
+  const files = opens.some((format) => kept.includes(format)) ? await arbeskRepresentations(asset.path) : [];
+  const candidates = openWithCandidates(model, files, opens);
+  return onlyChoice(candidates) ?? chooseFileToOpen(asset, app.name, candidates, files);
+}
+
+/** Hand one of `asset`'s files to `app`: fetched into the app cache as an
+ *  operation (progress, Cancel), then opened with it. A failure is a toast;
+ *  a cancel says nothing; the cached file never goes to Recent. */
+async function openAssetWith(asset: Entry, app: AppChoice, chosen?: FileChoice): Promise<void> {
+  let choice: FileChoice | null;
+  try {
+    choice = chosen ?? (await fileForApp(asset, app));
+  } catch (err) {
+    showToast(`Could not open “${asset.name}”: ${cleanError(err)}`);
+    return;
+  }
+  if (!choice) return;
+  const [name, path] = choice.kind === "model" ? [asset.name, asset.path] : [choice.rep.name, choice.rep.path];
+  const op = startOperation(opTitle("open", [name]), {
+    totalItems: 1,
+    onCancel: () => void cancelOperation(op.id).catch(() => {}),
+  });
+  setOperationState(op, "working");
+  try {
+    const file = await arbeskExport(path, { op: op.id, onProgress: (u) => updateOperation(op, u) });
+    await openWith(file, app.id);
+  } catch (err) {
+    if (cleanError(err) !== CANCELLED) showToast(`Could not open “${name}”: ${cleanError(err)}`);
+  } finally {
+    endOperation(op);
+  }
+}
+
+/** What the Files… page's rows do for `asset` (spec F7): Open With… a
+ *  chosen file, and Copy, which puts its pinned path (the model: the
+ *  asset's) on the clipboard. */
+function filesActions(asset: Entry): FilesActions {
+  const named = (choice: FileChoice): Entry =>
+    choice.kind === "model" ? asset : { ...asset, name: choice.rep.name, path: choice.rep.path, representations: undefined };
+  return {
+    openWith: (choice) => showOpenWith(asset, choice, named(choice)),
+    copy: (choice) => {
+      const path = choice.kind === "model" ? asset.path : choice.rep.path;
+      clipboard = { paths: [path], dirs: new Set(), mode: "copy" };
+      navigator.clipboard?.writeText(path).catch(() => {});
+      refreshCutMarks();
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
