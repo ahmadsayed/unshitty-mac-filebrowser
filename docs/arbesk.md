@@ -329,8 +329,19 @@ within the preview's 256 MB, shared by the downloads under way); the scene
 shows the same models in the same places as when they came one by one.
 Closing the preview, or stepping to another save, cancels the downloads it
 no longer needs, waiting or under way.
-The deployment's settings are kept for five minutes; a collection's current
-manifest is always read live, so Reload sees the latest. Revisits, thumbnails
+The deployment's settings are kept for five minutes. Which manifest a
+collection points at now is read from the chain and kept for five seconds,
+so one action's reads (a preview's model, saves and files; a scene's links
+to one collection; a copy's assets) ask the chain once: a save made in the
+Studio meanwhile shows within those seconds. Every listing, Reload among
+them, reads it afresh, and so does every save, attach, remove, Replace,
+New Collection and share, which also forget what was kept: a write never
+builds on a kept answer. A paste into a collection takes the collection's
+names once (from the view when it is open, else one listing) to ask Replace,
+Skip or Keep Both, instead of looking each file up; a copy out of assets
+whose listing shows no other files asks for none of their lists, and for
+several assets asks which files at once, from the formats the listing
+shows, while the lists it needs are read. Revisits, thumbnails
 after a restart and later previews are therefore much faster than the first
 visit.
 
