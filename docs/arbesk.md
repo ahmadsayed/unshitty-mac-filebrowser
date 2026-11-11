@@ -142,7 +142,10 @@ currently shows them mirrored (ahmadsayed/arbesk#138).
 An asset saved more than once in the Studio has versions: each save points
 at the one before it. Space shows the newest, and ‹ and › in the preview's
 header step back through the saves (the newest 50, as the Studio reads
-them), each shown as its own scene. A model that didn't change between
+them), each shown as its own scene. The model starts loading at once; the
+saves are read alongside and the ‹ › control appears when they are. If the
+asset is saved again elsewhere meanwhile, the control shows the newer save
+and the preview stays on the one it is showing. A model that didn't change between
 saves is downloaded once. Older saves store the model file itself (a `.glb`, or
 a zipped `.3mf`) instead of a stored source; the preview shows those as
 they are, as the Studio does.
@@ -310,6 +313,8 @@ Arbesk keeps a folder's assets as one small manifest each on IPFS, not as one
 Drive-style index. The first visit fetches what it doesn't have yet; File
 Browser keeps manifests and thumbnails in the app cache (64 MB each), reuses
 an asset's built preview file, and downloads a model's parts a few at a time.
+Space asks for an asset's model before its version history, which can take a
+read per save; looking up an older save reads its history only back to it.
 The deployment's settings are kept for five minutes; a collection's current
 manifest is always read live, so Reload sees the latest. Revisits, thumbnails
 after a restart and later previews are therefore much faster than the first
