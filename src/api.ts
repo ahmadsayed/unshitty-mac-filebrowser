@@ -770,12 +770,22 @@ export interface RepresentationInfo {
   stats: Record<string, string | number> | null;
   /** When it was added (ms). */
   created_at: number;
+  /** Its path one segment below the asset, pinned to the file it names
+   *  (spec F4): what Copy puts on the clipboard and Open With fetches. */
+  path: string;
 }
 
 /** An Arbesk asset's other files, in stored order, at the save `version`
  *  (a manifest CID from `arbeskVersions`; the current save without). */
 export async function arbeskRepresentations(path: string, version?: string): Promise<RepresentationInfo[]> {
   return invoke<RepresentationInfo[]>("arbesk_representations", { path, version: version ?? null });
+}
+
+/** What Open With hands an application for an Arbesk asset (spec F8): its
+ *  own file built in the app cache, or one of its other files (a pinned
+ *  path) fetched there, as operation `tracked`. The local file's path. */
+export async function arbeskExport(path: string, tracked: Tracked): Promise<string> {
+  return invoke<string>("arbesk_export", { path, ...trackedArgs(tracked) });
 }
 
 export async function previewBytes(path: string, limit: number): Promise<ArrayBuffer> {
@@ -791,6 +801,12 @@ export interface AppChoice {
 /** Applications offered by Open With. */
 export async function listApps(): Promise<AppChoice[]> {
   return invoke<AppChoice[]>("list_apps");
+}
+
+/** Which of `formats` (lower-case extensions) the application `app`
+ *  declares it opens, as the OS says (spec F8). */
+export async function appFormats(app: string, formats: string[]): Promise<string[]> {
+  return invoke<string[]>("app_formats", { app, formats });
 }
 
 /** Open a local file with a chosen application. */

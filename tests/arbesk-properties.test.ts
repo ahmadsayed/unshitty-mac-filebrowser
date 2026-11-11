@@ -33,7 +33,7 @@ test("an asset's menu ends with Properties, which shows its version and no local
   await openArbesk("Shapes");
   await click(row("Bracket.gltf"));
   await rightClick(row("Bracket.gltf"));
-  expect(menuLabels()).toEqual(["Open", "Copy", "Properties"]);
+  expect(menuLabels()).toEqual(["Open", "Open With…", "Copy", "Properties"]);
   expect($$(".popover .menu-separator").length).toBe(1);
   await click($$(".popover .menu-item").find((el) => el.textContent?.trim() === "Properties")!);
   await settle(10);
@@ -87,8 +87,11 @@ test("Files… lists the model first, then each file with its subtitle and out-o
     { title: "Bracket.3mf", subtitle: "3MF · 2.2 kB · Mesh", tag: null },
   ]);
   expect($(".files-dialog .out-of-date-tag").textContent).toBe("Out of date");
-  // Read only for now: no menu buttons on the rows, Close only.
-  expect($$(".files-dialog button").map((b) => b.textContent)).toEqual(["Close"]);
+  // Each row has a menu (Open With…, Copy, spec F8 and F9), then Close.
+  expect($$(".files-dialog .files-row-menu").map((b) => b.getAttribute("aria-label"))).toEqual(
+    rows.map((r) => `Menu for “${r.title}”`),
+  );
+  expect($$(".files-dialog .dialog-responses button").map((b) => b.textContent)).toEqual(["Close"]);
   await click($(".files-dialog .dialog-responses button"));
   await settle(10);
   // Properties is still open beneath it.

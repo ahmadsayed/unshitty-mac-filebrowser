@@ -142,7 +142,6 @@ pub(crate) fn safe_name(name: &str) -> String {
 
 /// The asset at `asset_path`'s other file `id`, named `name` (made safe
 /// first), pinned to `pin` (its CID) when given.
-#[cfg_attr(not(test), allow(dead_code))] // Copying a file out (spec F9, phase 3) makes these.
 pub fn file_path(asset_path: &str, id: &str, pin: Option<&str>, name: &str) -> String {
     let id = match pin {
         Some(cid) => format!("{}@{}", encode(id), encode(cid)),

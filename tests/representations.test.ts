@@ -1,12 +1,12 @@
 // The words for an Arbesk asset's other files (src/representations.ts).
 import { expect, test } from "vitest";
 import type { RepresentationInfo } from "../src/api";
-import { fileSubtitle, formatLabel, profileText, staleReason, statsText, toolText } from "../src/representations";
+import { assetFormat, copyNameAt, copySources, defaultChoice, fileSubtitle, formatLabel, formatRowLabel, formatsAcross, onlyChoice, openWithCandidates, profileText, staleReason, statsText, toolText, uniqueNames } from "../src/representations";
 import { filesEmblemOf, filesTitle } from "../src/icons";
 
 const rep = (over: Partial<RepresentationInfo>): RepresentationInfo => ({
   id: "stl", role: "mesh", format: "stl", name: "A.stl", bytes: 1000, stale: false, derived_from: null,
-  tool: null, profile: null, stats: null, created_at: 0, ...over,
+  tool: null, profile: null, stats: null, created_at: 0, path: "", ...over,
 });
 
 test("format labels are besk's, others in capitals", () => {
@@ -45,4 +45,45 @@ test("the files emblem and its tooltip, from the listing's summary", () => {
   expect(filesEmblemOf({ ...entry, representations: { count: 2, stale: 1, formats: ["stl"] } })).toBe("stale");
   expect(filesTitle({ count: 1, stale: 0 })).toBe("Has 1 other file");
   expect(filesTitle({ count: 3, stale: 1 })).toBe("Has 3 other files, 1 out of date");
+});
+
+test("Open With's candidates: the model when the app opens its format, then each file it opens (spec F8)", () => {
+  const files = [rep({ id: "source", format: "blend", name: "B.blend" }), rep({ id: "stl" }), rep({ id: "gcode", format: "gcode", name: "B.gcode", stale: true })];
+  expect(assetFormat("Box.GLTF")).toBe("gltf");
+  expect(assetFormat("Box")).toBe("");
+  const slicer = openWithCandidates("gltf", files, ["gcode", "stl", "3mf"]);
+  expect(slicer.map((c) => (c.kind === "model" ? "model" : c.rep.id))).toEqual(["stl", "gcode"]);
+  const blender = openWithCandidates("gltf", files, ["gltf", "blend"]);
+  expect(blender.map((c) => (c.kind === "model" ? "model" : c.rep.id))).toEqual(["model", "source"]);
+  // None declared: the model; one: it; several: ask.
+  expect(onlyChoice([])).toEqual({ kind: "model" });
+  expect(onlyChoice(slicer.slice(1))).toBe(slicer[1]);
+  expect(onlyChoice(slicer)).toBeNull();
+  // The first not out of date is chosen first; the model never is.
+  const stale = openWithCandidates("gltf", files, ["gcode", "stl"]).reverse();
+  expect(defaultChoice(stale)).toBe(1);
+  expect(defaultChoice([{ kind: "file", rep: rep({ stale: true }) }])).toBe(0);
+});
+
+test("copy out: rows per format, sources in order, Keep Both names within the paste (spec F9)", async () => {
+  expect(copyNameAt("Box.stl", 1)).toBe("Box (copy).stl");
+  expect(copyNameAt("Box.stl", 3)).toBe("Box (copy 3).stl");
+  expect(copyNameAt("Kit.d", 1, true)).toBe("Kit.d (copy)");
+  expect(formatRowLabel("gcode", 3)).toBe("G-code (3 assets)");
+  expect(formatRowLabel("stl", 1)).toBe("STL (1 asset)");
+  const box = { path: "a/box", name: "Box.gltf", files: [rep({ name: "Box.stl", path: "a/box/stl" })] };
+  const bracket = { path: "a/br", name: "Bracket.gltf", files: [rep({ id: "gcode", format: "gcode", name: "B.gcode", path: "a/br/g" }), rep({ name: "B.stl", path: "a/br/stl" })] };
+  expect(formatsAcross([box, bracket])).toEqual([{ format: "stl", assets: 2 }, { format: "gcode", assets: 1 }]);
+  expect(copySources([box, bracket], { model: true, formats: new Set(["stl"]) })).toEqual([
+    { path: "a/box", name: "Box.gltf" }, { path: "a/box/stl", name: "Box.stl" }, { path: "a/br", name: "Bracket.gltf" }, { path: "a/br/stl", name: "B.stl" },
+  ]);
+  expect(copySources([bracket], { model: false, files: new Set([0]) })).toEqual([{ path: "a/br/g", name: "B.gcode" }]);
+  // A repeat gets the next name free in the paste and the folder.
+  const inFolder = new Set(["Box (copy).stl"]);
+  expect(await uniqueNames(["Box.stl", "Box.gltf", "Box.stl", "Box.stl"], async (name) => inFolder.has(name))).toEqual([
+    "Box.stl", "Box.gltf", "Box (copy 2).stl", "Box (copy 3).stl",
+  ]);
+  expect(await uniqueNames(["A.stl", "A (copy).stl", "A.stl"], async () => false)).toEqual(["A.stl", "A (copy).stl", "A (copy 2).stl"]);
+  // Ignoring case, as a macOS volume would: Box.STL and box.stl would be one file there.
+  expect(await uniqueNames(["Box.STL", "box.stl", "BOX (COPY).stl"], async () => false)).toEqual(["Box.STL", "box (copy 2).stl", "BOX (COPY).stl"]);
 });

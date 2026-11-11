@@ -177,8 +177,30 @@ In the window:
   was made with and, for a sliced file, its print time and filament
   (`print_time_s` and `filament_g` in its stats). A file made from an
   earlier model, or from an earlier version of another file, is tagged
-  *Out of date*; the tag's tooltip says which. The page is read only for
-  now: opening, copying, adding and removing these files come next.
+  *Out of date*; the tag's tooltip says which. Each row has a menu with
+  **Open With…** (that file, with any application) and **Copy** (that
+  file; pasted, it lands as one file). Adding and removing files come
+  next.
+- **Open With…** in an asset's menu asks the system which of the asset's
+  formats the chosen application opens (GIO's MIME types and caches on
+  Linux, LaunchServices on macOS; never a list of File Browser's own). An
+  application that declares none of them gets the model, as GNOME Files
+  hands any file to the application you chose; one that opens one file
+  gets it; one that opens several asks *Open Which File With
+  PrusaSlicer?*, with the first file that isn't out of date chosen. The
+  file is fetched into the app cache (the model built, as a copy builds
+  it) as an operation you can follow and cancel, then opened; it never
+  lands in Recent. Plain **Open** still opens the asset in the Studio.
+- **Copy** (or a drag) of assets that have other files asks, when pasted
+  on this computer or in Google Drive, which files to copy: *Copy Which
+  Files of “Box.gltf”?* lists the model (chosen) and each file; for
+  several assets, *Copy Which Files?* offers *Models* and one row per
+  format (*G-code (3 assets)*), applied to each. *All Files* chooses or
+  clears them all. A name repeated within the paste (two assets' `Box.stl`)
+  gets Keep Both's name (*Box (copy).stl*); a name already in the folder
+  still asks Replace, Skip or Keep Both. Each file is copied as it was when
+  the dialog was shown: if it changed in Arbesk since, its copy is refused
+  (*“Bracket.gcode” changed in Arbesk since it was copied.*).
 
 Underneath:
 

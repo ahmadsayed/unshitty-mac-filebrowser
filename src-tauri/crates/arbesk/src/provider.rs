@@ -507,6 +507,38 @@ mod tests {
         assert!(std::fs::read(&blend).unwrap().starts_with(b"ARB\x01not a frame"));
     }
 
+    /// Spec F9: a copy out of an asset's other file exports it as an open
+    /// fetches it (into `arbesk/files/<cid>/`), and a pinned path whose
+    /// entry moved since it was copied is refused in the same words.
+    #[test]
+    fn an_assets_other_file_exports_as_it_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, _, _) = client_with(dir.path(), with_files);
+        let asset = location::asset_path(&testing::shapes(), "a1", "Box", "gltf");
+        let pinned = location::file_path(&asset, "gcode", Some("bafyGcode"), "Bracket.gcode");
+        let exported = places::Transfer::export(&client, &pinned, &Cx::default()).unwrap();
+        assert_eq!(exported, dir.path().join("cache/arbesk/files/bafyGcode/Bracket.gcode"));
+        assert_eq!(std::fs::read_to_string(&exported).unwrap(), GCODE.repeat(500));
+        assert_eq!(exported, opened(&client, &pinned).unwrap(), "the same cached copy");
+        let moved = location::file_path(&asset, "gcode", Some("bafyOld"), "Bracket.gcode");
+        assert_eq!(
+            places::Transfer::export(&client, &moved, &Cx::default()).unwrap_err(),
+            Error::Other("“Bracket.gcode” changed in Arbesk since it was copied.".into())
+        );
+    }
+
+    /// Each listed file carries its path pinned to its CID (spec F4, F9).
+    #[test]
+    fn listed_files_carry_their_pinned_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, _, _) = client_with(dir.path(), with_files);
+        let asset = location::asset_path(&testing::shapes(), "a1", "Box", "gltf");
+        let listed = Client::representations(&client, &asset, None).unwrap();
+        assert_eq!(listed[0].path, location::file_path(&asset, "gcode", Some("bafyGcode"), "Bracket.gcode"));
+        assert_eq!(listed[1].path, location::file_path(&asset, "source", Some("bafyBlend"), "../Bracket.blend"));
+        assert!(listed[1].path.ends_with("/source@bafyBlend~.._Bracket.blend"), "{}", listed[1].path);
+    }
+
     #[test]
     fn a_file_that_changed_moved_or_was_damaged_is_refused() {
         let dir = tempfile::tempdir().unwrap();

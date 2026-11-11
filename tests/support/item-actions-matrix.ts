@@ -280,7 +280,8 @@ const ROWS: Record<string, MatrixCase> = {
   // here only: its rule refuses what isn't a model file, in D1's words.
   // Properties (spec F7) shows an asset's version and other files.
   "an Arbesk collection": [async () => { await fromNetwork("Arbesk")(); await open("Shapes"); }, "Box.gltf", {
-    item: ["Open", "Copy", "Properties"],
+    // Open With… (spec F8) hands one of the asset's files to an application.
+    item: ["Open", "Open With…", "Copy", "Properties"],
     background: ["Show Hidden Files", "Reload", "Paste", "Share Collection…", "Select All"],
     location: ["Reload", "Paste", "Share Collection…", "Select All"],
     keys: {

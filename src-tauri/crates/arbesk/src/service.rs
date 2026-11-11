@@ -357,7 +357,7 @@ pub fn representations(
 ) -> Result<Vec<representations::RepresentationInfo>, String> {
     let reader = Reader::open(http, site, cache_dir)?;
     let (_, manifest) = manifest_of(&reader, path, version)?;
-    Ok(representations::infos(&manifest))
+    Ok(representations::infos(&manifest, path))
 }
 
 /// What the Properties dialog shows of the asset at `path` (spec F7): its

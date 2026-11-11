@@ -630,15 +630,21 @@ pub struct RepresentationInfo {
     pub profile: Option<Map<String, Value>>,
     pub stats: Option<Map<String, Value>>,
     pub created_at: f64,
+    /// Its path one segment below the asset, pinned to the entry's CID
+    /// (spec F4): what Copy puts on the clipboard and Open With fetches,
+    /// refused once the entry holds another file.
+    pub path: String,
 }
 
-/// Each valid entry of `manifest`, in stored order, with its staleness.
-pub(crate) fn infos(manifest: &Value) -> Vec<RepresentationInfo> {
+/// Each valid entry of `manifest`, in stored order, with its staleness
+/// and its pinned path below the asset at `asset_path`.
+pub(crate) fn infos(manifest: &Value, asset_path: &str) -> Vec<RepresentationInfo> {
     let reps = list(manifest);
     let current = Current::of(manifest, &reps);
     reps.into_iter()
         .map(|rep| RepresentationInfo {
             stale: is_stale_in(&current, &rep),
+            path: crate::location::file_path(asset_path, &rep.id, Some(&rep.cid), &rep.name),
             derived_from: rep.derived_from.as_ref().map(|from| from.reference.clone()),
             id: rep.id,
             role: rep.role,
@@ -784,6 +790,9 @@ mod tests {
         assert_eq!(js_number(12.0), "12");
     }
 
+    /// An asset's path, for the pinned paths `infos` gives its files.
+    const ASSET: &str = "arbesk://0x00000000000000000000000000000000000000ab/1~Shapes/box~Box.gltf";
+
     fn entry() -> Value {
         json!({ "id": "stl", "role": "mesh", "format": "stl", "name": "Box.stl", "cid": "bafyStl",
             "bytes": 10, "encoding": "raw", "created_at": 1 })
@@ -836,14 +845,14 @@ mod tests {
         assert_eq!(summary.formats, ["stl", "gcode"]);
         assert!(super::summary(&json!({})).is_none());
         assert!(super::summary(&json!({ "representations": [{ "id": "BAD" }] })).is_none());
-        let infos = infos(&manifest);
+        let infos = infos(&manifest, ASSET);
         assert_eq!(infos.len(), 3);
         assert!(infos[1].stale && infos[1].derived_from.as_deref() == Some("primary"));
         assert_eq!(
             serde_json::to_value(&infos[0]).unwrap(),
             json!({ "id": "stl", "role": "mesh", "format": "stl", "name": "Box.stl", "bytes": 10,
                 "stale": false, "derived_from": null, "tool": null, "profile": null, "stats": null,
-                "created_at": 1.0 })
+                "created_at": 1.0, "path": format!("{ASSET}/stl@bafyStl~Box.stl") })
         );
     }
 
@@ -868,7 +877,7 @@ mod tests {
         assert_eq!((summary.count, summary.stale), (50_000, 1));
         assert_eq!(summary.formats.len(), MAX_REPRESENTATIONS);
         assert_eq!(summary.formats[..2], ["f0", "f1"]);
-        assert_eq!(infos(&manifest).iter().filter(|info| info.stale).count(), 1);
+        assert_eq!(infos(&manifest, ASSET).iter().filter(|info| info.stale).count(), 1);
         assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
     }
 

@@ -457,6 +457,9 @@ export function openDialog(opts: {
     // not submit or close while its caller is waiting for that prompt.
     const dialogs = document.querySelectorAll(".dialog-layer");
     if (dialogs[dialogs.length - 1] !== layer) return;
+    // A menu open over the dialog (opening a dialog closes any other)
+    // takes Enter and Escape first.
+    if (activePopover) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();

@@ -255,7 +255,9 @@ CID from `arbesk_versions`) through the manifest cache, so after a listing
 it costs one `tokenURI` read (the collection's current CID; for a `version`
 none) and no manifest request. Each item: `id`, `role`, `format`, `name`, `bytes`,
 `stale`, `derived_from` (the ref only), `tool`, `profile`, `stats`,
-`created_at`. The model is not in the list; the frontend shows it as the
+`created_at`, and (from phase 3) `path`, the file's F4 path pinned to its
+CID (F4), which the frontend puts on the clipboard and fetches, so it never
+builds a path itself. The model is not in the list; the frontend shows it as the
 first row from the entry itself. It is an extension of Arbesk's provider,
 `ext::Representations` (D4 of the provider design: what only one place has
 is an extension), with the methods F5, F10 and F12 add.
@@ -303,9 +305,9 @@ capabilities row **`arbesk-file`** for it (a row in
 `has_thumbnails` false (and `can_attach` false, F13). The mock's
 `arbeskIds` (`core.ts:1695`) also returns the file id and the pin, refusing
 what the backend's `file_id` refuses, and the mock's CIDs are letters and
-digits, one per asset and file. Until F9's copy lands (phase 3),
-`place::copy` refuses an F4 source in its own words (*Copying an asset's
-other files out comes next.*), though its row already allows the copy.
+digits, one per asset and file. Phase 1 refused an F4 source in
+`place::copy` (*Copying an asset's other files out comes next.*) until
+F9's copy landed in phase 3, which routes it out as an asset.
 
 **F5. Fetching a file decodes it into the app cache, as an opened build.**
 `fetch(<file path>, Fetch::Open | Fetch::Preview)` and the extension's
@@ -476,12 +478,18 @@ in it), then:
    `AppChoice.id` is the `.desktop` file path, not a desktop id, so each
    result is downcast to `gio::DesktopAppInfo` and its `filename()`,
    canonicalised, is compared with the canonicalised `AppChoice.id`; a
-   result with no file name never matches. macOS: `UTType` from the
-   extension and NSWorkspace's
-   `URLsForApplicationsToOpenContentType:` (macOS 12 and later; on an
-   older macOS the answer is empty, so the model opens), compared with the
-   app's bundle path. Answered from the OS, never from a
-   table of our own.
+   result with no file name never matches. GLib (2.80 checked) learns
+   which launcher takes which type from each applications folder's
+   `mimeinfo.cache` (what `update-desktop-database` writes), not from the
+   `.desktop` files' own `MimeType=` lines. macOS, as built: NSWorkspace's
+   `URLsForApplicationsToOpenURL:` on an empty sample `x.<ext>` file in
+   the temp folder (macOS 12 and later, checked with `respondsToSelector:`;
+   on an older macOS the answer is empty, so the model opens), compared
+   with the app's bundle path: LaunchServices decides by the extension as
+   `UTType` would, with no new crate (`objc2-uniform-type-identifiers`).
+   It type-checks for `aarch64-apple-darwin` but is unverified until run
+   on a Mac. Answered from the OS, never from a table of our own. A format
+   that isn't `[a-z0-9]{1,16}` is never asked about.
 2. The candidates are the representations whose format the app opens,
    plus the model when its format is one. None (an app that declares
    nothing we know): the **model** opens with it, as GNOME Files hands any
@@ -492,17 +500,24 @@ in it), then:
    selected (the model counts as never out of date), responses Cancel and
    Open (suggested). Enter opens, Escape cancels.
 3. The chosen file is fetched (the model with `Transfer::export`'s build,
-   `service.rs:268`, a representation with F5 through its pinned F4 path)
-   as a `startOperation` row, *Opening “Bracket.gcode”…*, with progress and
+   `service.rs:268`, a representation with F5 through its pinned F4 path;
+   both by one command, `arbesk_export(path, op)`, Arbesk's
+   `Transfer::export`, which answers an F4 path with the F5 fetch)
+   as a `startOperation` row, *Opening “Bracket.gcode”* (`opTitle`'s
+   wording), with progress and
    Cancel, then `openWith(<cached file>, app)`. A failure (fetch or launch)
    is a toast, *Could not open “Bracket.gcode”: <reason>.*; a cancel says
    nothing. `hooks.opened` is **not** called with the cached path, so an
    app-cache file never lands in Recent.
 
 Started from the Files… page or the preview's file page (F14), the file is
-already chosen: step 2 is skipped, and the fetch uses
+already chosen: step 2 is skipped. The preview's file page fetches with
 `ext::Representations::file(path, version, id)` with the version on
-screen, never a current-version F4 path (F14).
+screen, never a current-version F4 path (F14). The Files… page shows the
+current save, so (as built in phase 3) its Open With… fetches the file's
+**pinned** F4 path through `arbesk_export`: a file whose entry changed
+since the page was drawn is refused, never swapped. Its model row hands
+over the model.
 
 Plain **Open** (double-click, Enter, the preview's Open) still opens the
 asset in Arbesk's Studio (`provider.rs:169`): the default stays what it
@@ -511,13 +526,15 @@ none for any file.
 
 **F9. Copy out asks which files.** Copy (and a drag) still puts the
 **asset** paths on the clipboard. A paste only has `{ paths, dirs, mode }`,
-and by then the user has usually left the collection (and a drop from
-another window has only paths), so the entries' summaries are gone.
+and by then the user has usually left the collection, so the entries'
+summaries are gone. (An asset never leaves its window, F16, so a drop
+from another window can't carry one: the question is asked for pastes and
+drags in the window.)
 `runTransfer`, when its sources hold Arbesk assets and the target is
 this computer or Google Drive (the routes Copy out has today), first calls
 `arbesk_representations(path)` for each asset (F3: one `tokenURI` read
 each, manifests from the cache, at most 4 at a time), under the paste's
-operation row (*Preparing to copy…*). When at least one asset has other
+operation row (its existing *Preparing…*). When at least one asset has other
 files, a dialog asks before anything is copied:
 
 - One asset: heading *Copy Which Files of “Box.gltf”?*, a boxed list of
@@ -526,9 +543,14 @@ files, a dialog asks before anything is copied:
   all are, mixed otherwise) toggles them all. Responses Cancel and Copy
   (suggested, insensitive while nothing is checked).
 - Several assets: heading *Copy Which Files?*, one check row per kind
-  instead of per file: *Models* (checked), then one row per format present
-  across the assets (*G-code (3 assets)*, *STL (2 assets)*), and All Files.
-  The choice applies to each asset.
+  instead of per file: All Files above them as for one asset, *Models*
+  (checked), then one row per format present across the assets (*G-code
+  (3 assets)*, *STL (2 assets)*). The choice applies to each asset.
+
+A failed read of an asset's list is a toast naming that asset (*Could not
+copy “Box.gltf”: …*) and copies nothing. A cancel of the paste's row while
+the lists are read starts no further read. The Files… page's Copy of the model row puts the
+asset on the clipboard, so its paste asks too, the model already chosen.
 
 The paste's sources become the chosen asset paths (the model) and
 **pinned** F4 paths (each chosen representation, with the CID the dialog
@@ -544,8 +566,11 @@ is already safe, F4, so this is the second guard), and
 targetName>`. The F9 dialog fills it: names repeated **within** one paste
 (a `Box.stl` from two assets, or a representation named like its model)
 get the app's Keep Both naming (`Box (copy).stl`, as `freeCopyName` makes it,
-checked against the other names of the paste as well as the folder), and
-the clash check uses the mapped name. **Name clashes still ask Replace /
+checked against the other names of the paste as well as the folder; names
+within the paste are compared ignoring case, as a macOS volume does), and
+the clash check uses the mapped name. Keep Both on a clash, too, skips every
+name the paste plans to write, so a later file of the same paste is never
+asked about. **Name clashes still ask Replace /
 Skip / Keep Both** for each file already in the target folder, so the
 dialog only asks about files that were there before. An asset without
 other files copies as today, with no dialog. Cancel copies nothing.
@@ -877,9 +902,13 @@ those tests.) The mock serves:
   `failUploadNext` likewise); `arbesk_versions` with `changes`;
   `file_properties` for an asset (with `version`); and the capabilities
   table with `can_attach` and the `arbesk-file` row. `arbeskIds` returns
-  the file id and pin of an F4 path. The mock's `apps.list` (`core.ts:2183`)
-  gains *PrusaSlicer*, *Blender* and *Text Editor*, which the
-  `app_formats` table above refers to.
+  the file id and pin of an F4 path. *PrusaSlicer*, *Blender* and *Text
+  Editor*, which the `app_formats` table above refers to, are the mock's
+  `MOCK_ARBESK_APPS`, which the tests and screenshot scenes add with
+  `__mockApps.set`: the default `apps.list` stays as it was, since existing
+  Open With tests pin it. Phase 3 also adds `arbesk_export` (the model
+  built under `…/mock-arbesk/builds/`, a file as `open_target` fetches it)
+  and the test hooks `__mockArbesk.addAsset` and `changeFile`.
 
 For phase 2's view test the mock also has a test hook,
 `__mockArbesk.addManyAssets(count)`, which adds a collection *Many* of
@@ -937,7 +966,9 @@ Each new mock command gets its case in `tests/mock-core.test.ts`.
 - `providers.rs`: the capability table with the new column and row, against
   `tests/capabilities.json`.
 - App: `app_formats` on Linux with a temporary `XDG_DATA_DIRS` holding
-  `.desktop` files and a MIME cache, including a launcher under a flatpak
+  `.desktop` files, a MIME database and each folder's `mimeinfo.cache`,
+  run in a fresh copy of the test binary (GIO reads its folders once per
+  process), including a launcher under a flatpak
   `exports/share/applications` folder and one whose desktop id differs
   from its file name (both matched by file path); macOS's half behind
   `cfg` with a test that Text Edit opens `txt`; `file_properties` for an
@@ -1058,8 +1089,8 @@ Changed: `crates/places/src/entry.rs` (`Representations`),
 `ext::Representations`, `ext::Properties::properties`),
 `crates/arbesk/src/{lib,service,location,provider,write,ipfs}.rs`,
 `src-tauri/src/{lib,providers,platform}.rs` (commands, `app_formats`,
-Properties), `src-tauri/Cargo.toml` (the macOS `UTType` binding,
-`objc2-uniform-type-identifiers`, checked with cargo-deny),
+Properties), `src-tauri/Cargo.toml` (as built: only the `NSURL` and
+`NSArray` features of `objc2-foundation` named, no new crate),
 `crates/places/src/{info,records}.rs` (`FileProperties.version`,
 `Version.changes`),
 `src/{api,icons,main,open-with,item-actions,locations,paths,capabilities,preview-versions}.ts`,
