@@ -1899,14 +1899,15 @@ function keepEarlierFiles(asset: MockAsset): void {
   if (asset.representations?.length) asset.earlier = { ...asset.earlier, [count]: asset.representations.map((rep) => structuredClone(rep)) };
 }
 
-/** The listing's summary (spec F2); none without valid entries. */
+/** The listing's summary (spec F2); none without valid entries. Its
+ *  distinct formats stop at 32, as the backend's (`MAX_REPRESENTATIONS`). */
 function arbeskSummary(asset: MockAsset): Entry["representations"] {
   const reps = arbeskFiles(asset);
   if (!reps.length) return undefined;
   return {
     count: reps.length,
     stale: reps.filter((rep) => arbeskStale(asset, rep)).length,
-    formats: [...new Set(reps.map((rep) => rep.format))],
+    formats: [...new Set(reps.map((rep) => rep.format))].slice(0, 32),
   };
 }
 

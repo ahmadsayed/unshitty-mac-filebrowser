@@ -8,7 +8,7 @@
 
 import type { Entry, RepresentationInfo } from "./api";
 import { entryIcon, sym } from "./icons";
-import { defaultChoice, fileSubtitle, formatRowLabel, formatsAcross, staleReason, type AssetFiles, type CopyChoice, type FileChoice } from "./representations";
+import { defaultChoice, fileSubtitle, formatCounts, formatRowLabel, formatsOfFiles, staleReason, type AssetFiles, type AssetFormats, type CopyChoice, type FileChoice } from "./representations";
 import { applyToAllRow, openDialog, openMenu, type DialogHandle } from "./ui";
 
 /** A row of the boxed list: the file kind's icon, a title, a subtitle and,
@@ -265,14 +265,59 @@ function checkBox(checked: boolean): HTMLInputElement {
   return box;
 }
 
+/** Which files a copy out takes (spec F9): one asset by its files, several
+ *  by their full lists' formats (`chooseFormatsToCopy`). */
+export function chooseFilesToCopy(assets: readonly AssetFiles[], iconOf: (asset: { name: string }) => Entry): Promise<CopyChoice | null> {
+  return assets.length === 1 ? askWhichFiles({ one: assets[0] }, iconOf) : chooseFormatsToCopy(assets.map(formatsOfFiles), iconOf);
+}
+
+/**
+ * Which files a copy out of several assets takes, by their formats: the
+ * Models row and a row per format (spec F9). The formats come from the
+ * full lists or from the listing's summaries (performance plan, phase 4:
+ * the same rows). When `withdrawn` settles first, the dialog closes and
+ * the answer is null, as for Cancel.
+ */
+export function chooseFormatsToCopy(
+  assets: readonly AssetFormats[], iconOf: (asset: { name: string }) => Entry, withdrawn?: Promise<unknown>,
+): Promise<CopyChoice | null> {
+  return askWhichFiles({ several: assets }, iconOf, withdrawn);
+}
+
+/** The rows of the copy dialog: one asset's model and files, or several
+ *  assets' Models and formats; the check boxes after the model's, in order. */
+function copyRows(asked: { one: AssetFiles } | { several: readonly AssetFormats[] }, iconOf: (asset: { name: string }) => Entry, list: HTMLElement, model: HTMLInputElement): HTMLInputElement[] {
+  const rows: HTMLInputElement[] = [];
+  if ("one" in asked) {
+    const one = asked.one;
+    list.appendChild(fileRow(iconOf(one), one.name, "Model", null, model));
+    for (const rep of one.files) {
+      const box = checkBox(false);
+      list.appendChild(fileRow(iconEntry(rep.name), rep.name, fileSubtitle(rep), rep.stale ? staleReason(rep, one.files) : null, box));
+      rows.push(box);
+    }
+    return rows;
+  }
+  list.appendChild(fileRow(iconOf(asked.several[0]), "Models", "", null, model));
+  for (const { format, assets: n } of formatCounts(asked.several)) {
+    const box = checkBox(false);
+    box.dataset.format = format;
+    list.appendChild(fileRow(iconEntry(`x.${format}`), formatRowLabel(format, n), "", null, box));
+    rows.push(box);
+  }
+  return rows;
+}
+
 /** Copy Which Files of “Box.gltf”? (one asset: a row per file) or Copy
  *  Which Files? (several: Models and a row per format, applied to each),
  *  with All Files above, checked when every row is, mixed when some are.
  *  Copy is insensitive while nothing is checked. Resolves with the
- *  choice, or null on Cancel or Escape. */
-export function chooseFilesToCopy(assets: readonly AssetFiles[], iconOf: (asset: AssetFiles) => Entry): Promise<CopyChoice | null> {
+ *  choice, or null on Cancel or Escape (or once `withdrawn` settles). */
+function askWhichFiles(
+  asked: { one: AssetFiles } | { several: readonly AssetFormats[] }, iconOf: (asset: { name: string }) => Entry, withdrawn?: Promise<unknown>,
+): Promise<CopyChoice | null> {
   return new Promise((resolve) => {
-    const one = assets.length === 1 ? assets[0] : null;
+    const one = "one" in asked ? asked.one : null;
     const extra = document.createElement("div");
     extra.className = "files-page";
     const list = boxedList("Files");
@@ -280,23 +325,7 @@ export function chooseFilesToCopy(assets: readonly AssetFiles[], iconOf: (asset:
     list.appendChild(fileRow(null, "All Files", "", null, all));
     all.closest("label")!.classList.add("all-files-row");
     const model = checkBox(true);
-    const rows: HTMLInputElement[] = [model];
-    if (one) {
-      list.appendChild(fileRow(iconOf(one), one.name, "Model", null, model));
-      for (const rep of one.files) {
-        const box = checkBox(false);
-        list.appendChild(fileRow(iconEntry(rep.name), rep.name, fileSubtitle(rep), rep.stale ? staleReason(rep, one.files) : null, box));
-        rows.push(box);
-      }
-    } else {
-      list.appendChild(fileRow(iconOf(assets[0]), "Models", "", null, model));
-      for (const { format, assets: n } of formatsAcross(assets)) {
-        const box = checkBox(false);
-        box.dataset.format = format;
-        list.appendChild(fileRow(iconEntry(`x.${format}`), formatRowLabel(format, n), "", null, box));
-        rows.push(box);
-      }
-    }
+    const rows: HTMLInputElement[] = [model, ...copyRows(asked, iconOf, list, model)];
     extra.appendChild(list);
     let dialog: DialogHandle | undefined;
     const sync = () => {
@@ -311,6 +340,7 @@ export function chooseFilesToCopy(assets: readonly AssetFiles[], iconOf: (asset:
       sync();
     });
     for (const box of rows) box.addEventListener("change", sync);
+    let answered = false;
     dialog = openDialog({
       heading: one ? `Copy Which Files of “${one.name}”?` : "Copy Which Files?",
       className: "files-dialog",
@@ -322,6 +352,7 @@ export function chooseFilesToCopy(assets: readonly AssetFiles[], iconOf: (asset:
       defaultResponse: "copy",
       closeResponse: "cancel",
       onResponse: (id) => {
+        answered = true;
         if (id !== "copy") return resolve(null);
         const chosen = rows.slice(1).filter((box) => box.checked);
         resolve(
@@ -332,5 +363,12 @@ export function chooseFilesToCopy(assets: readonly AssetFiles[], iconOf: (asset:
       },
     });
     sync();
+    const withdraw = () => {
+      if (answered) return;
+      answered = true;
+      dialog?.close();
+      resolve(null);
+    };
+    withdrawn?.then(withdraw, withdraw);
   });
 }

@@ -23,6 +23,7 @@
 // inside a moved folder with the folder's part swapped: nothing is guessed.
 // No DOM here: main.ts keeps the state, and saves and redraws in `set`.
 
+import type { RepresentationsSummary } from "./api";
 import { isWithin } from "./paths";
 
 /** An item the backend moved or renamed from `from` to `to`. */
@@ -66,6 +67,19 @@ export interface Clip {
   paths: string[];
   dirs: Set<string>;
   mode: "copy" | "cut";
+  /** What the listing said of each copied Arbesk asset's other files, so
+   *  a paste elsewhere plans the copy out from it while that listing is
+   *  still current (performance plan, phase 4). Arbesk assets never move. */
+  summaries?: KeptSummaries;
+}
+
+/** The copied Arbesk assets' summaries of their other files (undefined for
+ *  none), and where main.ts's write count stood when their listing started:
+ *  a write of this app into their collection since, or the window left and
+ *  back, makes them unknown. */
+export interface KeptSummaries {
+  listed: number;
+  byPath: ReadonlyMap<string, RepresentationsSummary | undefined>;
 }
 
 /** Where Back and Forward go. */

@@ -319,6 +319,101 @@ says no asset has other files.
 **Gain.** Copy-out of 200 assets with no files: about 15 s of planning
 becomes none. Paste of 200 files into 5,000 assets: 200 listings become 1.
 
+**As built.**
+- `memo.rs`: `TokenMemo`, one per `Client`, held by its `Limiter`
+  (`Limiter::tokens`): the CID `tokenURI` answered per (RPC, contract,
+  token), kept `KEPT` = 5 s (one operation's calls fit in it, and a save
+  made in the Studio shows within seconds without a Reload), at most
+  `MAX_TOKENS` = 256 (stale ones first, then the oldest, go). Callers of
+  one token at once share one call (`Limiter::shared`, keyed with the
+  memo's generation, so nobody after a clear joins a read from before
+  it); a failure is never kept. Reads reach it through the `Limited`
+  `Http` they are handed (`Reader::token_cid`, used by
+  `collection_manifest` and a link's collection): writes, and attach's
+  planning, read through the bare client and never see it, so
+  `collection_manifest_with_cid`, what compare-and-swap uses, still reads
+  `tokenURI` under the collection hold. Cleared (`Client::forget_tokens`)
+  after every write returns, whatever its outcome (save, Replace, attach,
+  detach, New Collection, and Share though it moves only the editor
+  list), and before every listing: the backend can't tell Reload from
+  navigation, and clearing more is always safe. A read that started
+  before a clear answers its caller but is not kept. The preview's scene
+  and its saves now usually read the same head; when they don't, phase
+  1's rule holds (the preview pins the CID the scene answered).
+- `Client::exists` is a names-only read (`service::lists_name`: the
+  collection's names through `Reader::listed_names`, its `tokenURI` read
+  afresh as the listing did; no rows, no thumbnail bookkeeping).
+- A listing stands in for asking the backend only while it is current
+  (`main.ts`: `wroteIn`, `windowReturned`, `unchangedSince`,
+  `viewAnswersFor`). A count goes up with each write of this app into a
+  folder (each item landed, `showLanded`; attach and remove, also when
+  they fail, as a late Cancel may have written; rename; Move to Trash)
+  and each time the window comes back (another app, or another window of
+  this one, may have written anywhere; the view reloads then too), and
+  with each drop from another app (`dropFromOtherApp`: a drop onto a
+  background window does not focus it on macOS or under Mutter). The
+  view's listing and the clipboard's summaries keep the count from when
+  their listing started; a write into their collection since, or a
+  return of the window, makes them unknown.
+- `transferBatch` asks `takenNamesIn(destDir)` once per batch: for an
+  Arbesk collection, the view's names when it is the folder on screen
+  (listed without an error, and current), else one `list_dir`, with each
+  name the paste lands added; the clash check and Keep Both's free name
+  ask it. Elsewhere, and when that listing fails, `path_exists` as before.
+  Names compare exactly, as `Client::exists` does. Each batch ends by
+  reloading the view, so a paste queued behind another finds its names
+  there; the count covers a reload that did not run or land first (one
+  put off by a drag in the view, a navigation's listing that started
+  before the landing).
+- Copy keeps each copied asset's listing summary with the clipboard
+  (`Clip.summaries`: `KeptSummaries`, the summaries of the assets the
+  view's listing holds and that listing's count; a search result's is not
+  kept). With every asset's summary known and current (`knownSummaries`:
+  the folder on screen's first, else the clipboard's), `planArbeskCopy`
+  asks `askFromSummaries`: no asset with files, no read and no question;
+  one asset with files, its list read, then asked as before (the dialog
+  shows each file and pins to its CID); several, the dialog built at once
+  from the summaries' formats (`formatCounts`, the rows the full lists'
+  `formatsOfFiles` give) while the lists of the assets with files are
+  read, 4 at a time, and once the choice is made an asset it takes no
+  format of (`choiceTakesFrom`) is no longer read; Cancel stops every
+  read not yet started. A summary naming 32 formats (`mayOmitFormats`:
+  the backend's summary stops at `MAX_REPRESENTATIONS`, a list another
+  client stored may hold more; the mock's now stops there too) can't
+  build the rows. Otherwise (`askFromLists`) every list is read first, as
+  before.
+- Correction to *Change* above: the lists are not read only after the
+  choice. They start at once beside the dialog, so that a failed read or
+  a cancelled row still ends the paste with the same words and no
+  question, as the existing tests (`tests/arbesk-copy-out-files.test.ts`)
+  pin: a failed read, or reads ending cancelled, withdraw the dialog
+  (`chooseFormatsToCopy`'s `withdrawn`). What waits for the choice is the
+  question itself and the reads not yet started. What is copied is still
+  what the lists say now, pinned; every asset takes part in `copySources`
+  (one not read with no files), so Models applies to each.
+- No new command, so no new mock; the dialog looks as before (before and
+  after screenshots of the one-asset dialog are identical).
+- Tests: `memo`'s own (kept then read again, per contract and token, a
+  clear, failures not kept, a read from before a clear not kept, one read
+  for callers at once, the cap) and the client's
+  `repeated_calls_for_one_collection_read_its_token_once`,
+  `a_scenes_links_to_one_collection_read_its_token_once`,
+  `a_listing_and_a_name_check_read_the_token_afresh` and
+  `a_write_reads_the_token_itself_and_clears_the_memo`;
+  `tests/arbesk-paste-names.test.ts` (no `path_exists` for a paste into a
+  collection, one listing for a drop on one not on screen, Replace, Skip
+  and Keep Both as before, a name landed earlier in the paste caught, and
+  a paste made while the view hasn't caught up with an earlier one's
+  names still asked);
+  `tests/arbesk-copy-out-summaries.test.ts` (no read for assets without
+  files, the question from the summaries while the lists are read,
+  assets the choice takes nothing from not read, Models unchecked, the
+  same rows from summaries as from lists, a file this app attached after
+  the Copy still offered, one another app attached offered once the
+  window is back, Cancel stopping the reads not started, a 33-format
+  asset read first), cases in `tests/representations.test.ts` and the
+  mock's 32-format summary in `tests/mock-core.test.ts`.
+
 ## Phase 5: copy several assets out at once
 
 **Now.** Copy-out runs one asset at a time (`transferBatch`,

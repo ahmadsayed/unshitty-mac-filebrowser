@@ -51,6 +51,24 @@ pub fn list(
     }
 }
 
+/// Whether collection `token_id` lists an asset named `name` (a pending
+/// name's check, `Client::exists`): only its names, as a listing names
+/// them, its `tokenURI` read afresh; no rows are made and no thumbnails
+/// kept (performance plan, phase 4). As a listing, a row that can't be
+/// read is left out and an unreachable chain or storage fails.
+pub fn lists_name(
+    http: &dyn Http,
+    site: &Site,
+    token_id: &str,
+    name: &str,
+    cache_dir: &Path,
+) -> Result<bool, String> {
+    let reader = Reader::open(http, site, cache_dir)?;
+    let (_, collection) = reader.collection_manifest_with_cid(token_id)?;
+    let names = reader.listed_names(&collection)?;
+    Ok(names.iter().any(|(_, _, listed)| listed == name))
+}
+
 /// The thumbnail the asset at `path` was saved with, as PNG at most `size`
 /// pixels square. `None` when it has none, the picture can't be read, or
 /// `stop` says the view no longer wants it: the view keeps the file's icon,
@@ -824,8 +842,19 @@ impl Reader<'_> {
         if let Some(contract) = collection["contractAddress"].as_str() {
             chain.contract = contract.to_string();
         }
-        self.gateway
-            .json(&chain::token_uri(self.http, &chain, &token)?)
+        self.gateway.json(&self.token_cid(&chain, &token)?)
+    }
+
+    /// The CID collection `token_id` of `chain` points at: through the
+    /// client's `tokenURI` memo when this reader's `Http` carries one (a
+    /// read's, performance plan, phase 4), else read afresh (a write's,
+    /// and its planning's: they never trust the memo).
+    fn token_cid(&self, chain: &ChainConfig, token_id: &str) -> Result<String, String> {
+        let read = || chain::token_uri(self.http, chain, token_id);
+        match self.http.limits() {
+            Some(limits) => limits.limiter.tokens.cid(limits, chain, token_id, read),
+            None => read(),
+        }
     }
 }
 
@@ -924,12 +953,15 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// The manifest collection `token_id` points at, its `tokenURI` through
+    /// the memo when this reader has one ([`Reader::token_cid`]).
     fn collection_manifest(&self, token_id: &str) -> Result<Value, String> {
-        Ok(self.collection_manifest_with_cid(token_id)?.1)
+        self.gateway.json(&self.token_cid(&self.chain, token_id)?)
     }
 
     /// The CID collection `token_id` points at now (its `tokenURI`, read
-    /// afresh) and the manifest there.
+    /// afresh, never from the memo: what writes compare and swap on) and
+    /// the manifest there.
     pub(crate) fn collection_manifest_with_cid(
         &self,
         token_id: &str,

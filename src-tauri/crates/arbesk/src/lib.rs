@@ -26,6 +26,7 @@ mod image;
 mod ipfs;
 mod limiter;
 mod location;
+mod memo;
 mod merkle;
 mod progress;
 mod provider;
@@ -201,8 +202,11 @@ impl Client {
     }
 
     /// `service::list` for the account `path` belongs to.
+    /// Every listing (Reload is one) reads its collections' `tokenURI`
+    /// afresh: the memo is forgotten first.
     pub fn list(&self, path: &str) -> Result<Vec<Entry>, String> {
         let site = self.reach(path)?;
+        self.forget_tokens();
         self.limited(&limiter::never, |http| {
             service::list(http, &site, path, &self.cache_dir, &self.thumbnails)
         })
@@ -463,6 +467,8 @@ impl Client {
             &self.cache_dir,
             &self.locks,
         );
+        // A save or Replace moved the collection (or may still land).
+        self.forget_tokens();
         if added.as_ref().err().is_some_and(|error| error == write::SIGN_IN) {
             self.forget_session(&account);
         }
@@ -516,6 +522,8 @@ impl Client {
             write::SIGN_IN => sign_in.to_string(),
             _ => error,
         });
+        // An attach or detach moved the collection (or may still land).
+        self.forget_tokens();
         if done.as_ref().err().is_some_and(|error| error == sign_in) {
             self.forget_session(&account);
         }
@@ -548,6 +556,8 @@ impl Client {
             write::SIGN_IN => create::SIGN_IN.to_string(),
             _ => error,
         });
+        // A new collection's token now answers.
+        self.forget_tokens();
         if created
             .as_ref()
             .err()
@@ -586,20 +596,37 @@ impl Client {
             write::SIGN_IN => share::SIGN_IN.to_string(),
             _ => error,
         });
+        // A share moves the editor list, not `tokenURI`; forgotten all the
+        // same, as after every write.
+        self.forget_tokens();
         if shared.as_ref().err().is_some_and(|error| error == share::SIGN_IN) {
             self.forget_session(&account);
         }
         shared
     }
 
-    /// Whether the collection of the pending name `path` lists that name.
+    /// Whether the collection of the pending name `path` lists that name:
+    /// its names only (`service::lists_name`), no listing's rows or
+    /// thumbnails (performance plan, phase 4).
     pub fn exists(&self, path: &str) -> bool {
         let Ok((address, token_id, name)) = parse_target(path) else {
             return false;
         };
         let collection = location::collection_path(&address, &token_id, "");
-        self.list(&collection)
-            .is_ok_and(|entries| entries.iter().any(|entry| entry.name == name))
+        let Ok(site) = self.reach(&collection) else {
+            return false;
+        };
+        self.limited(&limiter::never, |http| {
+            service::lists_name(http, &site, &token_id, &name, &self.cache_dir)
+        })
+        .unwrap_or(false)
+    }
+
+    /// Forget the `tokenURI` memo (performance plan, phase 4): after this
+    /// app's own write, which may have moved a collection, and before a
+    /// listing, so Reload reads every collection afresh.
+    fn forget_tokens(&self) {
+        self.limiter.tokens.clear();
     }
 
     /// Drop the session of `path`'s account, after Arbesk refused it.
@@ -1194,5 +1221,135 @@ mod tests {
                 .is_empty()
         );
         assert!(state.thumbnail("arbesk://bad", 256, &|| false).is_empty());
+    }
+
+    /// How many `tokenURI` calls `http` has answered.
+    fn token_reads(http: &FakeHttp) -> usize {
+        http.requests()
+            .iter()
+            .filter(|request| request.url == "https://rpc.test")
+            .filter(|request| {
+                request.body.as_ref().and_then(|body| body["params"][0]["data"].as_str())
+                    .is_some_and(|data| data.starts_with("0xc87b56dd"))
+            })
+            .count()
+    }
+
+    /// A client over the fake Arbesk `world`, signed in with session "t".
+    fn signed_in(world: testing::World, dir: &std::path::Path) -> (Client, Arc<FakeHttp>, Arc<Mutex<testing::World>>) {
+        let world = Arc::new(Mutex::new(world));
+        world.lock().unwrap().sessions.insert("t".into());
+        let http = Arc::new(testing::arbesk(world.clone()));
+        let (state, sessions) = state_with_sessions(http.clone(), dir);
+        let account = lock(&state.accounts).connect("me@example.com", ADDRESS, &testing::site()).unwrap();
+        let kept = Session { token: "t".into(), expires_at_ms: signin::now_ms() + 3_600_000 };
+        sessions.save(&account.id, &kept).unwrap();
+        (state, http, world)
+    }
+
+    /// Performance plan, phase 4: an operation's calls for one collection
+    /// (the copy-out plan's assets, a preview's scene, saves and files)
+    /// share one `tokenURI` read; each before read it again.
+    #[test]
+    fn repeated_calls_for_one_collection_read_its_token_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, http, _) = signed_in(testing::world(), dir.path());
+        let shapes = testing::shapes();
+        for asset in ["a1~Box.gltf", "a2~Box.3mf", "a4~Odd"] {
+            assert!(state.representations(&format!("{shapes}/{asset}"), None).is_ok(), "{asset}");
+        }
+        assert_eq!(token_reads(&http), 1);
+        let box_ = format!("{shapes}/a1~Box.gltf");
+        let scene = state.scene(&box_, None).unwrap();
+        assert!(state.versions(&box_).is_ok());
+        assert!(state.properties(&box_).is_ok());
+        assert_eq!(state.representations(&box_, Some(&scene.cid)).unwrap(), []);
+        assert_eq!(token_reads(&http), 1);
+    }
+
+    /// A scene's links to one collection, and the scene's own collection,
+    /// cost one `tokenURI` read each, though the links are read together.
+    #[test]
+    fn a_scenes_links_to_one_collection_read_its_token_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, http, _) = signed_in(testing::world(), dir.path());
+        let table = format!("arbesk://{ADDRESS}/4~Rooms/t1~Table.gltf");
+        let scene = state.scene(&table, None).unwrap();
+        assert!(scene.parts.len() >= 2, "{:?}", scene.parts.len());
+        // Rooms, and Shapes through the links' own contract.
+        assert_eq!(token_reads(&http), 2);
+        assert!(state.versions(&table).is_ok());
+        assert_eq!(token_reads(&http), 2);
+    }
+
+    /// Reload (any listing) reads `tokenURI` afresh, and so does a pending
+    /// name's check; neither is answered from the memo.
+    #[test]
+    fn a_listing_and_a_name_check_read_the_token_afresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, http, world) = signed_in(testing::world(), dir.path());
+        let shapes = testing::shapes();
+        let box_ = format!("{shapes}/a1~Box.gltf");
+        assert!(state.representations(&box_, None).is_ok());
+        // Another app adds an asset: the memo still answers the old save.
+        {
+            let mut w = world.lock().unwrap();
+            let mut collection: serde_json::Value = serde_json::from_slice(&w.files["bafyC1"]).unwrap();
+            collection["assets"]["a9"] = serde_json::json!("bafyA1");
+            w.put("bafyC1b", collection);
+            w.tokens.insert("1".into(), "bafyC1b".into());
+        }
+        assert!(state.representations(&box_, None).is_ok());
+        assert_eq!(token_reads(&http), 1);
+        assert!(state.exists(&format!("{shapes}/~Box.gltf")));
+        assert_eq!(token_reads(&http), 2, "the name check reads afresh");
+        let listed = state.list(&shapes).unwrap();
+        assert_eq!(token_reads(&http), 3, "Reload reads afresh");
+        assert!(listed.iter().any(|entry| entry.path.contains("/a9~")), "{listed:?}");
+        // The listing's fresh answer serves the next calls.
+        assert!(state.representations(&box_, None).is_ok());
+        assert_eq!(token_reads(&http), 3);
+    }
+
+    /// A write never trusts the memo: its compare-and-swap reads
+    /// `tokenURI` under the collection hold and builds on a save another
+    /// app made meanwhile; and it clears the memo, so the next read sees
+    /// what it wrote.
+    #[test]
+    fn a_write_reads_the_token_itself_and_clears_the_memo() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, http, world) = signed_in(testing::world(), dir.path());
+        let shapes = testing::shapes();
+        let box_ = format!("{shapes}/a1~Box.gltf");
+        assert_eq!(state.representations(&box_, None).unwrap(), []);
+        {
+            let mut w = world.lock().unwrap();
+            let mut collection: serde_json::Value = serde_json::from_slice(&w.files["bafyC1"]).unwrap();
+            collection["assets"]["a9"] = serde_json::json!("bafyA2");
+            w.put("bafyC1b", collection);
+            w.tokens.insert("1".into(), "bafyC1b".into());
+        }
+        // Reads still have the memo's answer from before that save.
+        assert_eq!(state.representations(&box_, None).unwrap(), []);
+        assert_eq!(token_reads(&http), 1);
+        let before = token_reads(&http);
+        let file = dir.path().join("Box.stl");
+        std::fs::write(&file, b"solid").unwrap();
+        let adding = [Adding { path: file.to_string_lossy().into_owned(), choice: None }];
+        state.attach(&box_, &adding, &Progress::default()).unwrap();
+        assert!(token_reads(&http) > before, "the write read tokenURI itself");
+        let (tip, collection) = {
+            let w = world.lock().unwrap();
+            let tip = w.tokens["1"].clone();
+            let collection: serde_json::Value = serde_json::from_slice(&w.files[&tip]).unwrap();
+            (tip, collection)
+        };
+        assert_ne!(tip, "bafyC1b");
+        assert_eq!(collection["prev_asset_manifest_cid"], "bafyC1b", "built on the other app's save");
+        assert_eq!(collection["assets"]["a9"], "bafyA2");
+        let after = token_reads(&http);
+        let files = state.representations(&box_, None).unwrap();
+        assert_eq!(token_reads(&http), after + 1, "the write cleared the memo");
+        assert_eq!(files.len(), 1);
     }
 }

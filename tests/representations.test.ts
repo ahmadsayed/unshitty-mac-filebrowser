@@ -1,7 +1,7 @@
 // The words for an Arbesk asset's other files (src/representations.ts).
 import { expect, test } from "vitest";
 import type { RepresentationInfo } from "../src/api";
-import { assetFormat, copyNameAt, copySources, defaultChoice, fileSubtitle, formatLabel, formatRowLabel, formatsAcross, onlyChoice, openWithCandidates, profileText, staleReason, statsText, toolText, uniqueNames } from "../src/representations";
+import { assetFormat, choiceTakesFrom, copyNameAt, copySources, defaultChoice, fileSubtitle, formatCounts, formatLabel, formatRowLabel, formatsOfFiles, formatsOfSummary, mayOmitFormats, onlyChoice, openWithCandidates, profileText, staleReason, statsText, toolText, uniqueNames } from "../src/representations";
 import { filesEmblemOf, filesTitle } from "../src/icons";
 
 const rep = (over: Partial<RepresentationInfo>): RepresentationInfo => ({
@@ -73,7 +73,7 @@ test("copy out: rows per format, sources in order, Keep Both names within the pa
   expect(formatRowLabel("stl", 1)).toBe("STL (1 asset)");
   const box = { path: "a/box", name: "Box.gltf", files: [rep({ name: "Box.stl", path: "a/box/stl" })] };
   const bracket = { path: "a/br", name: "Bracket.gltf", files: [rep({ id: "gcode", format: "gcode", name: "B.gcode", path: "a/br/g" }), rep({ name: "B.stl", path: "a/br/stl" })] };
-  expect(formatsAcross([box, bracket])).toEqual([{ format: "stl", assets: 2 }, { format: "gcode", assets: 1 }]);
+  expect(formatCounts([box, bracket].map(formatsOfFiles))).toEqual([{ format: "stl", assets: 2 }, { format: "gcode", assets: 1 }]);
   expect(copySources([box, bracket], { model: true, formats: new Set(["stl"]) })).toEqual([
     { path: "a/box", name: "Box.gltf" }, { path: "a/box/stl", name: "Box.stl" }, { path: "a/br", name: "Bracket.gltf" }, { path: "a/br/stl", name: "B.stl" },
   ]);
@@ -86,4 +86,27 @@ test("copy out: rows per format, sources in order, Keep Both names within the pa
   expect(await uniqueNames(["A.stl", "A (copy).stl", "A.stl"], async () => false)).toEqual(["A.stl", "A (copy).stl", "A (copy 2).stl"]);
   // Ignoring case, as a macOS volume would: Box.STL and box.stl would be one file there.
   expect(await uniqueNames(["Box.STL", "box.stl", "BOX (COPY).stl"], async () => false)).toEqual(["Box.STL", "box (copy 2).stl", "BOX (COPY).stl"]);
+});
+
+test("copy out from summaries: the same rows, and which assets a choice reads (performance plan, phase 4)", () => {
+  const box = { path: "a/box", name: "Box.gltf", files: [rep({ name: "Box.stl", path: "a/box/stl" }), rep({ id: "stl2", name: "Box2.stl", path: "a/box/stl2" })] };
+  const bracket = { path: "a/br", name: "Bracket.gltf", files: [rep({ id: "gcode", format: "gcode", name: "B.gcode", path: "a/br/g" }), rep({ name: "B.stl", path: "a/br/stl" })] };
+  expect(formatsOfFiles(box)).toEqual({ path: "a/box", name: "Box.gltf", formats: ["stl"] });
+  const summaries = [
+    formatsOfSummary("a/box", "Box.gltf", { count: 2, stale: 0, formats: ["stl"] }),
+    formatsOfSummary("a/plain", "Plain.gltf", undefined),
+    formatsOfSummary("a/br", "Bracket.gltf", { count: 2, stale: 1, formats: ["gcode", "stl"] }),
+  ];
+  const plain = { path: "a/plain", name: "Plain.gltf", files: [] };
+  expect(formatCounts(summaries)).toEqual(formatCounts([box, plain, bracket].map(formatsOfFiles)));
+  const stl = { model: true, formats: new Set(["stl"]) };
+  expect(choiceTakesFrom({ count: 1, stale: 0, formats: ["gcode"] }, stl)).toBe(false);
+  expect(choiceTakesFrom({ count: 2, stale: 0, formats: ["gcode", "stl"] }, stl)).toBe(true);
+  expect(choiceTakesFrom(undefined, stl)).toBe(false);
+  expect(choiceTakesFrom({ count: 1, stale: 0, formats: ["stl"] }, { model: true, formats: new Set() })).toBe(false);
+  // A summary naming as many formats as it can hold may have left some out.
+  const formats = (n: number) => Array.from({ length: n }, (_, i) => `f${i}`);
+  expect(mayOmitFormats({ count: 31, stale: 0, formats: formats(31) })).toBe(false);
+  expect(mayOmitFormats({ count: 40, stale: 0, formats: formats(32) })).toBe(true);
+  expect(mayOmitFormats(undefined)).toBe(false);
 });
