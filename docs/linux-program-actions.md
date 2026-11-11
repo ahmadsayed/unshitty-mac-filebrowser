@@ -59,5 +59,5 @@ does not solve every remaining environment issue tracked by #38.
 The plain-Rust filesystem and command construction are tested, including
 filenames with spaces/punctuation and refused overwrites. A real Linux GNOME
 session must additionally verify launcher discovery, AppImage startup, terminal
-integration and AppImage-host environment compatibility. See the PR's linked
-`needs-verification` issue for the pending host checks.
+integration and AppImage-host environment compatibility. The PR's "Not
+verified" section lists the pending host checks.
