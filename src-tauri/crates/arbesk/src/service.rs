@@ -360,6 +360,54 @@ pub fn representations(
     Ok(representations::infos(&manifest))
 }
 
+/// What the Properties dialog shows of the asset at `path` (spec F7): its
+/// listed name, its collection as the parent, when it was saved and its
+/// version, when that is a whole number from 0 up (`version_of`, as besk
+/// numbers it); sizes, dates and permissions Arbesk doesn't keep are zeros
+/// and empty strings. Anything but an asset is refused.
+pub fn properties(
+    http: &dyn Http,
+    site: &Site,
+    path: &str,
+    cache_dir: &Path,
+) -> Result<places::FileProperties, String> {
+    let ArbeskPath::Asset {
+        token_id, asset_id, ..
+    } = parse(path)?
+    else {
+        return Err("Properties aren't available for Arbesk yet.".into());
+    };
+    let reader = Reader::open(http, site, cache_dir)?;
+    let (cid, manifest) = reader.asset_manifest(&token_id, &asset_id)?;
+    let name = reader.name_of(&manifest, &asset_id, &cid)?;
+    Ok(places::FileProperties {
+        name,
+        path: path.to_string(),
+        parent: path.rsplit_once('/').map_or("", |(parent, _)| parent).to_string(),
+        is_dir: false,
+        is_symlink: false,
+        symlink_target: None,
+        size: 0,
+        item_count: None,
+        modified: manifest["timestamp"].as_i64().map_or(0, |ms| ms / 1000),
+        accessed: 0,
+        created: 0,
+        mode: String::new(),
+        octal: String::new(),
+        owner: String::new(),
+        group: String::new(),
+        others: String::new(),
+        version: whole_version(&manifest),
+    })
+}
+
+/// `version_of` as the Properties dialog shows it: a whole number from 0
+/// up that fits a `u32`, else none (no Version row).
+fn whole_version(manifest: &Value) -> Option<u32> {
+    let version = representations::version_of(manifest);
+    (version.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&version)).then_some(version as u32)
+}
+
 /// Which of an asset's other files [`file`] fetches.
 pub struct Wanted<'a> {
     /// The asset's path.

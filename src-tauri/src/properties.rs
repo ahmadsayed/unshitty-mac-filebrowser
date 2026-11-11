@@ -141,6 +141,7 @@ pub fn file_properties(path: &str, show_hidden: bool) -> Result<FileProperties, 
         owner: access_label(mode_bits, 6, is_dir).to_string(),
         group: access_label(mode_bits, 3, is_dir).to_string(),
         others: access_label(mode_bits, 0, is_dir).to_string(),
+        version: None,
         mode,
     })
 }

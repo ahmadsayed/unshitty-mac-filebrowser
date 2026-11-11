@@ -248,6 +248,13 @@ impl Client {
         service::representations(http, &site, path, version, &self.cache_dir)
     }
 
+    /// What the Properties dialog shows of the asset at `path`
+    /// (`service::properties`, spec F7).
+    pub fn properties(&self, path: &str) -> Result<places::FileProperties, String> {
+        let (http, site) = self.reach(path)?;
+        service::properties(http, &site, path, &self.cache_dir)
+    }
+
     /// The asset at `path`'s other file `id` (at `version`, the current
     /// save without), decoded into the app cache (`service::file`).
     pub fn representation_file(

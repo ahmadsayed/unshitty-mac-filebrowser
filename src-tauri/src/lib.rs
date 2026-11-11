@@ -764,11 +764,15 @@ fn path_infos(registry: &places::Registry, paths: &[String], cx: &places::Cx) ->
     registry.answer_each(paths, |provider, batch| provider.path_info(batch, cx))
 }
 
-/// Why the Properties dialog can't describe `path` yet, if it can't.
+/// Why the Properties dialog can't describe `path` yet, if it can't: of
+/// Arbesk, only an asset is described (spec F7).
 fn properties_refusal(path: &str) -> Result<(), String> {
     match place::kind(path) {
         Kind::Sftp => Err("Properties aren't available for SSH servers yet.".into()),
-        Kind::Arbesk => Err("Properties aren't available for Arbesk yet.".into()),
+        Kind::Arbesk => match arbesk::parse(path) {
+            Ok(arbesk::Location::Asset { .. }) => Ok(()),
+            _ => Err("Properties aren't available for Arbesk yet.".into()),
+        },
         Kind::Share => Err("Properties aren't available for shared folders yet.".into()),
         Kind::Drive => Ok(()),
         Kind::Local => place::local(path).map(|_| ()),
@@ -783,6 +787,13 @@ async fn file_properties(
     show_hidden: bool,
 ) -> Result<properties::FileProperties, String> {
     properties_refusal(&path)?;
+    if place::kind(&path) == Kind::Arbesk {
+        return blocking(move || {
+            let registry = app.state::<places::Registry>();
+            arbesk_properties(&registry, &path)
+        })
+        .await?;
+    }
     if place::kind(&path) == Kind::Drive {
         return blocking(move || {
             let state = app.state::<CloudState>();
@@ -791,6 +802,16 @@ async fn file_properties(
         .await?;
     }
     blocking(move || properties::file_properties(&path, show_hidden)).await?
+}
+
+/// An Arbesk asset's Properties, from its provider's extension.
+fn arbesk_properties(registry: &places::Registry, path: &str) -> Result<properties::FileProperties, String> {
+    let described = registry
+        .provider_for(path)
+        .extensions()
+        .properties
+        .ok_or_else(|| "Properties aren't available for Arbesk yet.".to_string())?;
+    described.properties(path).map_err(String::from)
 }
 
 /// Recursive size of a folder, shown after the Properties dialog is open.
@@ -2544,6 +2565,22 @@ mod properties_tests {
         assert_eq!(properties_refusal("/home/me/a.txt"), Ok(()));
         assert_eq!(properties_refusal("gdrive://acct/root~My%20Drive"), Ok(()));
         assert_eq!(properties_refusal("a.txt").unwrap_err(), "“a.txt” is not a local file.");
+    }
+
+    #[test]
+    fn of_arbesk_only_an_asset_has_properties() {
+        let account = format!("arbesk://0x{}", "ab".repeat(20));
+        let collection = format!("{account}/1~Shapes");
+        let asset = format!("{collection}/box~Box.gltf");
+        let file = format!("{asset}/stl~Box.stl");
+        assert_eq!(properties_refusal(&asset), Ok(()));
+        for path in [account.as_str(), &collection, &file, "arbesk://"] {
+            assert_eq!(
+                properties_refusal(path).unwrap_err(),
+                "Properties aren't available for Arbesk yet.",
+                "{path}"
+            );
+        }
     }
 }
 

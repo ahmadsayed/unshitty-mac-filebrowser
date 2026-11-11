@@ -436,7 +436,7 @@ pub trait Transfer {
 pub mod ext {
     use std::path::PathBuf;
 
-    use crate::{Cx, Json, Result, Shared, SignIn, Version};
+    use crate::{Cx, FileProperties, Json, Result, Shared, SignIn, Version};
 
     /// Thumbnails of items (`thumbnail`'s per-kind arms).
     pub trait Thumbnails: Send + Sync {
@@ -448,8 +448,13 @@ pub mod ext {
     }
 
     /// What the Properties dialog shows, and a folder's total size
-    /// (`file_properties`, `folder_size`).
-    pub trait Properties: Send + Sync {}
+    /// (`file_properties`, `folder_size`). Only a place whose items this
+    /// computer's and Drive's module don't describe fills it (Arbesk's
+    /// assets, spec F7); folder sizes stay with their command.
+    pub trait Properties: Send + Sync {
+        /// What the Properties dialog shows of the item at `path`.
+        fn properties(&self, path: &str) -> Result<FileProperties>;
+    }
 
     /// Item counts and version badges of folders, for the view
     /// (`item_counts`).
