@@ -3,6 +3,8 @@
 //! `arbesk_part` is registered under its window and ticket with the
 //! `Progress` its fetch listens to, so `cancel_arbesk_parts` stops it
 //! whether it waits for a read permit of Arbesk's limiter or is reading.
+//! A copy out's builds ahead (`arbesk_prefetch`, phase 5) take tickets
+//! here too, from the same frontend counter, so the same cancel stops them.
 //!
 //! `arbesk_part` is async: its ticket is registered when the runtime first
 //! runs it, while `cancel_arbesk_parts` runs at once, so a cancel can come

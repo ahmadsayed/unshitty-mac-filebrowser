@@ -1352,4 +1352,209 @@ mod tests {
         assert_eq!(token_reads(&http), after + 1, "the write cleared the memo");
         assert_eq!(files.len(), 1);
     }
+
+    // -- A copy out's builds ahead (performance plan, phase 5) ----------
+
+    /// The fake Arbesk with "Six" (token 8): six glTF assets of four
+    /// 100-byte parts each. Part reads take `DELAY`, are counted by CID,
+    /// in flight (`peak`) and by the bytes on their way (`bytes_peak`); a
+    /// part read while `held` waits for `release`.
+    struct Six {
+        reads: Mutex<HashMap<String, usize>>,
+        running: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+        bytes: std::sync::atomic::AtomicU64,
+        bytes_peak: std::sync::atomic::AtomicU64,
+        held: Mutex<bool>,
+        released: std::sync::Condvar,
+    }
+
+    const SIX_PART: u64 = 100;
+
+    impl Six {
+        fn new() -> Arc<Self> {
+            Arc::new(Six {
+                reads: Mutex::default(),
+                running: Default::default(),
+                peak: Default::default(),
+                bytes: Default::default(),
+                bytes_peak: Default::default(),
+                held: Mutex::new(false),
+                released: std::sync::Condvar::new(),
+            })
+        }
+
+        fn path(i: usize) -> String {
+            format!("arbesk://{ADDRESS}/8~Six/s{i}~Six{i}.gltf")
+        }
+
+        /// The world and the client over it, its gateway watched by `six`.
+        fn client(six: &Arc<Self>, dir: &std::path::Path) -> Client {
+            let mut w = testing::world();
+            let mut assets = serde_json::Map::new();
+            for i in 0..6 {
+                let buffers: Vec<serde_json::Value> = (0..4)
+                    .map(|j| {
+                        w.files.insert(format!("bafyS{i}p{j}"), vec![(i * 4 + j) as u8; SIX_PART as usize]);
+                        serde_json::json!({ "uri": format!("ipfs://bafyS{i}p{j}"), "byteLength": SIX_PART })
+                    })
+                    .collect();
+                w.put(&format!("bafySrcS{i}"), serde_json::json!({ "asset": { "version": "2.0" }, "buffers": buffers }));
+                w.put_asset_with_format(&format!("bafyS{i}"), Some(&format!("Six{i}")), &format!("bafySrcS{i}"), "gltf");
+                assets.insert(format!("s{i}"), serde_json::json!(format!("bafyS{i}")));
+            }
+            w.put("bafyC8", serde_json::json!({ "type": "collection", "name": "Six", "assets": assets }));
+            w.tokens.insert("8".into(), "bafyC8".into());
+            let inner = testing::arbesk(Arc::new(Mutex::new(w)));
+            let six = six.clone();
+            let http = FakeHttp::new(move |request| {
+                let part = request.url.strip_prefix("https://gw.test/ipfs/").filter(|cid| {
+                    cid.strip_prefix("bafyS").is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()) && rest.contains('p'))
+                });
+                match (request.method, part) {
+                    ("GET", Some(cid)) => six.part(cid, || inner.get(&request.url)),
+                    ("GET", None) => inner.get(&request.url),
+                    _ => inner.post_json(&request.url, request.body.as_ref().unwrap_or(&serde_json::Value::Null), request.session.as_deref()),
+                }
+            });
+            connected(Arc::new(http), dir)
+        }
+
+        fn part<R>(&self, cid: &str, read: impl FnOnce() -> R) -> R {
+            use std::sync::atomic::Ordering::SeqCst;
+            *lock(&self.reads).entry(cid.to_string()).or_default() += 1;
+            let now = self.running.fetch_add(1, SeqCst) + 1;
+            self.peak.fetch_max(now, SeqCst);
+            let on_way = self.bytes.fetch_add(SIX_PART, SeqCst) + SIX_PART;
+            self.bytes_peak.fetch_max(on_way, SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let mut held = lock(&self.held);
+            while *held {
+                held = self.released.wait(held).unwrap();
+            }
+            drop(held);
+            let answer = read();
+            self.bytes.fetch_sub(SIX_PART, SeqCst);
+            self.running.fetch_sub(1, SeqCst);
+            answer
+        }
+
+        fn hold(&self) {
+            *lock(&self.held) = true;
+        }
+
+        fn release(&self) {
+            *lock(&self.held) = false;
+            self.released.notify_all();
+        }
+
+        fn parts_read(&self) -> Vec<usize> {
+            lock(&self.reads).values().copied().collect()
+        }
+    }
+
+    /// Six assets copied out as the frontend's copy runs them: each placed
+    /// in turn (its build by `export`, the copy's own), the four after it
+    /// built ahead meanwhile by the same `export`. The builds overlap
+    /// within the limiter's reads; each placement gets the very file built
+    /// ahead (one cache key), and no part is read twice.
+    #[test]
+    fn builds_ahead_overlap_and_the_copy_takes_what_they_built() {
+        let dir = tempfile::tempdir().unwrap();
+        let six = Six::new();
+        let client = Six::client(&six, dir.path());
+        let placed: Vec<PathBuf> = std::thread::scope(|scope| {
+            let mut ahead = Vec::new();
+            let mut placed = Vec::new();
+            for i in 0..6 {
+                while ahead.len() < (i + 4).min(5) {
+                    let (client, j) = (&client, ahead.len() + 1);
+                    ahead.push(scope.spawn(move || client.export(&Six::path(j), &Progress::default())));
+                }
+                placed.push(client.export(&Six::path(i), &Progress::default()).unwrap());
+            }
+            for (j, built) in ahead.into_iter().enumerate() {
+                assert_eq!(built.join().unwrap().unwrap(), placed[j + 1], "asset {}", j + 1);
+            }
+            placed
+        });
+        assert!(placed.iter().all(|file| file.is_file()));
+        let peak = six.peak.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(peak > 1, "{peak}: the builds ran together");
+        assert!(peak <= limiter::READS, "{peak} reads in flight at once");
+        let reads = six.parts_read();
+        assert_eq!(reads.len(), 24);
+        assert!(reads.iter().all(|&n| n == 1), "a part read twice: {reads:?}");
+        assert_eq!(client.limiter.holding(), 0);
+    }
+
+    /// A copy's own build of an asset already being built ahead waits for
+    /// that build and takes its file; a cancel stops that wait at once.
+    #[test]
+    fn a_copy_waits_for_its_build_ahead_and_a_cancel_stops_the_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let six = Six::new();
+        let client = Six::client(&six, dir.path());
+        six.hold();
+        std::thread::scope(|scope| {
+            let ahead = scope.spawn(|| client.export(&Six::path(0), &Progress::default()));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while six.running.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                assert!(std::time::Instant::now() < deadline, "the build ahead never read");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let cancelled = Progress::default();
+            let cancel = cancelled.clone();
+            scope.spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                cancel.cancel();
+            });
+            let started = std::time::Instant::now();
+            assert_eq!(client.export(&Six::path(0), &cancelled).unwrap_err(), CANCELLED);
+            assert!(started.elapsed() < std::time::Duration::from_secs(1), "{:?}", started.elapsed());
+            assert!(six.running.load(std::sync::atomic::Ordering::SeqCst) > 0, "the build ahead still runs");
+            let placing = scope.spawn(|| client.export(&Six::path(0), &Progress::default()));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            six.release();
+            assert_eq!(placing.join().unwrap().unwrap(), ahead.join().unwrap().unwrap());
+        });
+        assert!(six.parts_read().iter().all(|&n| n == 1));
+    }
+
+    /// The builds ahead and the one being placed share the limiter's byte
+    /// budget: with room for one part, the five builds never have more on
+    /// their way than one part each (each would have two at once alone),
+    /// against every read permit's worth without it.
+    #[test]
+    fn builds_ahead_share_the_byte_budget() {
+        let on_their_way = |budget: Option<u64>| {
+            let dir = tempfile::tempdir().unwrap();
+            let six = Six::new();
+            let mut client = Six::client(&six, dir.path());
+            if let Some(budget) = budget {
+                client.limiter = limiter::Limiter::default().with_held(budget);
+            }
+            let start = std::sync::Barrier::new(5);
+            std::thread::scope(|scope| {
+                let builds: Vec<_> = (0..5)
+                    .map(|i| {
+                        let (client, start) = (&client, &start);
+                        scope.spawn(move || {
+                            start.wait();
+                            client.export(&Six::path(i), &Progress::default())
+                        })
+                    })
+                    .collect();
+                for build in builds {
+                    assert!(build.join().unwrap().unwrap().is_file());
+                }
+            });
+            assert_eq!(client.limiter.holding(), 0, "every build gave its bytes back");
+            six.bytes_peak.load(std::sync::atomic::Ordering::SeqCst)
+        };
+        let budgeted = on_their_way(Some(SIX_PART));
+        assert!(budgeted <= 5 * SIX_PART, "{budgeted} bytes on their way at once");
+        let free = on_their_way(None);
+        assert!(free > 5 * SIX_PART, "{free}: without the budget more go at once");
+    }
 }

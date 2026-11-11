@@ -771,6 +771,34 @@ fn arbesk_exported(registry: &places::Registry, path: &str, cx: &places::Cx) -> 
         .map(|file: PathBuf| file.to_string_lossy().into_owned())
 }
 
+/// What a copy out of Arbesk will place, built into the app cache ahead of
+/// its turn (performance plan, phase 5): the asset's own `.gltf`/`.3mf`,
+/// or one of its other files (its pinned path), by the same
+/// `Transfer::export` the copy's own build runs (`exported_source`), so
+/// the copy then finds it there. It writes nothing outside the app cache,
+/// and its reads go through Arbesk's limiter and byte budget like any
+/// build. `ticket` names it for `cancel_arbesk_parts`, as a preview's part.
+/// A failure is the copy's to tell: it builds again at its turn.
+#[tauri::command]
+async fn arbesk_prefetch(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+    ticket: u64,
+) -> Result<(), String> {
+    let running = app.state::<part_tickets::PartTickets>().start(window.label(), ticket);
+    blocking(move || {
+        let cx = places_cx(&app, running.progress());
+        built_ahead(&app.state::<places::Registry>(), &path, &cx)
+    })
+    .await?
+}
+
+/// `arbesk_prefetch`'s work: Arbesk's own export, whatever `path` is.
+fn built_ahead(registry: &places::Registry, path: &str, cx: &places::Cx) -> Result<(), String> {
+    arbesk_exported(registry, path, cx).map(drop)
+}
+
 /// One part of an Arbesk asset's scene, as the preview loads it (a GLB or a
 /// 3MF), at most `limit` bytes. `ticket`, when given, names the fetch for
 /// `cancel_arbesk_parts` (performance plan, phase 3): a cancelled part
@@ -1893,8 +1921,9 @@ fn cancel_thumbnails(
     requests.cancel(window.label(), &tickets);
 }
 
-/// Cancel this window's Arbesk part fetches with these tickets: the
-/// preview that asked for them was closed or moved to another save.
+/// Cancel this window's Arbesk fetches with these tickets: a preview's
+/// parts (the preview was closed or moved to another save), or a copy
+/// out's builds ahead (`arbesk_prefetch`: the copy was cancelled or ended).
 #[tauri::command]
 fn cancel_arbesk_parts(
     window: tauri::WebviewWindow,
@@ -2601,6 +2630,7 @@ pub fn run() {
             arbesk_versions,
             arbesk_representations,
             arbesk_export,
+            arbesk_prefetch,
             arbesk_file,
             arbesk_attach_plan,
             arbesk_attach,
@@ -3366,6 +3396,14 @@ mod read_gate_tests {
         let unknown = "Connect this Arbesk account first.".to_string();
         let model = "/nonexistent-filebrowser-tests/Box.gltf";
         assert_eq!(exported_source(&registry, ASSET.into(), &cx), Err(unknown.clone()));
+        // A copy's build ahead (performance plan, phase 5) is that same
+        // export, in the same words; a path Arbesk can't read in Arbesk's.
+        assert_eq!(built_ahead(&registry, ASSET, &cx), Err(unknown.clone()));
+        assert_eq!(built_ahead(&registry, &format!("{ASSET}/stl@bafyStl~Box.stl"), &cx), Err(unknown.clone()));
+        assert_eq!(
+            built_ahead(&registry, "/Users/me/Box.gltf", &cx).unwrap_err(),
+            "“/Users/me/Box.gltf” is not an Arbesk location."
+        );
         // Open With's fetch (spec F8) asks Arbesk whatever the path: an
         // asset and an asset's other file in the client's words, a local
         // path in Arbesk's.
