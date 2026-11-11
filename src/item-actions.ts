@@ -60,9 +60,6 @@ const ARBESK_READ_ONLY: Verdict = "Arbesk is read only.";
 /** A rule over kinds: what an action is allowed in each. */
 type Grid = (kind: LocationKind) => Verdict;
 
-/** `cells` as a grid. */
-const table = (cells: Record<LocationKind, Verdict>): Grid => (kind) => cells[kind];
-
 /** A grid from a place's capability `flag` (allowed when it holds, refused
  *  quietly when not), with `views`' cells for the frontend's own views. */
 function byPlace(flag: keyof PlaceCapabilities, views: Record<ViewKind, Verdict>): Grid {
@@ -135,11 +132,36 @@ const RENAME_ITEM = byPlace("can_rename", {
 
 /** Properties, by each item's kind: the backend can't read shares or SSH
  *  servers yet. Properties is an extension, not a capability: no row
- *  answers it. */
+ *  answers it. Arbesk's cell answers an item whose path isn't known;
+ *  with its path, `propertiesOf` reads its row (spec F7). */
 const PROPERTIES_ITEM: Record<LocationKind, Verdict> = {
   folder: OK, drive: OK, trash: OK, "in-trash": OK,
   share: QUIET, sftp: QUIET, arbesk: QUIET,
   recent: QUIET, starred: QUIET, network: QUIET,
+};
+
+/** Of Arbesk's rows, only an asset has Properties (its version, its
+ *  files); an account, a collection and an asset's other file don't. */
+const ARBESK_PROPERTIES: Record<"arbesk-account" | "arbesk-collection" | "arbesk-asset" | "arbesk-file", Verdict> = {
+  "arbesk-asset": OK,
+  "arbesk-account": QUIET, "arbesk-collection": QUIET, "arbesk-file": QUIET,
+};
+
+/** Properties of the item of `kind` at `path`: by its Arbesk row, read
+ *  from its path as copy out reads it (the `arbesk` cell can't tell an
+ *  asset from a collection); every other kind by its cell. */
+function propertiesOf(kind: LocationKind, path: string | undefined): Verdict {
+  if (kind !== "arbesk" || path === undefined) return PROPERTIES_ITEM[kind];
+  return ARBESK_PROPERTIES[capabilityRow(kind, path) as keyof typeof ARBESK_PROPERTIES];
+}
+
+/** Properties: the first refusal among the items, each by `propertiesOf`. */
+const properties = (here: Here): Verdict => {
+  for (const [i, kind] of here.items.entries()) {
+    const verdict = propertiesOf(kind, here.paths?.[i]);
+    if (verdict !== OK) return verdict;
+  }
+  return OK;
 };
 
 /** The first refusal among the items, by `grid`. */
@@ -173,7 +195,7 @@ const RULES: Record<SharedAction, (here: Here) => Verdict> = {
   deletePermanently: (here) => DELETE_PERMANENTLY[here.kind],
   star: (here) => STAR[here.kind],
   bookmark: (here) => BOOKMARK[here.kind],
-  properties: (here) => firstItemVerdict(table(PROPERTIES_ITEM), here),
+  properties,
   // Only for an item shown away from its folder, and never in the Trash,
   // where Restore From Trash is the way back.
   openLocation: (here) =>

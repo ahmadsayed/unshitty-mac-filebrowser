@@ -1430,7 +1430,7 @@ test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend'
   const shapes = collections[0].path;
   expect(shapes).toBe(`${root}/1~Shapes`);
   const assets = await invoke<Row[]>("list_dir", { path: shapes, showHidden: false });
-  expect(assets.map((r) => [r.name, r.is_dir, r.size])).toEqual([["Box.gltf", false, 0], ["Box.3mf", false, 0], ["Big.gltf", false, 0]]);
+  expect(assets.map((r) => [r.name, r.is_dir, r.size])).toEqual([["Box.gltf", false, 0], ["Box.3mf", false, 0], ["Big.gltf", false, 0], ["Bracket.gltf", false, 0]]);
   const [gltf, threeMf, big] = assets.map((r) => r.path);
 
   expect(await invoke("open_target", { path: gltf, op: "" })).toEqual({ kind: "url", url: "https://promptscad.com/studio?asset=1&assetId=box-g" });
@@ -1446,7 +1446,11 @@ test("Arbesk: sign-in, accounts, listing, opening and previews, and the backend'
   expect((await invoke<ArrayBuffer>("thumbnail", { path: threeMf, size: 64 })).byteLength).toBe(0);
 
   await expect(invoke("make_dir", { path: `${shapes}/~New` })).rejects.toBe("Arbesk is read only.");
-  await expect(invoke("file_properties", { path: gltf, showHidden: false })).rejects.toBe("Properties aren't available for Arbesk yet.");
+  // Properties for an asset only (spec F7): its version, no sizes or permissions.
+  const props = await invoke<{ name: string; parent: string; size: number; owner: string; mode: string; version?: number }>("file_properties", { path: gltf, showHidden: false });
+  expect([props.name, props.parent, props.size, props.owner, props.mode, props.version]).toEqual(["Box.gltf", shapes, 0, "", "", 1]);
+  await expect(invoke("file_properties", { path: shapes, showHidden: false })).rejects.toBe("Properties aren't available for Arbesk yet.");
+  await expect(invoke("file_properties", { path: root, showHidden: false })).rejects.toBe("Properties aren't available for Arbesk yet.");
   await expect(invoke("preview_text", { path: gltf, limit: 10 })).rejects.toBe("This action is not available for Arbesk.");
 
   // A scene: its parts and placements, then each part's bytes; a key the scene doesn't hold is refused.
@@ -1604,6 +1608,8 @@ test("Arbesk: an asset's other files: the listing's summary, the list per save, 
   const shapes = await invoke<Row[]>("list_dir", { path: `${root}/1~Shapes`, showHidden: false });
   expect(shapes.map((r) => [r.name, r.representations])).toEqual([
     ["Box.gltf", { count: 1, stale: 0, formats: ["stl"] }], ["Box.3mf", undefined], ["Big.gltf", undefined],
+    // The spec's Bracket: its invalid entry left out, its G-code made from an earlier model.
+    ["Bracket.gltf", { count: 4, stale: 1, formats: ["blend", "stl", "gcode", "3mf"] }],
   ]);
   expect("representations" in shapes[1]).toBe(false);
   const untitled = await invoke<Row[]>("list_dir", { path: `${root}/2~Untitled%20Collection`, showHidden: false });

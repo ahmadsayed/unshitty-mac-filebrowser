@@ -1,4 +1,4 @@
-import { encodeCloudName, isUnder, placeOf, type Place } from "../../src/paths";
+import { encodeCloudName, isArbeskAsset, isUnder, placeOf, type Place } from "../../src/paths";
 import { fold } from "../../src/search";
 import { BUILT_IN_CAPABILITIES } from "../../src/capabilities";
 import { sample3mf, sampleGlb, sampleModelBytes } from "./models";
@@ -1652,6 +1652,9 @@ type MockAsset = {
   thumbnail?: boolean;
   /** How many times it was saved (one when not given): save N of a model is N copies, 50 apart. */
   saves?: { prefix: string; count: number };
+  /** The newest manifest's stored `version`, as any client may write it;
+   *  not given, it is numbered as besk numbers saves (one per save). */
+  version?: unknown;
   /** A scene's parts, each at the x offsets of its copies (tinted when a colour is given). */
   scene?: Array<{ key: string; format: "glb" | "3mf"; copies: Array<{ x: number; color?: string }> }>;
   /** Its other files, as Arbesk stores the entries (an invalid one
@@ -1689,7 +1692,29 @@ const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset
         representations: [mockRep("box-g", "stl", "mesh", "stl", "Box.stl", 684, { derived_from: { ref: "primary", cid: "bafy-box-g-v1" } })],
       },
       { id: "box-m", name: "Box", ext: "3mf" },
-      { id: "big", name: "Big", ext: "gltf", huge: true },
+      // Saved by a client that writes a fractional version: no Version row.
+      { id: "big", name: "Big", ext: "gltf", huge: true, version: 2.5 },
+      // The spec's Bracket: a source, a fresh STL, a G-code for an Original
+      // Prusa MK4 in PETG made from an earlier model (out of date), a 3MF,
+      // and an entry File Browser can't read (left out, but stored).
+      {
+        id: "bracket",
+        name: "Bracket",
+        ext: "gltf",
+        saves: { prefix: "bracket", count: 2 },
+        representations: [
+          mockRep("bracket", "source", "source", "blend", "Bracket.blend", 96_240),
+          mockRep("bracket", "stl", "mesh", "stl", "Bracket.stl", 5_684, { derived_from: { ref: "primary", cid: "bafy-bracket-v2" } }),
+          mockRep("bracket", "gcode-original-prusa-mk4-petg", "machine", "gcode", "Bracket_0.2mm_PETG_MK4.gcode", 1_204_118, {
+            derived_from: { ref: "primary", cid: "bafy-bracket-v1" },
+            tool: { name: "PrusaSlicer", version: "2.9.2" },
+            profile: { printer: "Original Prusa MK4", material: "PETG", layer_mm: 0.2, nozzle_mm: 0.4 },
+            stats: { print_time_s: 7380, filament_g: 38.5 },
+          }),
+          mockRep("bracket", "3mf", "mesh", "3mf", "Bracket.3mf", 2_204),
+          { id: "Print Plan", role: "plan", format: "json" },
+        ],
+      },
     ],
   },
   {
@@ -1719,10 +1744,13 @@ const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset
         ],
       },
       // A scene: two copies of one model, the second 50 to the right (the model is 40 wide) and red, and a 3MF part.
+      // Its manifest numbers it 5 though it has one save here: the Version
+      // row shows the manifest's number, not a count of saves.
       {
         id: "table",
         name: "Table",
         ext: "gltf",
+        version: 5,
         scene: [
           { key: "box-src", format: "glb", copies: [{ x: 0 }, { x: 50, color: "#ff0000" }] },
           { key: "box-3mf", format: "3mf", copies: [{ x: 0 }] },
@@ -1854,6 +1882,39 @@ function listArbesk(path: string): Entry[] {
   return collection.assets.map((a) => arbeskEntry(`${a.name}.${a.ext}`, `${base}/${arbeskSegment(a.id, `${a.name}.${a.ext}`)}`, false, a));
 }
 
+/** `version_of`: the newest manifest's `version` when it is a JSON number,
+ *  else 1 (an unset mock version is the save count, as besk numbers them). */
+function arbeskVersionOf(asset: MockAsset): number {
+  if (asset.version === undefined) return asset.saves?.count ?? 1;
+  return typeof asset.version === "number" ? asset.version : 1;
+}
+
+/** `whole_version`: the version shown, when whole, 0 or more and within a u32. */
+function arbeskWholeVersion(asset: MockAsset): number | undefined {
+  const version = arbeskVersionOf(asset);
+  return Number.isInteger(version) && version >= 0 && version <= 0xffff_ffff ? version : undefined;
+}
+
+/** `file_properties` for an Arbesk asset (spec F7): its name, collection,
+ *  save date and version (`whole_version`'s rule, left out when it has
+ *  none); anything else is refused. */
+function arbeskProperties(path: string) {
+  if (!isArbeskAsset(path)) {
+    arbeskIds(path);
+    throw "Properties aren't available for Arbesk yet.";
+  }
+  const asset = arbeskAsset(path);
+  const saves = arbeskVersions(path);
+  const version = arbeskWholeVersion(asset);
+  return {
+    name: `${asset.name}.${asset.ext}`, path, parent: path.slice(0, path.lastIndexOf("/")),
+    is_dir: false, is_symlink: false, symlink_target: null, size: 0, item_count: null,
+    modified: Math.floor(saves[saves.length - 1].timestamp / 1000), accessed: 0, created: 0,
+    mode: "", octal: "", owner: "", group: "", others: "",
+    ...(version === undefined ? {} : { version }),
+  };
+}
+
 function arbeskAsset(path: string): MockAsset {
   const { token, asset } = arbeskIds(path);
   const found = ARBESK_COLLECTIONS.find((c) => c.token === token)?.assets.find((a) => a.id === asset);
@@ -1916,6 +1977,19 @@ const arbeskSession = { signedIn: true, expireNext: false };
   /** The next write is refused as Arbesk refuses an expired session (401), which forgets it. */
   expireOnce() {
     arbeskSession.expireNext = true;
+  },
+  /** For tests of a virtualized view: a collection "Many" (token 9) of
+   *  `count` assets, every third without other files, one with a fresh
+   *  STL, one with an out-of-date one. Its path. */
+  addManyAssets(count: number): string {
+    const assets: MockAsset[] = Array.from({ length: count }, (_, i) => {
+      const id = `m${i}`;
+      const made = i % 3 === 2 ? "bafy-old" : `bafy-${id}-v1`;
+      const stl = mockRep(id, "stl", "mesh", "stl", `Part ${i}.stl`, 100, { derived_from: { ref: "primary", cid: made } });
+      return { id, name: `Part ${String(i).padStart(4, "0")}`, ext: "gltf", representations: i % 3 === 0 ? undefined : [stl] };
+    });
+    ARBESK_COLLECTIONS.push({ token: "9", name: "Many", assets });
+    return `arbesk://${ARBESK_MOCK_ADDRESS}/${arbeskSegment("9", "Many")}`;
   },
 };
 let arbeskAssetSeq = 0;
@@ -1985,6 +2059,8 @@ function arbeskAdd(a: Args): string {
   if (taken) {
     const saves = taken.saves ?? { prefix: taken.id, count: 1 };
     taken.saves = { ...saves, count: saves.count + 1 };
+    // `next_version`: one more than the stored version's number.
+    if (taken.version !== undefined) taken.version = arbeskVersionOf(taken) + 1;
     return `${dir}/${arbeskSegment(taken.id, name)}`;
   }
   const dot = name.lastIndexOf(".");
@@ -2465,7 +2541,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     const path = str(a, "path");
     if (placeOf(path) === "share") throw "Properties aren't available for shared folders yet.";
     if (placeOf(path) === "sftp") throw "Properties aren't available for SSH servers yet.";
-    if (placeOf(path) === "arbesk") throw "Properties aren't available for Arbesk yet.";
+    if (placeOf(path) === "arbesk") return arbeskProperties(path);
     return placeOf(path) === "drive" ? driveProperties(path) : fileProperties(localPath(path));
   },
   set_permissions: (a) => {

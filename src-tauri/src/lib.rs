@@ -764,11 +764,15 @@ fn path_infos(registry: &places::Registry, paths: &[String], cx: &places::Cx) ->
     registry.answer_each(paths, |provider, batch| provider.path_info(batch, cx))
 }
 
-/// Why the Properties dialog can't describe `path` yet, if it can't.
+/// Why the Properties dialog can't describe `path` yet, if it can't: of
+/// Arbesk, only an asset is described (spec F7).
 fn properties_refusal(path: &str) -> Result<(), String> {
     match place::kind(path) {
         Kind::Sftp => Err("Properties aren't available for SSH servers yet.".into()),
-        Kind::Arbesk => Err("Properties aren't available for Arbesk yet.".into()),
+        Kind::Arbesk => match arbesk::parse(path) {
+            Ok(arbesk::Location::Asset { .. }) => Ok(()),
+            _ => Err("Properties aren't available for Arbesk yet.".into()),
+        },
         Kind::Share => Err("Properties aren't available for shared folders yet.".into()),
         Kind::Drive => Ok(()),
         Kind::Local => place::local(path).map(|_| ()),
@@ -783,14 +787,27 @@ async fn file_properties(
     show_hidden: bool,
 ) -> Result<properties::FileProperties, String> {
     properties_refusal(&path)?;
-    if place::kind(&path) == Kind::Drive {
-        return blocking(move || {
-            let state = app.state::<CloudState>();
-            places_gdrive::service::file_properties(&state, &path, show_hidden)
-        })
-        .await?;
+    blocking(move || properties_in(&app, &path, show_hidden)).await?
+}
+
+/// `file_properties` once `path` is known to be describable: Arbesk asks
+/// its provider, Drive its server, and this computer its disk.
+fn properties_in(app: &tauri::AppHandle, path: &str, show_hidden: bool) -> Result<properties::FileProperties, String> {
+    match place::kind(path) {
+        Kind::Arbesk => arbesk_properties(&app.state::<places::Registry>(), path),
+        Kind::Drive => places_gdrive::service::file_properties(&app.state::<CloudState>(), path, show_hidden),
+        _ => properties::file_properties(path, show_hidden),
     }
-    blocking(move || properties::file_properties(&path, show_hidden)).await?
+}
+
+/// An Arbesk asset's Properties, from its provider's extension.
+fn arbesk_properties(registry: &places::Registry, path: &str) -> Result<properties::FileProperties, String> {
+    let described = registry
+        .provider_for(path)
+        .extensions()
+        .properties
+        .ok_or_else(|| "Properties aren't available for Arbesk yet.".to_string())?;
+    described.properties(path).map_err(String::from)
 }
 
 /// Recursive size of a folder, shown after the Properties dialog is open.
@@ -2544,6 +2561,102 @@ mod properties_tests {
         assert_eq!(properties_refusal("/home/me/a.txt"), Ok(()));
         assert_eq!(properties_refusal("gdrive://acct/root~My%20Drive"), Ok(()));
         assert_eq!(properties_refusal("a.txt").unwrap_err(), "“a.txt” is not a local file.");
+    }
+
+    #[test]
+    fn of_arbesk_only_an_asset_has_properties() {
+        let account = format!("arbesk://0x{}", "ab".repeat(20));
+        let collection = format!("{account}/1~Shapes");
+        let asset = format!("{collection}/box~Box.gltf");
+        let file = format!("{asset}/stl~Box.stl");
+        assert_eq!(properties_refusal(&asset), Ok(()));
+        for path in [account.as_str(), &collection, &file, "arbesk://"] {
+            assert_eq!(
+                properties_refusal(path).unwrap_err(),
+                "Properties aren't available for Arbesk yet.",
+                "{path}"
+            );
+        }
+    }
+
+    use super::arbesk_properties;
+    use places::{Cx, Entry, Fetch, Fetched, FileProperties, ListOptions, Provider, Registry, ext};
+    use std::sync::Arc;
+
+    /// A place answering every call as read only; Properties only when
+    /// `version` is given, for an asset with that version.
+    struct Place {
+        scheme: &'static str,
+        version: Option<Option<u32>>,
+    }
+
+    impl Provider for Place {
+        fn scheme(&self) -> &'static str {
+            self.scheme
+        }
+        fn list(&self, _: &str, _: &ListOptions, _: &Cx) -> places::Result<Vec<Entry>> {
+            Ok(Vec::new())
+        }
+        fn fetch(&self, _: &str, _: Fetch, _: &Cx) -> places::Result<Fetched> {
+            Err(places::Error::Unsupported("Not in tests.".into()))
+        }
+        places::read_only_place!("Read only.", "Not here.");
+        fn extensions(&self) -> places::Extensions<'_> {
+            places::Extensions {
+                properties: self.version.is_some().then_some(self as &dyn ext::Properties),
+                ..Default::default()
+            }
+        }
+    }
+
+    impl ext::Properties for Place {
+        fn properties(&self, path: &str) -> places::Result<FileProperties> {
+            let (parent, name) = path.rsplit_once('/').unwrap();
+            Ok(FileProperties {
+                name: name.split_once('~').unwrap().1.into(),
+                path: path.into(),
+                parent: parent.into(),
+                is_dir: false,
+                is_symlink: false,
+                symlink_target: None,
+                size: 0,
+                item_count: None,
+                modified: 1_762_000_000,
+                accessed: 0,
+                created: 0,
+                mode: String::new(),
+                octal: String::new(),
+                owner: String::new(),
+                group: String::new(),
+                others: String::new(),
+                version: self.version.flatten(),
+            })
+        }
+    }
+
+    fn with_arbesk(version: Option<Option<u32>>) -> Registry {
+        Registry::new(Arc::new(Place { scheme: "", version: None })).register(Arc::new(Place { scheme: "arbesk", version }))
+    }
+
+    /// `file_properties` for an Arbesk asset: the registry's Arbesk provider
+    /// answers it through its Properties extension, version included.
+    #[test]
+    fn an_arbesk_asset_s_properties_come_from_its_provider() {
+        let asset = format!("arbesk://0x{}/1~Shapes/box~Box.gltf", "ab".repeat(20));
+        for version in [Some(4), None] {
+            let props = arbesk_properties(&with_arbesk(Some(version)), &asset).unwrap();
+            assert_eq!((props.name.as_str(), props.version), ("Box.gltf", version));
+            assert_eq!(props.parent, format!("arbesk://0x{}/1~Shapes", "ab".repeat(20)));
+        }
+        // A provider without the extension is refused in Arbesk's words.
+        assert_eq!(
+            arbesk_properties(&with_arbesk(None), &asset).unwrap_err(),
+            "Properties aren't available for Arbesk yet."
+        );
+        // The app's own registry routes to the real Arbesk client's
+        // extension: with no account connected, its own refusal comes back.
+        let registry = crate::providers::testing::plain();
+        assert_eq!(arbesk_properties(&registry, &asset).unwrap_err(), "Connect this Arbesk account first.");
     }
 }
 

@@ -380,8 +380,12 @@ aren't available for Arbesk yet.* for an account or a collection.
 `places::FileProperties` gains `version: Option<u32>`
 (`skip_serializing_if`, so every other place's JSON is unchanged); Arbesk
 answers the name, the collection as `parent`, `modified` from the
-manifest's `timestamp`, `version` = `version_of` (F1) when it is a whole number from 0 up (else none, and no Version row), and
-zeros and empty strings for the rest.
+manifest's `timestamp`, `version` = `version_of` (F1) when it is a whole number from 0 up that fits a `u32` (else none, and no Version row), and
+zeros and empty strings for the rest. The dialog's Parent folder row
+shows the collection by name (`pathName` of `parent`), its `arbesk://`
+address only in the row's tooltip: an address means nothing to read, as
+Copy Location's absence already says (`parent` itself stays the path, as
+Drive's does).
 
 Frontend (`showProperties`, `main.ts:2975`): the `isCloud(info.path)` test
 becomes a rule from `locations.ts`, `hasLocalFileFacts(kind)`, a
@@ -425,8 +429,11 @@ lists, in a boxed list:
   `representations.ts:365`, plus the format in capitals for others), its
   size (`formatSize(bytes)`), the role's words (*Source*, *Mesh*, *For
   viewing*, *For the printer*, *Other*), the tool (*PrusaSlicer 2.9.2*),
-  the profile (*Original Prusa MK4, PETG, 0.2 mm layers, 0.4 mm nozzle*)
-  and stats (*2 h 3 min*, *38.5 g*) when present;
+  the profile (*Original Prusa MK4, PETG, 0.2 mm layers, 0.4 mm nozzle*:
+  besk's `printer`, `material`, `layer_mm`, `nozzle_mm`; other keys left
+  out) and stats (*2 h 3 min* from `print_time_s`, *38.5 g* from
+  `filament_g`; other keys left out, since asset-core leaves `stats`
+  free-form and besk names no keys) when present;
 - a stale row carries an *Out of date* tag in `--warning`, whose tooltip
   says what changed: *Made from an earlier version of the model* (ref
   `primary`) or *Made from an earlier “source”* (another ref), or *Made
@@ -874,6 +881,14 @@ those tests.) The mock serves:
   gains *PrusaSlicer*, *Blender* and *Text Editor*, which the
   `app_formats` table above refers to.
 
+For phase 2's view test the mock also has a test hook,
+`__mockArbesk.addManyAssets(count)`, which adds a collection *Many* of
+`count` assets (every third without files, one fresh, one out of date),
+so the 2,000-asset scroll test needs no fixture in every listing.
+Bracket is saved twice (its G-code made from the first save), and the
+mock's `file_properties` gives an asset the number of its saves as its
+version.
+
 Each new mock command gets its case in `tests/mock-core.test.ts`.
 
 ## Testing
@@ -954,6 +969,9 @@ file skipped writes nothing; CONFLICT's error with the asset unchanged; a
 failed upload; Sign In Again with the add words then carrying on; the
 emblem's count changes after an attach; Remove… busy until done, its
 confirmation and its sign-in words) and
+`tests/representations.test.ts` (phase 2: the format labels, the
+subtitle's parts, the out-of-date reasons, the emblem's state and tooltip
+from a summary) and
 `tests/preview-representations.test.ts` (the switcher per version, an STL
 previewed, a `.blend` on the file page, the earlier version's file opened
 after its id was replaced, the version menu's change text and none for an

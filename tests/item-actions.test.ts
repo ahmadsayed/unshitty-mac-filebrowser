@@ -97,6 +97,24 @@ test("copy takes an Arbesk asset out; cut never does, and a collection stays", (
   }
 });
 
+test("properties: of Arbesk's rows only an asset, read from its path (spec F7)", () => {
+  const account = "arbesk://0x00000000000000000000000000000000000000ab";
+  const of = (path: string): Here => ({ kind: "arbesk", items: ["arbesk"], paths: [path] });
+  // prettier-ignore
+  const rows: Array<[string, string, string | null]> = [
+    ["arbesk-account", account, ""],
+    ["arbesk-collection", `${account}/1~S`, ""],
+    ["arbesk-asset", `${account}/1~S/a~B.gltf`, null],
+    ["arbesk-file", `${account}/1~S/a~B.gltf/stl~B.stl`, ""],
+  ];
+  for (const [, path, verdict] of rows) expect(refusal("properties", of(path))).toBe(verdict);
+  // An Arbesk item whose path isn't known keeps the cell's answer.
+  expect(refusal("properties", { kind: "arbesk", items: ["arbesk"] })).toBe("");
+  // The first item that has none refuses the rest.
+  expect(refusal("properties", { kind: "arbesk", items: ["arbesk", "arbesk"], paths: [`${account}/1~S/a~B.gltf`, `${account}/1~S`] })).toBe("");
+  expect(refusal("properties", { kind: "starred", items: ["folder", "arbesk"], paths: ["/Users/me/a.txt", `${account}/1~S/a~B.gltf`] })).toBeNull();
+});
+
 test("openLocation: for an item shown away from its folder, never in the Trash", () => {
   const away: Here = { kind: "recent", items: ["folder"], elsewhere: true };
   expect(allows("openLocation", away)).toBe(true);

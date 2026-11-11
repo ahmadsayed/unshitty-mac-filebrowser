@@ -10,6 +10,7 @@
   --accent-fg: #ffffff;
   --accent: #007aff;
   --destructive: #ff3b30;
+  --warning: #b25000;
   --success: #34c759;
 
   --window-bg: #ffffff;
@@ -67,6 +68,7 @@
     --accent-bg: #0a84ff;
     --accent: #0a84ff;
     --destructive: #ff453a;
+    --warning: #ffd60a;
     --success: #30d158;
 
     --window-bg: #1e1e1e;

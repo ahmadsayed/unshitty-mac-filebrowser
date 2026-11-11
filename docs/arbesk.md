@@ -158,7 +158,29 @@ out of date (made from an earlier model, or from another of the asset's
 files that has changed since) exactly as Arbesk's own `asset-core` does; a
 file entry it can't read is left out, never an error.
 
-Nothing shows these files yet; what is in place underneath:
+In the window:
+
+- An asset that has other files carries an emblem at the bottom-right of
+  its icon (two sheets of paper, on its thumbnail too), whose tooltip says
+  *Has 3 other files*, or *Has 3 other files, 1 out of date* when any is;
+  then a small dot in the warning colour sits on the emblem. It comes from
+  the listing alone, so it costs nothing per row.
+- **Properties** (in an asset's menu, or Ctrl+I / ⌘I) shows its name, its
+  type (*Arbesk asset (glTF)* or *(3MF)*), its collection, when it was saved
+  and its **Version** (besk's version number, when it is a whole number);
+  Arbesk keeps no size, permissions or owner, so those rows are left out.
+  A collection or the account still has no Properties.
+- When the asset has other files, Properties has a **Files…** button that
+  lists them: the model first, then each file with what it is (*G-code*,
+  *Blender file*, *STL*…), its size, its role (*Source*, *Mesh*, *For
+  viewing*, *For the printer*, *Other*), the tool and printer profile it
+  was made with and, for a sliced file, its print time and filament
+  (`print_time_s` and `filament_g` in its stats). A file made from an
+  earlier model, or from an earlier version of another file, is tagged
+  *Out of date*; the tag's tooltip says which. The page is read only for
+  now: opening, copying, adding and removing these files come next.
+
+Underneath:
 
 - Each file has a path one level below its asset,
   `…/<asset>~Box.gltf/<file id>~Bracket.gcode`, which may be pinned to the

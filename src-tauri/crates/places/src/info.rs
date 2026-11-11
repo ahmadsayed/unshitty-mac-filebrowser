@@ -43,6 +43,11 @@ pub struct FileProperties {
     pub owner: String,
     pub group: String,
     pub others: String,
+    /// The item's version number, where its place numbers saves (an
+    /// Arbesk asset); left out of the JSON elsewhere, so every other
+    /// place's answer is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
 }
 
 #[cfg(test)]
@@ -72,6 +77,7 @@ mod tests {
             owner: "Read and write".into(),
             group: "Read-only".into(),
             others: "Read-only".into(),
+            version: None,
         };
         assert_eq!(
             serde_json::to_string(&props).unwrap(),
@@ -81,5 +87,7 @@ mod tests {
                 r#""octal":"644","owner":"Read and write","group":"Read-only","others":"Read-only"}"#
             )
         );
+        let numbered = FileProperties { version: Some(3), ..props };
+        assert!(serde_json::to_string(&numbered).unwrap().ends_with(r#","others":"Read-only","version":3}"#));
     }
 }

@@ -278,14 +278,15 @@ const ROWS: Record<string, MatrixCase> = {
   // An asset copies out (its file is built first); ⌘D bookmarks the
   // collection, as on an SSH server; nothing else writes. Paste is offered
   // here only: its rule refuses what isn't a model file, in D1's words.
+  // Properties (spec F7) shows an asset's version and other files.
   "an Arbesk collection": [async () => { await fromNetwork("Arbesk")(); await open("Shapes"); }, "Box.gltf", {
-    item: ["Open", "Copy"],
+    item: ["Open", "Copy", "Properties"],
     background: ["Show Hidden Files", "Reload", "Paste", "Share Collection…", "Select All"],
     location: ["Reload", "Paste", "Share Collection…", "Select All"],
     keys: {
       copy: "clipboard",
       paste: "toast “Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.”",
-      properties: "nothing", bookmark: "save_pins", trash: "nothing", rename: "nothing",
+      properties: "file_properties", bookmark: "save_pins", trash: "nothing", rename: "nothing",
     },
     drag: "drag",
     preview: ["Open"],

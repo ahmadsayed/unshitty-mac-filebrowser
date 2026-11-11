@@ -390,6 +390,7 @@ fn properties_from(
         owner: owner.to_string(),
         group: String::new(),
         others: String::new(),
+        version: None,
     }
 }
 

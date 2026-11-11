@@ -212,6 +212,7 @@ impl places::Provider for Client {
             sharing: Some(self),
             preview: Some(self),
             representations: Some(self),
+            properties: Some(self),
             ..Extensions::default()
         }
     }
@@ -316,6 +317,13 @@ impl ext::Representations for Client {
     }
     fn file(&self, path: &str, version: Option<&str>, id: &str, cx: &Cx) -> Result<PathBuf> {
         self.representation_file(path, version, id, &cx.progress).map_err(words)
+    }
+}
+
+impl ext::Properties for Client {
+    /// An asset's name, collection, save date and version (spec F7).
+    fn properties(&self, path: &str) -> Result<places::FileProperties> {
+        Client::properties(self, path).map_err(words)
     }
 }
 
@@ -540,6 +548,37 @@ mod tests {
         assert_eq!(file, dir.path().join("cache/arbesk/files/bafyGcode/Bracket.gcode"));
         assert_eq!(files.file(&asset, Some("bafyA2"), "gcode", &Cx::default()).unwrap_err(), Error::Other("This file is no longer in the asset.".into()));
         assert!(files.representations(&testing::shapes(), None).is_err());
+    }
+
+    /// Properties for an asset: its listed name, its collection, the save's
+    /// date and its version while that is a whole number from 0 up; an
+    /// account, a collection and an asset's other file are refused (F7).
+    #[test]
+    fn an_asset_has_properties_with_its_version() {
+        let versions = [(serde_json::json!(3), Some(3)), (serde_json::json!(3.0), Some(3)), (serde_json::json!(2.5), None),
+            (serde_json::json!(-1), None), (serde_json::json!("7"), Some(1)), (serde_json::Value::Null, Some(1))];
+        for (version, shown) in versions {
+            let dir = tempfile::tempdir().unwrap();
+            let (client, _, _) = client_with(dir.path(), |world| {
+                let mut manifest: serde_json::Value = serde_json::from_slice(&world.files["bafyA1"]).unwrap();
+                manifest["version"] = version.clone();
+                world.files.insert("bafyA1".into(), serde_json::to_vec(&manifest).unwrap());
+            });
+            let described = client.extensions().properties.unwrap();
+            let asset = location::asset_path(&testing::shapes(), "a1", "Box", "gltf");
+            let props = described.properties(&asset).unwrap();
+            assert_eq!(props.version, shown, "{version}");
+            assert_eq!((props.name.as_str(), props.parent.as_str()), ("Box.gltf", testing::shapes().as_str()));
+            assert_eq!(props.modified, testing::STAMP_MS / 1000);
+            assert!(!props.is_dir && props.size == 0 && props.owner.is_empty() && props.mode.is_empty());
+            for path in [testing::shapes(), format!("{asset}/stl~Box.stl")] {
+                assert_eq!(
+                    described.properties(&path).unwrap_err(),
+                    Error::Other("Properties aren't available for Arbesk yet.".into()),
+                    "{path}"
+                );
+            }
+        }
     }
 
     /// The JSON the frontend gets for a listed asset, byte for byte, with no
