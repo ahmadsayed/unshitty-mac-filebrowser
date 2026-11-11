@@ -40,6 +40,8 @@ beforeAll(async () => {
     await invoke("create_file", { path: `${ATT}/${name}` });
   }
   await invoke("make_dir", { path: `${ATT}/Parts.stl` });
+  // A .gltf over 256 MB: refused for its size, as any file is.
+  await invoke("copy_entry", { from: `${PRINTS}/scan.stl`, to: `${ATT}/Huge.gltf`, overwrite: false });
   // An asset holding an entry File Browser can't read, under the id `plan`.
   arbeskMock().addAsset("2", "hook", "Hook", [], [{ id: "plan", role: "someday" }]);
   await boot();
@@ -127,6 +129,7 @@ test("each refusal is one toast before any dialog", async () => {
     [ATT, ["Parts.stl"], false, "Only files on this computer can be added to an asset."],
     [PRINTS, ["lamp.gltf"], false, "“lamp.gltf” uses files beside it. Add a .glb instead."],
     [PRINTS, ["scan.stl"], false, "“scan.stl” is larger than 256 MB."],
+    [ATT, ["Huge.gltf"], false, "“Huge.gltf” is larger than 256 MB."],
   ];
   for (const [dir, picks, cut, words] of cases) {
     await copyFrom(dir, picks, cut);
@@ -134,6 +137,7 @@ test("each refusal is one toast before any dialog", async () => {
     await pasteInto("Table.gltf");
     expect(dialogHeading(), words).toBeUndefined();
     expect(toasts()).toContain(words);
+    expect(toasts().join(" ")).not.toContain("couldn't be read as glTF");
     await closeOverlays();
   }
   // An Arbesk asset's file isn't one on this computer.

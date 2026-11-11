@@ -841,10 +841,14 @@ fn upload_files(
 }
 
 /// Whether `manifest` still holds the file `cid` under `id`, the one the
-/// user saw and agreed to remove: gone, or replaced by another file (or by
-/// an entry this app can't read), is refused.
+/// user saw and agreed to remove: gone, or replaced by another file, is
+/// refused; so is an id an entry this app can't read also holds, even
+/// beside the file shown, since the remove drops every entry of the id.
 fn still_holds(manifest: &Value, id: &str, cid: &str) -> Result<(), String> {
     let stored = Stored::of(manifest);
+    if stored.unreadable.contains(id) {
+        return Err(CHANGED_FILE.into());
+    }
     match stored.valid.get(id) {
         Some(now) if now == cid => Ok(()),
         None if !stored.ids.contains(id) => Err(GONE_FILE.into()),

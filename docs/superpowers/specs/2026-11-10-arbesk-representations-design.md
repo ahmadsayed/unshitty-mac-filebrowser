@@ -621,8 +621,10 @@ asset.*), a file with no extension or one that isn't `[a-z0-9]{1,16}`
 name anything but a `data:` URI, beside it, above its folder or an absolute
 `file:` URI (*“Box.gltf” uses files beside it. Add a .glb instead.*, read
 with `models.ts`' `gltfExternalUris`, since only the one file would be
-stored; as built, a `.gltf` that can't be read or parsed to tell is refused
-too: *“Box.gltf” couldn't be read as glTF. Add a .glb instead.*), and a
+stored; as built, a `.gltf` whose bytes aren't JSON is refused too:
+*“Box.gltf” couldn't be read as glTF. Add a .glb instead.*, while one that
+can't be read at all goes on to the plan, which names why: too large,
+gone or not allowed), and a
 file over 256 MB (*“Print.gcode” is larger than 256 MB.*). As built, an
 asset whose `representations` is there but isn't a list (a newer schema's,
 or a broken write) is refused before anything is asked or uploaded, by the
@@ -782,7 +784,9 @@ entry, matched by stored id (`withoutRepresentation`: the key dropped when
 the list empties), and only while that entry still holds the file the row
 showed (the CID its path is pinned to, F4), on the first read and on a
 conflict's retry alike: an entry gone is *This file is no longer in the
-asset.*, one holding another file (or one File Browser can't show) is
+asset.*, one holding another file (or one File Browser can't show, or
+an id such an entry also holds, beside the file shown, since every entry
+of the id goes) is
 *This file was replaced in the asset since it was shown. Nothing was
 removed.*, as Replace replaces only the file the user agreed to; with F11's steps 1, 3 and 4 (nothing to upload; the
 same hold, settle and `remember`). Files derived from the removed one

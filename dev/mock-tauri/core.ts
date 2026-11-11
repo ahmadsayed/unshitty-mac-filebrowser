@@ -2160,7 +2160,9 @@ function storedIds(asset: MockAsset) {
   const valid = new Map<string, string>();
   for (const rep of arbeskFiles(asset)) if (!valid.has(rep.id)) valid.set(rep.id, rep.cid);
   const all = (asset.representations ?? []).flatMap((rep) => (typeof rep.id === "string" ? [rep.id] : []));
-  return { valid, all: new Set(all), unreadable: new Set(all.filter((id) => !valid.has(id))) };
+  // An id an entry this app can't parse holds, even beside a valid one (`Stored::of`).
+  const unreadable = (asset.representations ?? []).flatMap((rep) => (typeof rep.id === "string" && !validRepresentation(rep) ? [rep.id] : []));
+  return { valid, all: new Set(all), unreadable: new Set(unreadable) };
 }
 
 const heldByUnreadable = (id: string) => `This asset already has a file “${id}” that File Browser can't show.`;
@@ -2273,8 +2275,8 @@ function arbeskAttach(a: Args) {
 }
 
 /** `arbesk_detach` (spec F12): the next version without the entry, only
- *  while it still holds the file `cid` the row showed; the list dropped
- *  once it empties. */
+ *  while it still holds the file `cid` the row showed and no entry this
+ *  app can't parse shares its id; the list dropped once it empties. */
 function arbeskDetach(a: Args) {
   const path = str(a, "path");
   const asset = arbeskAsset(path);
@@ -2283,7 +2285,7 @@ function arbeskDetach(a: Args) {
   const id = str(a, "id");
   const stored = storedIds(asset);
   if (!stored.all.has(id)) throw "This file is no longer in the asset.";
-  if (stored.valid.get(id) !== str(a, "cid")) throw "This file was replaced in the asset since it was shown. Nothing was removed.";
+  if (stored.unreadable.has(id) || stored.valid.get(id) !== str(a, "cid")) throw "This file was replaced in the asset since it was shown. Nothing was removed.";
   const kept = (asset.representations ?? []).filter((rep) => rep.id !== id);
   asset.representations = kept.length ? kept : undefined;
   newFilesVersion(asset);

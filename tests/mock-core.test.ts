@@ -1776,6 +1776,12 @@ test("Arbesk: adding files to an asset and removing them: arbesk_attach_plan, ar
   for (const id of ["stl", "gcode", "stl-3"]) await invoke("arbesk_detach", { path: asset, id, cid: pin(id), op: "" });
   // An entry File Browser can't show is never removed from here.
   await expect(invoke("arbesk_detach", { path: asset, id: "plan", cid: "", op: "" })).rejects.toBe("This file was replaced in the asset since it was shown. Nothing was removed.");
+  // Nor beside the file shown: the remove would drop the entry nobody saw.
+  hooks.addAsset("2", "twin", "Twin", [{ id: "stl", format: "stl", name: "Twin.stl", bytes: 10 }], [{ id: "stl", role: "someday" }]);
+  const twin = `${root}/2~Untitled%20Collection/twin~Twin.gltf`;
+  const twinFiles = await invoke<Attached["files"]>("arbesk_representations", { path: twin, version: null });
+  await expect(invoke("arbesk_detach", { path: twin, id: "stl", cid: pin("stl", twinFiles), op: "" })).rejects.toBe("This file was replaced in the asset since it was shown. Nothing was removed.");
+  expect((await invoke<Attached["files"]>("arbesk_representations", { path: twin, version: null })).map((file) => file.id)).toEqual(["stl"]);
   hooks.addAsset("2", "solo", "Solo", [{ id: "stl", format: "stl", name: "Solo.stl", bytes: 10 }]);
   const solo = `${root}/2~Untitled%20Collection/solo~Solo.gltf`;
   const soloFiles = await invoke<Attached["files"]>("arbesk_representations", { path: solo, version: null });

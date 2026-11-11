@@ -5377,17 +5377,25 @@ function pasteIntoAsset(asset: Entry): void {
 
 /** Why the local `.gltf` at `path` can't be added: it names a buffer or
  *  image by any URI but a `data:` one (beside it, above its folder, an
- *  absolute `file:` URI), so the one file stored wouldn't load; or it
- *  can't be read and parsed to tell. Null for anything else. */
+ *  absolute `file:` URI), so the one file stored wouldn't load; or its
+ *  bytes aren't JSON to tell. Null for anything else, a file that can't
+ *  be read too: the plan reads every file again and names why (too large,
+ *  gone, not allowed), and refuses it. */
 async function gltfRefusal(path: string): Promise<string | null> {
   if (!/\.gltf$/i.test(path)) return null;
-  const beside = `“${basename(path)}” uses files beside it. Add a .glb instead.`;
+  let bytes: ArrayBuffer;
   try {
-    const bytes = await previewBytes(path, MODEL_PREVIEW_LIMIT);
-    return gltfExternalUris(JSON.parse(new TextDecoder().decode(bytes))).length > 0 ? beside : null;
+    bytes = await previewBytes(path, MODEL_PREVIEW_LIMIT);
+  } catch {
+    return null;
+  }
+  let gltf: unknown;
+  try {
+    gltf = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     return `“${basename(path)}” couldn't be read as glTF. Add a .glb instead.`;
   }
+  return gltfExternalUris(gltf).length > 0 ? `“${basename(path)}” uses files beside it. Add a .glb instead.` : null;
 }
 
 /** For each file of the plan whose id a file the asset shows has, what

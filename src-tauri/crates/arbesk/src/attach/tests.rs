@@ -641,6 +641,21 @@ fn a_detach_removes_only_the_file_the_user_saw() {
     // An entry File Browser can't show is never removed from here.
     assert_eq!(f.detach("plan", "").unwrap_err(), CHANGED);
     assert!(f.sent(UPLOADS).is_empty() && f.sent(RELAY).is_empty());
+    // Nor beside the file shown: an id a valid entry and an unreadable one
+    // both hold is refused, in either order, as the remove would drop both.
+    for unreadable_first in [false, true] {
+        let f = fixture(|w| {
+            with_files(w);
+            let mut manifest: Value = serde_json::from_slice(&w.files["bafyA1"]).unwrap();
+            let newer = json!({ "id": "stl", "role": "someday", "format": "json", "newer": [3] });
+            let list = manifest["representations"].as_array_mut().unwrap();
+            list.insert(if unreadable_first { 0 } else { 1 }, newer);
+            w.put("bafyA1", manifest);
+        });
+        assert_eq!(f.detach("stl", "bafyOldStl").unwrap_err(), CHANGED);
+        assert!(f.sent(UPLOADS).is_empty() && f.sent(RELAY).is_empty());
+        assert_eq!(f.token(), "bafyC1");
+    }
     // Replaced by another save while the remove was written: the retry
     // from the new tip finds another file under `stl` and changes nothing.
     let f = fixture(with_files);
