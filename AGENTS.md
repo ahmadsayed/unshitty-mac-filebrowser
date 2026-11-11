@@ -623,9 +623,9 @@ conversation; GitHub can't enforce that part, since agents use the human's
 
 **Record what isn't verified.** Work that can't be checked here (macOS from
 Linux and the reverse, a real launch, real network shares) is merged as
-done-but-unverified: the PR's "Not verified" section says so, one line per
-point. That section is the record: don't open a `needs-verification` issue
-for it, the owner decided they are noise.
+done-but-unverified: the PR's "Not verified" section says so, and an open
+issue labelled `needs-verification` keeps a checklist line per point, so it
+isn't lost in a chat. Remove the label when every point is checked.
 
 Run `gh`, `git` and the scripts as plain commands, without `cd …&&`, `;` or
 variables around them: permission rules match whole commands.
@@ -696,7 +696,7 @@ Release only when the human asks, and only after something significant.
    AppImage), quit any running copy, and in the installed app: open a folder,
    open a file with its default app and with Open With, search, and show
    thumbnails of a photo folder. Ask the human to do the same on the other
-   platform, or say so in the release's PR under "Not verified".
+   platform, or note it on a `needs-verification` issue.
 5. Publish (`gh release edit vX.Y.Z --draft=false`) only when the human says
    so. The release must contain `latest.json`; without it Check for Updates
    reports "Could not check for updates" to everyone. A draft can be fixed
