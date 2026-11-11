@@ -154,6 +154,91 @@ pub fn applications() -> Vec<AppChoice> {
     apps
 }
 
+/// Which of `formats` (lower-case file extensions, as an Arbesk asset's
+/// files name them) the application `app` (an [`AppChoice`] id) declares it
+/// opens, each once and in the order given (spec F8). Answered by the OS,
+/// never by a table of our own: GIO on Linux, LaunchServices on macOS. A
+/// format that isn't `[a-z0-9]{1,16}` is never asked about.
+pub fn app_formats(app: &str, formats: &[String]) -> Vec<String> {
+    let mut opened: Vec<String> = Vec::new();
+    for format in formats {
+        if is_format(format) && !opened.contains(format) && app_opens(app, format) {
+            opened.push(format.clone());
+        }
+    }
+    opened
+}
+
+/// `[a-z0-9]{1,16}`: an extension as Arbesk records a file's format.
+fn is_format(format: &str) -> bool {
+    (1..=16).contains(&format.len()) && format.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+
+/// Whether the `.desktop` file `app` is among the applications GIO gives
+/// for `x.<format>`'s content type (`MimeType=`, the MIME cache and its
+/// subclasses: a text editor that opens `text/plain` opens G-code). GIO
+/// names applications by desktop id, so each one is matched by its file's
+/// path, canonicalised on both sides; one with no file never matches.
+#[cfg(target_os = "linux")]
+fn app_opens(app: &str, format: &str) -> bool {
+    use gio::prelude::*;
+    let Ok(wanted) = fs::canonicalize(app) else {
+        return false;
+    };
+    let (content_type, _) = gio::content_type_guess(Some(format!("x.{format}")), &[]);
+    gio::AppInfo::all_for_type(&content_type).iter().any(|info| {
+        info.downcast_ref::<gio::DesktopAppInfo>()
+            .and_then(|desktop| desktop.filename())
+            .and_then(|file| fs::canonicalize(file).ok())
+            .is_some_and(|file| file == wanted)
+    })
+}
+
+/// Whether LaunchServices lists the `.app` bundle `app` among the
+/// applications that open an (empty) sample `x.<format>` file in the temp
+/// folder (`URLsForApplicationsToOpenURL:`, macOS 12 and later; earlier,
+/// none, so the model opens). Not run on Linux: unverified until tried on
+/// a Mac.
+#[cfg(target_os = "macos")]
+fn app_opens(app: &str, format: &str) -> bool {
+    use objc2::rc::autoreleasepool;
+    use objc2::runtime::NSObjectProtocol;
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::{NSString, NSURL};
+
+    let Ok(wanted) = fs::canonicalize(app) else {
+        return false;
+    };
+    let dir = std::env::temp_dir().join("filebrowser-app-formats");
+    let sample = dir.join(format!("x.{format}"));
+    if fs::create_dir_all(&dir).is_err() || (!sample.exists() && fs::write(&sample, b"").is_err()) {
+        return false;
+    }
+    let Some(sample) = sample.to_str() else {
+        return false;
+    };
+    autoreleasepool(|_| {
+        let workspace = NSWorkspace::sharedWorkspace();
+        if !workspace.respondsToSelector(objc2::sel!(URLsForApplicationsToOpenURL:)) {
+            return false;
+        }
+        let url = NSURL::fileURLWithPath(&NSString::from_str(sample));
+        let found = workspace.URLsForApplicationsToOpenURL(&url);
+        (0..found.count()).any(|i| {
+            found
+                .objectAtIndex(i)
+                .path()
+                .and_then(|path| fs::canonicalize(path.to_string()).ok())
+                .is_some_and(|path| path == wanted)
+        })
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn app_opens(_: &str, _: &str) -> bool {
+    false
+}
+
 fn mac_applications() -> Vec<AppChoice> {
     let mut roots = vec![
         PathBuf::from("/Applications"),
@@ -1917,5 +2002,116 @@ mod tests {
         assert_eq!(drag_uris(&[]).unwrap_err(), "Nothing to drag.");
         assert_eq!(drag_uris(&["relative.txt".into()]).unwrap_err(), "“relative.txt” is not a local file.");
         assert!(drag_uris(&["/home/me/a".into(), "gdrive://x".into()]).is_err());
+    }
+
+    /// `app_formats` keeps each format once, in order, and never asks
+    /// about one that isn't an extension Arbesk records.
+    #[test]
+    fn app_formats_ask_each_valid_format_once() {
+        let formats: Vec<String> = ["STL", "", "a/b", "seventeen-chars-x"].map(String::from).to_vec();
+        assert!(app_formats("/nonexistent-filebrowser-tests/x.desktop", &formats).is_empty());
+        assert!(is_format("gcode") && is_format("3mf") && !is_format("bgcode-long-format-x"));
+    }
+
+    /// Spec F8 on macOS: LaunchServices says TextEdit opens plain text.
+    /// Not run from Linux (unverified until tried on a Mac).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn app_formats_ask_launch_services() {
+        let formats: Vec<String> = ["txt", "txt"].map(String::from).to_vec();
+        assert_eq!(app_formats("/System/Applications/TextEdit.app", &formats), ["txt"]);
+        assert!(app_formats("/nonexistent-filebrowser-tests/X.app", &formats).is_empty());
+    }
+
+    /// The child's environment marker: set only when the parent test
+    /// below runs this binary again with a GIO of its own.
+    #[cfg(target_os = "linux")]
+    const APP_FORMATS_ROOT: &str = "FILEBROWSER_TEST_APP_FORMATS_ROOT";
+
+    /// Spec F8 on Linux: what GIO says each `.desktop` file opens, with a
+    /// MIME database and launchers of the test's own (a temporary
+    /// `XDG_DATA_DIRS`, with the MIME caches `update-desktop-database`
+    /// writes). GIO reads its folders once per process, so the
+    /// checks run in a fresh copy of this test binary
+    /// (`app_formats_in_a_fresh_gio`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn app_formats_follow_gio_matched_by_desktop_file_path() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let sys = root.join("sys");
+        fs::create_dir_all(sys.join("mime")).unwrap();
+        fs::write(
+            sys.join("mime/globs2"),
+            "50:text/x-gcode:*.gcode\n50:model/stl:*.stl\n50:model/3mf:*.3mf\n50:application/x-blender:*.blend\n50:model/gltf+json:*.gltf\n",
+        )
+        .unwrap();
+        fs::write(sys.join("mime/subclasses"), "text/x-gcode text/plain\n").unwrap();
+        let desktop = |dir: &Path, file: &str, name: &str, types: &str| {
+            fs::create_dir_all(dir).unwrap();
+            let mime = if types.is_empty() { String::new() } else { format!("MimeType={types}\n") };
+            let text = format!("[Desktop Entry]\nType=Application\nName={name}\nExec=true %f\n{mime}");
+            fs::write(dir.join(file), text).unwrap();
+        };
+        let apps = sys.join("applications");
+        desktop(&apps, "prusa-slicer.desktop", "PrusaSlicer", "model/stl;model/3mf;text/x-gcode;");
+        desktop(&apps, "editor.desktop", "Text Editor", "text/plain;");
+        desktop(&apps, "nothing.desktop", "Nothing", "");
+        // Its desktop id is `vendor-blender.desktop`, not its file name.
+        desktop(&apps.join("vendor"), "blender.desktop", "Blender", "application/x-blender;model/stl;");
+        let flatpak = root.join("flatpak/exports/share");
+        desktop(&flatpak.join("applications"), "org.cura.Cura.desktop", "Cura", "model/stl;");
+        // GIO reads which launcher takes which type from each folder's
+        // MIME cache (`update-desktop-database` writes it), by desktop id.
+        let cache = |dir: PathBuf, lines: &str| fs::write(dir.join("mimeinfo.cache"), format!("[MIME Cache]\n{lines}")).unwrap();
+        cache(
+            apps.clone(),
+            "model/stl=prusa-slicer.desktop;vendor-blender.desktop;\nmodel/3mf=prusa-slicer.desktop;\n\
+             text/x-gcode=prusa-slicer.desktop;\ntext/plain=editor.desktop;\napplication/x-blender=vendor-blender.desktop;\n",
+        );
+        cache(flatpak.join("applications"), "model/stl=org.cura.Cura.desktop;\n");
+        for dir in ["home/.local/share", "config", "config-dirs"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let data_dirs = format!("{}:{}", sys.display(), flatpak.display());
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "platform::tests::app_formats_in_a_fresh_gio", "--ignored", "--nocapture", "--test-threads=1"])
+            .env(APP_FORMATS_ROOT, root)
+            .env("HOME", root.join("home"))
+            .env("XDG_DATA_HOME", root.join("home/.local/share"))
+            .env("XDG_DATA_DIRS", data_dirs)
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_CONFIG_DIRS", root.join("config-dirs"))
+            .env_remove("XDG_CURRENT_DESKTOP")
+            .output()
+            .unwrap();
+        let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(output.status.success(), "{text}");
+        assert!(text.contains("1 passed"), "{text}");
+    }
+
+    /// The checks of the test above, in the fresh process it starts; does
+    /// nothing when run on its own.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "run by app_formats_follow_gio_matched_by_desktop_file_path"]
+    fn app_formats_in_a_fresh_gio() {
+        let Some(root) = std::env::var_os(APP_FORMATS_ROOT).map(PathBuf::from) else {
+            return;
+        };
+        let formats: Vec<String> = ["gltf", "gcode", "stl", "3mf", "blend", "stl"].map(String::from).to_vec();
+        let opens = |app: PathBuf| app_formats(&app.to_string_lossy(), &formats);
+        let apps = root.join("sys/applications");
+        assert_eq!(opens(apps.join("prusa-slicer.desktop")), ["gcode", "stl", "3mf"]);
+        // G-code is a kind of text/plain, which the editor declares.
+        assert_eq!(opens(apps.join("editor.desktop")), ["gcode"]);
+        assert!(opens(apps.join("nothing.desktop")).is_empty());
+        assert_eq!(opens(apps.join("vendor/blender.desktop")), ["stl", "blend"]);
+        let cura = root.join("flatpak/exports/share/applications/org.cura.Cura.desktop");
+        assert_eq!(opens(cura), ["stl"]);
+        // Through a link to its folder, the same file.
+        std::os::unix::fs::symlink(&apps, root.join("linked")).unwrap();
+        assert_eq!(opens(root.join("linked/prusa-slicer.desktop")), ["gcode", "stl", "3mf"]);
+        assert!(opens(root.join("sys/applications/gone.desktop")).is_empty());
     }
 }

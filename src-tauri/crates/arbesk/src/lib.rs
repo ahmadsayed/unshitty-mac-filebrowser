@@ -224,8 +224,14 @@ impl Client {
         )
     }
 
-    /// `service::export` for the account `path` belongs to.
+    /// `service::export` for the account `path` belongs to: an asset's
+    /// own file built in the app cache; for an asset's other file (spec
+    /// F4), that file fetched and decoded there (`file_at`, spec F9), a
+    /// pinned path refused once its entry holds another file.
     pub fn export(&self, path: &str, progress: &Progress) -> Result<PathBuf, String> {
+        if let location::ArbeskPath::File { .. } = parse(path)? {
+            return self.file_at(path, progress);
+        }
         let site = self.site_for(parse(path)?.address())?;
         service::export(
             self.http()?,

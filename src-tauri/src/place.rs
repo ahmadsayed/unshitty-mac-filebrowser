@@ -125,15 +125,16 @@ pub fn transfer(from: &str, to: &str) -> Result<Route, String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CopyRoute {
     pub route: Route,
-    /// The source is an Arbesk asset: its file is built in the app cache and
-    /// copied from there (`Client::export`).
+    /// The source is an Arbesk asset or one of its other files: its file is
+    /// built or fetched in the app cache and copied from there
+    /// (`Client::export`).
     pub from_arbesk: bool,
 }
 
 /// [`transfer`] for a copy, which may also take an Arbesk asset out to this
-/// computer or Drive, or a local file into an Arbesk collection. A move never
-/// does: Arbesk is read only. Collections, and an asset's other files,
-/// can't be copied yet.
+/// computer or Drive (an asset's other file too, spec F9), or a local file
+/// into an Arbesk collection. A move never does: Arbesk is read only.
+/// Collections can't be copied yet.
 pub fn copy(from: &str, to: &str) -> Result<CopyRoute, String> {
     if kind(to) == Kind::Arbesk && kind(from) != Kind::Arbesk {
         return into_arbesk(from, to);
@@ -143,13 +144,9 @@ pub fn copy(from: &str, to: &str) -> Result<CopyRoute, String> {
     }
     writable(to)?;
     match arbesk::parse(from)? {
-        arbesk::Location::Asset { .. } => {}
-        // Its capability row already allows the copy (spec F4): the copy
-        // itself lands with the Files… page (F9), so until then it is
-        // refused in its own words.
-        arbesk::Location::File { .. } => {
-            return Err("Copying an asset's other files out comes next.".into());
-        }
+        // An asset's other file goes out as its asset does (spec F9): its
+        // provider's `export` fetches it into the app cache first.
+        arbesk::Location::Asset { .. } | arbesk::Location::File { .. } => {}
         _ => return Err("Copying Arbesk collections comes next.".into()),
     }
     let route = if kind(to) == Kind::Drive {
@@ -205,7 +202,6 @@ mod tests {
     const ARBESK_LOCAL: &str = "This action is not available for Arbesk.";
     const ARBESK_READ_ONLY: &str = "Arbesk is read only.";
     const ARBESK_COLLECTION: &str = "Copying Arbesk collections comes next.";
-    const ARBESK_FILE: &str = "Copying an asset's other files out comes next.";
     const ARBESK: &str = "arbesk://0x00000000000000000000000000000000000000ab/12~Set";
 
     /// Each path: its kind, `local`'s answer (None: the path itself),
@@ -345,6 +341,9 @@ mod tests {
         assert_eq!(copy(drive, a), plain(Route::Drive));
         assert_eq!(copy(asset, "/Users/me/Box.gltf"), built(Route::Local));
         assert_eq!(copy(asset, drive), built(Route::Drive));
+        // An asset's other file, pinned or not, goes out the same way (F9).
+        assert_eq!(copy(&format!("{asset}/stl@bafyStl~Box.stl"), b), built(Route::Local));
+        assert_eq!(copy(&format!("{asset}/stl~Box.stl"), drive), built(Route::Drive));
         // Anything else stays as `transfer` answers, and only a copy takes an asset out.
         for (from, to, refusal) in [
             (asset, asset, ARBESK_READ_ONLY.to_string()),
@@ -353,8 +352,8 @@ mod tests {
             (asset, "rel/Box.gltf", "“rel/Box.gltf” is not a local file.".into()),
             (ARBESK, b, ARBESK_COLLECTION.into()),
             ("arbesk://0x00000000000000000000000000000000000000ab", b, ARBESK_COLLECTION.into()),
-            (format!("{asset}/stl@bafyStl~Box.stl").as_str(), b, ARBESK_FILE.into()),
-            (format!("{asset}/stl~Box.stl").as_str(), drive, ARBESK_FILE.into()),
+            (format!("{asset}/stl@bafyStl~Box.stl").as_str(), "share://r1/b", SHARE_READ_ONLY.into()),
+            (format!("{asset}/stl~Box.stl").as_str(), asset, ARBESK_READ_ONLY.into()),
             ("share://r1/a", b, SHARE_READ_ONLY.into()),
         ] {
             assert_eq!(copy(from, to).unwrap_err(), refusal, "{from} -> {to}");

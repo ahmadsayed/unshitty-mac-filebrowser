@@ -1842,7 +1842,14 @@ function arbeskRepresentations(path: string, version: string | null) {
     id: rep.id, role: rep.role, format: rep.format, name: rep.name, bytes: rep.bytes,
     stale: arbeskStale(asset, rep), derived_from: rep.derived_from?.ref ?? null,
     tool: rep.tool ?? null, profile: rep.profile ?? null, stats: rep.stats ?? null, created_at: rep.created_at,
+    path: arbeskFilePath(path, rep.id, rep.cid, rep.name),
   }));
+}
+
+/** An asset's other file's path pinned to its CID, as the backend's
+ *  `file_path` writes it: `<asset>/<id>@<cid>~<safe name>` (spec F4). */
+function arbeskFilePath(asset: string, id: string, cid: string, name: string): string {
+  return `${asset.replace(/\/+$/, "")}/${encodeCloudName(id)}@${encodeCloudName(cid)}~${encodeCloudName(safeFileName(name))}`;
 }
 
 /** Where the backend keeps opened copies of Arbesk files, in the fake filesystem. */
@@ -1933,8 +1940,31 @@ function arbeskBytes(path: string, limit: number): Uint8Array {
   return bytes;
 }
 
+/** An asset's built file as a copy places it (its export's size). */
+function arbeskModelNode(path: string): Node {
+  const asset = arbeskAsset(path);
+  if (asset.huge) throw "This asset is too large to open.";
+  return f(asset.ext === "3mf" ? sample3mf().length : sampleGlb().length, 0);
+}
+
+/** Where the mock keeps an asset's built file, as the backend's `export`. */
+export const ARBESK_MOCK_BUILDS = "/tmp/opencode/mock-arbesk/builds";
+
+/** `arbesk_export` (spec F8): what Open With hands an application, in the
+ *  app cache: an asset's built file, or one of its other files fetched
+ *  (a pinned path whose entry moved refused, as `open_target` does). */
+function arbeskExport(path: string): string {
+  if (arbeskIds(path).file !== undefined) return arbeskFileOpen(path);
+  const asset = arbeskAsset(path);
+  const node = arbeskModelNode(path);
+  const name = `${asset.name}.${asset.ext}`;
+  ensureDir(`${ARBESK_MOCK_BUILDS}/${asset.id}`).children[name] ??= node;
+  return `${ARBESK_MOCK_BUILDS}/${asset.id}/${name}`;
+}
+
 /**
- * copy_entry from Arbesk (place::copy): only an asset, only to a folder on
+ * copy_entry from Arbesk (place::copy): an asset or one of its other files
+ * (spec F9: pinned paths whose entry moved refused), only to a folder on
  * this computer or in Drive. Its file is built (Client::export), then placed
  * as any copy is: a name taken asks first, and Replace trashes the old item.
  */
@@ -1942,10 +1972,9 @@ function arbeskCopy(a: Args): string {
   const from = str(a, "from"), to = str(a, "to");
   const overwrite = Boolean(a.overwrite);
   writable(to);
-  if (!arbeskIds(from).asset) throw "Copying Arbesk collections comes next.";
-  const asset = arbeskAsset(from);
-  if (asset.huge) throw "This asset is too large to open.";
-  const node = f(asset.ext === "3mf" ? sample3mf().length : sampleGlb().length, 0);
+  const ids = arbeskIds(from);
+  if (!ids.asset) throw "Copying Arbesk collections comes next.";
+  const node = ids.file === undefined ? arbeskModelNode(from) : f(lookup(arbeskFileOpen(from))!.size, 0);
   if (placeOf(to) === "drive") return uploadNode(node, to, overwrite);
   const [toParent, toName] = parentAndName(localPath(to));
   if (!toParent?.dir) throw "The destination folder no longer exists.";
@@ -2155,6 +2184,7 @@ const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
   arbesk_versions: (a) => arbeskVersions(str(a, "path")),
   arbesk_scene: (a) => arbeskScene(str(a, "path"), (a.version as string | null | undefined) ?? null),
   arbesk_representations: (a) => arbeskRepresentations(str(a, "path"), (a.version as string | null | undefined) ?? null),
+  arbesk_export: gated((a) => arbeskExport(str(a, "path"))),
   arbesk_part: (a) => arbeskPart(str(a, "path"), (a.version as string | null | undefined) ?? null, str(a, "key"), Number(a.limit)),
   arbesk_accounts: () => arbeskAccountList.map((account) => ({ ...account })),
   arbesk_connect_start: (a) => {
@@ -2440,6 +2470,30 @@ async function mockListApps(): Promise<MockApp[]> {
   return apps.list.map((app) => ({ ...app }));
 }
 
+/** Applications the Arbesk tests and screenshots add (`__mockApps.set`),
+ *  named by `APP_FORMATS`; the default list stays as it was. */
+export const MOCK_ARBESK_APPS: MockApp[] = [
+  { name: "PrusaSlicer", id: "/Applications/PrusaSlicer.app" },
+  { name: "Blender", id: "/Applications/Blender.app" },
+  { name: "Text Editor", id: "/Applications/Text Editor.app" },
+];
+
+/** What each mock application declares it opens, by name; any other opens nothing. */
+const APP_FORMATS: Record<string, string[]> = {
+  PrusaSlicer: ["3mf", "gcode", "stl"],
+  Blender: ["blend", "gltf", "glb", "stl"],
+  "Text Editor": ["gcode"],
+};
+
+/** `app_formats` (spec F8): which of `formats` the application declares,
+ *  each once, in order; an extension Arbesk can't record is never asked. */
+function mockAppFormats(a: Args): string[] {
+  const app = apps.list.find((choice) => choice.id === str(a, "app"));
+  const opens = APP_FORMATS[app?.name ?? ""] ?? [];
+  const formats = (a.formats as string[]).filter((format) => /^[a-z0-9]{1,16}$/.test(format) && opens.includes(format));
+  return [...new Set(formats)];
+}
+
 function mockOpenWith(a: Args): undefined {
   const path = localPath(str(a, "path"));
   if (!lookup(path)) throw "No such file or directory";
@@ -2702,6 +2756,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     return undefined;
   },
   open_with: (a) => mockOpenWith(a),
+  app_formats: (a) => mockAppFormats(a),
   new_folder_walk: () => ++mockWalks,
   cancel_folder_size: () => undefined,
   folder_size: (a) => {

@@ -511,6 +511,13 @@ async fn list_apps() -> Result<Vec<platform::AppChoice>, String> {
     blocking(platform::applications).await
 }
 
+/// Which of `formats` (lower-case extensions) the application `app` (an
+/// `AppChoice` id) declares it opens, as the OS says (spec F8).
+#[tauri::command]
+async fn app_formats(app: String, formats: Vec<String>) -> Result<Vec<String>, String> {
+    blocking(move || platform::app_formats(&app, &formats)).await
+}
+
 /// What opening `path` opens: the file itself on this computer; for Drive,
 /// a share or an SSH server, a copy downloaded into the app cache, or a
 /// Google Docs file's web page. A download is operation `op`: it reports
@@ -637,6 +644,37 @@ async fn arbesk_representations(
         files.representations(&path, version.as_deref()).map_err(String::from)
     })
     .await?
+}
+
+/// The file Open With hands an application for an Arbesk asset (spec F8):
+/// the asset's own `.gltf`/`.3mf` built in the app cache, or one of its
+/// other files (its pinned path, spec F4) fetched and decoded there, by
+/// Arbesk's `Transfer::export` (what a copy out reads). Operation `op`: it
+/// reports through `on_progress` and `cancel_operation` stops it.
+#[tauri::command]
+async fn arbesk_export(
+    app: tauri::AppHandle,
+    path: String,
+    op: String,
+    on_progress: Channel<ProgressUpdate>,
+) -> Result<String, String> {
+    blocking(move || {
+        let tracking = track(&app, &op, on_progress);
+        let cx = places_cx(&app, tracking.progress.clone());
+        let result = arbesk_exported(&app.state::<places::Registry>(), &path, &cx);
+        tracking.finish();
+        result
+    })
+    .await?
+}
+
+/// `arbesk_export`'s work on Arbesk's own provider, whatever `path` is: a
+/// path Arbesk can't read is refused in its words.
+fn arbesk_exported(registry: &places::Registry, path: &str, cx: &places::Cx) -> Result<String, String> {
+    let place = arbesk_place(registry)?;
+    places::with_transfer(place, cx, |t| Ok(t.export(path, cx)?))
+        .unwrap_or_else(|| Err("Arbesk isn't available.".to_string()))
+        .map(|file: PathBuf| file.to_string_lossy().into_owned())
 }
 
 /// One part of an Arbesk asset's scene, as the preview loads it (a GLB or a
@@ -2450,6 +2488,8 @@ pub fn run() {
             arbesk_scene,
             arbesk_versions,
             arbesk_representations,
+            arbesk_export,
+            app_formats,
             arbesk_part,
             rename_many,
             set_permissions,
@@ -3209,6 +3249,15 @@ mod read_gate_tests {
         let unknown = "Connect this Arbesk account first.".to_string();
         let model = "/nonexistent-filebrowser-tests/Box.gltf";
         assert_eq!(exported_source(&registry, ASSET.into(), &cx), Err(unknown.clone()));
+        // Open With's fetch (spec F8) asks Arbesk whatever the path: an
+        // asset and an asset's other file in the client's words, a local
+        // path in Arbesk's.
+        assert_eq!(arbesk_exported(&registry, ASSET, &cx), Err(unknown.clone()));
+        assert_eq!(arbesk_exported(&registry, &format!("{ASSET}/stl@bafyStl~Box.stl"), &cx), Err(unknown.clone()));
+        assert_eq!(
+            arbesk_exported(&registry, "/Users/me/Box.gltf", &cx).unwrap_err(),
+            "“/Users/me/Box.gltf” is not an Arbesk location."
+        );
         assert_eq!(write_into_place(&registry, model, PENDING, false, &cx), Err(unknown.clone()));
         // A local path has this computer's transfer (step 6b); a read-only
         // place has none.

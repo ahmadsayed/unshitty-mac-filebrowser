@@ -1596,6 +1596,52 @@ test("copy_entry puts a local model into an Arbesk collection, with the backend'
   await expect(invoke("copy_entry", { from: `${HOME}/Up/Box.glb`, to: `${set}/~Box.gltf`, overwrite: true })).rejects.toBe("Connect this Arbesk account first.");
 });
 
+test("Arbesk: Open With and copying an asset's files out: app_formats, arbesk_export, pinned paths (spec F8, F9)", async () => {
+  const core = await import("../dev/mock-tauri/core");
+  const root = `arbesk://${core.ARBESK_MOCK_ADDRESS}`;
+  const start = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  const account = await invoke<{ id: string }>("arbesk_connect_finish", { flowId: start.flow_id });
+  const apps = (globalThis as unknown as { __mockApps: { set(o: { list: unknown[] }): void; reset(): void } }).__mockApps;
+  apps.set({ list: core.MOCK_ARBESK_APPS });
+  try {
+    // What each app declares, each format once, in the order asked; nothing for an unknown app.
+    const formats = ["gltf", "gcode", "stl", "3mf", "blend", "stl", "STL"];
+    const opens = (app: string) => invoke<string[]>("app_formats", { app, formats });
+    expect(await opens("/Applications/PrusaSlicer.app")).toEqual(["gcode", "stl", "3mf"]);
+    expect(await opens("/Applications/Blender.app")).toEqual(["gltf", "stl", "blend"]);
+    expect(await opens("/Applications/Text Editor.app")).toEqual(["gcode"]);
+    expect(await opens("/Applications/Nothing.app")).toEqual([]);
+  } finally {
+    apps.reset();
+  }
+
+  // Each listed file carries its path pinned to its CID, its name made one safe file name.
+  const shapes = `${root}/1~Shapes`;
+  const bracket = `${shapes}/bracket~Bracket.gltf`;
+  type Info = { id: string; name: string; path: string };
+  const files = await invoke<Info[]>("arbesk_representations", { path: bracket, version: null });
+  const gcode = files.find((file) => file.id === "gcode-original-prusa-mk4-petg")!;
+  const gcodeCid = "bafyrepbracketxgcodeoriginalprusamk4petg";
+  expect(gcode.path).toBe(`${bracket}/gcode-original-prusa-mk4-petg@${gcodeCid}~Bracket_0.2mm_PETG_MK4.gcode`);
+
+  // arbesk_export: the model built, a file fetched into the app cache, a moved pin refused.
+  expect(await invoke("arbesk_export", { path: bracket, op: "" })).toBe(`${core.ARBESK_MOCK_BUILDS}/bracket/Bracket.gltf`);
+  expect(await invoke("path_exists", { path: `${core.ARBESK_MOCK_BUILDS}/bracket/Bracket.gltf` })).toBe(true);
+  expect(await invoke("arbesk_export", { path: gcode.path, op: "" })).toBe(`${core.ARBESK_MOCK_FILES}/${gcodeCid}/Bracket_0.2mm_PETG_MK4.gcode`);
+  await expect(invoke("arbesk_export", { path: `${bracket}/stl@bafyOld~Bracket.stl`, op: "" })).rejects.toBe("“Bracket.stl” changed in Arbesk since it was copied.");
+
+  // copy_entry takes a file out as its own size; a moved pin is refused and nothing lands.
+  await invoke("make_dir", { path: `${HOME}/RepsOut` });
+  expect(await invoke("copy_entry", { from: gcode.path, to: `${HOME}/RepsOut/Bracket.gcode`, overwrite: false })).toBe(`${HOME}/RepsOut/Bracket.gcode`);
+  const listed = await invoke<{ name: string; size: number }[]>("list_dir", { path: `${HOME}/RepsOut`, showHidden: false });
+  expect(listed.map((e) => [e.name, e.size])).toEqual([["Bracket.gcode", 1_204_118]]);
+  await expect(invoke("copy_entry", { from: `${bracket}/stl@bafyOld~Bracket.stl`, to: `${HOME}/RepsOut/Bracket.stl`, overwrite: false })).rejects.toBe(
+    "“Bracket.stl” changed in Arbesk since it was copied.",
+  );
+  expect(await invoke("path_exists", { path: `${HOME}/RepsOut/Bracket.stl` })).toBe(false);
+  await invoke("arbesk_disconnect", { account: account.id });
+});
+
 // Last: its Replace changes Shapes' Box.gltf for every test after it.
 test("Arbesk: an asset's other files: the listing's summary, the list per save, and opening one", async () => {
   const { ARBESK_MOCK_ADDRESS: address, ARBESK_MOCK_FILES: files } = await import("../dev/mock-tauri/core");
