@@ -314,7 +314,9 @@ Drive-style index. The first visit fetches what it doesn't have yet; File
 Browser keeps manifests and thumbnails in the app cache (64 MB each), reuses
 an asset's built preview file, and downloads a model's parts several at a
 time, a slow one never holding up the others, without letting the parts on
-their way take a build past its 512 MB. Every read shares one limit: at most
+their way take a build past its 512 MB (a part larger than its asset says is
+fetched again the careful way), and builds running at once share 512 MB of
+parts between them. Every read shares one limit: at most
 8 reads from Arbesk's storage at once (and 4 from its chain), whatever is
 listing, building or drawing thumbnails meanwhile, and two that want the same
 file at once share one download. A cancelled copy or download, and a

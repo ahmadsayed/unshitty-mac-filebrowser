@@ -348,10 +348,15 @@ impl Client {
         progress: &Progress,
     ) -> Result<PathBuf, String> {
         let site = self.reach(path)?;
-        self.limited(&|| progress.is_cancelled(), |http| {
-            let scene = self.scenes.get_or_keep(&kept(path, version), || {
+        // The scene is resolved without the part's stop, as `scene` does:
+        // resolving drops what it cannot read, so a read cancelled there
+        // would keep a scene missing parts.
+        let scene = self.scenes.get_or_keep(&kept(path, version), || {
+            self.limited(&limiter::never, |http| {
                 service::scene(http, &site, path, version, &self.cache_dir)
-            })?;
+            })
+        })?;
+        self.limited(&|| progress.is_cancelled(), |http| {
             service::part(http, &site, &scene, key, &self.cache_dir, progress, &self.builds)
         })
     }
@@ -1042,6 +1047,94 @@ mod tests {
             assert_eq!(listed.join().unwrap().unwrap().len(), 17);
         });
         assert_eq!(client.limiter.reading(), 0);
+    }
+
+    /// A listing's chain calls take their own permits: never more than
+    /// `limiter::RPCS` at once, though six collections are read together.
+    #[test]
+    fn chain_calls_never_pass_their_own_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut world = testing::busy_world();
+        world.owned = ["1", "2", "3", "4", "5", "7"].map(String::from).to_vec();
+        let delay = std::time::Duration::from_millis(30);
+        let http = Arc::new(testing::Watched::new(world, delay, &[]));
+        let client = connected(http.clone(), dir.path());
+        assert!(client.list(&format!("arbesk://{ADDRESS}")).is_ok());
+        let peak = http.rpc_peak.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(peak <= limiter::RPCS, "{peak} chain calls at once");
+        assert!(peak > 1, "{peak}: the calls ran together");
+    }
+
+    /// An asset's other file is downloaded under a read permit: queued
+    /// behind a listing that holds them all, it hears its cancel and never
+    /// starts its download.
+    #[test]
+    fn a_file_download_waits_for_a_read_permit() {
+        let dir = tempfile::tempdir().unwrap();
+        let held: Vec<String> = (1..16).map(|i| format!("bafyMany{i}")).collect();
+        let http = Arc::new(testing::Watched::new(testing::busy_world(), std::time::Duration::ZERO, &held));
+        let client = connected(http.clone(), dir.path());
+        let many = format!("arbesk://{ADDRESS}/7~Many");
+        let part0 = format!("{many}/m0~Part0.gltf");
+        // Part0's manifest is read (and kept) before the listing holds every permit.
+        assert!(client.thumbnail(&part0, 64, &|| false).starts_with(b"\x89PNG"));
+        std::thread::scope(|scope| {
+            let listed = scope.spawn(|| client.list(&many));
+            assert!(http.wait_running(limiter::READS), "the listing holds every permit");
+            let progress = Progress::default();
+            let cancel = progress.clone();
+            scope.spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                cancel.cancel();
+            });
+            let started = std::time::Instant::now();
+            let file = client.representation_file(&part0, None, "notes", &progress);
+            let took = started.elapsed();
+            let streamed = http.streamed.load(std::sync::atomic::Ordering::SeqCst);
+            // Released before anything is checked, so a failure never hangs.
+            http.release();
+            assert_eq!(file.unwrap_err(), CANCELLED);
+            assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+            assert_eq!(streamed, 0);
+            assert!(listed.join().unwrap().is_ok());
+        });
+        let file = client.representation_file(&part0, None, "notes", &Progress::default()).unwrap();
+        assert_eq!(std::fs::read(file).unwrap(), b"Notes on Part0.");
+        assert_eq!(client.limiter.reading(), 0);
+    }
+
+    /// A part cancelled while its scene's reads wait for a permit keeps no
+    /// scene with parts missing: the scene resolves without the part's
+    /// stop, so its linked child's part is still there for the next ask.
+    #[test]
+    fn a_cancelled_part_keeps_no_scene_missing_parts() {
+        let dir = tempfile::tempdir().unwrap();
+        let held: Vec<String> = (0..16).map(|i| format!("bafyMany{i}")).collect();
+        let http = Arc::new(testing::Watched::new(testing::busy_world(), std::time::Duration::ZERO, &held));
+        let client = connected(http.clone(), dir.path());
+        let rooms = format!("arbesk://{ADDRESS}/4~Rooms");
+        let table = format!("{rooms}/t1~Table.gltf");
+        // Rooms' and Table's manifests are read (and kept) first: only the
+        // scene's own reads, its linked child's among them, queue below.
+        assert!(client.list(&rooms).is_ok());
+        let many = format!("arbesk://{ADDRESS}/7~Many");
+        std::thread::scope(|scope| {
+            let listed = scope.spawn(|| client.list(&many));
+            assert!(http.wait_running(limiter::READS), "the listing holds every permit");
+            let progress = Progress::default();
+            let cancel = progress.clone();
+            let release = http.clone();
+            scope.spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                cancel.cancel();
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                release.release();
+            });
+            assert_eq!(client.part(&table, None, "bafySrcTable", &progress).unwrap_err(), CANCELLED);
+            assert!(listed.join().unwrap().is_ok());
+        });
+        let child = client.part(&table, None, "bafySrcGltf", &Progress::default());
+        assert!(child.unwrap().is_file());
     }
 
     /// One read that fails in a listing's batch still fails the listing,

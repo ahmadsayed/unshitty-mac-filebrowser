@@ -493,13 +493,19 @@ pub(crate) fn webp(width: u32, height: u32) -> Vec<u8> {
 }
 
 /// The fake Arbesk with its gateway reads watched: each takes `delay`, is
-/// counted while in flight (`running`, and the most at once, `peak`), and
-/// a read of a CID in `held` waits until [`Watched::release`].
+/// counted while in flight (`running`, and the most at once, `peak`;
+/// streamed downloads of an asset's other files too), and a read of a CID
+/// in `held` waits until [`Watched::release`]. Chain RPC calls take `delay`
+/// too and are counted apart (`rpc_running`, `rpc_peak`).
 pub(crate) struct Watched {
     inner: FakeHttp,
     delay: std::time::Duration,
     pub(crate) running: std::sync::atomic::AtomicUsize,
     pub(crate) peak: std::sync::atomic::AtomicUsize,
+    pub(crate) rpc_running: std::sync::atomic::AtomicUsize,
+    pub(crate) rpc_peak: std::sync::atomic::AtomicUsize,
+    /// Streamed downloads asked for.
+    pub(crate) streamed: std::sync::atomic::AtomicUsize,
     held: Mutex<HashSet<String>>,
     released: std::sync::Condvar,
 }
@@ -511,6 +517,9 @@ impl Watched {
             delay,
             running: Default::default(),
             peak: Default::default(),
+            rpc_running: Default::default(),
+            rpc_peak: Default::default(),
+            streamed: Default::default(),
             held: Mutex::new(held.iter().cloned().collect()),
             released: std::sync::Condvar::new(),
         }
@@ -532,14 +541,11 @@ impl Watched {
         }
         false
     }
-}
 
-impl super::http::Http for Watched {
-    fn get(&self, url: &str) -> Result<Vec<u8>, HttpError> {
+    /// `request` counted in `running` (and `peak`) while it is in flight,
+    /// after `delay`, and held while `cid` is.
+    fn watch<R>(&self, cid: &str, request: impl FnOnce() -> R) -> R {
         use std::sync::atomic::Ordering::SeqCst;
-        let Some(cid) = url.strip_prefix("https://gw.test/ipfs/") else {
-            return self.inner.get(url);
-        };
         let now = self.running.fetch_add(1, SeqCst) + 1;
         self.peak.fetch_max(now, SeqCst);
         std::thread::sleep(self.delay);
@@ -548,9 +554,18 @@ impl super::http::Http for Watched {
             held = self.released.wait(held).unwrap();
         }
         drop(held);
-        let answer = self.inner.get(url);
+        let answer = request();
         self.running.fetch_sub(1, SeqCst);
         answer
+    }
+}
+
+impl super::http::Http for Watched {
+    fn get(&self, url: &str) -> Result<Vec<u8>, HttpError> {
+        match url.strip_prefix("https://gw.test/ipfs/") {
+            Some(cid) => self.watch(cid, || self.inner.get(url)),
+            None => self.inner.get(url),
+        }
     }
 
     fn get_streamed(
@@ -559,11 +574,24 @@ impl super::http::Http for Watched {
         expected: u64,
         chunk: &mut dyn FnMut(&[u8]) -> bool,
     ) -> Result<(), HttpError> {
-        self.inner.get_streamed(url, expected, chunk)
+        self.streamed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        match url.strip_prefix("https://gw.test/ipfs/") {
+            Some(cid) => self.watch(cid, || self.inner.get_streamed(url, expected, chunk)),
+            None => self.inner.get_streamed(url, expected, chunk),
+        }
     }
 
     fn post_json(&self, url: &str, body: &Value, session: Option<&str>) -> Result<Vec<u8>, HttpError> {
-        self.inner.post_json(url, body, session)
+        use std::sync::atomic::Ordering::SeqCst;
+        if url != "https://rpc.test" {
+            return self.inner.post_json(url, body, session);
+        }
+        let now = self.rpc_running.fetch_add(1, SeqCst) + 1;
+        self.rpc_peak.fetch_max(now, SeqCst);
+        std::thread::sleep(self.delay);
+        let answer = self.inner.post_json(url, body, session);
+        self.rpc_running.fetch_sub(1, SeqCst);
+        answer
     }
 
     fn post_json_slow(&self, url: &str, body: &Value, session: Option<&str>) -> Result<Vec<u8>, HttpError> {
@@ -587,8 +615,8 @@ impl super::http::Http for Watched {
 }
 
 /// [`world`] and a collection (token 7, "Many") of sixteen assets, each
-/// with its thumbnail, and one asset ("Wide") whose glTF has twelve
-/// buffers of sixteen bytes.
+/// with its thumbnail (the first also with another file, "notes"), and one
+/// asset ("Wide") whose glTF has twelve buffers of sixteen bytes.
 pub(crate) fn busy_world() -> World {
     let mut w = world();
     let mut assets = serde_json::Map::new();
@@ -609,6 +637,13 @@ pub(crate) fn busy_world() -> World {
     assets.insert("w".into(), json!("bafyWide"));
     w.put("bafyC7", json!({ "type": "collection", "name": "Many", "assets": assets }));
     w.tokens.insert("7".into(), "bafyC7".into());
+    // Part0 (m0) has another file: notes, stored raw.
+    let notes = b"Notes on Part0.".to_vec();
+    let mut part0: Value = serde_json::from_slice(&w.files["bafyMany0"]).unwrap();
+    part0["representations"] = json!([{ "id": "notes", "role": "other", "format": "txt",
+        "name": "Notes.txt", "cid": "bafyNotes", "bytes": notes.len(), "encoding": "raw", "created_at": 1 }]);
+    w.put("bafyMany0", part0);
+    w.files.insert("bafyNotes".into(), notes);
     w
 }
 

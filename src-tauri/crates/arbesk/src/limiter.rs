@@ -25,6 +25,10 @@ use crate::progress::CANCELLED;
 pub const READS: usize = 8;
 /// How many chain RPC calls are in flight at once, across the whole app.
 pub const RPCS: usize = 4;
+/// How many bytes of parts every build together may hold or have on their
+/// way before another part of known size starts (`compose::Window`); each
+/// build still refuses past its own cap.
+pub const HELD: u64 = 512 * 1024 * 1024;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -97,6 +101,10 @@ struct Flight {
 pub struct Limiter {
     reads: Pool,
     rpcs: Pool,
+    /// The bytes of parts builds hold or have on their way, and the most
+    /// they may before another part of known size starts.
+    held: Mutex<u64>,
+    held_cap: u64,
     /// Reads under way, by what they read (a gateway URL).
     flights: Mutex<HashMap<String, Arc<Flight>>>,
 }
@@ -112,8 +120,41 @@ impl Limiter {
         Self {
             reads: Pool::new(reads.max(1)),
             rpcs: Pool::new(rpcs.max(1)),
+            held: Mutex::new(0),
+            held_cap: HELD,
             flights: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The same limits with another shared byte budget (tests use small ones).
+    #[cfg(test)]
+    pub fn with_held(self, held_cap: u64) -> Self {
+        Self { held_cap, ..self }
+    }
+
+    /// Hold `bytes` of the builds' shared budget, if they fit beside what
+    /// is held, or if the build asking has nothing on its way (`alone`): a
+    /// build may always fetch one part, so builds never wait on each other
+    /// for ever. False leaves nothing held; the build asks again later.
+    pub fn hold(&self, bytes: u64, alone: bool) -> bool {
+        let mut held = lock(&self.held);
+        let fits = held.saturating_add(bytes) <= self.held_cap;
+        if fits || alone {
+            *held = held.saturating_add(bytes);
+        }
+        fits || alone
+    }
+
+    /// Give back `bytes` held with [`Limiter::hold`].
+    pub fn let_go(&self, bytes: u64) {
+        let mut held = lock(&self.held);
+        *held = held.saturating_sub(bytes);
+    }
+
+    /// How many bytes the builds hold now (tests).
+    #[cfg(test)]
+    pub fn holding(&self) -> u64 {
+        *lock(&self.held)
     }
 
     /// A gateway read's permit (see [`Pool::take`]).
@@ -168,39 +209,52 @@ impl Limiter {
     }
 
     /// Run `read` for everyone waiting on `flight`, then let them have it.
+    /// A read nobody else waits for is handed back as it is, never copied:
+    /// the answer is only published (and each follower copies it) when
+    /// someone joined the flight while it was under way.
     fn lead(
         &self,
         key: &str,
-        flight: &Flight,
+        flight: &Arc<Flight>,
         read: &dyn Fn() -> Result<Vec<u8>, String>,
     ) -> Result<Vec<u8>, String> {
-        /// Lands the flight even if `read` panics, so nobody waits for ever.
+        /// Lands the flight if `read` panics, so nobody waits for ever.
         struct Landing<'a> {
             limiter: &'a Limiter,
             key: &'a str,
             flight: &'a Flight,
-            answer: Option<Result<Arc<Vec<u8>>, String>>,
+            armed: bool,
         }
         impl Drop for Landing<'_> {
             fn drop(&mut self) {
-                lock(&self.limiter.flights).remove(self.key);
-                let answer = self
-                    .answer
-                    .take()
-                    .unwrap_or_else(|| Err("The read stopped unexpectedly.".into()));
-                *lock(&self.flight.answer) = Some(answer);
-                self.flight.landed.notify_all();
+                if self.armed {
+                    lock(&self.limiter.flights).remove(self.key);
+                    *lock(&self.flight.answer) = Some(Err("The read stopped unexpectedly.".into()));
+                    self.flight.landed.notify_all();
+                }
             }
         }
         let mut landing = Landing {
             limiter: self,
             key,
             flight,
-            answer: None,
+            armed: true,
         };
-        let answer = read().map(Arc::new);
-        landing.answer = Some(answer.clone());
-        drop(landing);
+        let answer = read();
+        landing.armed = false;
+        // Once the key is gone nobody new can join, so the count is final:
+        // the leader's own `Arc` and one per follower.
+        let followed = {
+            let mut flights = lock(&self.flights);
+            flights.remove(key);
+            Arc::strong_count(flight) > 1
+        };
+        if !followed {
+            return answer;
+        }
+        let answer = answer.map(Arc::new);
+        *lock(&flight.answer) = Some(answer.clone());
+        flight.landed.notify_all();
         answer.map(Arc::unwrap_or_clone)
     }
 }
@@ -248,6 +302,10 @@ impl<'a> Limited<'a> {
 impl Http for Limited<'_> {
     fn get(&self, url: &str) -> Result<Vec<u8>, HttpError> {
         self.inner.get(url)
+    }
+
+    fn get_within(&self, url: &str, cap: u64) -> Result<Vec<u8>, HttpError> {
+        self.inner.get_within(url, cap)
     }
 
     fn get_streamed(
@@ -394,6 +452,38 @@ mod tests {
         // Once landed, the next caller reads again.
         limiter.shared("bafyX", &never, || Ok(Vec::new())).unwrap();
         assert!(lock(&limiter.flights).is_empty());
+    }
+
+    /// A read nobody joined is handed back as it was read: the same
+    /// allocation, never copied (a part can be hundreds of megabytes).
+    #[test]
+    fn a_read_nobody_shares_is_not_copied() {
+        let limiter = Limiter::default();
+        let read = Mutex::new(0usize);
+        let answer = limiter
+            .shared("bafyBig", &never, || {
+                let bytes = vec![7u8; 1 << 20];
+                *lock(&read) = bytes.as_ptr() as usize;
+                Ok(bytes)
+            })
+            .unwrap();
+        assert_eq!(answer.as_ptr() as usize, *lock(&read));
+        assert!(lock(&limiter.flights).is_empty());
+    }
+
+    /// The builds' shared byte budget: what fits is held, what does not
+    /// waits unless its build has nothing on its way, and comes back.
+    #[test]
+    fn the_shared_byte_budget_holds_what_fits_or_a_lone_part() {
+        let limiter = Limiter::default().with_held(100);
+        assert!(limiter.hold(60, false));
+        assert!(!limiter.hold(50, false), "past the budget");
+        assert_eq!(limiter.holding(), 60);
+        assert!(limiter.hold(50, true), "a build with nothing on its way");
+        assert_eq!(limiter.holding(), 110);
+        limiter.let_go(110);
+        assert_eq!(limiter.holding(), 0);
+        assert!(limiter.hold(100, false));
     }
 
     #[test]

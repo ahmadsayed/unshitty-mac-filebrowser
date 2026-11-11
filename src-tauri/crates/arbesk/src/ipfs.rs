@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::http::Http;
+use crate::http::{Http, TOO_LONG};
 
 const BROTLI_MAGIC: &[u8] = b"ARB\x01";
 const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
@@ -27,6 +27,15 @@ pub const TOO_LARGE: &str = "Arbesk sent a file larger than File Browser reads."
 pub const JSON_CAP: u64 = 16 * 1024 * 1024;
 /// The most one part of an asset may hold once unpacked.
 pub const PART_CAP: u64 = 512 * 1024 * 1024;
+/// A capped read found more than its cap (see [`Gateway::bytes_within`]).
+const OVER: &str = "The part is larger than its source says.";
+
+/// How far a part whose source declares `size` bytes may be read: a
+/// little more, for a packed body's framing and a padded buffer.
+pub fn within(size: u64) -> u64 {
+    size.saturating_add(size / 64).saturating_add(4096)
+}
+
 /// The most a thumbnail may hold once unpacked; the Studio's are a few
 /// hundred kilobytes.
 pub const IMAGE_CAP: u64 = 16 * 1024 * 1024;
@@ -356,15 +365,41 @@ impl<'a> Gateway<'a> {
     /// client's limits when it has some: a read permit, and a read of the
     /// same CID already under way shared rather than asked again.
     fn get(&self, cid: &str) -> Result<Vec<u8>, String> {
+        self.get_within(cid, None)
+    }
+
+    /// [`Gateway::get`], reading at most `cap` bytes when given one: past
+    /// it the answer is [`OVER`]. A capped read is only shared with reads
+    /// of the same cap.
+    fn get_within(&self, cid: &str, cap: Option<u64>) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
-        let read = || self.http.get(&url).map_err(|error| storage_error(cid, error));
+        let read = || {
+            let answer = match cap {
+                Some(cap) => self.http.get_within(&url, cap),
+                None => self.http.get(&url),
+            };
+            answer.map_err(|error| match cap {
+                Some(_) if error.message == TOO_LONG => OVER.to_string(),
+                _ => storage_error(cid, error),
+            })
+        };
         let Some(limits) = self.http.limits() else {
             return read();
         };
-        limits.limiter.shared(&url, limits.stop, || {
+        let key = match cap {
+            Some(cap) => format!("{url} within {cap}"),
+            None => url.clone(),
+        };
+        limits.limiter.shared(&key, limits.stop, || {
             let _permit = limits.limiter.read(limits.stop)?;
             read()
         })
+    }
+
+    /// What the gateway's client is limited by, if anything (a build's
+    /// shared byte budget is its limiter's).
+    pub fn limits(&self) -> Option<crate::limiter::Limits<'_>> {
+        self.http.limits()
     }
 
     /// Whether the operation these reads are for was stopped (a cancel, a
@@ -416,6 +451,26 @@ impl<'a> Gateway<'a> {
     /// The content at `cid`, unpacked.
     pub fn bytes(&self, cid: &str) -> Result<Vec<u8>, String> {
         self.fetch(cid, self.part_cap)
+    }
+
+    /// The content at `cid`, unpacked, when it is about the `size` its
+    /// source declares: neither the body nor what it unpacks to is read
+    /// past [`within`]`(size)`, and `None` says the part is larger than
+    /// declared (the caller fetches it again as one of unknown size). A
+    /// size at the part cap or past it reads as [`Gateway::bytes`].
+    pub fn bytes_within(&self, cid: &str, size: u64) -> Result<Option<Vec<u8>>, String> {
+        let cap = within(size);
+        if cap >= self.part_cap {
+            return self.bytes(cid).map(Some);
+        }
+        let body = match self.get_within(cid, Some(cap)) {
+            Err(error) if error == OVER => return Ok(None),
+            body => body?,
+        };
+        match unpack(body, cap) {
+            Err(error) if error == TOO_LARGE => Ok(None),
+            unpacked => unpacked.map(Some),
+        }
     }
 
     /// The picture at `cid` (an asset's thumbnail), unpacked.

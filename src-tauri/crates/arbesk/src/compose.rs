@@ -3,7 +3,7 @@
 //! `ipfs://` buffer and image as a `data:` URI), a composite 3MF becomes a
 //! `.3mf` zip again. Anything else is refused rather than guessed at.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Cursor, Write};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
@@ -14,7 +14,7 @@ use zip::write::SimpleFileOptions;
 
 use crate::http::TICK;
 use crate::ipfs::Gateway;
-use crate::limiter::READS;
+use crate::limiter::{Limiter, READS};
 use crate::progress::CANCELLED;
 
 pub const UNKNOWN_FORMAT: &str = "This asset uses an Arbesk format File Browser can't read yet.";
@@ -229,10 +229,15 @@ impl Plan {
 /// plan, phase 2): a part whose size is known starts as soon as a worker is
 /// free and its bytes, reserved before the fetch, fit the budget left after
 /// the others in flight (alone, it starts anyway and is charged when it
-/// lands, as before); parts of unknown size are fetched as before, in
-/// pairs charged when they land, and never beside a known one. So the
-/// bytes held never pass the cap by more than one part's, or two unknown
-/// ones'. The assembler takes the parts in its own order.
+/// lands, as before). Its read never goes far past that size
+/// (`Gateway::bytes_within`): a part larger than its source says is put
+/// back as one of unknown size. Parts of unknown size are fetched as
+/// before, in pairs charged when they land, and never beside a known one.
+/// So the bytes held never pass the cap by more than one part's (and the
+/// small slack of `ipfs::within` per part), or two unknown ones'. The
+/// builds of the app also share the limiter's byte budget (`HELD`): a
+/// part of known size waits for it unless its build has nothing on its
+/// way. The assembler takes the parts in its own order.
 struct Window {
     queue: VecDeque<Plan>,
     /// The budget left once what landed is charged.
@@ -247,6 +252,13 @@ struct Window {
     remaining: HashMap<String, usize>,
     /// Bytes fetched and not yet consumed by the assembler.
     fetched: HashMap<String, Vec<u8>>,
+    /// The parts on their way.
+    flying: HashSet<String>,
+    /// What each part holds of the limiter's shared byte budget.
+    held: HashMap<String, u64>,
+    /// Each failed part's failure (a read, the budget), which a wait for
+    /// that part answers with.
+    errors: HashMap<String, String>,
     /// The first failure: a read, the budget, a cancel. It fails the build.
     failed: Option<String>,
     /// The assembler is done: workers start nothing more.
@@ -272,9 +284,21 @@ impl Window {
         }
     }
 
-    fn start(&mut self) -> Option<Plan> {
+    /// The next part, if the window and the shared budget let it start.
+    fn start(&mut self, limiter: Option<&Limiter>) -> Option<Plan> {
+        if !self.may_start() {
+            return None;
+        }
+        let need = self.queue.front()?.need();
+        if let (Some(need), Some(limiter)) = (need, limiter) {
+            if !limiter.hold(need, self.known + self.unknown == 0) {
+                return None;
+            }
+            let cid = self.queue.front()?.cid.clone();
+            *self.held.entry(cid).or_default() += need;
+        }
         let plan = self.queue.pop_front()?;
-        match plan.need() {
+        match need {
             Some(need) => {
                 self.known += 1;
                 self.reserved = self.reserved.saturating_add(need);
@@ -286,10 +310,14 @@ impl Window {
                 self.unknown += 1;
             }
         }
+        self.flying.insert(plan.cid.clone());
         Some(plan)
     }
 
-    fn land(&mut self, plan: &Plan, answer: Result<Vec<u8>, String>) {
+    /// A part's read is back: its bytes, `None` when it is larger than its
+    /// source says (put back, first, as a part of unknown size), or why it
+    /// failed.
+    fn land(&mut self, plan: &Plan, answer: Result<Option<Vec<u8>>, String>, limiter: Option<&Limiter>) {
         match plan.need() {
             Some(need) => {
                 self.known -= 1;
@@ -300,14 +328,40 @@ impl Window {
                 self.pair_open = false;
             }
         }
-        if self.failed.is_some() {
-            return;
-        }
-        match answer.and_then(|bytes| self.charge(bytes, plan.refs)) {
+        self.flying.remove(&plan.cid);
+        let landed = match answer {
+            Ok(None) => {
+                self.let_go(&plan.cid, limiter);
+                self.queue.push_front(Plan { size: None, ..plan.clone() });
+                return;
+            }
+            Ok(Some(bytes)) => self.charge(bytes, plan.refs),
+            Err(error) => Err(error),
+        };
+        match landed {
             Ok(bytes) => {
+                if plan.size.is_none()
+                    && let Some(limiter) = limiter
+                {
+                    // Held from now on, though it was not asked for first.
+                    let charged = (bytes.len() as u64).saturating_mul(plan.refs as u64);
+                    limiter.hold(charged, true);
+                    *self.held.entry(plan.cid.clone()).or_default() += charged;
+                }
                 self.fetched.insert(plan.cid.clone(), bytes);
             }
-            Err(error) => self.failed = Some(error),
+            Err(error) => {
+                self.let_go(&plan.cid, limiter);
+                self.errors.insert(plan.cid.clone(), error.clone());
+                self.failed.get_or_insert(error);
+            }
+        }
+    }
+
+    /// Give back what `cid` holds of the shared byte budget.
+    fn let_go(&mut self, cid: &str, limiter: Option<&Limiter>) {
+        if let (Some(bytes), Some(limiter)) = (self.held.remove(cid), limiter) {
+            limiter.let_go(bytes);
         }
     }
 
@@ -319,12 +373,13 @@ impl Window {
     }
 
     /// One reference's bytes, released at the last one.
-    fn take(&mut self, cid: &str) -> Result<Vec<u8>, String> {
+    fn take(&mut self, cid: &str, limiter: Option<&Limiter>) -> Result<Vec<u8>, String> {
         let refs = self.remaining.get_mut(cid).ok_or(UNKNOWN_FORMAT)?;
         *refs -= 1;
         let last = *refs == 0;
         if last {
             self.remaining.remove(cid);
+            self.let_go(cid, limiter);
             self.fetched.remove(cid).ok_or_else(|| UNKNOWN_FORMAT.to_string())
         } else {
             self.fetched
@@ -333,13 +388,49 @@ impl Window {
                 .ok_or_else(|| UNKNOWN_FORMAT.to_string())
         }
     }
+
+    /// What a wait for `cid` answers now, if anything: its bytes, its own
+    /// failure, or the build's once `cid` can no longer land (it is not on
+    /// its way). So of several failed parts, the assembler hears the one it
+    /// asks for first, as it did when parts went in order.
+    fn ready(&mut self, cid: &str, limiter: Option<&Limiter>) -> Option<Result<Vec<u8>, String>> {
+        if self.fetched.contains_key(cid) {
+            return Some(self.take(cid, limiter));
+        }
+        if let Some(error) = self.errors.get(cid) {
+            return Some(Err(error.clone()));
+        }
+        if let Some(error) = self.failed.as_ref().filter(|_| !self.flying.contains(cid)) {
+            return Some(Err(error.clone()));
+        }
+        if self.workers == 0 {
+            // Nothing more lands: a worker ended without landing `cid`.
+            return Some(Err(self.failed.clone().unwrap_or_else(|| STOPPED.into())));
+        }
+        None
+    }
 }
+
+/// Why a build fails when a worker ended without landing its part.
+const STOPPED: &str = "The download stopped unexpectedly.";
 
 /// The parts of one build, fetched within its budget (see [`Window`]).
 struct Parts<'g> {
     gateway: &'g Gateway<'g>,
+    /// The client's limiter, whose byte budget the app's builds share.
+    limiter: Option<&'g Limiter>,
     window: Mutex<Window>,
     changed: Condvar,
+}
+
+impl Drop for Parts<'_> {
+    /// Whatever the build still holds of the shared byte budget goes back.
+    fn drop(&mut self) {
+        if let Some(limiter) = self.limiter {
+            let window = self.window.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner());
+            limiter.let_go(window.held.drain().map(|(_, bytes)| bytes).sum());
+        }
+    }
 }
 
 impl<'g> Parts<'g> {
@@ -357,6 +448,7 @@ impl<'g> Parts<'g> {
         let workers = plans.len().min(READS);
         let parts = Parts {
             gateway,
+            limiter: gateway.limits().map(|limits| limits.limiter),
             window: Mutex::new(Window {
                 remaining: plans.iter().map(|plan| (plan.cid.clone(), plan.refs)).collect(),
                 queue: plans.into(),
@@ -366,6 +458,9 @@ impl<'g> Parts<'g> {
                 unknown: 0,
                 pair_open: false,
                 fetched: HashMap::new(),
+                flying: HashSet::new(),
+                held: HashMap::new(),
+                errors: HashMap::new(),
                 failed: None,
                 done: false,
                 workers,
@@ -397,11 +492,17 @@ impl<'g> Parts<'g> {
     /// A worker: fetch the next part whenever the window lets it, until the
     /// queue is empty, the build failed or the assembler is done.
     fn work(&self) {
-        /// Counts the worker out however it ends.
+        /// Counts the worker out however it ends; one that panicked fails
+        /// the build, since the part it was fetching will never land.
         struct Out<'a, 'g>(&'a Parts<'g>);
         impl Drop for Out<'_, '_> {
             fn drop(&mut self) {
-                self.0.lock().workers -= 1;
+                let mut window = self.0.lock();
+                window.workers -= 1;
+                if std::thread::panicking() {
+                    window.failed.get_or_insert_with(|| STOPPED.into());
+                }
+                drop(window);
                 self.0.changed.notify_all();
             }
         }
@@ -418,15 +519,17 @@ impl<'g> Parts<'g> {
                         self.changed.notify_all();
                         return;
                     }
-                    if window.may_start() {
-                        break window.start();
+                    if let Some(plan) = window.start(self.limiter) {
+                        break plan;
                     }
                     window = self.wait(window);
                 }
             };
-            let Some(plan) = plan else { return };
-            let answer = self.gateway.bytes(&plan.cid);
-            self.lock().land(&plan, answer);
+            let answer = match plan.size {
+                Some(size) => self.gateway.bytes_within(&plan.cid, size),
+                None => self.gateway.bytes(&plan.cid).map(Some),
+            };
+            self.lock().land(&plan, answer, self.limiter);
             self.changed.notify_all();
         }
     }
@@ -435,7 +538,8 @@ impl<'g> Parts<'g> {
     /// every reference, and its bytes are released after the last one. A
     /// part the source did not declare (or asked for past its references)
     /// still gets one reference and is fetched here, so a caller can never
-    /// skip it silently. Any failure of the build fails it.
+    /// skip it silently. A failure of `cid` fails with its words; else any
+    /// failure of the build, once `cid` is not on its way.
     fn fetch(&self, cid: &str) -> Result<Vec<u8>, String> {
         let mut window = self.lock();
         if !window.remaining.contains_key(cid) {
@@ -447,15 +551,8 @@ impl<'g> Parts<'g> {
             window.fetched.insert(cid.to_string(), bytes);
         }
         loop {
-            if window.fetched.contains_key(cid) {
-                return window.take(cid);
-            }
-            if let Some(error) = &window.failed {
-                return Err(error.clone());
-            }
-            if window.workers == 0 {
-                // A worker ended without landing its part (it panicked).
-                return Err("The download stopped unexpectedly.".into());
+            if let Some(answer) = window.ready(cid, self.limiter) {
+                return answer;
             }
             window = self.wait(window);
         }
@@ -1224,6 +1321,202 @@ mod tests {
             assert!(error.starts_with("Arbesk's storage has nothing at bafyP3."), "{error}");
             assert_eq!(compose(&gateway, &source).unwrap_err(), error);
         }
+    }
+
+    /// A gateway that records each capped read's cap, and counts the most
+    /// whole (uncapped) reads in flight at once; each read takes 20 ms.
+    struct Capped {
+        inner: FakeHttp,
+        caps: Mutex<Vec<u64>>,
+        running: AtomicUsize,
+        peak: AtomicUsize,
+    }
+
+    impl crate::http::Http for Capped {
+        fn get(&self, url: &str) -> Result<Vec<u8>, crate::http::HttpError> {
+            let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(20));
+            let answer = self.inner.get(url);
+            self.running.fetch_sub(1, Ordering::SeqCst);
+            answer
+        }
+        fn get_within(&self, url: &str, cap: u64) -> Result<Vec<u8>, crate::http::HttpError> {
+            self.caps.lock().unwrap().push(cap);
+            std::thread::sleep(Duration::from_millis(20));
+            // The real client stops reading at the cap; the fake checks after.
+            let body = self.inner.get(url)?;
+            if body.len() as u64 > cap {
+                return Err(crate::http::HttpError::new(Some(200), crate::http::TOO_LONG));
+            }
+            Ok(body)
+        }
+        fn get_streamed(&self, _: &str, _: u64, _: &mut dyn FnMut(&[u8]) -> bool) -> Result<(), crate::http::HttpError> {
+            unreachable!("parts are not streamed")
+        }
+        fn post_json(&self, _: &str, _: &Value, _: Option<&str>) -> Result<Vec<u8>, crate::http::HttpError> {
+            unreachable!("parts are not posted")
+        }
+        fn post_json_slow(&self, _: &str, _: &Value, _: Option<&str>) -> Result<Vec<u8>, crate::http::HttpError> {
+            unreachable!("parts are not posted")
+        }
+        fn post_multipart(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[u8],
+            _: &[(&str, &str)],
+            _: Option<&str>,
+        ) -> Result<Vec<u8>, crate::http::HttpError> {
+            unreachable!("parts are not uploaded")
+        }
+        fn delete(&self, _: &str, _: Option<&str>) -> Result<(), crate::http::HttpError> {
+            unreachable!("parts are not deleted")
+        }
+    }
+
+    /// A source that understates its parts' sizes can't hold more than
+    /// fixed pairs did: a part of known size is never read far past its
+    /// size, and one larger than declared is fetched again as one of
+    /// unknown size, in pairs charged as they land.
+    #[test]
+    fn a_source_that_understates_its_sizes_cannot_overshoot_the_budget() {
+        let http = Capped {
+            inner: FakeHttp::new(|_| Ok(vec![1u8; 10_000])),
+            caps: Mutex::new(Vec::new()),
+            running: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        };
+        let cache = tempfile::tempdir().unwrap();
+        let gateway = Gateway::new(
+            &http,
+            "https://gw.test/ipfs",
+            ManifestCache::new(cache.path().into(), 1 << 20),
+        );
+        let cids = ["bafyP0", "bafyP1", "bafyP2", "bafyP3", "bafyP4", "bafyP5"];
+        let source = sized_buffers(&cids, 1);
+        assert_eq!(
+            compose_preview_within(&gateway, &source, 25_000).unwrap_err(),
+            TOO_LARGE_TO_BUILD
+        );
+        let caps = http.caps.lock().unwrap();
+        assert!(!caps.is_empty());
+        assert!(caps.iter().all(|&cap| cap == crate::ipfs::within(1)), "{caps:?}");
+        let peak = http.peak.load(Ordering::SeqCst);
+        assert!(peak <= PARALLEL_PARTS, "{peak} whole parts read at once");
+        // Sizes that are right are read within them and built.
+        let http = Capped {
+            inner: FakeHttp::new(|_| Ok(vec![1u8; 100])),
+            caps: Mutex::new(Vec::new()),
+            running: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        };
+        let gateway = Gateway::new(
+            &http,
+            "https://gw.test/ipfs",
+            ManifestCache::new(cache.path().into(), 1 << 20),
+        );
+        assert!(compose_preview(&gateway, &sized_buffers(&cids, 100)).is_ok());
+        assert_eq!(http.caps.lock().unwrap().len(), 6);
+        assert_eq!(http.peak.load(Ordering::SeqCst), 0);
+    }
+
+    /// A worker that panics mid-read fails the build (the panic goes on to
+    /// the caller, as it did from a pair) instead of leaving its slot taken
+    /// and the build waiting for ever.
+    #[test]
+    fn a_worker_that_panics_does_not_hang_the_build() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let built = std::panic::catch_unwind(|| {
+                let http = FakeHttp::new(|request| {
+                    if request.url.ends_with("/bafyP1") {
+                        panic!("a decoder gave up");
+                    }
+                    Ok(vec![1u8; 10])
+                });
+                let cache = tempfile::tempdir().unwrap();
+                let buffers = ["bafyP0", "bafyP1", "bafyP2", "bafyP3"].map(|cid| json!({ "uri": format!("ipfs://{cid}") }));
+                let source = json!({ "buffers": buffers });
+                compose_preview(&gateway_for(&http, cache.path()), &source).map(|_| ())
+            });
+            let _ = sender.send(built.map_err(|_| "panicked").and_then(|built| built.map_err(|_| "failed")));
+        });
+        let ended = receiver.recv_timeout(Duration::from_secs(5));
+        assert!(matches!(ended, Ok(Err(_))), "{ended:?}");
+    }
+
+    /// Of several failed parts, the build fails with the first the
+    /// assembler asks for, as when parts went in order, not the first to
+    /// fail in time.
+    #[test]
+    fn of_two_failed_parts_the_first_in_order_is_told() {
+        let http = FakeHttp::new(|request| {
+            if request.url.ends_with("/bafyP1") {
+                std::thread::sleep(Duration::from_millis(100));
+                return Err(not_found());
+            }
+            if request.url.ends_with("/bafyP4") {
+                return Err(crate::http::HttpError::new(None, "connection reset"));
+            }
+            Ok(vec![1u8; 10])
+        });
+        let cache = tempfile::tempdir().unwrap();
+        let cids = ["bafyP0", "bafyP1", "bafyP2", "bafyP3", "bafyP4", "bafyP5"];
+        let error = compose_preview(&gateway_for(&http, cache.path()), &sized_buffers(&cids, 10)).unwrap_err();
+        assert!(error.starts_with("Arbesk's storage has nothing at bafyP1."), "{error}");
+    }
+
+    /// Builds share the limiter's byte budget: two at once never have
+    /// more on their way than fits it, beside one part a build with
+    /// nothing on its way may always fetch. Each would fetch all four of
+    /// its parts at once alone.
+    #[test]
+    fn builds_at_once_share_one_byte_budget() {
+        use crate::limiter::{Limited, Limiter, never};
+        let running = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let (r, p) = (running.clone(), peak.clone());
+        let http = FakeHttp::new(move |_| {
+            let now = r.fetch_add(1, Ordering::SeqCst) + 1;
+            p.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(30));
+            r.fetch_sub(1, Ordering::SeqCst);
+            Ok(vec![1u8; 100])
+        });
+        let limiter = Limiter::default().with_held(250);
+        let limited = Limited::new(&http, &limiter, &never);
+        let cache = tempfile::tempdir().unwrap();
+        let gateway = gateway_for_http(&limited, cache.path());
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let builds: Vec<_> = ["A", "B"]
+                .map(|build| {
+                    let (gateway, start) = (&gateway, &start);
+                    scope.spawn(move || {
+                        let cids: Vec<String> = (0..4).map(|i| format!("bafy{build}{i}")).collect();
+                        let cids: Vec<&str> = cids.iter().map(String::as_str).collect();
+                        start.wait();
+                        compose_preview(gateway, &sized_buffers(&cids, 100))
+                    })
+                })
+                .into_iter()
+                .collect();
+            for build in builds {
+                assert!(build.join().unwrap().is_ok());
+            }
+        });
+        let peak = peak.load(Ordering::SeqCst);
+        assert!(peak <= 3, "{peak} parts on their way at once");
+        assert_eq!(limiter.holding(), 0, "every build gave its bytes back");
+    }
+
+    fn gateway_for_http<'a>(http: &'a dyn crate::http::Http, cache: &Path) -> Gateway<'a> {
+        Gateway::new(
+            http,
+            "https://gw.test/ipfs",
+            ManifestCache::new(cache.into(), 1 << 20),
+        )
     }
 
     #[test]

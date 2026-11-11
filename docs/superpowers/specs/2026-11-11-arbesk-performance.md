@@ -154,20 +154,52 @@ flight never pass 8, whatever runs at once.
   as before: in pairs (`PARALLEL_PARTS` = 2) charged when both land, never
   beside a sized one. Any failure (a read, the budget, a cancel) fails the
   build with its words; reads under way finish, workers start nothing more.
+  Of several failed parts, the build tells the failure of the part the
+  assembler asks for first (each part's failure is kept), as when parts
+  went in order; a worker that panics fails the build rather than keeping
+  its slot (the panic still reaches the caller).
+- A part of known size is read no further than that size
+  (`Gateway::bytes_within` through `Http::get_within`, with the slack of
+  `ipfs::within`): a source that understates a size can't start eight
+  large reads at once. A part found larger than declared is put back,
+  first, as a part of unknown size and fetched again in a pair, charged as
+  it lands: the verdict is the one charging every part gives, and what is
+  held never passes the cap by more than one part (or two of unknown size),
+  as with fixed pairs.
+- The shared byte budget: the limiter's `HELD` (512 MiB) counts the parts
+  every build holds or has on its way. A part of known size waits for it
+  unless its build has nothing on its way (so builds never wait on each
+  other for ever); a part of unknown size is counted once it lands. A
+  part's bytes go back when the assembler takes its last reference, or when
+  the build ends. Each build still refuses past its own cap; a waiting
+  build hears a freed budget at the next `TICK`.
+- `Client::part` resolves the scene without the part's stop, as
+  `Client::scene` does: resolving leaves out what it can't read, so a
+  cancelled read there would keep a scene with parts missing.
+- A shared read nobody else joined is handed back as it was read, never
+  copied; only a read with followers is published for them to copy.
 - Not changed: what is read and where results land, the frontend's caps
   (thumbnails 4, the copy-out plan 4).
 - Tests: `limiter`'s own (the cap, a cancel while waiting, shared reads,
-  their failures and cancels, `bridged`), `ipfs`'
+  their failures and cancels, a read nobody shares not copied, the shared
+  byte budget, `bridged`), `ipfs`'
   `callers_of_one_cid_at_once_share_one_read`, `compose`'s
   `a_slow_part_does_not_idle_the_others`,
   `parts_in_flight_never_overshoot_the_budget`,
   `one_failed_part_among_many_fails_the_build`,
-  `a_part_size_comes_from_byte_length_or_its_recorded_bytes` and
-  `a_build_waiting_for_a_permit_stops_on_a_cancel`, and the client's
+  `a_part_size_comes_from_byte_length_or_its_recorded_bytes`,
+  `a_build_waiting_for_a_permit_stops_on_a_cancel`,
+  `a_source_that_understates_its_sizes_cannot_overshoot_the_budget`,
+  `a_worker_that_panics_does_not_hang_the_build`,
+  `of_two_failed_parts_the_first_in_order_is_told` and
+  `builds_at_once_share_one_byte_budget`, and the client's
   `every_read_shares_one_limit` (a listing, a build and four thumbnails:
   12 reads at once without the limiter, at most 8 with it),
-  `a_cancel_while_waiting_for_a_permit_returns_at_once` and
-  `one_unreachable_read_still_fails_the_listing`.
+  `a_cancel_while_waiting_for_a_permit_returns_at_once`,
+  `one_unreachable_read_still_fails_the_listing`,
+  `chain_calls_never_pass_their_own_limit`,
+  `a_file_download_waits_for_a_read_permit` and
+  `a_cancelled_part_keeps_no_scene_missing_parts`.
 
 ## Phase 3: a scene's models load together
 
