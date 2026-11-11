@@ -189,3 +189,34 @@ test("a paste made before the view shows an earlier paste's names still asks Rep
     document.elementFromPoint = pointAt;
   }
 });
+
+test("a drop on the collection on screen, with no focus since another app added the name, still asks Replace, Skip or Keep Both", async () => {
+  // A drop onto a background window does not focus it (macOS, Mutter): the
+  // drop itself is what says another app may have written meanwhile.
+  const pointAt = document.elementFromPoint;
+  let target: Element | null = null;
+  document.elementFromPoint = () => target;
+  try {
+    await invoke("create_file", { path: `${UP}/Lid.glb` });
+    await openCollection("Untitled Collection");
+    const collection = await collectionPath("Untitled Collection");
+    expect(names()).not.toContain("Lid.gltf");
+    // Another app (besk, Studio) adds it behind the window's back; no focus event.
+    await invoke("copy_entry", { from: `${UP}/Lid.glb`, to: `${collection}/~Lid.gltf`, overwrite: false });
+    expect(await listed(collection)).toContain("Lid.gltf");
+    expect(names()).not.toContain("Lid.gltf");
+    target = $(".view-overlay");
+    const drop = (window as unknown as { __mockDrop: (paths: string[], x: number, y: number) => void }).__mockDrop;
+    drop([`${UP}/Lid.glb`], 10, 10);
+    await settle(30);
+    expect(dialogHeading()).toBe("Copy to Arbesk?");
+    await respond("Copy");
+    await vi.waitFor(() => expect(dialogHeading()).toBe("Replace file “Lid.gltf”?"), { timeout: 2000 });
+    await respond("Skip");
+    await settle(30);
+    expect($$(".toast").map((t) => t.textContent ?? "").join(" ")).not.toContain("already exists");
+    expect((await listed(collection)).filter((n) => n === "Lid.gltf")).toHaveLength(1);
+  } finally {
+    document.elementFromPoint = pointAt;
+  }
+});

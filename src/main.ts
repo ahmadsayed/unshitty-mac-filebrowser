@@ -3215,7 +3215,8 @@ function wroteIn(dir: string): void {
   lastWriteIn.set(dir, ++writeCount);
 }
 
-/** The window came back: anything may have changed. */
+/** The window came back, or took a drop from another app (which need not
+ *  focus it): anything may have changed. */
 function windowReturned(): void {
   lastReturn = ++writeCount;
 }
@@ -4346,6 +4347,10 @@ function externalDropOp(target: DropTarget, sources: string[], own: boolean, dev
 
 /** Files dragged in from Finder, GNOME Files or a browser's downloads. */
 async function dropFromOtherApp(all: string[], target: DropTarget | null): Promise<void> {
+  // A drop onto a background window does not focus it (macOS, Mutter), yet
+  // other apps may have written since: it counts as the window coming back,
+  // so no listing taken before it answers for the names it lands.
+  windowReturned();
   const paths = localDropPaths(all);
   // Decided on arrival, before any wait: the drag's end can be reported
   // meanwhile. A drag out that comes back is over once dropped here.

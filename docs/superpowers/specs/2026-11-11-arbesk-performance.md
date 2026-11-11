@@ -349,7 +349,9 @@ becomes none. Paste of 200 files into 5,000 assets: 200 listings become 1.
   folder (each item landed, `showLanded`; attach and remove, also when
   they fail, as a late Cancel may have written; rename; Move to Trash)
   and each time the window comes back (another app, or another window of
-  this one, may have written anywhere; the view reloads then too). The
+  this one, may have written anywhere; the view reloads then too), and
+  with each drop from another app (`dropFromOtherApp`: a drop onto a
+  background window does not focus it on macOS or under Mutter). The
   view's listing and the clipboard's summaries keep the count from when
   their listing started; a write into their collection since, or a
   return of the window, makes them unknown.
