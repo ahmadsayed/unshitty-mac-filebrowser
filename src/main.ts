@@ -5142,7 +5142,9 @@ async function previewArbeskScene(entry: Entry, seq: number, version: string | n
 /** The preview's part fetches under way, by ticket: a closed or stepped
  *  preview cancels them (performance plan, phase 3). */
 const partTickets = new Set<number>();
-let partTicketSeq = 0;
+// From the clock at load: a reload never reuses a ticket the backend may
+// still hold a cancel for (`part_tickets.rs`).
+let partTicketSeq = Date.now();
 
 /** Stop these part fetches, queued or reading. */
 function cancelPartFetches(tickets: Iterable<number>): void {

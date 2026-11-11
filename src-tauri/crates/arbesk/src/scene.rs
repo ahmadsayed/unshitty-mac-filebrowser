@@ -192,13 +192,16 @@ enum Answer {
 }
 
 /// A scene's reads, made a level at a time: every answer kept, a failed
-/// read as its failure, so the walk leaves out what [`resolve`] leaves out.
+/// read as its failure for the walk's first ask (read again after, as
+/// [`resolve`] does), so the walk leaves out what [`resolve`] leaves out.
 struct Known<'a> {
     links: &'a (dyn Links + Sync),
     manifests: HashMap<String, Result<Value, String>>,
     /// By the link, as [`Walk`] keys them.
     linked: HashMap<String, Result<String, String>>,
     formats: HashMap<String, Result<Format, String>>,
+    /// The failures already answered to the walk, by kind and key.
+    spent: Mutex<HashSet<String>>,
 }
 
 impl<'a> Known<'a> {
@@ -212,6 +215,7 @@ impl<'a> Known<'a> {
             manifests: HashMap::new(),
             linked: HashMap::new(),
             formats: HashMap::new(),
+            spent: Mutex::default(),
         };
         known
             .manifests
@@ -303,24 +307,45 @@ impl<'a> Known<'a> {
 
 impl Links for Known<'_> {
     fn manifest(&self, cid: &str) -> Result<Value, String> {
-        match self.manifests.get(cid) {
-            Some(known) => known.clone(),
-            None => self.links.manifest(cid),
-        }
+        self.known("manifest", cid, self.manifests.get(cid), || self.links.manifest(cid))
     }
 
     fn linked(&self, child_ref: &Value) -> Result<String, String> {
-        match self.linked.get(&child_ref.to_string()) {
-            Some(known) => known.clone(),
-            None => self.links.linked(child_ref),
-        }
+        let key = child_ref.to_string();
+        self.known("linked", &key, self.linked.get(&key), || self.links.linked(child_ref))
     }
 
     fn format(&self, source_cid: &str) -> Result<Format, String> {
-        match self.formats.get(source_cid) {
-            Some(known) => known.clone(),
-            None => self.links.format(source_cid),
+        self.known("format", source_cid, self.formats.get(source_cid), || {
+            self.links.format(source_cid)
+        })
+    }
+}
+
+impl Known<'_> {
+    /// What was read for `kind` `key`: a success every time; a failure only
+    /// the first time the walk asks (the level's read stood in for that
+    /// ask), and read again after, as [`resolve`] reads again what failed
+    /// (a gateway caches only what it read). So a read that fails once and
+    /// then works leaves out what [`resolve`] leaves out, no more.
+    fn known<T: Clone>(
+        &self,
+        kind: &str,
+        key: &str,
+        known: Option<&Result<T, String>>,
+        read: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        match known {
+            Some(Ok(answer)) => Ok(answer.clone()),
+            Some(Err(failed)) if self.spent_failure(kind, key) => Err(failed.clone()),
+            _ => read(),
         }
+    }
+
+    /// Whether this is the first time the walk is answered `kind` `key`'s failure.
+    fn spent_failure(&self, kind: &str, key: &str) -> bool {
+        let mut spent = self.spent.lock().unwrap_or_else(|e| e.into_inner());
+        spent.insert(format!("{kind} {key}"))
     }
 }
 
@@ -501,6 +526,8 @@ mod tests {
         /// How many times `linked` and `format` were asked.
         asked: std::cell::Cell<usize>,
         formats_asked: std::cell::Cell<usize>,
+        /// Manifests and sources whose first read fails (a gateway hiccup).
+        fail_once: std::cell::RefCell<HashSet<String>>,
     }
 
     impl Fake {
@@ -519,6 +546,9 @@ mod tests {
 
     impl Links for Fake {
         fn manifest(&self, cid: &str) -> Result<Value, String> {
+            if self.fail_once.borrow_mut().remove(cid) {
+                return Err(format!("{cid} timed out"));
+            }
             self.manifests
                 .get(cid)
                 .cloned()
@@ -534,6 +564,9 @@ mod tests {
         }
         fn format(&self, source_cid: &str) -> Result<Format, String> {
             self.formats_asked.set(self.formats_asked.get() + 1);
+            if self.fail_once.borrow_mut().remove(source_cid) {
+                return Err(format!("{source_cid} timed out"));
+            }
             self.formats
                 .get(source_cid)
                 .copied()
@@ -1001,6 +1034,45 @@ mod tests {
         // A link is still asked once, a source's format once.
         let fake = slow.fake.lock().unwrap();
         assert_eq!((fake.asked.get(), fake.formats_asked.get()), (6, 8));
+    }
+
+    /// A read that fails once and then works: the walk reads it again at
+    /// its next place, as the depth-first walk does, so a source and a
+    /// linked asset each placed twice keep their second placement.
+    #[test]
+    fn a_read_that_fails_once_is_read_again_as_the_walk_does() {
+        let flaky = || {
+            let mut fake = Fake::default();
+            fake.asset(
+                "bafyRoot",
+                json!([
+                    source_node("bafyS1", Some(translation(1.0, 0.0, 0.0))),
+                    link_node("chair", translation(2.0, 0.0, 0.0)),
+                    source_node("bafyS1", Some(translation(5.0, 0.0, 0.0))),
+                    link_node("chair", translation(-2.0, 0.0, 0.0)),
+                ]),
+            );
+            fake.asset("bafyChair", json!([source_node("bafyS2", None)]));
+            fake.link("chair", "bafyChair");
+            fake.source("bafyS1", Format::Gltf);
+            fake.source("bafyS2", Format::Gltf);
+            for cid in ["bafyS1", "bafyChair"] {
+                fake.fail_once.borrow_mut().insert(cid.into());
+            }
+            fake
+        };
+        let serial = resolve("bafyRoot", &flaky());
+        let placed: Vec<(&str, usize)> = serial
+            .parts
+            .iter()
+            .map(|part| (part.key.as_str(), part.placements.len()))
+            .collect();
+        assert_eq!(placed, [("bafyS1", 1), ("bafyS2", 1)]);
+        let slow = Slow::new(flaky());
+        assert_eq!(resolve_together("bafyRoot", &slow), serial);
+        // The level's failed read stood in for the walk's first ask: S1's
+        // format is read twice, as the depth-first walk reads it.
+        assert_eq!(slow.fake.lock().unwrap().formats_asked.get(), 3);
     }
 
     /// The depth limit, the placement cap, a cycle and what can't be read

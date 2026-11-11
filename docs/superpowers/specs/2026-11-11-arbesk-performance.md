@@ -237,8 +237,11 @@ parts strictly one after another (`loadArbeskParts`, `src/main.ts:5101-5121`:
   at the shallowest level it is linked from, and its links are followed
   while that level is under `MAX_LINK_DEPTH`. Then the unchanged
   depth-first `resolve` walks those answers (`Known` is its `Links`: a
-  failed read kept as its failure; anything not read is asked then, as
-  before), so the parts, their order, placements and omissions are the
+  failed read answers the walk's first ask with its failure and is read
+  again at each later ask, as the serial walk reads again what failed (the
+  gateway caches only what it read), so a read that fails once and then
+  works leaves out no more than before; anything not read is asked then,
+  as before), so the parts, their order, placements and omissions are the
   ones the serial walk gives. The one difference in what is read: a scene
   past the 2,000-placement cap may have the format of a source read that
   the walk, stopped by the cap, never asks for.
@@ -247,7 +250,15 @@ parts strictly one after another (`loadArbeskParts`, `src/main.ts:5101-5121`:
 - `arbesk_part` takes a `ticket` (`part_tickets::PartTickets`, one
   `Progress` per window and ticket) and `cancel_arbesk_parts(tickets)`
   cancels it: the fetch, waiting for a limiter permit or reading, stops and
-  answers "Cancelled.".
+  answers "Cancelled.". `arbesk_part` is async and registers its ticket
+  only when the runtime first runs it, while the cancel runs at once, so a
+  cancel can overtake its call: a cancel of a ticket not running is kept
+  (the last 64) and that part starts cancelled. The frontend numbers its
+  tickets from `Date.now()` at load, so a reload never reuses one a kept
+  cancel names. `PartTickets` repeats `thumbnails::Requests`' shape rather
+  than sharing a generic registry with it: thumbnails keep their own
+  cancel behaviour (a cancel before start still reaches nothing there),
+  which this phase leaves as it was; one registry for both is a follow-up.
 - The frontend's window is `src/arbesk-parts.ts` (`fetchParts`,
   `PARTS_AT_ONCE` = 4). The limit is reserved per call in flight: a call
   gets its share of what the calls in flight and the parts landed but not
@@ -271,7 +282,9 @@ parts strictly one after another (`loadArbeskParts`, `src/main.ts:5101-5121`:
   `reading_together_leaves_out_what_the_walk_leaves_out`,
   `a_scenes_sources_and_links_are_read_together` (the fake gateway's peak
   in flight above 1, the scene equal to a serial walk's) and
-  `part_tickets`' own; the frontend's `tests/arbesk-parts.test.ts` (random
+  `a_read_that_fails_once_is_read_again_as_the_walk_does`, and
+  `part_tickets`' own (`a_cancel_before_its_part_starts_starts_it_cancelled`
+  among them); the frontend's `tests/arbesk-parts.test.ts` (random
   scenes answered out of order against the one-at-a-time loop: same parts,
   same *too large*, the limit never passed) and
   `tests/arbesk-scene-parts.test.ts` (order and placements kept when calls
