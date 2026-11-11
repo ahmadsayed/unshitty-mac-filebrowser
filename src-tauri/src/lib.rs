@@ -683,13 +683,15 @@ async fn arbesk_attach(
 }
 
 /// Remove the file `id` from the Arbesk asset at `path` as one new version
-/// (spec F12); operation `op`, as `arbesk_attach`. The asset's files
+/// (spec F12), only while it is still the file `cid` the Files… page
+/// showed; operation `op`, as `arbesk_attach`. The asset's files
 /// afterwards.
 #[tauri::command]
 async fn arbesk_detach(
     app: tauri::AppHandle,
     path: String,
     id: String,
+    cid: String,
     op: String,
     on_progress: Channel<ProgressUpdate>,
 ) -> Result<places::Json, String> {
@@ -698,7 +700,7 @@ async fn arbesk_detach(
         let cx = places_cx(&app, tracking.progress.clone());
         let registry = app.state::<places::Registry>();
         let result = arbesk_ext(&registry, |ext| ext.representations)
-            .and_then(|reps| reps.detach(&path, &id, &cx).map_err(String::from));
+            .and_then(|reps| reps.detach(&path, &id, &cid, &cx).map_err(String::from));
         tracking.finish();
         result
     })

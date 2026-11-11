@@ -364,11 +364,19 @@ impl<'a> Uploader<'a> {
         self.fresh.pop_front().ok_or_else(|| UNREADABLE.to_string())
     }
 
-    /// Upload `bytes` as `file_name`; the CID IPFS gave it.
+    /// Upload `bytes` as `file_name`; the CID IPFS gave it. A failure
+    /// names the file the uploader was made for.
     pub(crate) fn upload(&mut self, file_name: &str, bytes: &[u8]) -> Result<String, String> {
+        let shown = self.name;
+        self.upload_shown(file_name, bytes, shown)
+    }
+
+    /// Upload `bytes` as `file_name`, a failure naming `shown` (one file of
+    /// several an attach uploads).
+    pub(crate) fn upload_shown(&mut self, file_name: &str, bytes: &[u8], shown: &str) -> Result<String, String> {
         let url = self.next_url()?;
         let fields = [("network", "public")];
-        let failed = |why: &str| format!("Couldn't upload “{}” to IPFS: {why}", self.name);
+        let failed = |why: &str| format!("Couldn't upload “{shown}” to IPFS: {why}");
         let answer = self
             .http
             .post_multipart(&url, file_name, bytes, &fields, None)

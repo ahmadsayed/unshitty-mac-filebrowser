@@ -2206,8 +2206,10 @@ function attached(path: string, refused: string[]) {
   return { files: arbeskRepresentations(path, null), representations: arbeskSummary(asset) ?? null, refused };
 }
 
-/** Once a write's checks pass: the test switches. */
-function arbeskWriteChecks(name: string, removing: boolean): void {
+/** Once a write's checks pass: the test switches. A failed upload names
+ *  the file going up: an attach's first file, a remove's asset (its
+ *  manifests are all it uploads). */
+function arbeskWriteChecks(name: string, removing: boolean, uploading = name): void {
   if (arbeskWrites.conflictNext) {
     arbeskWrites.conflictNext = false;
     throw removing
@@ -2216,7 +2218,7 @@ function arbeskWriteChecks(name: string, removing: boolean): void {
   }
   if (arbeskWrites.failUploadNext) {
     arbeskWrites.failUploadNext = false;
-    throw `Couldn't upload “${name}” to IPFS: The server answered 500.`;
+    throw `Couldn't upload “${uploading}” to IPFS: The server answered 500.`;
   }
 }
 
@@ -2231,7 +2233,7 @@ function arbeskAttach(a: Args) {
   arbeskSessionFor(ARBESK_ATTACH_SIGN_IN);
   const adding = a.files as Array<{ path: string; choice?: { kind: string; cid?: string } }>;
   const local = adding.map((file) => mockLocalFile(file.path));
-  arbeskWriteChecks(name, false);
+  arbeskWriteChecks(name, false, local[0]?.name);
   const stored = storedIds(asset);
   const taken = new Set(stored.all);
   const given = new Set<string>();
@@ -2270,15 +2272,18 @@ function arbeskAttach(a: Args) {
   return attached(path, refused);
 }
 
-/** `arbesk_detach` (spec F12): the next version without the entry; the
- *  list dropped once it empties. */
+/** `arbesk_detach` (spec F12): the next version without the entry, only
+ *  while it still holds the file `cid` the row showed; the list dropped
+ *  once it empties. */
 function arbeskDetach(a: Args) {
   const path = str(a, "path");
   const asset = arbeskAsset(path);
   arbeskSessionFor(ARBESK_DETACH_SIGN_IN);
   arbeskWriteChecks(`${asset.name}.${asset.ext}`, true);
   const id = str(a, "id");
-  if (!(asset.representations ?? []).some((rep) => rep.id === id)) throw "This file is no longer in the asset.";
+  const stored = storedIds(asset);
+  if (!stored.all.has(id)) throw "This file is no longer in the asset.";
+  if (stored.valid.get(id) !== str(a, "cid")) throw "This file was replaced in the asset since it was shown. Nothing was removed.";
   const kept = (asset.representations ?? []).filter((rep) => rep.id !== id);
   asset.representations = kept.length ? kept : undefined;
   newFilesVersion(asset);

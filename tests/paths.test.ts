@@ -4,7 +4,7 @@ import { expect, test } from "vitest";
 import {
   childPath, cloudSegmentName, decodeSegment, homeFolder, isCloudRoot, isKnownPath, isUnder, isWithin, joinCloudPath, joinSharePath, joinSftpPath,
   isCloudPath, isRemotePath, isShareLink, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket,
-  isSharePath, isSftpPath, resolveTypedPath, isArbeskPath, isArbeskAccount, isArbeskAsset, isArbeskCollection, isArbeskFile, arbeskAccountKey,
+  isSharePath, isSftpPath, resolveTypedPath, isArbeskPath, isArbeskAccount, isArbeskAsset, isArbeskCollection, isArbeskFile, arbeskFilePin, arbeskAccountKey,
 } from "../src/paths";
 
 const HOME = "/Users/me";
@@ -312,6 +312,15 @@ test("an Arbesk asset's other file is the fourth level, below its asset", () => 
   const elsewhere = ["arbesk://0xab/1~S/a~B.gltf/stl~x", `${account}/abc~S/a~B.gltf/stl~x`, `${account}//1~S/a~B.gltf/stl~x`, `${account}/1~S//a~B.gltf/stl~x`, `${account}/1~S%/a~B.gltf/stl~x`, `${account}/1~S/~B.gltf/stl~x`];
   for (const path of [asset, `${asset}/`, `${asset}/x`, `${asset}/~B.stl`, `${asset}/stl~B.stl/more~x`, ...malformed.map((file) => `${asset}/${file}`), ...elsewhere, "/Users/me/1~S/a~B.gltf/stl~B.stl", "gdrive://acct/1~S/a~B/stl~B.stl", "arbesk://"]) {
     expect(isArbeskFile(path), path).toBe(false);
+  }
+});
+
+test("an Arbesk asset's other file's pin is the CID after its id's @", () => {
+  const asset = "arbesk://0x00000000000000000000000000000000000000ab/1~S/a~B.gltf";
+  expect(arbeskFilePin(`${asset}/gcode-mk4@bafyG1~B.gcode`)).toBe("bafyG1");
+  expect(arbeskFilePin(`${asset}/gcode%40bafyG1~B.gcode/`)).toBe("bafyG1");
+  for (const path of [`${asset}/stl~B.stl`, asset, `${asset}/stl@~x`, "/Users/me/1~S/a~B.gltf/stl@bafy1~B.stl"]) {
+    expect(arbeskFilePin(path), path).toBeNull();
   }
 });
 

@@ -3,6 +3,7 @@
 import { expect, test, vi } from "vitest";
 import { Channel, fileShareMock, invoke, nativeIconMock, searchMock, setMockDriveEmail } from "../dev/mock-tauri/core";
 import { installFakeCanvas } from "./app";
+import { arbeskFilePin } from "../src/paths";
 
 const HOME = "/Users/me";
 
@@ -1733,7 +1734,7 @@ test("Arbesk: adding files to an asset and removing them: arbesk_attach_plan, ar
   await expect(invoke("arbesk_attach_plan", { path: asset, files: [`${HOME}/Desktop`] })).rejects.toBe("Only files on this computer can be added to an asset.");
   await expect(invoke("arbesk_attach_plan", { path: asset, files: [await local("README")] })).rejects.toBe("“README” has no file type to record.");
 
-  type Attached = { files: Array<{ id: string; stale: boolean }>; representations: { count: number } | null; refused: string[] };
+  type Attached = { files: Array<{ id: string; stale: boolean; path: string }>; representations: { count: number } | null; refused: string[] };
   const listed = async () => (await invoke<Array<{ name: string; representations?: { count: number } }>>("list_dir", { path: `${root}/2~Untitled%20Collection`, showHidden: false })).find((row) => row.name === "Hook.gltf")!;
   // One version for the paste: Keep Both for the clash nobody answered, the unreadable id refused.
   const files = (paths: string[], choice?: unknown) => paths.map((path) => ({ path, choice }));
@@ -1753,23 +1754,35 @@ test("Arbesk: adding files to an asset and removing them: arbesk_attach_plan, ar
   hooks.conflictNext();
   await expect(invoke("arbesk_attach", { path: asset, files: files([blend]), op: "" })).rejects.toBe("“Hook.gltf” changed while the files were being added. Nothing was changed; try again.");
   hooks.failUploadNext();
-  await expect(invoke("arbesk_attach", { path: asset, files: files([blend]), op: "" })).rejects.toBe("Couldn't upload “Hook.gltf” to IPFS: The server answered 500.");
+  // The failed upload names the file going up, not the asset.
+  await expect(invoke("arbesk_attach", { path: asset, files: files([blend]), op: "" })).rejects.toBe("Couldn't upload “Hook.blend” to IPFS: The server answered 500.");
   hooks.expireOnce();
   await expect(invoke("arbesk_attach", { path: asset, files: files([blend]), op: "" })).rejects.toBe("Sign in to Arbesk again to add files to it.");
-  await expect(invoke("arbesk_detach", { path: asset, id: "stl", op: "" })).rejects.toBe("Sign in to Arbesk again to remove files from it.");
+  await expect(invoke("arbesk_detach", { path: asset, id: "stl", cid: "x", op: "" })).rejects.toBe("Sign in to Arbesk again to remove files from it.");
   await invoke("arbesk_connect_finish", { flowId: (await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" })).flow_id });
   expect((await listed()).representations?.count).toBe(4);
 
-  // Remove: a new version without the entry; gone once, refused after; the list goes when it empties.
-  const removed = await invoke<Attached>("arbesk_detach", { path: asset, id: "stl-2", op: "" });
+  // Remove: a new version without the entry, only while it holds the file
+  // the row showed (its path's pin); gone once, refused after; the list
+  // goes when it empties.
+  const shown = await invoke<Attached["files"]>("arbesk_representations", { path: asset, version: null });
+  const pin = (id: string, list = shown) => arbeskFilePin(list.find((file) => file.id === id)!.path)!;
+  await expect(invoke("arbesk_detach", { path: asset, id: "stl-2", cid: pin("stl"), op: "" })).rejects.toBe("This file was replaced in the asset since it was shown. Nothing was removed.");
+  const removed = await invoke<Attached>("arbesk_detach", { path: asset, id: "stl-2", cid: pin("stl-2"), op: "" });
   expect(removed.files.map((file) => file.id)).toEqual(["stl", "gcode", "stl-3"]);
-  await expect(invoke("arbesk_detach", { path: asset, id: "stl-2", op: "" })).rejects.toBe("This file is no longer in the asset.");
+  await expect(invoke("arbesk_detach", { path: asset, id: "stl-2", cid: pin("stl-2"), op: "" })).rejects.toBe("This file is no longer in the asset.");
   hooks.conflictNext();
-  await expect(invoke("arbesk_detach", { path: asset, id: "stl", op: "" })).rejects.toBe("“Hook.gltf” changed while the file was being removed. Nothing was changed; try again.");
-  for (const id of ["stl", "gcode", "stl-3"]) await invoke("arbesk_detach", { path: asset, id, op: "" });
-  const last = await invoke<Attached>("arbesk_detach", { path: asset, id: "plan", op: "" });
+  await expect(invoke("arbesk_detach", { path: asset, id: "stl", cid: pin("stl"), op: "" })).rejects.toBe("“Hook.gltf” changed while the file was being removed. Nothing was changed; try again.");
+  for (const id of ["stl", "gcode", "stl-3"]) await invoke("arbesk_detach", { path: asset, id, cid: pin(id), op: "" });
+  // An entry File Browser can't show is never removed from here.
+  await expect(invoke("arbesk_detach", { path: asset, id: "plan", cid: "", op: "" })).rejects.toBe("This file was replaced in the asset since it was shown. Nothing was removed.");
+  hooks.addAsset("2", "solo", "Solo", [{ id: "stl", format: "stl", name: "Solo.stl", bytes: 10 }]);
+  const solo = `${root}/2~Untitled%20Collection/solo~Solo.gltf`;
+  const soloFiles = await invoke<Attached["files"]>("arbesk_representations", { path: solo, version: null });
+  const last = await invoke<Attached>("arbesk_detach", { path: solo, id: "stl", cid: pin("stl", soloFiles), op: "" });
   expect(last).toEqual({ files: [], representations: null, refused: [] });
-  expect((await listed()).representations).toBeUndefined();
+  const soloRow = (await invoke<Array<{ name: string; representations?: unknown }>>("list_dir", { path: `${root}/2~Untitled%20Collection`, showHidden: false })).find((row) => row.name === "Solo.gltf")!;
+  expect(soloRow.representations).toBeUndefined();
 
   // Only an asset takes files.
   const table = await invoke<Record<string, { can_attach: boolean }>>("capabilities", {});

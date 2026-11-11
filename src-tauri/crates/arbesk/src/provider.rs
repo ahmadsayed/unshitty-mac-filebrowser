@@ -335,8 +335,8 @@ impl ext::Representations for Client {
             serde_json::from_value(files.clone()).map_err(|error| Error::Other(error.to_string()))?;
         Json::of(&Client::attach(self, path, &adding, &cx.progress).map_err(words)?)
     }
-    fn detach(&self, path: &str, id: &str, cx: &Cx) -> Result<Json> {
-        Json::of(&Client::detach(self, path, id, &cx.progress).map_err(words)?)
+    fn detach(&self, path: &str, id: &str, cid: &str, cx: &Cx) -> Result<Json> {
+        Json::of(&Client::detach(self, path, id, cid, &cx.progress).map_err(words)?)
     }
 }
 
@@ -900,13 +900,19 @@ mod tests {
         assert_eq!(words(reps.attach(&asset, &files, &Cx::default()).unwrap_err()), "Sign in to Arbesk again to add files to it.");
         assert_eq!(sessions.load(&account.id), None);
         assert_eq!(words(reps.attach(&asset, &files, &Cx::default()).unwrap_err()), "Sign in to Arbesk again to add files to it.");
-        assert_eq!(words(reps.detach(&asset, "stl", &Cx::default()).unwrap_err()), "Sign in to Arbesk again to remove files from it.");
+        assert_eq!(words(reps.detach(&asset, "stl", "bafyAny", &Cx::default()).unwrap_err()), "Sign in to Arbesk again to remove files from it.");
         // Signed in again, the file goes in, and comes out.
         let kept = Session { token: "t".into(), expires_at_ms: signin::now_ms() + 3_600_000 };
         sessions.save(&account.id, &kept).unwrap();
         let attached = reps.attach(&asset, &files, &Cx::default()).unwrap();
         assert!(attached.as_str().contains("\"count\":1"), "{}", attached.as_str());
-        let detached = reps.detach(&asset, "stl", &Cx::default()).unwrap();
+        let attached: serde_json::Value = serde_json::from_str(attached.as_str()).unwrap();
+        // The file the page shows: its path's pin.
+        let shown = attached["files"][0]["path"].as_str().unwrap();
+        let crate::location::ArbeskPath::File { pin: Some(cid), .. } = crate::location::parse(shown).unwrap() else {
+            panic!("{shown}")
+        };
+        let detached = reps.detach(&asset, "stl", &cid, &Cx::default()).unwrap();
         assert!(detached.as_str().contains("\"files\":[]"), "{}", detached.as_str());
         assert_eq!(words(reps.attach(COLLECTION, &files, &Cx::default()).unwrap_err()), "Add files to an asset.");
     }

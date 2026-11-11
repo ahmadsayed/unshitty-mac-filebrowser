@@ -381,6 +381,19 @@ class InFlight {
   }
 }
 
+/** A conflict dialog's *Apply this action to all conflicts (N)* check-row,
+ *  shown when `remaining` more conflicts follow this one (N counts this one
+ *  too); `onChange` hears whether it is ticked. Null when none follow. */
+export function applyToAllRow(remaining: number, onChange: (all: boolean) => void): HTMLElement | null {
+  if (remaining <= 0) return null;
+  const row = document.createElement("label");
+  row.className = "check-row";
+  row.innerHTML = `<input type="checkbox" /><span></span>`;
+  row.querySelector("span")!.textContent = `Apply this action to all conflicts (${remaining + 1})`;
+  row.querySelector("input")!.addEventListener("change", (e) => onChange((e.target as HTMLInputElement).checked));
+  return row;
+}
+
 export function openDialog(opts: {
   heading: string;
   body?: string;

@@ -96,6 +96,16 @@ export function isArbeskFile(path: string): boolean {
   return match !== null && match[1] !== "primary";
 }
 
+/** The CID an Arbesk asset's other file's path is pinned to
+ *  (`…/<file-id>@<cid>~<name>`), or null for any other path: the file a
+ *  Files… row showed, which Remove… agrees to remove. */
+export function arbeskFilePin(path: string): string | null {
+  if (!isArbeskFile(path)) return null;
+  const segment = path.replace(/\/+$/, "").split("/").pop()!;
+  const match = ARBESK_FILE_ID.exec(arbeskSegmentId(segment)!);
+  return match?.[2]?.slice(1) ?? null;
+}
+
 /** Whether `path` is an Arbesk collection, the one place files are copied into:
  *  `arbesk://<address>/<token>~<name>`. */
 export function isArbeskCollection(path: string): boolean {

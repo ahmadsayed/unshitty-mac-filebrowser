@@ -540,8 +540,9 @@ pub mod ext {
         /// (`files`); the item's files afterwards.
         fn attach(&self, path: &str, files: &serde_json::Value, cx: &Cx) -> Result<Json>;
         /// Remove the other file `id` from the item at `path` as one new
-        /// version; the item's files afterwards.
-        fn detach(&self, path: &str, id: &str, cx: &Cx) -> Result<Json>;
+        /// version, only while it is still the file `cid` the user saw;
+        /// the item's files afterwards.
+        fn detach(&self, path: &str, id: &str, cid: &str, cx: &Cx) -> Result<Json>;
     }
 
     /// Features that only make sense for items on this computer (Make Link,

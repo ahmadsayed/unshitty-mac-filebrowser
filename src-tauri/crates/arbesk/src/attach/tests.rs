@@ -87,9 +87,13 @@ impl Fixture {
         self.attach_with(&self.http, adding)
     }
 
-    fn detach(&self, id: &str) -> Result<Attached, String> {
+    fn detach(&self, id: &str, cid: &str) -> Result<Attached, String> {
+        self.detach_with(&self.http, id, cid)
+    }
+
+    fn detach_with(&self, http: &dyn Http, id: &str, cid: &str) -> Result<Attached, String> {
         let progress = Progress::default();
-        detach(&self.writer(&self.http, &progress), &box_path(), id)
+        detach(&self.writer(http, &progress), &box_path(), id, cid)
     }
 
     /// The asset manifest Shapes lists for a1 now, and its CID.
@@ -383,6 +387,11 @@ fn new_collection(w: &mut World, cid: &str, edit: impl FnOnce(&mut Value)) {
 /// Another client's save of a1 lands: a new manifest (with a key of its
 /// own and a new model) at `cid`, and the collection points at it.
 fn another_save(world: &Arc<Mutex<World>>, cid: &str) {
+    another_save_with(world, cid, |_| {});
+}
+
+/// The same, its manifest also changed by `edit`.
+fn another_save_with(world: &Arc<Mutex<World>>, cid: &str, edit: impl FnOnce(&mut Value)) {
     let mut w = world.lock().unwrap();
     let collection: Value = serde_json::from_slice(&w.files[&w.tokens["1"]]).unwrap();
     let current = collection["assets"]["a1"].as_str().unwrap().to_string();
@@ -392,6 +401,7 @@ fn another_save(world: &Arc<Mutex<World>>, cid: &str) {
     let source = w.files["bafySrcGltf"].clone();
     w.files.insert(format!("{cid}Src"), source);
     manifest["prev_asset_manifest_cid"] = json!(current);
+    edit(&mut manifest);
     w.put(cid, manifest);
     new_collection(&mut w, cid, |collection| collection["assets"]["a1"] = json!(cid));
 }
@@ -402,11 +412,12 @@ fn a_failed_upload_leaves_the_asset_unchanged() {
     let a = f.file("A.stl", b"solid a");
     let b = f.file("B.stl", b"solid b");
     let before = f.box_manifest();
-    for from in [1, 2, 3, 4] {
+    // Each failure names what was going up: a pasted file, then the asset.
+    for (from, named) in [(1, "A.stl"), (2, "B.stl"), (3, "Box.gltf"), (4, "Box.gltf")] {
         let mut watched = Watched::new(&f.http);
         watched.failing_from = Some(from);
         let error = f.attach_with(&watched, &adding(&[&a, &b])).unwrap_err();
-        assert!(error.starts_with("Couldn't upload"), "{error}");
+        assert_eq!(error, format!("Couldn't upload “{named}” to IPFS: The server answered 500."));
         assert_eq!(f.box_manifest(), before, "failing from upload {from}");
         assert_eq!(f.token(), "bafyC1");
     }
@@ -484,6 +495,37 @@ fn an_asset_gone_from_its_collection_is_said() {
     let error = f.attach_with(&watched, &adding(&[&stl])).unwrap_err();
     assert_eq!(error, "“Box.gltf” is no longer in the collection.");
     assert!(f.sent(RELAY).is_empty());
+    // Gone before the write first reads it: the same words, nothing uploaded.
+    let f = fixture(|w| {
+        new_collection(w, "bafyNoBox", |collection| {
+            collection["assets"].as_object_mut().unwrap().remove("a1");
+        });
+    });
+    let stl = f.file("A.stl", b"solid a");
+    assert_eq!(f.attach(&adding(&[&stl])).unwrap_err(), "“Box.gltf” is no longer in the collection.");
+    assert_eq!(f.detach("stl", "bafyOldStl").unwrap_err(), "“Box.gltf” is no longer in the collection.");
+    assert!(f.sent(UPLOADS).is_empty() && f.sent(RELAY).is_empty());
+}
+
+#[test]
+fn a_file_refused_first_and_settled_on_the_retry_counts_in_the_total() {
+    let f = fixture(with_files);
+    let plan_file = f.file("Print.plan", b"later");
+    let stl = f.file("A.stl", b"solid a");
+    let world = f.world.clone();
+    // The other save drops the entry that held `plan`: on the retry the
+    // `.plan` file settles too.
+    let watched = Watched::new(&f.http).after(2, move || {
+        another_save_with(&world, "bafyTheirs", |manifest| {
+            manifest["representations"].as_array_mut().unwrap().retain(|entry| entry["id"] != "plan");
+        });
+    });
+    let progress = Progress::default();
+    let attached = attach(&f.writer(&watched, &progress), &box_path(), &adding(&[&plan_file, &stl])).unwrap();
+    assert!(attached.refused.is_empty());
+    let done = progress.snapshot();
+    assert_eq!(done.total, Some(5 + 7));
+    assert_eq!(done.bytes, 5 + 7);
 }
 
 #[test]
@@ -578,7 +620,7 @@ fn a_child_ref_asset_records_no_derived_from() {
 fn a_detach_writes_the_next_version_without_the_entry() {
     let f = fixture(with_files);
     let (before_cid, before) = f.box_manifest();
-    let attached = f.detach("stl").unwrap();
+    let attached = f.detach("stl", "bafyOldStl").unwrap();
     let (_, after) = f.box_manifest();
     assert_eq!(without_owned(&after), without_owned(&before));
     assert_eq!(ids(&after), ["plan", "source"]);
@@ -587,7 +629,49 @@ fn a_detach_writes_the_next_version_without_the_entry() {
     assert_eq!(attached.files.len(), 1);
     // Uploads: the two manifests, nothing else.
     assert_eq!(f.sent(UPLOADS).len(), 2);
-    assert_eq!(f.detach("stl").unwrap_err(), "This file is no longer in the asset.");
+    assert_eq!(f.detach("stl", "bafyOldStl").unwrap_err(), "This file is no longer in the asset.");
+}
+
+#[test]
+fn a_detach_removes_only_the_file_the_user_saw() {
+    const CHANGED: &str = "This file was replaced in the asset since it was shown. Nothing was removed.";
+    // Replaced before the page was opened again: refused before anything goes up.
+    let f = fixture(with_files);
+    assert_eq!(f.detach("stl", "bafyElse").unwrap_err(), CHANGED);
+    // An entry File Browser can't show is never removed from here.
+    assert_eq!(f.detach("plan", "").unwrap_err(), CHANGED);
+    assert!(f.sent(UPLOADS).is_empty() && f.sent(RELAY).is_empty());
+    // Replaced by another save while the remove was written: the retry
+    // from the new tip finds another file under `stl` and changes nothing.
+    let f = fixture(with_files);
+    let world = f.world.clone();
+    let watched = Watched::new(&f.http).after(1, move || {
+        another_save_with(&world, "bafyTheirs", |manifest| {
+            manifest["representations"][0]["cid"] = json!("bafyTheirStl");
+        });
+    });
+    assert_eq!(f.detach_with(&watched, "stl", "bafyOldStl").unwrap_err(), CHANGED);
+    assert!(f.sent(RELAY).is_empty());
+    let (cid, after) = f.box_manifest();
+    assert_eq!(cid, "bafyTheirs");
+    assert_eq!(after["representations"][0]["cid"], "bafyTheirStl");
+}
+
+#[test]
+fn a_list_that_isnt_one_is_never_overwritten_or_dropped() {
+    let f = fixture(|w| {
+        with_files(w);
+        let mut manifest: Value = serde_json::from_slice(&w.files["bafyA1"]).unwrap();
+        manifest["representations"] = json!({ "schema": 2, "items": [] });
+        w.put("bafyA1", manifest);
+    });
+    let words = "“Box.gltf” has files File Browser can't show.";
+    let stl = f.file("Box.stl", b"solid");
+    assert_eq!(plan(&f.http, &f.site, &box_path(), std::slice::from_ref(&stl), f.cache.path()).unwrap_err(), words);
+    assert_eq!(f.attach(&adding(&[&stl])).unwrap_err(), words);
+    assert_eq!(f.detach("stl", "bafyOldStl").unwrap_err(), words);
+    assert!(f.sent(UPLOADS).is_empty() && f.sent(RELAY).is_empty());
+    assert_eq!(f.token(), "bafyC1");
 }
 
 #[test]
@@ -598,7 +682,7 @@ fn the_list_goes_once_it_empties() {
         manifest["representations"] = json!([manifest["representations"][0].clone()]);
         w.put("bafyA1", manifest);
     });
-    let attached = f.detach("stl").unwrap();
+    let attached = f.detach("stl", "bafyOldStl").unwrap();
     let (_, after) = f.box_manifest();
     assert!(after.get("representations").is_none());
     assert!(attached.files.is_empty() && attached.representations.is_none());
@@ -715,26 +799,38 @@ fn besk_fixture() -> Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
+/// Each case's file, made on disk from its text, recorded through the real
+/// path (`local_file`: format, role, the G-code's details and id; `settle`:
+/// Replace or Keep Both) and added to the next version as an attach adds
+/// it. besk records only the profile its flags give, so the tool and stats
+/// File Browser reads from a slicer's G-code are checked on their own.
 #[test]
 fn the_next_manifest_is_besks() {
     let fixture = besk_fixture();
-    for case in fixture["cases"].as_array().unwrap() {
+    let dir = tempfile::tempdir().unwrap();
+    for (n, case) in fixture["cases"].as_array().unwrap().iter().enumerate() {
         let name = case["name"].as_str().unwrap();
-        let base = based_on(case["current"].clone(), case["cid"].as_str().unwrap(), case["listed"].as_str().unwrap(), case["asset_id"].as_str().unwrap()).unwrap();
-        let mut next = next_version_of(&base, case["cid"].as_str().unwrap(), case["now"].as_i64().unwrap());
+        let (cid, now) = (case["cid"].as_str().unwrap(), case["now"].as_i64().unwrap());
+        let base = based_on(case["current"].clone(), cid, case["listed"].as_str().unwrap(), case["asset_id"].as_str().unwrap()).unwrap();
+        let mut next = next_version_of(&base, cid, now);
         for file in case["files"].as_array().unwrap() {
-            let local = LocalFile {
-                path: String::new(),
-                name: file["name"].as_str().unwrap().into(),
-                format: file["format"].as_str().unwrap().into(),
-                role: reps::default_role(file["format"].as_str().unwrap()),
-                bytes: file["bytes"].as_u64().unwrap(),
-                details: Details::default(),
-                id: String::new(),
-            };
-            let id = reps::representation_id(local.role, &local.format, None);
+            let folder = dir.path().join(n.to_string());
+            std::fs::create_dir_all(&folder).unwrap();
+            let path = folder.join(file["name"].as_str().unwrap());
+            std::fs::write(&path, file["text"].as_str().unwrap()).unwrap();
+            let local = local_file(&path.to_string_lossy()).unwrap();
+            assert_eq!(local.bytes, file["bytes"].as_u64().unwrap(), "{name}");
+            let choice: Option<Choice> = serde_json::from_value(file["choice"].clone()).unwrap();
+            let settled = settle(&base, std::slice::from_ref(&local), &[choice]);
+            let id = &settled.ids[0].1;
             let encoding = reps::encoding_for(&local.format);
-            let entry = entry_of(&next, &local, &id, file["cid"].as_str().unwrap(), local.bytes, encoding, case["now"].as_i64().unwrap());
+            let mut entry = entry_of(&next, &local, id, file["cid"].as_str().unwrap(), local.bytes, encoding, now);
+            let fields = entry.as_object_mut().unwrap();
+            let (tool, stats) = (fields.remove("tool"), fields.remove("stats"));
+            if local.details.tool.is_some() {
+                assert_eq!(tool, Some(json!({ "name": "PrusaSlicer", "version": "2.9.2" })), "{name}");
+                assert_eq!(stats, Some(json!({ "print_time_s": 7380, "filament_g": 38.5 })), "{name}");
+            }
             next = with_entries(next, vec![entry]);
         }
         assert_eq!(next, case["next"], "{name}");

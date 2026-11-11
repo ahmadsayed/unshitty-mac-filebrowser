@@ -451,10 +451,11 @@ impl Client {
         self.writing(path, attach::SIGN_IN, progress, |writer| attach::attach(writer, path, adding))
     }
 
-    /// Remove the file `id` from the asset at `path` as one new version
+    /// Remove the file `id` from the asset at `path` as one new version,
+    /// only while it is still the file `cid` the user saw
     /// (`attach::detach`, spec F12). Arbesk's 401 ends the session.
-    pub fn detach(&self, path: &str, id: &str, progress: &Progress) -> Result<Attached, String> {
-        self.writing(path, attach::SIGN_IN_REMOVE, progress, |writer| attach::detach(writer, path, id))
+    pub fn detach(&self, path: &str, id: &str, cid: &str, progress: &Progress) -> Result<Attached, String> {
+        self.writing(path, attach::SIGN_IN_REMOVE, progress, |writer| attach::detach(writer, path, id, cid))
     }
 
     /// `work` as the account `path` belongs to, signed in: a missing

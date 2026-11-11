@@ -1,7 +1,7 @@
 // Which files the 3D preview takes, and which companion files a .gltf may
 // load (src/models.ts).
 import { expect, test } from "vitest";
-import { companionPath, gltfCompanions, isGlb, modelFormat } from "../src/models";
+import { companionPath, gltfCompanions, gltfExternalUris, isGlb, modelFormat } from "../src/models";
 import { sampleGlb, sampleGltf } from "../dev/mock-tauri/models";
 
 test.each([
@@ -48,6 +48,17 @@ test("a .gltf's companions are its buffers' and images' files, each once, withou
   expect(gltfCompanions({})).toEqual([]);
   expect(gltfCompanions(null)).toEqual([]);
   expect(gltfCompanions({ buffers: [{ uri: 7 }] })).toEqual([]);
+});
+
+test("what a .gltf loads from outside itself is every URI but a data: one, escapes and absolute ones too", () => {
+  expect(
+    gltfExternalUris({
+      buffers: [{ uri: "../a.bin" }, { uri: "data:application/octet-stream;base64,AAAA" }, { uri: "file:///a.bin" }, { byteLength: 4 }],
+      images: [{ uri: "/abs/wood.png" }, { uri: "DATA:image/png;base64,AA" }, { uri: "../a.bin" }, { uri: "https://example.com/t.png" }],
+    }),
+  ).toEqual(["../a.bin", "file:///a.bin", "/abs/wood.png", "https://example.com/t.png"]);
+  expect(gltfExternalUris({ buffers: [{ uri: "data:,x" }] })).toEqual([]);
+  expect(gltfExternalUris(null)).toEqual([]);
 });
 
 test("a GLB is known by its first bytes, whatever its name", () => {

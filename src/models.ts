@@ -39,6 +39,17 @@ export function companionPath(uri: string): string | null {
 
 type GltfJson = { buffers?: Array<{ uri?: unknown }>; images?: Array<{ uri?: unknown }> };
 
+/** Every buffer and image URI a .gltf names that isn't a `data:` URI, each
+ *  once, as written: what it loads from outside itself, wherever that is
+ *  (beside it, above its folder, an absolute `file:` URI). */
+export function gltfExternalUris(json: unknown): string[] {
+  const doc = (json ?? {}) as GltfJson;
+  const uris = [...(doc.buffers ?? []), ...(doc.images ?? [])]
+    .map((item) => item?.uri)
+    .filter((uri): uri is string => typeof uri === "string" && !/^data:/i.test(uri));
+  return [...new Set(uris)];
+}
+
 /** The companion files a .gltf names (its buffers' and images' URIs), each once, as written. */
 export function gltfCompanions(json: unknown): string[] {
   const doc = (json ?? {}) as GltfJson;

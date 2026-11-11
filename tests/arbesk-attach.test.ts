@@ -5,7 +5,7 @@
 // Remove… on the Files… page. The account is connected before the app boots.
 import { beforeAll, expect, test, vi } from "vitest";
 import { invoke } from "../dev/mock-tauri/core";
-import { $, $$, boot, click, closeOverlays, dialogHeading, goTo, installFakeCanvas, key, menuLabels, names, open, respond, rightClick, settle, toasts } from "./app";
+import { $, $$, accountGroups, boot, click, closeOverlays, dialogHeading, goTo, installFakeCanvas, key, menuLabels, names, open, openOnlineAccounts, respond, rightClick, settle, toasts } from "./app";
 
 const ATT = "/Users/me/Att";
 const PRINTS = "/Users/me/Documents/Projects/Prints";
@@ -18,6 +18,7 @@ type ArbeskHooks = {
   expireOnce(): void;
   conflictNext(): void;
   failUploadNext(): void;
+  changeFile(token: string, asset: string, file: string): void;
   addAsset(token: string, id: string, name: string, files: unknown[], unreadable?: unknown[]): void;
 };
 const arbeskMock = () => (globalThis as unknown as { __mockArbesk: ArbeskHooks }).__mockArbesk;
@@ -302,5 +303,25 @@ test("Remove… without a session says so in the dialog", async () => {
   expect(dialogHeading()).toBe("Remove “Part.stl” From “Table.gltf”?");
   expect($(".dialog-layer:last-child .field-message").textContent).toBe("Sign in to Arbesk again to remove files from it.");
   await closeOverlays();
+  // The account now reads as needing a sign-in, as after an attach.
+  await openOnlineAccounts();
+  expect(accountGroups()[0].rows).toEqual(["Arbesk · me@example.com · Sign in again"]);
+  await closeOverlays();
   arbeskMock().signedIn = true;
+});
+
+test("Remove… of a file replaced since the page showed it removes nothing", async () => {
+  await openCollection("Untitled Collection");
+  await openFiles("Table.gltf");
+  const before = await idsOf("2~Untitled%20Collection", "table~Table.gltf");
+  // Another save puts other bytes under the row's id.
+  arbeskMock().changeFile("2", "table", "stl");
+  await click($$(".files-dialog .files-row-menu")[1]);
+  await click($$(".popover .menu-item").find((el) => el.textContent?.trim() === "Remove…")!);
+  await settle(10);
+  await respond("Remove");
+  await settle(20);
+  expect($(".dialog-layer:last-child .field-message").textContent).toBe("This file was replaced in the asset since it was shown. Nothing was removed.");
+  expect(await idsOf("2~Untitled%20Collection", "table~Table.gltf")).toEqual(before);
+  await closeOverlays();
 });

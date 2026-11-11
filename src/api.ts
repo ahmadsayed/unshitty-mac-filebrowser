@@ -830,9 +830,10 @@ export async function arbeskAttach(path: string, files: Array<{ path: string; ch
 }
 
 /** Remove the file `id` from the Arbesk asset `path` as one new version
- *  (spec F12), as operation `tracked`. */
-export async function arbeskDetach(path: string, id: string, tracked: Tracked): Promise<Attached> {
-  return invoke<Attached>("arbesk_detach", { path, id, ...trackedArgs(tracked) });
+ *  (spec F12), only while it is still the file `cid` the row showed, as
+ *  operation `tracked`. */
+export async function arbeskDetach(path: string, id: string, cid: string, tracked: Tracked): Promise<Attached> {
+  return invoke<Attached>("arbesk_detach", { path, id, cid, ...trackedArgs(tracked) });
 }
 
 export async function previewBytes(path: string, limit: number): Promise<ArrayBuffer> {

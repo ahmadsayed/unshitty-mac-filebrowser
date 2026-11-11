@@ -43,6 +43,8 @@ pub(crate) const ONLY_LOCAL: &str = "Only files on this computer can be added to
 pub(crate) const FULL: &str = "An asset holds at most 32 files.";
 /// A removed file whose entry is gone already.
 pub(crate) const GONE_FILE: &str = "This file is no longer in the asset.";
+/// A removed file whose entry holds another file than the one shown.
+pub(crate) const CHANGED_FILE: &str = "This file was replaced in the asset since it was shown. Nothing was removed.";
 
 fn no_type(name: &str) -> String {
     format!("“{name}” has no file type to record.")
@@ -75,6 +77,21 @@ fn changed_while_removing(asset: &str) -> String {
 
 fn not_in_collection(asset: &str) -> String {
     format!("“{asset}” is no longer in the collection.")
+}
+
+/// A `representations` value that isn't a list (a newer schema's, or a
+/// broken write): never overwritten or dropped.
+fn unreadable_files(asset: &str) -> String {
+    format!("“{asset}” has files File Browser can't show.")
+}
+
+/// Refuse a write to `manifest` when its `representations` is there but
+/// not a list: the write would replace or drop what this app can't read.
+fn list_readable(manifest: &Value, listed: &str) -> Result<(), String> {
+    match manifest.get("representations") {
+        None | Some(Value::Null | Value::Array(_)) => Ok(()),
+        Some(_) => Err(unreadable_files(listed)),
+    }
 }
 
 // ---- A local file -------------------------------------------------------------
@@ -348,6 +365,7 @@ pub fn plan(
     let (cid, manifest) = reader.asset_manifest(&token_id, &asset_id)?;
     let listed = reader.name_of(&manifest, &asset_id, &cid)?;
     let base = based_on(manifest, &cid, &listed, &asset_id)?;
+    list_readable(&base, &listed)?;
     let stored = Stored::of(&base);
     let infos = reps::infos(&base, asset_path);
     Ok(files
@@ -630,6 +648,9 @@ struct AssetWrite<'a> {
     target: Target,
     asset_id: String,
     asset_path: String,
+    /// The name the asset's path shows, for words said before its
+    /// manifest is read.
+    shown: String,
     editor_proof: Vec<String>,
 }
 
@@ -639,12 +660,14 @@ impl<'a> AssetWrite<'a> {
         let reader = Reader::open_fresh(writer.http, writer.site, writer.cache_dir)?;
         let target = Target { address, token_id, name: String::new() };
         let editor_proof = write::editor_proof(&reader, &target)?;
+        let shown = location::shown_name(asset_path).unwrap_or_else(|| asset_id.clone());
         Ok(Self {
             writer,
             reader,
             target,
             asset_id,
             asset_path: asset_path.to_string(),
+            shown,
             editor_proof,
         })
     }
@@ -659,7 +682,7 @@ impl<'a> AssetWrite<'a> {
         drop(held);
         let cid = collection["assets"][&self.asset_id]
             .as_str()
-            .ok_or("This asset is no longer in the collection.")?
+            .ok_or_else(|| not_in_collection(&self.shown))?
             .to_string();
         let manifest = self.reader.manifest_at(&cid)?;
         let listed = self.reader.name_of(&manifest, &self.asset_id, &cid)?;
@@ -716,6 +739,7 @@ impl<'a> AssetWrite<'a> {
 /// room for them, each entry as it will be recorded; then the entries and
 /// the refusals. Nothing to add is refused.
 fn checked(base: &Base, files: &[LocalFile], choices: &[Option<Choice>]) -> Result<Settled, String> {
+    list_readable(&base.manifest, &base.listed)?;
     let settled = settle(&base.manifest, files, choices);
     if settled.ids.is_empty() {
         return Err(nothing_added(&base.listed));
@@ -746,7 +770,7 @@ pub(crate) fn attach(writer: &Writer, asset_path: &str, adding: &[Adding]) -> Re
     let named = base.listed.clone();
     let mut uploader = Uploader::new(writer.http, writer.site, writer.session, settled.ids.len() + 2, &named)?;
     let mut uploaded: HashMap<usize, Uploaded> = HashMap::new();
-    writer.progress.set_total(settled.ids.iter().map(|(i, _)| files[*i].bytes).sum());
+    writer.progress.set_total(upload_total(&files, &settled, &uploaded));
     for attempt in 0..2 {
         upload_files(writer.progress, &mut uploader, &files, &settled, &mut uploaded)?;
         let now = now_ms();
@@ -769,8 +793,17 @@ pub(crate) fn attach(writer: &Writer, asset_path: &str, adding: &[Adding]) -> Re
         // settled again; the files already uploaded keep their CIDs.
         base = write.base()?;
         settled = checked(&base, &files, &choices)?;
+        // A file the first settle refused may be settled now.
+        writer.progress.set_total(upload_total(&files, &settled, &uploaded));
     }
     Err(changed_while_adding(&base.listed))
+}
+
+/// The bytes a write uploads: the files uploaded already and those settled.
+fn upload_total(files: &[LocalFile], settled: &Settled, uploaded: &HashMap<usize, Uploaded>) -> u64 {
+    let mut counted: HashSet<usize> = uploaded.keys().copied().collect();
+    counted.extend(settled.ids.iter().map(|(i, _)| *i));
+    counted.iter().map(|i| files[*i].bytes).sum()
 }
 
 /// A file uploaded once: its CID, decoded size and encoding.
@@ -800,17 +833,30 @@ fn upload_files(
             return Err(too_large(&file.name));
         }
         let (stored, encoding) = reps::encode(&bytes, &file.format);
-        let cid = uploader.upload(&file.name, &stored)?;
+        let cid = uploader.upload_shown(&file.name, &stored, &file.name)?;
         progress.add_bytes(bytes.len() as u64);
         uploaded.insert(*i, Uploaded { cid, bytes: bytes.len() as u64, encoding });
     }
     Ok(())
 }
 
+/// Whether `manifest` still holds the file `cid` under `id`, the one the
+/// user saw and agreed to remove: gone, or replaced by another file (or by
+/// an entry this app can't read), is refused.
+fn still_holds(manifest: &Value, id: &str, cid: &str) -> Result<(), String> {
+    let stored = Stored::of(manifest);
+    match stored.valid.get(id) {
+        Some(now) if now == cid => Ok(()),
+        None if !stored.ids.contains(id) => Err(GONE_FILE.into()),
+        _ => Err(CHANGED_FILE.into()),
+    }
+}
+
 /// Remove the file `id` from the asset at `asset_path` as one new version
-/// (spec F12): its files afterwards. Nothing is uploaded but the two
-/// manifests; the same hold, settle and compare-and-swap as an attach.
-pub(crate) fn detach(writer: &Writer, asset_path: &str, id: &str) -> Result<Attached, String> {
+/// (spec F12), only while its entry still holds the file `cid` the user
+/// saw: its files afterwards. Nothing is uploaded but the two manifests;
+/// the same hold, settle and compare-and-swap as an attach.
+pub(crate) fn detach(writer: &Writer, asset_path: &str, id: &str, cid: &str) -> Result<Attached, String> {
     let write = AssetWrite::open(writer, asset_path)?;
     let mut base = write.base()?;
     let named = base.listed.clone();
@@ -819,9 +865,8 @@ pub(crate) fn detach(writer: &Writer, asset_path: &str, id: &str) -> Result<Atta
         if attempt == 1 {
             base = write.base()?;
         }
-        if !reps::stored_ids(&base.manifest).iter().any(|stored| stored == id) {
-            return Err(GONE_FILE.into());
-        }
+        list_readable(&base.manifest, &base.listed)?;
+        still_holds(&base.manifest, id, cid)?;
         let next = without_entry(next_version_of(&base.manifest, &base.cid, now_ms()), id);
         if write.swap(&mut uploader, &base, &next)?.is_some() {
             return Ok(write.attached(&next, Vec::new()));

@@ -9,7 +9,7 @@
 import type { Entry, RepresentationInfo } from "./api";
 import { entryIcon, sym } from "./icons";
 import { defaultChoice, fileSubtitle, formatRowLabel, formatsAcross, staleReason, type AssetFiles, type CopyChoice, type FileChoice } from "./representations";
-import { openDialog, openMenu, type DialogHandle } from "./ui";
+import { applyToAllRow, openDialog, openMenu, type DialogHandle } from "./ui";
 
 /** A row of the boxed list: the file kind's icon, a title, a subtitle and,
  *  when out of date, its tag. Text goes in with textContent only. A
@@ -200,14 +200,8 @@ export function askAttachClash(assetName: string, existing: RepresentationInfo, 
     extra.className = "dialog-paragraphs";
     extra.appendChild(paragraph(`The new file is “${newName}”.`));
     let all = false;
-    if (remaining > 0) {
-      const check = document.createElement("label");
-      check.className = "check-row";
-      check.innerHTML = `<input type="checkbox" /><span></span>`;
-      check.querySelector("span")!.textContent = `Apply this action to all conflicts (${remaining + 1})`;
-      check.querySelector("input")!.addEventListener("change", (e) => (all = (e.target as HTMLInputElement).checked));
-      extra.appendChild(check);
-    }
+    const check = applyToAllRow(remaining, (ticked) => (all = ticked));
+    if (check) extra.appendChild(check);
     openDialog({
       heading: `Replace “${existing.name}” in “${assetName}”?`,
       body: fileSubtitle(existing),

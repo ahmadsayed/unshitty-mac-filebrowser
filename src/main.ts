@@ -41,7 +41,7 @@ import { thumbType } from "./thumbnails";
 import { formatDate, formatDateDetailed, formatItemCount, formatSize } from "./format";
 import { LAYOUT_SIZES, platformTheme, type Theme } from "./theme";
 import { contentHeight, headerTop, indicesInRect, indicesInRows, itemPos as slotPos, revealTop, stepRow, type Section, type ViewLayout } from "./view-layout";
-import { cleanError, closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
+import { applyToAllRow, cleanError, closePopover, dialogLinks, hasOpenOverlay, openDialog, openMenu, openPopover, showToast, type Anchor, type MenuItem } from "./ui";
 import { checkForUpdates } from "./updates";
 import { addVersionRows, insideVersionedRoot, restoreName, showDeletedFiles, showVersions } from "./versions";
 import { LOCAL_VERSION_LIMIT, drawVersionControl, fromArbeskSaves, fromLocal, type PreviewVersion } from "./preview-versions";
@@ -57,13 +57,13 @@ import { FolderSummaries } from "./folder-summaries";
 import { listingReaction, type ListingContext, type ListingPhase } from "./listing-failure";
 import type { DriveAuthNeed } from "./drive-auth";
 import { PathRefs, type Clip } from "./path-refs";
-import { companionPath, gltfCompanions, isGlb, modelFormat, type ModelFormat } from "./models";
+import { companionPath, gltfCompanions, gltfExternalUris, isGlb, modelFormat, type ModelFormat } from "./models";
 import { accountOf, fromArbesk, fromDrive, PROVIDERS, providerOf, withAccount, withoutAccount, type Account, type ProviderActions, type ProviderId } from "./providers";
 import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
 import { acceptsNewItems, arbeskPasteRefusal, attachRefusal, takesFiles, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, hasLocalFileFacts, knowsSizes, takesDrops, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
-import { childPath, cloudAccountKey, homeFolder, isArbeskAccount, isArbeskAsset, isArbeskCollection, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
+import { childPath, cloudAccountKey, homeFolder, isArbeskAccount, isArbeskAsset, isArbeskCollection, arbeskFilePin, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -3209,13 +3209,7 @@ function askConflict(name: string, isDir: boolean, destDir: string, remaining: n
   return new Promise((resolve) => {
     const kind = isDir ? "folder" : "file";
     let all = false;
-    let extra: HTMLElement | undefined;
-    if (remaining > 0) {
-      extra = document.createElement("label");
-      extra.className = "check-row";
-      extra.innerHTML = `<input type="checkbox" /><span>Apply this action to all conflicts (${remaining + 1})</span>`;
-      extra.querySelector("input")!.addEventListener("change", (e) => (all = (e.target as HTMLInputElement).checked));
-    }
+    const extra = applyToAllRow(remaining, (ticked) => (all = ticked)) ?? undefined;
     openDialog({
       heading: `Replace ${kind} “${name}”?`,
       body: conflictBody(kind, destDir),
@@ -5370,8 +5364,9 @@ async function afterAssetWrite(asset: string, done: Attached): Promise<void> {
   if (isUnder(asset, location)) await reload();
 }
 
-/** The error a write to an asset ends with when it needs a new sign-in. */
+/** The errors a write to an asset ends with when it needs a new sign-in. */
 const ATTACH_SIGN_IN = "Sign in to Arbesk again to add files to it.";
+const DETACH_SIGN_IN = "Sign in to Arbesk again to remove files from it.";
 
 /** Paste Into Asset: the clipboard's files added to `asset`. */
 function pasteIntoAsset(asset: Entry): void {
@@ -5380,15 +5375,18 @@ function pasteIntoAsset(asset: Entry): void {
   void attachFiles(asset.path, paths, dirs, mode === "cut");
 }
 
-/** Whether the local `.gltf` at `path` loads files beside it (buffers or
- *  images by a relative URI): only the one file would be stored. */
-async function usesFilesBeside(path: string): Promise<boolean> {
-  if (!/\.gltf$/i.test(path)) return false;
+/** Why the local `.gltf` at `path` can't be added: it names a buffer or
+ *  image by any URI but a `data:` one (beside it, above its folder, an
+ *  absolute `file:` URI), so the one file stored wouldn't load; or it
+ *  can't be read and parsed to tell. Null for anything else. */
+async function gltfRefusal(path: string): Promise<string | null> {
+  if (!/\.gltf$/i.test(path)) return null;
+  const beside = `“${basename(path)}” uses files beside it. Add a .glb instead.`;
   try {
     const bytes = await previewBytes(path, MODEL_PREVIEW_LIMIT);
-    return gltfCompanions(JSON.parse(new TextDecoder().decode(bytes))).length > 0;
+    return gltfExternalUris(JSON.parse(new TextDecoder().decode(bytes))).length > 0 ? beside : null;
   } catch {
-    return false;
+    return `“${basename(path)}” couldn't be read as glTF. Add a .glb instead.`;
   }
 }
 
@@ -5423,7 +5421,8 @@ async function attachFiles(asset: string, paths: string[], dirs: ReadonlySet<str
   if (refuse("attach", { kind: locationKind(asset, trashPath), items: [], paths, dir: asset, moving, dirs })) return;
   const assetName = pathName(asset);
   for (const path of paths) {
-    if (await usesFilesBeside(path)) return showToast(`“${basename(path)}” uses files beside it. Add a .glb instead.`);
+    const refusal = await gltfRefusal(path);
+    if (refusal) return showToast(refusal);
   }
   let planned: PlannedFile[];
   try {
@@ -5480,7 +5479,9 @@ async function runAttach(asset: string, assetName: string, adding: Array<{ path:
 
 /** Remove… on a file of the Files… page (spec F12): asked first, Cancel
  *  the default; the write waits in the dialog (Cancel live until the
- *  collection is written), its failure said there. */
+ *  collection is written), its failure said there. Only the file the row
+ *  shows is removed (its path's pin), never one that replaced it since. A
+ *  lost session marks the account as needing a sign-in, as an attach does. */
 function removeAssetFile(asset: Entry, rep: RepresentationInfo): void {
   let op: string | null = null;
   confirmRemoveFile(
@@ -5488,7 +5489,16 @@ function removeAssetFile(asset: Entry, rep: RepresentationInfo): void {
     rep,
     async () => {
       op = `remove-${Date.now().toString(36)}`;
-      const done = await arbeskDetach(asset.path, rep.id, { op });
+      let done: Attached;
+      try {
+        done = await arbeskDetach(asset.path, rep.id, arbeskFilePin(rep.path) ?? "", { op });
+      } catch (err) {
+        if (cleanError(err) === DETACH_SIGN_IN) {
+          const account = await arbeskAccountFor(asset.path);
+          if (account) signInNeeded.add(accountRef(account));
+        }
+        throw err;
+      }
       await afterAssetWrite(asset.path, done);
     },
     () => {

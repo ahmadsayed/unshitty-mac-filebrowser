@@ -98,6 +98,11 @@
       "files": [
         {
           "name": "Box.stl",
+          "text": "solid box\n",
+          "choice": {
+            "kind": "replace",
+            "cid": "bafyOldStl"
+          },
           "format": "stl",
           "bytes": 10,
           "cid": "bafyRaw1"
@@ -187,6 +192,232 @@
               1,
               2
             ]
+          }
+        ],
+        "prev_asset_manifest_cid": "bafyBase"
+      }
+    },
+    {
+      "name": "Keep Both takes the next free id",
+      "cid": "bafyBase",
+      "listed": "Box.gltf",
+      "asset_id": "a1",
+      "now": 1762000000000,
+      "current": {
+        "type": "asset",
+        "name": "Box",
+        "asset_id": "a1",
+        "version": 3,
+        "timestamp": 1000,
+        "scene": {
+          "nodes": [
+            {
+              "node_id": "node_1",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ],
+              "source": {
+                "cid": "bafySrc",
+                "format": "gltf",
+                "path": "composite.gltf"
+              }
+            }
+          ]
+        },
+        "thumbnail": {
+          "cid": "bafyThumb",
+          "mime": "image/webp"
+        },
+        "future": {
+          "kept": true
+        },
+        "representations": [
+          {
+            "id": "stl",
+            "role": "mesh",
+            "format": "stl",
+            "name": "Box.stl",
+            "cid": "bafyOldStl",
+            "bytes": 3,
+            "encoding": "raw",
+            "created_at": 1,
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafyOld",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "id": "plan",
+            "role": "someday",
+            "format": "json",
+            "newer": [
+              1,
+              2
+            ]
+          }
+        ]
+      },
+      "files": [
+        {
+          "name": "Lid.stl",
+          "text": "solid lid\n",
+          "choice": {
+            "kind": "keep_both"
+          },
+          "format": "stl",
+          "bytes": 10,
+          "cid": "bafyRaw1"
+        }
+      ],
+      "next": {
+        "type": "asset",
+        "name": "Box",
+        "asset_id": "a1",
+        "version": 4,
+        "timestamp": 1762000000000,
+        "scene": {
+          "nodes": [
+            {
+              "node_id": "node_1",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ],
+              "source": {
+                "cid": "bafySrc",
+                "format": "gltf",
+                "path": "composite.gltf"
+              }
+            }
+          ]
+        },
+        "thumbnail": {
+          "cid": "bafyThumb",
+          "mime": "image/webp"
+        },
+        "future": {
+          "kept": true
+        },
+        "representations": [
+          {
+            "id": "stl",
+            "role": "mesh",
+            "format": "stl",
+            "name": "Box.stl",
+            "cid": "bafyOldStl",
+            "bytes": 3,
+            "encoding": "raw",
+            "created_at": 1,
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafyOld",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "id": "plan",
+            "role": "someday",
+            "format": "json",
+            "newer": [
+              1,
+              2
+            ]
+          },
+          {
+            "id": "stl-2",
+            "role": "mesh",
+            "format": "stl",
+            "name": "Lid.stl",
+            "cid": "bafyRaw1",
+            "bytes": 10,
+            "encoding": "raw",
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafySrc",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ]
+            },
+            "created_at": 1762000000000
           }
         ],
         "prev_asset_manifest_cid": "bafyBase"
@@ -288,6 +519,7 @@
       "files": [
         {
           "name": "Box.blend",
+          "text": "BLENDER-v300",
           "format": "blend",
           "bytes": 12,
           "cid": "bafyRaw1"
@@ -488,6 +720,7 @@
       "files": [
         {
           "name": "Box.gcode",
+          "text": "G1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\nG1 X1 Y1\n",
           "format": "gcode",
           "bytes": 450,
           "cid": "bafyRaw1"
@@ -615,6 +848,235 @@
       }
     },
     {
+      "name": "a PrusaSlicer G-code is named by its printer and material",
+      "cid": "bafyBase",
+      "listed": "Box.gltf",
+      "asset_id": "a1",
+      "now": 1762000000000,
+      "current": {
+        "type": "asset",
+        "name": "Box",
+        "asset_id": "a1",
+        "version": 3,
+        "timestamp": 1000,
+        "scene": {
+          "nodes": [
+            {
+              "node_id": "node_1",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ],
+              "source": {
+                "cid": "bafySrc",
+                "format": "gltf",
+                "path": "composite.gltf"
+              }
+            }
+          ]
+        },
+        "thumbnail": {
+          "cid": "bafyThumb",
+          "mime": "image/webp"
+        },
+        "future": {
+          "kept": true
+        },
+        "representations": [
+          {
+            "id": "stl",
+            "role": "mesh",
+            "format": "stl",
+            "name": "Box.stl",
+            "cid": "bafyOldStl",
+            "bytes": 3,
+            "encoding": "raw",
+            "created_at": 1,
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafyOld",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "id": "plan",
+            "role": "someday",
+            "format": "json",
+            "newer": [
+              1,
+              2
+            ]
+          }
+        ]
+      },
+      "files": [
+        {
+          "name": "Bracket.gcode",
+          "text": "; generated by PrusaSlicer 2.9.2+linux-x64-GTK3 on 2025-03-01 at 10:00:00 UTC\nG1 X1 Y1\n; filament used [g] = 38.50\n; estimated printing time (normal mode) = 2h 3m 0s\n; filament_type = PETG\n; layer_height = 0.2\n; nozzle_diameter = 0.4,0.4\n; printer_settings_id = Original Prusa MK4 0.4 nozzle\n",
+          "format": "gcode",
+          "bytes": 292,
+          "cid": "bafyRaw1"
+        }
+      ],
+      "next": {
+        "type": "asset",
+        "name": "Box",
+        "asset_id": "a1",
+        "version": 4,
+        "timestamp": 1762000000000,
+        "scene": {
+          "nodes": [
+            {
+              "node_id": "node_1",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ],
+              "source": {
+                "cid": "bafySrc",
+                "format": "gltf",
+                "path": "composite.gltf"
+              }
+            }
+          ]
+        },
+        "thumbnail": {
+          "cid": "bafyThumb",
+          "mime": "image/webp"
+        },
+        "future": {
+          "kept": true
+        },
+        "representations": [
+          {
+            "id": "stl",
+            "role": "mesh",
+            "format": "stl",
+            "name": "Box.stl",
+            "cid": "bafyOldStl",
+            "bytes": 3,
+            "encoding": "raw",
+            "created_at": 1,
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafyOld",
+              "transform_matrix": [
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          },
+          {
+            "id": "plan",
+            "role": "someday",
+            "format": "json",
+            "newer": [
+              1,
+              2
+            ]
+          },
+          {
+            "id": "gcode-original-prusa-mk4-petg",
+            "role": "machine",
+            "format": "gcode",
+            "name": "Bracket.gcode",
+            "cid": "bafyRaw1",
+            "bytes": 292,
+            "encoding": "brotli",
+            "derived_from": {
+              "ref": "primary",
+              "cid": "bafySrc",
+              "transform_matrix": [
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                2,
+                3,
+                1
+              ]
+            },
+            "profile": {
+              "printer": "Original Prusa MK4",
+              "material": "PETG",
+              "layer_mm": 0.2,
+              "nozzle_mm": 0.4
+            },
+            "created_at": 1762000000000
+          }
+        ],
+        "prev_asset_manifest_cid": "bafyBase"
+      }
+    },
+    {
       "name": "a bare glTF composite is wrapped",
       "cid": "bafyBase",
       "listed": "Box.gltf",
@@ -638,6 +1100,7 @@
       "files": [
         {
           "name": "Box.stl",
+          "text": "solid\n",
           "format": "stl",
           "bytes": 6,
           "cid": "bafyRaw1"
@@ -733,6 +1196,7 @@
       "files": [
         {
           "name": "Bracket.3mf",
+          "text": "PK\u0003\u0004",
           "format": "3mf",
           "bytes": 4,
           "cid": "bafyRaw1"

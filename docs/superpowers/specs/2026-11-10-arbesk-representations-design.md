@@ -618,10 +618,17 @@ Refused with one toast, before anything starts: Cut or a forced-move drag
 shares or SSH servers (*Only files on this computer can be added to an
 asset.*), a file with no extension or one that isn't `[a-z0-9]{1,16}`
 (*“README” has no file type to record.*), a `.gltf` whose buffers or images
-point at files beside it (*“Box.gltf” uses files beside it. Add a .glb
-instead.*, read with `models.ts`' `companionPath`, since only the one file
-would be stored), and a file over 256 MB (*“Print.gcode” is larger than
-256 MB.*). Room is checked **after** the ids are settled (below).
+name anything but a `data:` URI, beside it, above its folder or an absolute
+`file:` URI (*“Box.gltf” uses files beside it. Add a .glb instead.*, read
+with `models.ts`' `gltfExternalUris`, since only the one file would be
+stored; as built, a `.gltf` that can't be read or parsed to tell is refused
+too: *“Box.gltf” couldn't be read as glTF. Add a .glb instead.*), and a
+file over 256 MB (*“Print.gcode” is larger than 256 MB.*). As built, an
+asset whose `representations` is there but isn't a list (a newer schema's,
+or a broken write) is refused before anything is asked or uploaded, by the
+plan, an attach and a remove alike, rather than overwritten or dropped:
+*“Box.gltf” has files File Browser can't show.* Room is checked **after**
+the ids are settled (below).
 
 **What each file records**, as `besk attach` records it (Arbesk R6): format
 = the lower-case extension; role = `default_role(format)` (a 3MF is a
@@ -698,11 +705,15 @@ until the collection manifest is uploaded, as copy-in does
    (`CollectionLocks::take`), read the collection through
    `settled_collection` (so this app's own last write to it, still
    settling, shows first), note the asset's manifest CID, and **let the
-   hold go** before uploading; the manifest itself; every F10 check, ids
+   hold go** before uploading (an asset gone from the collection here
+already: *“Box.gltf” is no longer in the collection.*, its listed name
+taken from its path); the manifest itself; every F10 check, ids
    and room included, against it; and each entry as it will be recorded
    checked by F1's validator with a placeholder CID (`checkEntry`,
    `besk/representations.ts:204`). A failure here uploads nothing.
-2. Upload each file, encoded (F1). A failed or cancelled upload stops
+2. Upload each file, encoded (F1); a failed upload names that file
+   (*Couldn't upload “Box.stl” to IPFS: …*), the manifests' the asset's.
+   A failed or cancelled upload stops
    here: **the asset and the collection are unchanged**; what was uploaded
    stays on IPFS unreferenced, as for copy-in.
 3. Build the next manifest **from the manifest read in step 1, as JSON**:
@@ -768,11 +779,17 @@ returns the `arbesk_detach` promise from `onResponse`, Cancel stays live
 is shown in the dialog in words, as AGENTS.md asks of a dialog whose
 response waits on the backend. It writes the next version without that
 entry, matched by stored id (`withoutRepresentation`: the key dropped when
-the list empties), with F11's steps 1, 3 and 4 (nothing to upload; the
+the list empties), and only while that entry still holds the file the row
+showed (the CID its path is pinned to, F4), on the first read and on a
+conflict's retry alike: an entry gone is *This file is no longer in the
+asset.*, one holding another file (or one File Browser can't show) is
+*This file was replaced in the asset since it was shown. Nothing was
+removed.*, as Replace replaces only the file the user agreed to; with F11's steps 1, 3 and 4 (nothing to upload; the
 same hold, settle and `remember`). Files derived from the removed one
 become out of date, which the Files… dialog shows when it is redrawn. The
 model can't be removed. Removing needs the session (*Sign in to Arbesk
-again to remove files from it.*).
+again to remove files from it.*, which marks the account as needing a
+sign-in, as an attach does).
 
 **F13. Capabilities: `can_attach`.** `places::Operation` gains `Attach`;
 `providers::capability_table` derives `can_attach` from it as it derives
