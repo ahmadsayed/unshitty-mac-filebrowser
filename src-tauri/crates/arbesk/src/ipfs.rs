@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::http::Http;
+use crate::http::{Http, TOO_LONG};
 
 const BROTLI_MAGIC: &[u8] = b"ARB\x01";
 const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
@@ -27,6 +27,15 @@ pub const TOO_LARGE: &str = "Arbesk sent a file larger than File Browser reads."
 pub const JSON_CAP: u64 = 16 * 1024 * 1024;
 /// The most one part of an asset may hold once unpacked.
 pub const PART_CAP: u64 = 512 * 1024 * 1024;
+/// A capped read found more than its cap (see [`Gateway::bytes_within`]).
+const OVER: &str = "The part is larger than its source says.";
+
+/// How far a part whose source declares `size` bytes may be read: a
+/// little more, for a packed body's framing and a padded buffer.
+pub fn within(size: u64) -> u64 {
+    size.saturating_add(size / 64).saturating_add(4096)
+}
+
 /// The most a thumbnail may hold once unpacked; the Studio's are a few
 /// hundred kilobytes.
 pub const IMAGE_CAP: u64 = 16 * 1024 * 1024;
@@ -352,10 +361,51 @@ impl<'a> Gateway<'a> {
         unpack(self.get(cid)?, cap)
     }
 
-    /// The stored bytes at `cid`, as the gateway sends them.
+    /// The stored bytes at `cid`, as the gateway sends them. Through the
+    /// client's limits when it has some: a read permit, and a read of the
+    /// same CID already under way shared rather than asked again.
     fn get(&self, cid: &str) -> Result<Vec<u8>, String> {
+        self.get_within(cid, None)
+    }
+
+    /// [`Gateway::get`], reading at most `cap` bytes when given one: past
+    /// it the answer is [`OVER`]. A capped read is only shared with reads
+    /// of the same cap.
+    fn get_within(&self, cid: &str, cap: Option<u64>) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
-        self.http.get(&url).map_err(|error| storage_error(cid, error))
+        let read = || {
+            let answer = match cap {
+                Some(cap) => self.http.get_within(&url, cap),
+                None => self.http.get(&url),
+            };
+            answer.map_err(|error| match cap {
+                Some(_) if error.message == TOO_LONG => OVER.to_string(),
+                _ => storage_error(cid, error),
+            })
+        };
+        let Some(limits) = self.http.limits() else {
+            return read();
+        };
+        let key = match cap {
+            Some(cap) => format!("{url} within {cap}"),
+            None => url.clone(),
+        };
+        limits.limiter.shared(&key, limits.stop, || {
+            let _permit = limits.limiter.read(limits.stop)?;
+            read()
+        })
+    }
+
+    /// What the gateway's client is limited by, if anything (a build's
+    /// shared byte budget is its limiter's).
+    pub fn limits(&self) -> Option<crate::limiter::Limits<'_>> {
+        self.http.limits()
+    }
+
+    /// Whether the operation these reads are for was stopped (a cancel, a
+    /// closed preview); never without limits.
+    pub fn stopped(&self) -> bool {
+        self.http.limits().is_some_and(|limits| (limits.stop)())
     }
 
     /// The stored bytes at `cid`, never unpacked: an asset's other file,
@@ -374,6 +424,12 @@ impl<'a> Gateway<'a> {
         on_chunk: &mut dyn FnMut(usize) -> Result<(), String>,
     ) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
+        // Its own read, not shared: its progress and cancel are its caller's.
+        let limits = self.http.limits();
+        let _permit = match limits {
+            Some(limits) => Some(limits.limiter.read(limits.stop)?),
+            None => None,
+        };
         let mut bytes = Vec::new();
         let mut stopped = None;
         let read = self.http.get_streamed(&url, expected, &mut |chunk| {
@@ -395,6 +451,26 @@ impl<'a> Gateway<'a> {
     /// The content at `cid`, unpacked.
     pub fn bytes(&self, cid: &str) -> Result<Vec<u8>, String> {
         self.fetch(cid, self.part_cap)
+    }
+
+    /// The content at `cid`, unpacked, when it is about the `size` its
+    /// source declares: neither the body nor what it unpacks to is read
+    /// past [`within`]`(size)`, and `None` says the part is larger than
+    /// declared (the caller fetches it again as one of unknown size). A
+    /// size at the part cap or past it reads as [`Gateway::bytes`].
+    pub fn bytes_within(&self, cid: &str, size: u64) -> Result<Option<Vec<u8>>, String> {
+        let cap = within(size);
+        if cap >= self.part_cap {
+            return self.bytes(cid).map(Some);
+        }
+        let body = match self.get_within(cid, Some(cap)) {
+            Err(error) if error == OVER => return Ok(None),
+            body => body?,
+        };
+        match unpack(body, cap) {
+            Err(error) if error == TOO_LARGE => Ok(None),
+            unpacked => unpacked.map(Some),
+        }
     }
 
     /// The picture at `cid` (an asset's thumbnail), unpacked.
@@ -425,7 +501,11 @@ impl<'a> Gateway<'a> {
     }
 }
 
-/// `work` for each item on at most `limit` threads, answers in order.
+/// `work` for each item on at most `limit` threads, answers in order. The
+/// reads `work` makes take their permits from the client's limiter one by
+/// one (a worker holding one while its next read waits for another could
+/// leave every permit waiting), so `limit` only bounds the threads:
+/// `limiter::READS`, the most that can read at once anyway.
 pub fn in_parallel<T: Sync, R: Send>(
     items: &[T],
     limit: usize,
@@ -743,6 +823,43 @@ mod tests {
         assert_eq!(cache.get("a1"), None);
         assert_eq!(cache.get("b2"), Some(vec![b'b'; 10]));
         assert_eq!(cache.get("c3"), Some(vec![b'c'; 10]));
+    }
+
+    /// Performance plan, phase 2: callers asking for one CID at once
+    /// through the app's limiter share one read, each with its own bytes;
+    /// a later caller reads again.
+    #[test]
+    fn callers_of_one_cid_at_once_share_one_read() {
+        use crate::limiter::{Limited, Limiter, never};
+        let dir = tempfile::tempdir().unwrap();
+        let http = FakeHttp::new(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            Ok(gzipped(b"part"))
+        });
+        let limiter = Limiter::default();
+        let limited = Limited::new(&http, &limiter, &never);
+        let gateway = Gateway::new(
+            &limited,
+            "https://gw.test/ipfs/",
+            ManifestCache::new(dir.path().to_path_buf(), 1 << 20),
+        );
+        let together = std::sync::Barrier::new(3);
+        let answers: Vec<_> = std::thread::scope(|scope| {
+            let callers: Vec<_> = (0..3)
+                .map(|_| {
+                    scope.spawn(|| {
+                        together.wait();
+                        gateway.bytes("bafyPart")
+                    })
+                })
+                .collect();
+            callers.into_iter().map(|caller| caller.join().unwrap()).collect()
+        });
+        assert!(answers.iter().all(|answer| answer.as_deref() == Ok(b"part".as_slice())));
+        assert_eq!(http.requests().len(), 1);
+        assert_eq!(gateway.bytes("bafyPart").unwrap(), b"part");
+        assert_eq!(http.requests().len(), 2);
+        assert_eq!(limiter.reading(), 0);
     }
 
     #[test]

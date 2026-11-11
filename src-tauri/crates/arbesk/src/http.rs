@@ -62,7 +62,28 @@ pub trait Http: Send + Sync {
         session: Option<&str>,
     ) -> Result<Vec<u8>, HttpError>;
     fn delete(&self, url: &str, session: Option<&str>) -> Result<(), HttpError>;
+    /// The limits this client's reads go through (performance plan,
+    /// phase 2): the gateway takes a read permit and shares a read already
+    /// under way, the chain an RPC permit. None for the bare client, which
+    /// a write and the tests use: unlimited, as before.
+    fn limits(&self) -> Option<crate::limiter::Limits<'_>> {
+        None
+    }
+    /// GET like [`Http::get`], but a body past `cap` bytes is refused with
+    /// [`TOO_LONG`] (the real client stops reading there): a part whose
+    /// size the source declares is never read far past it. Clients that
+    /// read the whole body anyway (the fakes) check it after.
+    fn get_within(&self, url: &str, cap: u64) -> Result<Vec<u8>, HttpError> {
+        let body = self.get(url)?;
+        if body.len() as u64 > cap {
+            return Err(HttpError::new(Some(200), TOO_LONG));
+        }
+        Ok(body)
+    }
 }
+
+/// Why a body past its cap was refused.
+pub const TOO_LONG: &str = "Arbesk sent more than File Browser reads at once.";
 
 /// A `multipart/form-data` body, built by hand: `fields` in order, then the
 /// `file` part (`application/octet-stream`), closed with `--boundary--`.
@@ -195,10 +216,7 @@ fn open_streamed(
 }
 
 fn too_long(status: u16) -> HttpError {
-    HttpError::new(
-        Some(status),
-        "Arbesk sent more than File Browser reads at once.",
-    )
+    HttpError::new(Some(status), TOO_LONG)
 }
 
 /// `name` safe inside `filename="…"`: `"`, CR and LF percent-encoded, as
@@ -246,6 +264,16 @@ impl ReqwestHttp {
         request: reqwest::blocking::RequestBuilder,
         session: Option<&str>,
     ) -> Result<Vec<u8>, HttpError> {
+        self.send_within(request, session, self.cap)
+    }
+
+    /// `send`, reading at most `cap` bytes of the answer.
+    fn send_within(
+        &self,
+        request: reqwest::blocking::RequestBuilder,
+        session: Option<&str>,
+        cap: u64,
+    ) -> Result<Vec<u8>, HttpError> {
         let request = match session {
             Some(token) => request.header("Authorization", format!("Session {token}")),
             None => request,
@@ -255,7 +283,7 @@ impl ReqwestHttp {
             // Without the URL: an upload's is a one-use pre-signed address.
             .map_err(|error| HttpError::new(None, error.without_url().to_string()))?;
         let status = response.status();
-        let bytes = read_capped(response, self.cap)
+        let bytes = read_capped(response, cap)
             .map_err(|message| HttpError::new(Some(status.as_u16()), message))?;
         if status.is_success() {
             Ok(bytes)
@@ -271,7 +299,7 @@ impl ReqwestHttp {
 /// A body of at most `cap` bytes: a longer one (by its length or its bytes) is refused.
 fn read_capped(response: reqwest::blocking::Response, cap: u64) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    let too_long = || "Arbesk sent more than File Browser reads at once.".to_string();
+    let too_long = || TOO_LONG.to_string();
     if response.content_length().is_some_and(|length| length > cap) {
         return Err(too_long());
     }
@@ -289,6 +317,10 @@ fn read_capped(response: reqwest::blocking::Response, cap: u64) -> Result<Vec<u8
 impl Http for ReqwestHttp {
     fn get(&self, url: &str) -> Result<Vec<u8>, HttpError> {
         self.send(self.client.get(url), None)
+    }
+
+    fn get_within(&self, url: &str, cap: u64) -> Result<Vec<u8>, HttpError> {
+        self.send_within(self.client.get(url), None, cap.min(self.cap))
     }
 
     /// On the slow client, given [`transfer_timeout`] of `expected`, read

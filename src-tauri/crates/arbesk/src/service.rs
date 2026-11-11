@@ -14,6 +14,7 @@ use crate::compose::{
 };
 use crate::http::Http;
 use crate::ipfs::{FileCache, Gateway, ManifestCache, STORAGE_UNREACHABLE, in_parallel};
+use crate::limiter::READS;
 use crate::location::{ArbeskPath, asset_path_named, collection_path, parse, safe_name};
 use crate::scene::{Links, Scene, resolve};
 use crate::Entry;
@@ -21,8 +22,6 @@ use crate::progress::Progress;
 use crate::representations;
 use crate::image::png_from_bytes;
 
-/// How many requests a listing runs at once.
-const PARALLEL: usize = 8;
 /// The manifest cache's cap.
 const MANIFEST_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 /// The Arbesk thumbnail cache's cap.
@@ -960,7 +959,7 @@ impl<'a> Reader<'a> {
         collection: &Value,
     ) -> Result<Vec<(String, String, String)>, String> {
         let assets = asset_cids(collection);
-        let rows = in_parallel(&assets, PARALLEL, |(id, cid)| {
+        let rows = in_parallel(&assets, READS, |(id, cid)| {
             self.listed_name(id, cid)
                 .map(|name| (id.clone(), cid.clone(), name))
         });
@@ -1023,7 +1022,7 @@ impl<'a> Reader<'a> {
 
     fn collections(&self, address: &str) -> Result<Vec<Entry>, String> {
         let ids = chain::collection_ids(self.http, self.site, address)?;
-        readable(in_parallel(&ids, PARALLEL, |id| {
+        readable(in_parallel(&ids, READS, |id| {
             self.collection_entry(address, id)
         }))
     }
@@ -1044,7 +1043,7 @@ impl<'a> Reader<'a> {
     ) -> Result<Vec<Entry>, String> {
         let manifest = self.collection_manifest(token_id)?;
         let assets = asset_cids(&manifest);
-        readable(in_parallel(&assets, PARALLEL, |(id, cid)| {
+        readable(in_parallel(&assets, READS, |(id, cid)| {
             let entry = self.asset_entry(path, id, cid)?;
             thumbs.remember(asset_key(address, token_id, id), entry.1);
             Ok(entry.0)
