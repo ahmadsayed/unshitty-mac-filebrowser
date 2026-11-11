@@ -117,9 +117,11 @@ test("the first view and the current version picked again load the scene by the 
   await goTo(SHAPES);
   await preview("Bracket.gltf");
   await until(() => !switcher().hidden);
-  // The first view: the newest save arbesk_versions read, by its CID, never
+  // The first view: the scene of the newest save, asked for at once, says
+  // which save that is; its parts and files are read by that CID, never
   // the asset's path, so a save made meanwhile can't mix with the files.
-  expect(calls().argsOf("arbesk_scene")).toEqual([expect.objectContaining({ version: "bracket-v2" })]);
+  expect(calls().argsOf("arbesk_scene")).toEqual([expect.objectContaining({ version: null })]);
+  expect(calls().argsOf("arbesk_part").map((args) => args.version)).toEqual(["bracket-v2"]);
   expect(calls().argsOf("arbesk_representations").at(-1)).toMatchObject({ version: "bracket-v2" });
   // Older, then Newer again: the current save, by its CID too.
   await click($("#preview-versions").querySelector<HTMLButtonElement>("[aria-label='Older Version']")!);

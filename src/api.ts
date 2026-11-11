@@ -725,12 +725,16 @@ export interface ArbeskPlacement {
   scale: [number, number, number];
 }
 
-/** An Arbesk asset's scene: each stored model once, with every place it goes. */
+/** An Arbesk asset's scene: each stored model once, with every place it
+ *  goes, and the manifest CID of the save it was resolved from (the
+ *  version asked for, or the newest save the backend read). */
 export interface ArbeskScene {
+  cid: string;
   parts: { key: string; format: "glb" | "3mf"; placements: ArbeskPlacement[] }[];
 }
 
-/** The scene of an Arbesk asset, as saved in `version` (its newest when null). */
+/** The scene of an Arbesk asset, as saved in `version` (its newest when
+ *  null: its `cid` then says which save that was). */
 export async function arbeskScene(path: string, version: string | null = null): Promise<ArbeskScene> {
   return invoke<ArbeskScene>("arbesk_scene", { path, version });
 }
