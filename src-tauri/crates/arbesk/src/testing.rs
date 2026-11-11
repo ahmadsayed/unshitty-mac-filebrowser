@@ -492,6 +492,126 @@ pub(crate) fn webp(width: u32, height: u32) -> Vec<u8> {
     bytes
 }
 
+/// The fake Arbesk with its gateway reads watched: each takes `delay`, is
+/// counted while in flight (`running`, and the most at once, `peak`), and
+/// a read of a CID in `held` waits until [`Watched::release`].
+pub(crate) struct Watched {
+    inner: FakeHttp,
+    delay: std::time::Duration,
+    pub(crate) running: std::sync::atomic::AtomicUsize,
+    pub(crate) peak: std::sync::atomic::AtomicUsize,
+    held: Mutex<HashSet<String>>,
+    released: std::sync::Condvar,
+}
+
+impl Watched {
+    pub(crate) fn new(world: World, delay: std::time::Duration, held: &[String]) -> Self {
+        Self {
+            inner: arbesk(Arc::new(Mutex::new(world))),
+            delay,
+            running: Default::default(),
+            peak: Default::default(),
+            held: Mutex::new(held.iter().cloned().collect()),
+            released: std::sync::Condvar::new(),
+        }
+    }
+
+    pub(crate) fn release(&self) {
+        self.held.lock().unwrap().clear();
+        self.released.notify_all();
+    }
+
+    /// Wait (up to five seconds) until `n` gateway reads are in flight.
+    pub(crate) fn wait_running(&self, n: usize) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if self.running.load(std::sync::atomic::Ordering::SeqCst) >= n {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    }
+}
+
+impl super::http::Http for Watched {
+    fn get(&self, url: &str) -> Result<Vec<u8>, HttpError> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let Some(cid) = url.strip_prefix("https://gw.test/ipfs/") else {
+            return self.inner.get(url);
+        };
+        let now = self.running.fetch_add(1, SeqCst) + 1;
+        self.peak.fetch_max(now, SeqCst);
+        std::thread::sleep(self.delay);
+        let mut held = self.held.lock().unwrap();
+        while held.contains(cid) {
+            held = self.released.wait(held).unwrap();
+        }
+        drop(held);
+        let answer = self.inner.get(url);
+        self.running.fetch_sub(1, SeqCst);
+        answer
+    }
+
+    fn get_streamed(
+        &self,
+        url: &str,
+        expected: u64,
+        chunk: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<(), HttpError> {
+        self.inner.get_streamed(url, expected, chunk)
+    }
+
+    fn post_json(&self, url: &str, body: &Value, session: Option<&str>) -> Result<Vec<u8>, HttpError> {
+        self.inner.post_json(url, body, session)
+    }
+
+    fn post_json_slow(&self, url: &str, body: &Value, session: Option<&str>) -> Result<Vec<u8>, HttpError> {
+        self.inner.post_json_slow(url, body, session)
+    }
+
+    fn post_multipart(
+        &self,
+        url: &str,
+        file_name: &str,
+        bytes: &[u8],
+        fields: &[(&str, &str)],
+        session: Option<&str>,
+    ) -> Result<Vec<u8>, HttpError> {
+        self.inner.post_multipart(url, file_name, bytes, fields, session)
+    }
+
+    fn delete(&self, url: &str, session: Option<&str>) -> Result<(), HttpError> {
+        self.inner.delete(url, session)
+    }
+}
+
+/// [`world`] and a collection (token 7, "Many") of sixteen assets, each
+/// with its thumbnail, and one asset ("Wide") whose glTF has twelve
+/// buffers of sixteen bytes.
+pub(crate) fn busy_world() -> World {
+    let mut w = world();
+    let mut assets = serde_json::Map::new();
+    for i in 0..16 {
+        let cid = format!("bafyMany{i}");
+        w.put_asset_with_format(&cid, Some(&format!("Part{i}")), "bafySrcGltf", "gltf");
+        w.put_thumbnail(&cid, &format!("bafyThumb{i}"), 64, 64);
+        assets.insert(format!("m{i}"), json!(cid));
+    }
+    let buffers: Vec<Value> = (0..12)
+        .map(|i| {
+            w.files.insert(format!("bafyBuf{i}"), vec![i as u8; 16]);
+            json!({ "uri": format!("ipfs://bafyBuf{i}"), "byteLength": 16 })
+        })
+        .collect();
+    w.put("bafySrcWide", json!({ "asset": { "version": "2.0" }, "buffers": buffers }));
+    w.put_asset_with_format("bafyWide", Some("Wide"), "bafySrcWide", "gltf");
+    assets.insert("w".into(), json!("bafyWide"));
+    w.put("bafyC7", json!({ "type": "collection", "name": "Many", "assets": assets }));
+    w.tokens.insert("7".into(), "bafyC7".into());
+    w
+}
+
 pub(crate) fn shapes() -> String {
     collection_path(ADDRESS, "1", "Shapes")
 }

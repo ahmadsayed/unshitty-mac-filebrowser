@@ -24,6 +24,7 @@ mod http;
 mod ids;
 mod image;
 mod ipfs;
+mod limiter;
 mod location;
 mod merkle;
 mod progress;
@@ -103,6 +104,9 @@ pub struct Client {
     thumbnails: service::Thumbnails,
     /// One for the app's whole run: it remembers writes that may still land.
     locks: write::CollectionLocks,
+    /// Every read's permits, shared by all of them (performance plan,
+    /// phase 2); writes read without it, as before.
+    limiter: limiter::Limiter,
 }
 
 /// The key a scene is kept under: its asset and version.
@@ -157,11 +161,22 @@ impl Client {
             scenes: scene::Scenes::default(),
             thumbnails,
             locks: write::CollectionLocks::default(),
+            limiter: limiter::Limiter::default(),
         }
     }
 
     fn http(&self) -> Result<&dyn Http, String> {
         self.http.as_deref().map_err(Clone::clone)
+    }
+
+    /// `read` handed the client through the app's limiter, its waits for a
+    /// permit stopped by `stop`.
+    fn limited<T>(
+        &self,
+        stop: limiter::Stop,
+        read: impl FnOnce(&dyn Http) -> Result<T, String>,
+    ) -> Result<T, String> {
+        read(&limiter::Limited::new(self.http()?, &self.limiter, stop))
     }
 
     pub fn accounts(&self) -> Vec<Account> {
@@ -177,16 +192,20 @@ impl Client {
         Ok(account.site())
     }
 
-    /// How to reach the account `path` belongs to.
-    fn reach(&self, path: &str) -> Result<(&dyn Http, Site), String> {
+    /// How to reach the account `path` belongs to: its site, checking the
+    /// client could be made.
+    fn reach(&self, path: &str) -> Result<Site, String> {
         let site = self.site_for(parse(path)?.address())?;
-        Ok((self.http()?, site))
+        self.http()?;
+        Ok(site)
     }
 
     /// `service::list` for the account `path` belongs to.
     pub fn list(&self, path: &str) -> Result<Vec<Entry>, String> {
-        let (http, site) = self.reach(path)?;
-        service::list(http, &site, path, &self.cache_dir, &self.thumbnails)
+        let site = self.reach(path)?;
+        self.limited(&limiter::never, |http| {
+            service::list(http, &site, path, &self.cache_dir, &self.thumbnails)
+        })
     }
 
     /// `service::thumbnail` for the account `path` belongs to, as PNG bytes:
@@ -196,16 +215,21 @@ impl Client {
         let (Ok(site), Ok(http)) = (site, self.http()) else {
             return Vec::new();
         };
-        service::thumbnail(
-            http,
-            &site,
-            path,
-            size,
-            &self.cache_dir,
-            &self.thumbnails,
-            stop,
-        )
-        .unwrap_or_default()
+        // The view's stop is for this thread only: the limiter's waits hear
+        // it through `bridged`.
+        limiter::bridged(stop, |stop| {
+            let http = limiter::Limited::new(http, &self.limiter, stop);
+            service::thumbnail(
+                &http,
+                &site,
+                path,
+                size,
+                &self.cache_dir,
+                &self.thumbnails,
+                stop,
+            )
+            .unwrap_or_default()
+        })
     }
 
     /// The Studio link of the asset at `path`, on its account's deployment.
@@ -216,14 +240,9 @@ impl Client {
     /// `service::build` for the account `path` belongs to.
     pub fn build(&self, path: &str, progress: &Progress) -> Result<PathBuf, String> {
         let site = self.site_for(parse(path)?.address())?;
-        service::build(
-            self.http()?,
-            &site,
-            path,
-            &self.cache_dir,
-            progress,
-            &self.builds,
-        )
+        self.limited(&|| progress.is_cancelled(), |http| {
+            service::build(http, &site, path, &self.cache_dir, progress, &self.builds)
+        })
     }
 
     /// `service::export` for the account `path` belongs to: an asset's
@@ -235,14 +254,9 @@ impl Client {
             return self.file_at(path, progress);
         }
         let site = self.site_for(parse(path)?.address())?;
-        service::export(
-            self.http()?,
-            &site,
-            path,
-            &self.cache_dir,
-            progress,
-            &self.builds,
-        )
+        self.limited(&|| progress.is_cancelled(), |http| {
+            service::export(http, &site, path, &self.cache_dir, progress, &self.builds)
+        })
     }
 
     /// `service::representations` for the account `path` belongs to: the
@@ -252,15 +266,19 @@ impl Client {
         path: &str,
         version: Option<&str>,
     ) -> Result<Vec<RepresentationInfo>, String> {
-        let (http, site) = self.reach(path)?;
-        service::representations(http, &site, path, version, &self.cache_dir)
+        let site = self.reach(path)?;
+        self.limited(&limiter::never, |http| {
+            service::representations(http, &site, path, version, &self.cache_dir)
+        })
     }
 
     /// What the Properties dialog shows of the asset at `path`
     /// (`service::properties`, spec F7).
     pub fn properties(&self, path: &str) -> Result<places::FileProperties, String> {
-        let (http, site) = self.reach(path)?;
-        service::properties(http, &site, path, &self.cache_dir)
+        let site = self.reach(path)?;
+        self.limited(&limiter::never, |http| {
+            service::properties(http, &site, path, &self.cache_dir)
+        })
     }
 
     /// The asset at `path`'s other file `id` (at `version`, the current
@@ -290,14 +308,18 @@ impl Client {
     }
 
     fn file(&self, wanted: &service::Wanted, progress: &Progress) -> Result<PathBuf, String> {
-        let (http, site) = self.reach(wanted.asset)?;
-        service::file(http, &site, wanted, &self.cache_dir, progress, &self.builds)
+        let site = self.reach(wanted.asset)?;
+        self.limited(&|| progress.is_cancelled(), |http| {
+            service::file(http, &site, wanted, &self.cache_dir, progress, &self.builds)
+        })
     }
 
     /// `service::versions` for the account `path` belongs to.
     pub fn versions(&self, path: &str) -> Result<Vec<service::Version>, String> {
-        let (http, site) = self.reach(path)?;
-        service::versions(http, &site, path, &self.cache_dir)
+        let site = self.reach(path)?;
+        self.limited(&limiter::never, |http| {
+            service::versions(http, &site, path, &self.cache_dir)
+        })
     }
 
     /// `service::scene_at` for the account `path` belongs to: the scene and
@@ -305,8 +327,10 @@ impl Client {
     /// only (the preview always asks for the parts by it; a part asked for
     /// without a version resolves the newest scene again).
     pub fn scene(&self, path: &str, version: Option<&str>) -> Result<scene::SceneAt, String> {
-        let (http, site) = self.reach(path)?;
-        let (cid, resolved) = service::scene_at(http, &site, path, version, &self.cache_dir)?;
+        let site = self.reach(path)?;
+        let (cid, resolved) = self.limited(&limiter::never, |http| {
+            service::scene_at(http, &site, path, version, &self.cache_dir)
+        })?;
         let scene = self.scenes.keep(&kept(path, Some(&cid)), resolved);
         Ok(scene::SceneAt {
             cid,
@@ -323,19 +347,13 @@ impl Client {
         key: &str,
         progress: &Progress,
     ) -> Result<PathBuf, String> {
-        let (http, site) = self.reach(path)?;
-        let scene = self.scenes.get_or_keep(&kept(path, version), || {
-            service::scene(http, &site, path, version, &self.cache_dir)
-        })?;
-        service::part(
-            http,
-            &site,
-            &scene,
-            key,
-            &self.cache_dir,
-            progress,
-            &self.builds,
-        )
+        let site = self.reach(path)?;
+        self.limited(&|| progress.is_cancelled(), |http| {
+            let scene = self.scenes.get_or_keep(&kept(path, version), || {
+                service::scene(http, &site, path, version, &self.cache_dir)
+            })?;
+            service::part(http, &site, &scene, key, &self.cache_dir, progress, &self.builds)
+        })
     }
 
     /// Start a sign-in for `email`: its id and the page to open in the browser.
@@ -443,8 +461,9 @@ impl Client {
     /// What adding the local `files` to the asset at `path` would do
     /// (`attach::plan`): each file as it would be recorded, and its clash.
     pub fn plan_attach(&self, path: &str, files: &[String]) -> Result<Vec<PlannedFile>, String> {
-        let (http, site) = self.reach(path)?;
-        attach::plan(http, &site, path, files, &self.cache_dir)
+        // The planning of a write: unlimited, as the write is.
+        let site = self.reach(path)?;
+        attach::plan(self.http()?, &site, path, files, &self.cache_dir)
     }
 
     /// Add the local files `adding` to the asset at `path` as one new
@@ -951,6 +970,92 @@ mod tests {
             "This sign-in attempt is no longer active."
         );
         assert!(state.accounts().is_empty());
+    }
+
+    /// A client over `http` (the fake Arbesk) with `testing::ADDRESS`
+    /// connected.
+    fn connected(http: Arc<dyn Http>, dir: &std::path::Path) -> Client {
+        let client = Client::with_http(http, dir.join("cache"), dir.join("a.json"));
+        lock(&client.accounts)
+            .connect("me@example.com", testing::ADDRESS, &testing::site())
+            .unwrap();
+        client
+    }
+
+    /// Performance plan, phase 2: a listing, a build and four thumbnails
+    /// at once never have more than `limiter::READS` gateway reads in
+    /// flight between them (before, 8 + 2 + 4).
+    #[test]
+    fn every_read_shares_one_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let delay = std::time::Duration::from_millis(20);
+        let http = Arc::new(testing::Watched::new(testing::busy_world(), delay, &[]));
+        let client = connected(http.clone(), dir.path());
+        let many = format!("arbesk://{ADDRESS}/7~Many");
+        let wide = format!("{many}/w~Wide.gltf");
+        let (listed, built, thumbnails) = std::thread::scope(|scope| {
+            let listed = scope.spawn(|| client.list(&many));
+            let built = scope.spawn(|| client.build(&wide, &Progress::default()));
+            let thumbnails: Vec<_> = (0..4)
+                .map(|i| {
+                    let (client, many) = (&client, &many);
+                    scope.spawn(move || client.thumbnail(&format!("{many}/m{i}~Part{i}.gltf"), 64, &|| false))
+                })
+                .collect();
+            let thumbnails: Vec<Vec<u8>> = thumbnails.into_iter().map(|t| t.join().unwrap()).collect();
+            (listed.join().unwrap(), built.join().unwrap(), thumbnails)
+        });
+        assert_eq!(listed.unwrap().len(), 17);
+        assert!(built.unwrap().is_file());
+        assert!(thumbnails.iter().all(|png| png.starts_with(b"\x89PNG")));
+        let peak = http.peak.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(peak <= limiter::READS, "{peak} reads in flight at once");
+        assert!(peak > 2, "{peak}: the reads ran together");
+        assert_eq!(client.limiter.reading(), 0);
+    }
+
+    /// A build queued behind a listing that holds every read permit hears
+    /// its cancel while it waits, and reads nothing.
+    #[test]
+    fn a_cancel_while_waiting_for_a_permit_returns_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let held: Vec<String> = (0..16).map(|i| format!("bafyMany{i}")).collect();
+        let delay = std::time::Duration::ZERO;
+        let http = Arc::new(testing::Watched::new(testing::busy_world(), delay, &held));
+        let client = connected(http.clone(), dir.path());
+        let many = format!("arbesk://{ADDRESS}/7~Many");
+        std::thread::scope(|scope| {
+            let listed = scope.spawn(|| client.list(&many));
+            assert!(http.wait_running(limiter::READS), "the listing holds every permit");
+            let progress = Progress::default();
+            let cancel = progress.clone();
+            let started = std::time::Instant::now();
+            scope.spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                cancel.cancel();
+            });
+            let chair = format!("arbesk://{ADDRESS}/5~History/h1~Chair.gltf");
+            assert_eq!(client.build(&chair, &progress).unwrap_err(), CANCELLED);
+            assert!(started.elapsed() < std::time::Duration::from_secs(1), "{:?}", started.elapsed());
+            assert_eq!(http.peak.load(std::sync::atomic::Ordering::SeqCst), limiter::READS);
+            http.release();
+            assert_eq!(listed.join().unwrap().unwrap().len(), 17);
+        });
+        assert_eq!(client.limiter.reading(), 0);
+    }
+
+    /// One read that fails in a listing's batch still fails the listing,
+    /// as before, and gives its permit back.
+    #[test]
+    fn one_unreachable_read_still_fails_the_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut world = testing::busy_world();
+        world.failing.insert("bafyMany5".into());
+        let http = Arc::new(testing::Watched::new(world, std::time::Duration::ZERO, &[]));
+        let client = connected(http, dir.path());
+        let error = client.list(&format!("arbesk://{ADDRESS}/7~Many")).unwrap_err();
+        assert!(error.starts_with(ipfs::STORAGE_UNREACHABLE), "{error}");
+        assert_eq!(client.limiter.reading(), 0);
     }
 
     #[test]

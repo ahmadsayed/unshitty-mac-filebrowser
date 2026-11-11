@@ -62,6 +62,13 @@ pub trait Http: Send + Sync {
         session: Option<&str>,
     ) -> Result<Vec<u8>, HttpError>;
     fn delete(&self, url: &str, session: Option<&str>) -> Result<(), HttpError>;
+    /// The limits this client's reads go through (performance plan,
+    /// phase 2): the gateway takes a read permit and shares a read already
+    /// under way, the chain an RPC permit. None for the bare client, which
+    /// a write and the tests use: unlimited, as before.
+    fn limits(&self) -> Option<crate::limiter::Limits<'_>> {
+        None
+    }
 }
 
 /// A `multipart/form-data` body, built by hand: `fields` in order, then the

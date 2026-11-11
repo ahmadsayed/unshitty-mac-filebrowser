@@ -205,6 +205,11 @@ fn eth_call(
     what: &str,
 ) -> Result<String, String> {
     let data = call_data(selector, token_id)?;
+    // An RPC permit of the client's limiter when it has one (phase 2).
+    let _permit = match http.limits() {
+        Some(limits) => Some(limits.limiter.rpc(limits.stop)?),
+        None => None,
+    };
     let call = json!({
         "jsonrpc": "2.0", "id": 1, "method": "eth_call",
         "params": [{ "to": chain.contract, "data": data }, "latest"]

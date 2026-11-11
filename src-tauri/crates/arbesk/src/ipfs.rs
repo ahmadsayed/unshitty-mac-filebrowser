@@ -352,10 +352,19 @@ impl<'a> Gateway<'a> {
         unpack(self.get(cid)?, cap)
     }
 
-    /// The stored bytes at `cid`, as the gateway sends them.
+    /// The stored bytes at `cid`, as the gateway sends them. Through the
+    /// client's limits when it has some: a read permit, and a read of the
+    /// same CID already under way shared rather than asked again.
     fn get(&self, cid: &str) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
-        self.http.get(&url).map_err(|error| storage_error(cid, error))
+        let read = || self.http.get(&url).map_err(|error| storage_error(cid, error));
+        let Some(limits) = self.http.limits() else {
+            return read();
+        };
+        limits.limiter.shared(&url, limits.stop, || {
+            let _permit = limits.limiter.read(limits.stop)?;
+            read()
+        })
     }
 
     /// The stored bytes at `cid`, never unpacked: an asset's other file,
@@ -374,6 +383,12 @@ impl<'a> Gateway<'a> {
         on_chunk: &mut dyn FnMut(usize) -> Result<(), String>,
     ) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
+        // Its own read, not shared: its progress and cancel are its caller's.
+        let limits = self.http.limits();
+        let _permit = match limits {
+            Some(limits) => Some(limits.limiter.read(limits.stop)?),
+            None => None,
+        };
         let mut bytes = Vec::new();
         let mut stopped = None;
         let read = self.http.get_streamed(&url, expected, &mut |chunk| {
@@ -425,7 +440,11 @@ impl<'a> Gateway<'a> {
     }
 }
 
-/// `work` for each item on at most `limit` threads, answers in order.
+/// `work` for each item on at most `limit` threads, answers in order. The
+/// reads `work` makes take their permits from the client's limiter one by
+/// one (a worker holding one while its next read waits for another could
+/// leave every permit waiting), so `limit` only bounds the threads:
+/// `limiter::READS`, the most that can read at once anyway.
 pub fn in_parallel<T: Sync, R: Send>(
     items: &[T],
     limit: usize,
@@ -743,6 +762,43 @@ mod tests {
         assert_eq!(cache.get("a1"), None);
         assert_eq!(cache.get("b2"), Some(vec![b'b'; 10]));
         assert_eq!(cache.get("c3"), Some(vec![b'c'; 10]));
+    }
+
+    /// Performance plan, phase 2: callers asking for one CID at once
+    /// through the app's limiter share one read, each with its own bytes;
+    /// a later caller reads again.
+    #[test]
+    fn callers_of_one_cid_at_once_share_one_read() {
+        use crate::limiter::{Limited, Limiter, never};
+        let dir = tempfile::tempdir().unwrap();
+        let http = FakeHttp::new(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            Ok(gzipped(b"part"))
+        });
+        let limiter = Limiter::default();
+        let limited = Limited::new(&http, &limiter, &never);
+        let gateway = Gateway::new(
+            &limited,
+            "https://gw.test/ipfs/",
+            ManifestCache::new(dir.path().to_path_buf(), 1 << 20),
+        );
+        let together = std::sync::Barrier::new(3);
+        let answers: Vec<_> = std::thread::scope(|scope| {
+            let callers: Vec<_> = (0..3)
+                .map(|_| {
+                    scope.spawn(|| {
+                        together.wait();
+                        gateway.bytes("bafyPart")
+                    })
+                })
+                .collect();
+            callers.into_iter().map(|caller| caller.join().unwrap()).collect()
+        });
+        assert!(answers.iter().all(|answer| answer.as_deref() == Ok(b"part".as_slice())));
+        assert_eq!(http.requests().len(), 1);
+        assert_eq!(gateway.bytes("bafyPart").unwrap(), b"part");
+        assert_eq!(http.requests().len(), 2);
+        assert_eq!(limiter.reading(), 0);
     }
 
     #[test]
