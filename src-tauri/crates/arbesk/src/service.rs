@@ -560,7 +560,11 @@ pub use places::Version;
 
 /// The saves of the asset at `path`, oldest first: its manifest and the ones
 /// before it (`prev_asset_manifest_cid`), the newest `MAX_VERSIONS`, up to
-/// one that can't be read.
+/// one that can't be read. Each says what it changed in the asset's other
+/// files (spec F14): compared with the save before it; the oldest shown
+/// with the one before it when that is read (one more cached read, when
+/// the walk stopped at `MAX_VERSIONS`), with nothing when it is the first
+/// save (its files read as added), and no change when that one can't be read.
 pub fn versions(
     http: &dyn Http,
     site: &Site,
@@ -568,30 +572,69 @@ pub fn versions(
     cache_dir: &Path,
 ) -> Result<Vec<Version>, String> {
     let (reader, cid) = open_asset(http, site, path, cache_dir)?;
-    let saves = chain(&reader, &cid)
-        .into_iter()
-        .map(|(id, manifest)| Version {
+    let (saves, before) = walk(&reader, &cid, true);
+    let mut prev = match before {
+        Before::First => Some(None),
+        Before::Read(manifest) => Some(Some(manifest)),
+        Before::Unread => None,
+    };
+    let mut out = Vec::with_capacity(saves.len());
+    for (id, manifest) in saves {
+        let changes = match &prev {
+            Some(before) => representations::changes(before.as_ref(), &manifest),
+            None => Vec::new(),
+        };
+        out.push(Version {
             id,
             timestamp: manifest["timestamp"].as_i64(),
+            changes,
         });
-    Ok(saves.collect())
+        prev = Some(Some(manifest));
+    }
+    Ok(out)
+}
+
+/// What came before the oldest save a walk read.
+enum Before {
+    /// Nothing: it is the asset's first save.
+    First,
+    /// The save before it, read.
+    Read(Value),
+    /// A save before it that wasn't read (the walk stopped at a manifest
+    /// it couldn't read, or wasn't asked to read past `MAX_VERSIONS`).
+    Unread,
 }
 
 /// The manifests from `cid` back through `prev_asset_manifest_cid`, oldest first.
 fn chain(reader: &Reader, cid: &str) -> Vec<(String, Value)> {
+    walk(reader, cid, false).0
+}
+
+/// [`chain`], and what came before its oldest save: with `read_before`,
+/// the save past `MAX_VERSIONS` is read too.
+fn walk(reader: &Reader, cid: &str, read_before: bool) -> (Vec<(String, Value)>, Before) {
     let mut saves = Vec::new();
     let mut next = Some(cid.to_string());
-    while let Some(id) = next.filter(|_| saves.len() < MAX_VERSIONS) {
+    let before = loop {
+        let Some(id) = next.take() else {
+            break Before::First;
+        };
+        if saves.len() >= MAX_VERSIONS {
+            break match read_before.then(|| reader.gateway.json(&id)) {
+                Some(Ok(manifest)) => Before::Read(manifest),
+                _ => Before::Unread,
+            };
+        }
         let Ok(manifest) = reader.gateway.json(&id) else {
-            break;
+            break Before::Unread;
         };
         next = manifest["prev_asset_manifest_cid"]
             .as_str()
             .map(String::from);
         saves.push((id, manifest));
-    }
+    };
     saves.reverse();
-    saves
+    (saves, before)
 }
 
 /// The file the preview loads for the part `key` of `scene` (as `scene`
@@ -1775,6 +1818,128 @@ mod tests {
         let found = versions(&http, &site(), &history(), cache.path()).unwrap();
         let ids: Vec<&str> = found.iter().map(|v| v.id.as_str()).collect();
         assert_eq!(ids, ["bafyH2", "bafyH3"]);
+    }
+
+    /// History's saves with other files: H1 a STL, H2 adds a G-code,
+    /// H3 replaces the STL and drops the G-code.
+    fn history_with_files() -> testing::World {
+        let mut w = world();
+        let stl = |cid: &str| json!({ "id": "stl", "role": "mesh", "format": "stl", "name": "Chair.stl",
+            "cid": cid, "bytes": 3, "encoding": "raw", "created_at": 1 });
+        let gcode = json!({ "id": "gcode", "role": "machine", "format": "gcode", "name": "Chair.gcode",
+            "cid": "bafyG", "bytes": 3, "encoding": "brotli", "created_at": 1,
+            "profile": { "printer": "Original Prusa MK4", "material": "PETG" } });
+        for (cid, files) in [("bafyH1", json!([stl("bafyS1")])), ("bafyH2", json!([stl("bafyS1"), gcode])), ("bafyH3", json!([stl("bafyS2")]))] {
+            let mut manifest: Value = serde_json::from_slice(&w.files[cid]).unwrap();
+            manifest["representations"] = files;
+            w.put(cid, manifest);
+        }
+        w
+    }
+
+    fn changes_of(found: &[Version]) -> Vec<Vec<String>> {
+        found.iter().map(|v| v.changes.clone()).collect()
+    }
+
+    /// Spec F14: each save says what it changed in the asset's other
+    /// files; the first save's files read as added.
+    #[test]
+    fn each_version_says_what_it_changed_in_the_files() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(history_with_files())));
+        let found = versions(&http, &site(), &history(), cache.path()).unwrap();
+        assert_eq!(
+            changes_of(&found),
+            [
+                vec!["Added STL".to_string()],
+                vec!["Added G-code (Original Prusa MK4, PETG)".to_string()],
+                vec!["Replaced STL".to_string(), "Removed G-code (Original Prusa MK4, PETG)".to_string()],
+            ]
+        );
+        // Without files, a save says nothing, and its JSON is as before
+        // (another cache: the manifests are cached by CID).
+        let cache = tempfile::tempdir().unwrap();
+        let plain = versions(&arbesk(Arc::new(Mutex::new(world()))), &site(), &history(), cache.path()).unwrap();
+        assert!(plain.iter().all(|v| v.changes.is_empty()));
+        assert!(serde_json::to_value(&plain[0]).unwrap().get("changes").is_none());
+    }
+
+    /// Spec F14: the oldest version shown when the walk stopped at a
+    /// manifest it couldn't read claims nothing.
+    #[test]
+    fn the_oldest_shown_after_an_unreadable_save_shows_no_change() {
+        let cache = tempfile::tempdir().unwrap();
+        let mut w = history_with_files();
+        w.failing.insert("bafyH1".into());
+        let http = arbesk(Arc::new(Mutex::new(w)));
+        let found = versions(&http, &site(), &history(), cache.path()).unwrap();
+        assert_eq!(
+            changes_of(&found),
+            [vec![], vec!["Replaced STL".to_string(), "Removed G-code (Original Prusa MK4, PETG)".to_string()]]
+        );
+    }
+
+    /// Spec F14: past `MAX_VERSIONS`, the oldest shown is compared with
+    /// the save before it (one more read); unread, it claims nothing.
+    #[test]
+    fn the_oldest_shown_of_a_long_history_reads_the_save_before_it() {
+        let build = |failing: bool| {
+            let mut w = world();
+            for i in 0..60 {
+                let files = if i < 10 { json!([]) } else {
+                    json!([{ "id": "stl", "role": "mesh", "format": "stl", "name": "A.stl",
+                        "cid": format!("bafyS{}", i.min(10)), "bytes": 3, "encoding": "raw", "created_at": 1 }])
+                };
+                let mut manifest = json!({ "timestamp": i, "scene": { "nodes": [] }, "representations": files });
+                if i > 0 {
+                    manifest["prev_asset_manifest_cid"] = json!(format!("bafyL{}", i - 1));
+                }
+                w.put(&format!("bafyL{i}"), manifest);
+            }
+            w.put("bafyC5", json!({ "type": "collection", "assets": { "h1": "bafyL59" } }));
+            if failing {
+                w.failing.insert("bafyL9".into());
+            }
+            arbesk(Arc::new(Mutex::new(w)))
+        };
+        let cache = tempfile::tempdir().unwrap();
+        let found = versions(&build(false), &site(), &history(), cache.path()).unwrap();
+        assert_eq!(found.len(), MAX_VERSIONS);
+        assert_eq!(found[0].id, "bafyL10");
+        assert_eq!(found[0].changes, ["Added STL"]);
+        assert!(found[1..].iter().all(|v| v.changes.is_empty()));
+        let cache = tempfile::tempdir().unwrap();
+        let found = versions(&build(true), &site(), &history(), cache.path()).unwrap();
+        assert_eq!(found[0].id, "bafyL10");
+        assert!(found[0].changes.is_empty());
+    }
+
+    /// Spec F14: a file of an earlier save is fetched from that save's
+    /// manifest, even after its id was replaced since.
+    #[test]
+    fn an_earlier_saves_file_is_the_one_it_held() {
+        let mut w = world();
+        let gcode = |cid: &str| json!([{ "id": "gcode", "role": "machine", "format": "gcode", "name": "Box.gcode",
+            "cid": cid, "bytes": 3, "encoding": "raw", "created_at": 1 }]);
+        let mut old: Value = serde_json::from_slice(&w.files["bafyA1"]).unwrap();
+        old["representations"] = gcode("bafyOldGcode");
+        w.put("bafyA1old", old.clone());
+        let mut new = old;
+        new["representations"] = gcode("bafyNewGcode");
+        new["prev_asset_manifest_cid"] = json!("bafyA1old");
+        w.put("bafyA1", new);
+        w.files.insert("bafyOldGcode".into(), b"old".to_vec());
+        w.files.insert("bafyNewGcode".into(), b"new".to_vec());
+        let http = http_of(w);
+        let cache = tempfile::tempdir().unwrap();
+        let asset = box_gltf();
+        let at = |version: Option<&str>| {
+            let wanted = Wanted { asset: &asset, version, id: "gcode", pin: None };
+            let file = file(&http, &site(), &wanted, cache.path(), &Progress::default(), &Builds::default()).unwrap();
+            std::fs::read(file).unwrap()
+        };
+        assert_eq!(at(Some("bafyA1old")), b"old");
+        assert_eq!(at(None), b"new");
     }
 
     #[test]

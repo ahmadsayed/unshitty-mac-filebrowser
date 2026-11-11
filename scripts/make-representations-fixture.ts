@@ -1,7 +1,8 @@
 // The shared fixture for src-tauri/crates/arbesk/src/representations.rs:
 // Arbesk's own asset-core answers each case (which entries parse, what
 // `listRepresentations` keeps, `currentCidOf`, `isStale`, `representationId`,
-// `defaultRole`, `encodingFor`), so the Rust port is checked against the
+// `defaultRole`, `encodingFor`) and besk answers what a save changed
+// (`representationChanges`, the version menu's words, spec F14), so the Rust port is checked against the
 // rules it mirrors, never against answers written by hand. The cases are
 // asset-core's own tests (test/asset-core-representations.test.js) plus the
 // node matrices whose values need ECMAScript's ToNumber (spec F1).
@@ -195,10 +196,39 @@ const formats = ["blend", "step", "stp", "f3d", "fcstd", "scad", "iges", "igs", 
   "usdz", "gcode", "bgcode", "mtl", "dxf", "svg", "txt", "json", "csv", "zip", "BLEND", "GCODE"];
 const tables = formats.map((format) => ({ format, role: reps.defaultRole(format), encoding: reps.encodingFor(format) }));
 
+// ---- What a save changed (besk's representationChanges) -----------------------------
+
+const { representationChanges } = await import(resolve(arbesk, "packages/besk/src/representations.ts"));
+const stlFile = { ...source, id: "stl", role: "mesh", format: "stl", name: "Bracket.stl", cid: "bafyStl" };
+const changeCases: Array<[string, Json, Json]> = [
+  ["the first version's files are added", null, manifest({ representations: [source, gcode] })],
+  ["a first version without files", null, manifest()],
+  ["nothing changed", manifest({ representations: [source] }), manifest({ representations: [source] })],
+  ["a file added", manifest({ representations: [source] }), manifest({ representations: [source, gcode] })],
+  ["a file replaced", manifest({ representations: [gcode] }), manifest({ representations: [{ ...gcode, cid: "bafyGcode2" }] })],
+  ["a file removed", manifest({ representations: [source, gcode] }), manifest({ representations: [source] })],
+  ["the list dropped", manifest({ representations: [source, gcode] }), manifest()],
+  ["added, replaced and removed together", manifest({ representations: [source, stlFile] }),
+    manifest({ representations: [gcode, { ...source, cid: "bafyBlend2" }] })],
+  ["an unknown format in capitals", null, manifest({ representations: [{ ...source, id: "ply", format: "ply" }] })],
+  ["a printer without a material", null, manifest({ representations: [{ ...gcode, profile: { printer: "Original Prusa MK4" } }] })],
+  ["an empty printer left out", null, manifest({ representations: [{ ...gcode, profile: { printer: "", material: "PLA" } }] })],
+  ["numbers in the profile", null, manifest({ representations: [{ ...gcode, profile: { printer: 12, material: 0.5 } }] })],
+  ["entries this client can't read ignored", manifest({ representations: [{ id: "plan" }, source] }),
+    manifest({ representations: [{ id: "source", cid: "x" }, { id: "plan2" }] })],
+  ["a duplicate id compared as besk's Map", manifest({ representations: [source, { ...source, cid: "bafyDup" }] }),
+    manifest({ representations: [{ ...source, cid: "bafyDup" }] })],
+  ["a duplicate id in the new list", manifest({ representations: [source] }),
+    manifest({ representations: [{ ...source, cid: "bafyA" }, { ...source, cid: "bafyB" }] })],
+];
+const changes = changeCases.map(([label, prev, next]) => ({
+  label, prev, next, changes: representationChanges(prev, next).map((change: { text: string }) => change.text),
+}));
+
 const fixture = {
   about: "asset-core's answers for the representation cases (made by scripts/make-representations-fixture.ts; do not edit by hand)",
   arbesk_commit: commit,
-  entries, lists, cids, stale, ids, tables,
+  entries, lists, cids, stale, ids, tables, changes,
 };
 writeFileSync(out, JSON.stringify(fixture, null, 1) + "\n");
-console.log(`${commit}: ${entries.length} entries, ${lists.length} lists, ${cids.length} cids, ${stale.length} stale, ${ids.length} ids`);
+console.log(`${commit}: ${entries.length} entries, ${lists.length} lists, ${cids.length} cids, ${stale.length} stale, ${ids.length} ids, ${changes.length} changes`);

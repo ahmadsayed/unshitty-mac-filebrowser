@@ -729,6 +729,38 @@ async fn arbesk_export(
     .await?
 }
 
+/// One of an Arbesk asset's other files as the save `version` holds it (a
+/// manifest CID from `arbesk_versions`), fetched and decoded into the app
+/// cache (spec F14: the preview's file page and its Open With…; never the
+/// current save's path, whose entry may name another file since). Operation
+/// `op`, as `arbesk_export`. The local file's path.
+#[tauri::command]
+async fn arbesk_file(
+    app: tauri::AppHandle,
+    path: String,
+    version: String,
+    id: String,
+    op: String,
+    on_progress: Channel<ProgressUpdate>,
+) -> Result<String, String> {
+    blocking(move || {
+        let tracking = track(&app, &op, on_progress);
+        let cx = places_cx(&app, tracking.progress.clone());
+        let registry = app.state::<places::Registry>();
+        let result = arbesk_saved_file(&registry, &path, &version, &id, &cx);
+        tracking.finish();
+        result
+    })
+    .await?
+}
+
+/// `arbesk_file`'s work on Arbesk's `Representations` extension.
+fn arbesk_saved_file(registry: &places::Registry, path: &str, version: &str, id: &str, cx: &places::Cx) -> Result<String, String> {
+    let files = arbesk_ext(registry, |ext| ext.representations)?;
+    let file = files.file(path, Some(version), id, cx)?;
+    Ok(file.to_string_lossy().into_owned())
+}
+
 /// `arbesk_export`'s work on Arbesk's own provider, whatever `path` is: a
 /// path Arbesk can't read is refused in its words.
 fn arbesk_exported(registry: &places::Registry, path: &str, cx: &places::Cx) -> Result<String, String> {
@@ -2550,6 +2582,7 @@ pub fn run() {
             arbesk_versions,
             arbesk_representations,
             arbesk_export,
+            arbesk_file,
             arbesk_attach_plan,
             arbesk_attach,
             arbesk_detach,
@@ -3320,6 +3353,12 @@ mod read_gate_tests {
         assert_eq!(arbesk_exported(&registry, &format!("{ASSET}/stl@bafyStl~Box.stl"), &cx), Err(unknown.clone()));
         assert_eq!(
             arbesk_exported(&registry, "/Users/me/Box.gltf", &cx).unwrap_err(),
+            "“/Users/me/Box.gltf” is not an Arbesk location."
+        );
+        // The preview's file of a save (spec F14) asks Arbesk's extension too.
+        assert_eq!(arbesk_saved_file(&registry, ASSET, "bafyOld", "gcode", &cx), Err(unknown.clone()));
+        assert_eq!(
+            arbesk_saved_file(&registry, "/Users/me/Box.gltf", "bafyOld", "gcode", &cx).unwrap_err(),
             "“/Users/me/Box.gltf” is not an Arbesk location."
         );
         assert_eq!(write_into_place(&registry, model, PENDING, false, &cx), Err(unknown.clone()));

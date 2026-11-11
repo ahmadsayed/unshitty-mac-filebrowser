@@ -8,12 +8,16 @@ use serde_json::value::RawValue;
 
 use crate::{Error, Result};
 
-/// One save of an item (`ext::Versions`): its id (an Arbesk manifest's CID)
-/// and when it was saved, in ms, when the place knows.
+/// One save of an item (`ext::Versions`): its id (an Arbesk manifest's CID),
+/// when it was saved, in ms, when the place knows, and what it changed in
+/// the item's other files, in words (an Arbesk asset's: *Added G-code*),
+/// sent only when there is something to say.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Version {
     pub id: String,
     pub timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<String>,
 }
 
 /// What sharing did (`ext::Sharing`): the member's address and role, and
@@ -88,10 +92,12 @@ mod tests {
 
     #[test]
     fn a_save_and_a_share_serialise_as_arbesk_s_did() {
-        let version = Version { id: "bafyH1".into(), timestamp: Some(1000) };
+        let version = Version { id: "bafyH1".into(), timestamp: Some(1000), changes: vec![] };
         assert_eq!(serde_json::to_string(&version).unwrap(), r#"{"id":"bafyH1","timestamp":1000}"#);
-        let unknown = Version { id: "bafyH2".into(), timestamp: None };
+        let unknown = Version { id: "bafyH2".into(), timestamp: None, changes: vec![] };
         assert_eq!(serde_json::to_string(&unknown).unwrap(), r#"{"id":"bafyH2","timestamp":null}"#);
+        let changed = Version { id: "bafyH3".into(), timestamp: None, changes: vec!["Added STL".into()] };
+        assert_eq!(serde_json::to_string(&changed).unwrap(), r#"{"id":"bafyH3","timestamp":null,"changes":["Added STL"]}"#);
         let shared = Shared { address: "0x11".into(), role: 2, added: true };
         assert_eq!(serde_json::to_string(&shared).unwrap(), r#"{"address":"0x11","role":2,"added":true}"#);
     }
