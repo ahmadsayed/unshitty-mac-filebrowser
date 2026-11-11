@@ -745,10 +745,20 @@ export async function arbeskPart(path: string, key: string, limit: number, versi
   return invoke<ArrayBuffer>("arbesk_part", { path, version, key, limit, ticket });
 }
 
-/** Stop the part fetches with these tickets, waiting or reading: their
- *  preview was closed or moved on. Each answers "Cancelled.". */
+/** Stop the Arbesk fetches with these tickets, waiting or reading: a
+ *  preview's parts (it was closed or moved on), or a copy's builds ahead
+ *  (`arbeskPrefetch`). Each answers "Cancelled.". */
 export async function cancelArbeskParts(tickets: number[]): Promise<void> {
   return invoke<void>("cancel_arbesk_parts", { tickets });
+}
+
+/** Build what a copy out of Arbesk will place (an asset, or one of its
+ *  other files by its pinned path) into the app cache ahead of its turn
+ *  (performance plan, phase 5): the export the copy's own build runs, so
+ *  the copy then finds it there. `ticket` names it for
+ *  `cancelArbeskParts`. Writes nothing outside the app cache. */
+export async function arbeskPrefetch(path: string, ticket: number): Promise<void> {
+  return invoke<void>("arbesk_prefetch", { path, ticket });
 }
 
 /** One save of an Arbesk asset: its manifest's CID, when (ms), if known,

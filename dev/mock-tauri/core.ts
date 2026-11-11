@@ -1030,6 +1030,7 @@ function gated(command: (a: Args) => unknown): (a: Args) => Promise<unknown> {
 
 function cancelOperation(op: string): void {
   cancelledOps.add(op);
+  cancelBuilds((waiter) => waiter.op === op);
   for (const h of held.filter((h) => h.op === op)) h.reject("Cancelled.");
   held = held.filter((h) => h.op !== op);
 }
@@ -2066,28 +2067,141 @@ function arbeskExport(path: string): string {
   return `${ARBESK_MOCK_BUILDS}/${asset.id}/${name}`;
 }
 
+/** What a copy out of `from` places (an asset's built file, or one of its
+ *  other files): the checks the backend's export makes first, in its words. */
+function arbeskCopyNode(from: string): Node {
+  const ids = arbeskIds(from);
+  if (!ids.asset) throw "Copying Arbesk collections comes next.";
+  return ids.file === undefined ? arbeskModelNode(from) : f(lookup(arbeskFileOpen(from))!.size, 0);
+}
+
+// ----- A copy out's builds (Client::export): the copy's own, or ahead of its turn (performance plan, phase 5) -----
+
+/** Who asked for a build: a build ahead by its ticket, a copy by its operation. */
+type BuildBy = { ticket?: number; op?: string };
+
+/**
+ * What a copy out of Arbesk builds into the app cache, as the backend's
+ * `Builds` keeps it: one build of a source at a time (a second waits for
+ * the first, then takes its file), a built source not built again, a
+ * cancel (the copy's operation, a build ahead's ticket) stopping a build
+ * or its wait. Tests hold the builds (`holdBuilds`, `releaseBuilds`), make
+ * a source's builds fail (`failBuilds`, `failBuildOnce`), and read the
+ * builds (`builds`, `buildsRunning`, `buildsPeak`) and the placements
+ * (`placements`, `placingPeak`).
+ */
+const copyBuilds = {
+  held: false,
+  waiting: [] as Array<BuildBy & { path: string; ahead: boolean; resolve: () => void; reject: (error: unknown) => void }>,
+  running: 0,
+  peak: 0,
+  built: new Set<string>(),
+  inFlight: new Map<string, Promise<void>>(),
+  failing: new Map<string, { error: string; once: boolean }>(),
+  log: [] as Array<{ path: string; ahead: boolean; outcome: string }>,
+  placing: 0,
+  placingPeak: 0,
+  placed: [] as string[],
+};
+
+const buildStopped = (by: BuildBy) =>
+  (by.ticket !== undefined && cancelledParts.includes(by.ticket)) || (by.op !== undefined && cancelledOps.has(by.op));
+
+/** Wait in `copyBuilds.waiting` for a release (or `done`); a cancel of `by` rejects. */
+function waitForBuild(path: string, by: BuildBy, done?: Promise<unknown>): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const waiter = { ...by, path, ahead: by.ticket !== undefined, resolve, reject };
+    copyBuilds.waiting.push(waiter);
+    void done?.catch(() => {}).then(() => {
+      const at = copyBuilds.waiting.indexOf(waiter);
+      if (at >= 0) copyBuilds.waiting.splice(at, 1);
+      resolve();
+    });
+  });
+}
+
+/** Reject the builds waiting for `stopped`, as their cancel stops them. */
+function cancelBuilds(stopped: (waiter: BuildBy) => boolean): void {
+  for (const waiter of copyBuilds.waiting.filter(stopped)) {
+    copyBuilds.waiting.splice(copyBuilds.waiting.indexOf(waiter), 1);
+    waiter.reject("Cancelled.");
+  }
+}
+
+/** Build `path` for a copy out, or wait for its build under way and take it. */
+async function buildForCopy(path: string, by: BuildBy): Promise<void> {
+  for (let under = copyBuilds.inFlight.get(path); under; under = copyBuilds.inFlight.get(path)) {
+    if (buildStopped(by)) throw "Cancelled.";
+    await waitForBuild(path, by, under);
+  }
+  if (copyBuilds.built.has(path)) return;
+  const entry = { path, ahead: by.ticket !== undefined, outcome: "running" };
+  copyBuilds.log.push(entry);
+  const run = (async () => {
+    copyBuilds.peak = Math.max(copyBuilds.peak, ++copyBuilds.running);
+    try {
+      if (copyBuilds.held) await waitForBuild(path, by);
+      if (buildStopped(by)) throw "Cancelled.";
+      const failure = copyBuilds.failing.get(path);
+      if (failure) {
+        if (failure.once) copyBuilds.failing.delete(path);
+        throw failure.error;
+      }
+      copyBuilds.built.add(path);
+    } finally {
+      copyBuilds.running--;
+    }
+  })();
+  copyBuilds.inFlight.set(path, run);
+  try {
+    await run;
+    entry.outcome = "built";
+  } catch (error) {
+    entry.outcome = String(error);
+    throw error;
+  } finally {
+    if (copyBuilds.inFlight.get(path) === run) copyBuilds.inFlight.delete(path);
+  }
+}
+
+/** `arbesk_prefetch`: what a copy out will place, built ahead of its turn
+ *  under `ticket` (`cancel_arbesk_parts` stops it), by the copy's own
+ *  checks and build; nothing outside the app cache. */
+async function arbeskPrefetch(path: string, ticket: number): Promise<void> {
+  if (cancelledParts.includes(ticket)) throw "Cancelled.";
+  if (placeOf(path) !== "arbesk") throw `“${path}” is not an Arbesk location.`;
+  arbeskCopyNode(path);
+  await buildForCopy(path, { ticket });
+}
+
 /**
  * copy_entry from Arbesk (place::copy): an asset or one of its other files
  * (spec F9: pinned paths whose entry moved refused), only to a folder on
- * this computer or in Drive. Its file is built (Client::export), then placed
+ * this computer or in Drive. Its file is built (Client::export: taken from
+ * a build ahead when there is one, performance plan, phase 5), then placed
  * as any copy is: a name taken asks first, and Replace trashes the old item.
  */
-function arbeskCopy(a: Args): string {
+async function arbeskCopy(a: Args): Promise<string> {
   const from = str(a, "from"), to = str(a, "to");
   const overwrite = Boolean(a.overwrite);
   writable(to);
-  const ids = arbeskIds(from);
-  if (!ids.asset) throw "Copying Arbesk collections comes next.";
-  const node = ids.file === undefined ? arbeskModelNode(from) : f(lookup(arbeskFileOpen(from))!.size, 0);
-  if (placeOf(to) === "drive") return uploadNode(node, to, overwrite);
-  const [toParent, toName] = parentAndName(localPath(to));
-  if (!toParent?.dir) throw "The destination folder no longer exists.";
-  if (toParent.children[toName]) {
-    if (!overwrite) throw `Target already exists: ${to}`;
-    trash(toParent, toName, to);
+  copyBuilds.placingPeak = Math.max(copyBuilds.placingPeak, ++copyBuilds.placing);
+  copyBuilds.placed.push(from);
+  try {
+    const node = arbeskCopyNode(from);
+    await buildForCopy(from, { op: typeof a.op === "string" ? a.op : undefined });
+    if (placeOf(to) === "drive") return uploadNode(node, to, overwrite);
+    const [toParent, toName] = parentAndName(localPath(to));
+    if (!toParent?.dir) throw "The destination folder no longer exists.";
+    if (toParent.children[toName]) {
+      if (!overwrite) throw `Target already exists: ${to}`;
+      trash(toParent, toName, to);
+    }
+    toParent.children[toName] = node;
+    return to;
+  } finally {
+    copyBuilds.placing--;
   }
-  toParent.children[toName] = node;
-  return to;
 }
 
 const ARBESK_ONLY_MODELS = "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.";
@@ -2171,6 +2285,46 @@ const arbeskSession = { signedIn: true, expireNext: false };
   },
   /** The held calls, in the order they were asked: their part, limit and ticket. */
   heldParts: () => heldParts.map(({ key, limit, ticket }) => ({ key, limit, ticket })),
+  /** Hold every copy-out build, ahead or the copy's own, until released
+   *  (performance plan, phase 5). */
+  holdBuilds(hold: boolean): void {
+    copyBuilds.held = hold;
+    if (!hold) this.releaseBuilds();
+  },
+  /** Let the held builds go on: those `which` names (by source and whether
+   *  built ahead), all without. */
+  releaseBuilds(which: (path: string, ahead: boolean) => boolean = () => true): void {
+    for (const waiter of copyBuilds.waiting.filter((w) => which(w.path, w.ahead))) {
+      copyBuilds.waiting.splice(copyBuilds.waiting.indexOf(waiter), 1);
+      waiter.resolve();
+    }
+  },
+  /** Every build of the source `path` fails with `error`, as an unreachable gateway does. */
+  failBuilds(path: string, error: string): void {
+    copyBuilds.failing.set(path, { error, once: false });
+  },
+  /** The next build of `path` fails with `error`; the one after works. */
+  failBuildOnce(path: string, error: string): void {
+    copyBuilds.failing.set(path, { error, once: true });
+  },
+  /** Each build that ran, in the order they started: its source, whether
+   *  it was built ahead, and how it ended ("running", "built" or its error). */
+  builds: () => copyBuilds.log.map((entry) => ({ ...entry })),
+  buildsRunning: () => copyBuilds.running,
+  buildsPeak: () => copyBuilds.peak,
+  /** The sources copy_entry placed, in the order it was asked, and the
+   *  most it placed at once. */
+  placements: () => [...copyBuilds.placed],
+  placingPeak: () => copyBuilds.placingPeak,
+  /** Forget the builds and placements (the cache too: the next copy builds again). */
+  resetBuilds(): void {
+    this.holdBuilds(false);
+    Object.assign(copyBuilds, { running: 0, peak: 0, placing: 0, placingPeak: 0 });
+    copyBuilds.built.clear();
+    copyBuilds.failing.clear();
+    copyBuilds.log.length = 0;
+    copyBuilds.placed.length = 0;
+  },
   /** The tickets `cancel_arbesk_parts` was given, in order. */
   cancelledParts: () => [...cancelledParts],
   /** As a save elsewhere would: the file `file` of asset `asset` now holds other bytes (another CID). */
@@ -2542,6 +2696,7 @@ async function arbeskPart(path: string, version: string | null, key: string, lim
 
 /** `cancel_arbesk_parts`: each ticket's call, held or not yet answered, answers "Cancelled.". */
 function cancelArbeskParts(tickets: number[]): void {
+  cancelBuilds((waiter) => waiter.ticket !== undefined && tickets.includes(waiter.ticket));
   for (const ticket of tickets) {
     cancelledParts.push(ticket);
     const held = heldParts.findIndex((call) => call.ticket === ticket);
@@ -2554,6 +2709,7 @@ const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
   arbesk_scene: (a) => arbeskScene(str(a, "path"), (a.version as string | null | undefined) ?? null),
   arbesk_representations: (a) => arbeskRepresentations(str(a, "path"), (a.version as string | null | undefined) ?? null),
   arbesk_export: gated((a) => arbeskExport(str(a, "path"))),
+  arbesk_prefetch: (a) => arbeskPrefetch(str(a, "path"), Number(a.ticket)),
   arbesk_file: gated((a) => arbeskSavedFile(str(a, "path"), str(a, "version"), str(a, "id"))),
   arbesk_attach_plan: (a) => arbeskAttachPlan(str(a, "path"), a.files as string[]),
   arbesk_attach: gated(arbeskAttach),
