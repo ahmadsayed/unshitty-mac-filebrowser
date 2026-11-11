@@ -1,7 +1,9 @@
 // Performance plan, phase 5: which items a copy builds ahead of the one it
 // places (`buildsAhead`, src/arbesk-ahead.ts): up to BUILDS_AHEAD after it,
 // each once, only those it is told are built first, none once stopped; a
-// stop cancels the builds still running, never one that ended.
+// stop cancels the builds still running, never one that ended; an item
+// passed has its build stopped; an item's turn waits for its build still
+// running and takes its failure.
 import { expect, test } from "vitest";
 import { BUILDS_AHEAD, buildsAhead, type AheadCalls } from "../src/arbesk-ahead";
 
@@ -83,4 +85,54 @@ test("one item, or none built first: no build and no cancel", () => {
   local.stop();
   expect(calls.started).toEqual([]);
   expect(calls.cancelled).toEqual([]);
+});
+
+test("items passed stop their builds: a long run of Skips never builds more than four ahead", () => {
+  const calls = recorder();
+  const sources = items(70);
+  const ahead = buildsAhead(sources, () => true, calls);
+  // The recorder's tickets go 101, 102, … in the order the builds start.
+  const started = (path: string) => 101 + calls.started.indexOf(path);
+  let peak = 0;
+  for (let i = 0; i < sources.length; i++) {
+    // Item i is skipped: placing(i), then straight on, nothing finishes.
+    ahead.placing(i);
+    const cancelled = new Set(calls.cancelled.flat());
+    const running = calls.started.filter((path) => !cancelled.has(started(path)));
+    peak = Math.max(peak, running.length);
+    // Only item i (its own, the copy would wait for) and the four after it.
+    expect(running.every((path) => sources.indexOf(path) >= i && sources.indexOf(path) <= i + BUILDS_AHEAD)).toBe(true);
+  }
+  ahead.stop();
+  expect(peak).toBe(BUILDS_AHEAD + 1);
+  // Every build ahead was cancelled, each once.
+  const cancelled = calls.cancelled.flat().sort((a, b) => a - b);
+  expect(cancelled).toEqual(calls.started.map(started).sort((a, b) => a - b));
+  expect(calls.started).toEqual(sources.slice(1));
+});
+
+test("an item's turn waits for its build ahead still running, and takes its failure", async () => {
+  const calls = recorder();
+  const sources = items(6);
+  const ahead = buildsAhead(sources, () => true, calls);
+  ahead.placing(0);
+  // No build ahead for the item the copy builds itself.
+  await expect(ahead.turn(0)).resolves.toBeNull();
+  // Item 1's still runs: its turn ends with it, and its failure.
+  ahead.placing(1);
+  const turn = ahead.turn(1);
+  await calls.finish(sources[1], true);
+  await expect(turn).resolves.toEqual({ error: "Arbesk's gateway could not be reached." });
+  // Item 2's failed before its turn: the copy builds again, nothing told.
+  await calls.finish(sources[2], true);
+  ahead.placing(2);
+  await expect(ahead.turn(2)).resolves.toBeNull();
+  // Item 3's built while still running at its turn.
+  ahead.placing(3);
+  const built = ahead.turn(3);
+  await calls.finish(sources[3]);
+  await expect(built).resolves.toBeNull();
+  // Once stopped, no turn waits.
+  ahead.stop();
+  await expect(ahead.turn(4)).resolves.toBeNull();
 });

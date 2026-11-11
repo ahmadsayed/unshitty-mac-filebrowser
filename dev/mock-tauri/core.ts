@@ -2087,7 +2087,7 @@ type BuildBy = { ticket?: number; op?: string };
  * cancel (the copy's operation, a build ahead's ticket) stopping a build
  * or its wait. Tests hold the builds (`holdBuilds`, `releaseBuilds`), make
  * a source's builds fail (`failBuilds`, `failBuildOnce`), and read the
- * builds (`builds`, `buildsRunning`, `buildsPeak`) and the placements
+ * builds (`builds`, `buildsRunning`, `buildsPeak`, `buildsAheadPeak`) and the placements
  * (`placements`, `placingPeak`).
  */
 const copyBuilds = {
@@ -2095,6 +2095,8 @@ const copyBuilds = {
   waiting: [] as Array<BuildBy & { path: string; ahead: boolean; resolve: () => void; reject: (error: unknown) => void }>,
   running: 0,
   peak: 0,
+  runningAhead: 0,
+  aheadPeak: 0,
   built: new Set<string>(),
   inFlight: new Map<string, Promise<void>>(),
   failing: new Map<string, { error: string; once: boolean }>(),
@@ -2139,6 +2141,7 @@ async function buildForCopy(path: string, by: BuildBy): Promise<void> {
   copyBuilds.log.push(entry);
   const run = (async () => {
     copyBuilds.peak = Math.max(copyBuilds.peak, ++copyBuilds.running);
+    if (entry.ahead) copyBuilds.aheadPeak = Math.max(copyBuilds.aheadPeak, ++copyBuilds.runningAhead);
     try {
       if (copyBuilds.held) await waitForBuild(path, by);
       if (buildStopped(by)) throw "Cancelled.";
@@ -2150,6 +2153,7 @@ async function buildForCopy(path: string, by: BuildBy): Promise<void> {
       copyBuilds.built.add(path);
     } finally {
       copyBuilds.running--;
+      if (entry.ahead) copyBuilds.runningAhead--;
     }
   })();
   copyBuilds.inFlight.set(path, run);
@@ -2312,6 +2316,8 @@ const arbeskSession = { signedIn: true, expireNext: false };
   builds: () => copyBuilds.log.map((entry) => ({ ...entry })),
   buildsRunning: () => copyBuilds.running,
   buildsPeak: () => copyBuilds.peak,
+  /** The most builds ahead (`arbesk_prefetch`) that ran at once. */
+  buildsAheadPeak: () => copyBuilds.aheadPeak,
   /** The sources copy_entry placed, in the order it was asked, and the
    *  most it placed at once. */
   placements: () => [...copyBuilds.placed],
@@ -2319,7 +2325,7 @@ const arbeskSession = { signedIn: true, expireNext: false };
   /** Forget the builds and placements (the cache too: the next copy builds again). */
   resetBuilds(): void {
     this.holdBuilds(false);
-    Object.assign(copyBuilds, { running: 0, peak: 0, placing: 0, placingPeak: 0 });
+    Object.assign(copyBuilds, { running: 0, peak: 0, runningAhead: 0, aheadPeak: 0, placing: 0, placingPeak: 0 });
     copyBuilds.built.clear();
     copyBuilds.failing.clear();
     copyBuilds.log.length = 0;

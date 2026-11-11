@@ -32,7 +32,7 @@ import {
 } from "./api";
 import { appFormats, arbeskAttach, arbeskAttachPlan, arbeskDetach, arbeskExport, arbeskFile, arbeskPrefetch, arbeskRepresentations, capabilities, openWith, type AppChoice, type AttachChoice, type Attached, type PlannedFile, type RepresentationInfo } from "./api";
 import { askAttachClash, chooseFileToOpen, chooseFilesToCopy, chooseFormatsToCopy, confirmAttach, confirmRemoveFile, iconEntry, showFilesDialog, type ClashChoice, type FilesActions, type FilesPage } from "./representation-dialogs";
-import { buildsAhead } from "./arbesk-ahead";
+import { buildsAhead, type BuildsAhead } from "./arbesk-ahead";
 import { assetFormat, choiceTakesFrom, copyNameAt, copySources, formatsOfSummary, mayOmitFormats, onlyChoice, openWithCandidates, uniqueNames, type AssetFiles, type CopyChoice, type FileChoice } from "./representations";
 import { loadCapabilities } from "./capabilities";
 import { entryIcon, filesEmblemOf, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
@@ -3747,6 +3747,17 @@ function builtBeforePlacing(path: string, moving: boolean, destDir: string): boo
   return out && !moving && (isArbeskAsset(path) || isArbeskFile(path));
 }
 
+/** Item `i`'s build ahead's failure, in the copy's words, when it was
+ *  still running at the item's turn; null when the copy builds the item
+ *  itself (no build ahead, one that ended before, built, or was
+ *  cancelled; a sign-in, which the copy asks for). */
+async function aheadFailure(ahead: BuildsAhead, i: number): Promise<string | null> {
+  const ended = await ahead.turn(i);
+  if (!ended) return null;
+  const error = cleanError(ended.error);
+  return error === CANCELLED || error === ARBESK_SIGN_IN ? null : error;
+}
+
 async function transferBatch(
   paths: string[], dirs: Set<string>, move: (path: string) => boolean, destDir: string,
   op: Operation, batch: TransferBatch, intent: number,
@@ -3806,6 +3817,16 @@ async function transferBatch(
         if (choice === "skip") continue;
         if (choice === "keepboth") landing = await freeName(name, isDir);
         else overwrite = true;
+      }
+
+      // Its build ahead still running: the copy's own build would wait for
+      // it, then build again; its failure is the copy's, told at once.
+      const failedAhead = await aheadFailure(ahead, i);
+      if (batch.cancelled) break;
+      if (failedAhead !== null) {
+        finishItem(op);
+        errors.push(`“${name}”: ${failedAhead}`);
+        continue;
       }
 
       try {

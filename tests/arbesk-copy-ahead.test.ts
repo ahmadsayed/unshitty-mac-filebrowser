@@ -3,9 +3,11 @@
 // app cache), while placing stays one at a time and in order, with the
 // same clash questions. Cancel stops the builds ahead and the placing, and
 // leaves nothing extra in the folder; a build ahead that failed is told at
-// its item's turn, in the words a copy always gave; a Skip places nothing.
+// its item's turn, in the words a copy always gave (once, when it still ran
+// at that turn); a Skip places nothing and stops the item's build.
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { ARBESK_MOCK_ADDRESS, invoke } from "../dev/mock-tauri/core";
+import { BUILDS_AHEAD } from "../src/arbesk-ahead";
 import { $, $$, boot, click, closeOverlays, dialogHeading, goTo, installFakeCanvas, key, names, respond, settle, toasts } from "./app";
 
 type Build = { path: string; ahead: boolean; outcome: string };
@@ -18,6 +20,7 @@ type MockArbesk = {
   builds(): Build[];
   buildsRunning(): number;
   buildsPeak(): number;
+  buildsAheadPeak(): number;
   placements(): string[];
   placingPeak(): number;
   resetBuilds(): void;
@@ -29,6 +32,8 @@ const calls = () => (globalThis as unknown as { __mockCalls: MockCalls }).__mock
 const HOME = "/Users/me";
 const SHAPES = `arbesk://${ARBESK_MOCK_ADDRESS}/1~Shapes`;
 const SIX = [0, 1, 2, 3, 4, 5].map((n) => `Ahead${n}.gltf`);
+/** Twelve assets whose names are all taken in Ahead7. */
+const TWELVE = Array.from({ length: 12 }, (_, n) => `Taken${n}.gltf`);
 const pathOf = (name: string) => `${SHAPES}/${name.replace(".gltf", "").toLowerCase()}~${name}`;
 const nameOf = (path: string) => decodeURIComponent(path.slice(path.lastIndexOf("~") + 1));
 const GATEWAY = "Arbesk's gateway could not be reached.";
@@ -40,11 +45,13 @@ const box = (title: string) =>
 beforeAll(async () => {
   installFakeCanvas();
   SIX.forEach((name, n) => mockArbesk().addAsset("1", `ahead${n}`, name.replace(".gltf", ""), []));
+  TWELVE.forEach((name, n) => mockArbesk().addAsset("1", `taken${n}`, name.replace(".gltf", ""), []));
   for (const n of [1, 2]) mockArbesk().addAsset("1", `meshy${n}`, `Meshy${n}`, [{ id: "stl", format: "stl", name: `Meshy${n}.stl`, bytes: 100 }]);
   const flow = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
   await invoke("arbesk_connect_finish", { flowId: flow.flow_id });
-  for (const n of [1, 2, 3, 4, 5, 6]) await invoke("make_dir", { path: `${HOME}/Ahead${n}` });
+  for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) await invoke("make_dir", { path: `${HOME}/Ahead${n}` });
   await invoke("create_file", { path: `${HOME}/Ahead5/Ahead2.gltf` });
+  for (const name of TWELVE) await invoke("create_file", { path: `${HOME}/Ahead7/${name}` });
   await boot();
   await key("1", { mod: true });
 });
@@ -172,6 +179,54 @@ test("Skip on a clash places nothing of an item built ahead", async () => {
   // The empty file that was there stays: nothing went to the Trash.
   const listed = await invoke<Array<{ name: string; size: number }>>("list_dir", { path: `${HOME}/Ahead5`, showHidden: false });
   expect(listed.find((entry) => entry.name === SIX[2])?.size).toBe(0);
+});
+
+test("Skip to all of many clashes stops each passed item's build: never more than four ahead", async () => {
+  await copyFromShapes(TWELVE);
+  mockArbesk().resetBuilds();
+  mockArbesk().holdBuilds(true);
+  await goTo(`${HOME}/Ahead7`);
+  await key("v", { mod: true });
+  await vi.waitFor(() => expect(dialogHeading()).toBe(`Replace file “${TWELVE[0]}”?`), { timeout: 3000 });
+  const all = document.querySelector<HTMLInputElement>(".dialog-layer .check-row input")!;
+  all.checked = true;
+  all.dispatchEvent(new Event("change"));
+  await respond("Skip");
+  await vi.waitFor(() => expect(mockArbesk().buildsRunning()).toBe(0), { timeout: 2000 });
+  await settle(20);
+  // Each item after the first was built ahead, and each build stopped
+  // once its item was passed (or the copy ended): none landed, nothing placed.
+  expect(built().map(([name]) => name).sort()).toEqual(TWELVE.slice(1).sort());
+  expect(built().every(([, ahead, outcome]) => ahead && outcome === "Cancelled.")).toBe(true);
+  expect(mockArbesk().buildsAheadPeak()).toBeLessThanOrEqual(BUILDS_AHEAD + 1);
+  const cancelled = calls().argsOf("cancel_arbesk_parts").flatMap((a) => a.tickets as number[]);
+  const ahead = calls().argsOf("arbesk_prefetch").map((a) => a.ticket as number);
+  expect(ahead.every((ticket) => cancelled.includes(ticket))).toBe(true);
+  expect(mockArbesk().placements()).toEqual([]);
+  const listed = await invoke<Array<{ name: string; size: number }>>("list_dir", { path: `${HOME}/Ahead7`, showHidden: false });
+  expect(listed.map((entry) => entry.name).sort()).toEqual([...TWELVE].sort());
+  expect(listed.every((entry) => entry.size === 0)).toBe(true);
+});
+
+test("a build ahead still running at its turn: the copy takes its failure, in today's words, and does not build again", async () => {
+  await copyFromShapes(SIX);
+  mockArbesk().resetBuilds();
+  mockArbesk().holdBuilds(true);
+  mockArbesk().failBuilds(pathOf(SIX[1]), GATEWAY);
+  await goTo(`${HOME}/Ahead8`);
+  await key("v", { mod: true });
+  await vi.waitFor(() => expect(mockArbesk().buildsRunning()).toBe(5), { timeout: 2000 });
+  // The first is placed; the second's turn waits for its build ahead.
+  mockArbesk().releaseBuilds((path, ahead) => !ahead && path === pathOf(SIX[0]));
+  await vi.waitFor(() => expect(names()).toEqual([SIX[0]]), { timeout: 2000 });
+  await settle(10);
+  expect(mockArbesk().placements()).toEqual([pathOf(SIX[0])]);
+  mockArbesk().holdBuilds(false);
+  await vi.waitFor(() => expect(names().sort()).toEqual(SIX.filter((name) => name !== SIX[1])), { timeout: 3000 });
+  await vi.waitFor(() => expect(toasts()).toContain(`Could not copy “${SIX[1]}”: ${GATEWAY}`), { timeout: 2000 });
+  // One build of it, ahead: the copy did not wait for a second one.
+  expect(built().filter(([name]) => name === SIX[1])).toEqual([[SIX[1], true, GATEWAY]]);
+  expect(mockArbesk().placements()).toEqual(SIX.filter((name) => name !== SIX[1]).map(pathOf));
 });
 
 test("an asset's other files are built ahead by their pinned paths", async () => {

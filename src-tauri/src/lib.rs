@@ -778,7 +778,7 @@ fn arbesk_exported(registry: &places::Registry, path: &str, cx: &places::Cx) -> 
 /// the copy then finds it there. It writes nothing outside the app cache,
 /// and its reads go through Arbesk's limiter and byte budget like any
 /// build. `ticket` names it for `cancel_arbesk_parts`, as a preview's part.
-/// A failure is the copy's to tell: it builds again at its turn.
+/// A failure is told by the copy, at the item's turn.
 #[tauri::command]
 async fn arbesk_prefetch(
     app: tauri::AppHandle,
@@ -786,12 +786,30 @@ async fn arbesk_prefetch(
     path: String,
     ticket: u64,
 ) -> Result<(), String> {
-    let running = app.state::<part_tickets::PartTickets>().start(window.label(), ticket);
+    let tickets = app.state::<part_tickets::PartTickets>().inner().clone();
+    let window = window.label().to_string();
     blocking(move || {
-        let cx = places_cx(&app, running.progress());
-        built_ahead(&app.state::<places::Registry>(), &path, &cx)
+        under_ticket(&tickets, &window, ticket, |progress| {
+            built_ahead(&app.state::<places::Registry>(), &path, &places_cx(&app, progress))
+        })
     })
     .await?
+}
+
+/// `build` under `window`'s cancel ticket `ticket`, given the ticket's
+/// `Progress`, so `cancel_arbesk_parts` stops it waiting or reading; not
+/// run at all when that cancel came first (the copy passed the item, or
+/// ended, before the build started).
+fn under_ticket(
+    tickets: &part_tickets::PartTickets,
+    window: &str,
+    ticket: u64,
+    build: impl FnOnce(progress::Progress) -> Result<(), String>,
+) -> Result<(), String> {
+    let running = tickets.start(window, ticket);
+    let progress = running.progress();
+    progress.check()?;
+    build(progress)
 }
 
 /// `arbesk_prefetch`'s work: Arbesk's own export, whatever `path` is.
@@ -3469,6 +3487,71 @@ mod read_gate_tests {
             let with = block_on(open_with(path.into(), "/no/such.desktop".into()));
             assert_eq!(with.unwrap_err(), refusal, "{path}");
         }
+    }
+}
+
+#[cfg(test)]
+mod prefetch_ticket_tests {
+    //! A copy's build ahead (`arbesk_prefetch`, performance plan, phase 5)
+    //! runs under its cancel ticket: `cancel_arbesk_parts` stops it while
+    //! it reads, and one cancelled before it started does nothing.
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    const ASSET: &str = "arbesk://0x00000000000000000000000000000000000000ab/1~Set/a1~Box.gltf";
+
+    #[test]
+    fn a_cancel_before_the_build_ahead_starts_builds_nothing() {
+        let tickets = part_tickets::PartTickets::default();
+        let registry = providers::testing::plain();
+        tickets.cancel("main", &[5]);
+        // Arbesk's own export is never asked: without the account it
+        // would have said so.
+        let cx = |progress| places::Cx { progress, cache_dir: PathBuf::new() };
+        assert_eq!(
+            under_ticket(&tickets, "main", 5, |progress| built_ahead(&registry, ASSET, &cx(progress))),
+            Err(progress::CANCELLED.to_string())
+        );
+        // Not cancelled, it is that export, in its words.
+        assert_eq!(
+            under_ticket(&tickets, "main", 6, |progress| built_ahead(&registry, ASSET, &cx(progress))),
+            Err("Connect this Arbesk account first.".to_string())
+        );
+        // Another window's cancel of the same ticket doesn't reach it.
+        tickets.cancel("second", &[7]);
+        assert_eq!(under_ticket(&tickets, "main", 7, |_| Ok(())), Ok(()));
+    }
+
+    /// A build ahead reading (as Arbesk's reads do, looking at its
+    /// `Progress` every tick) stops at its ticket's cancel.
+    #[test]
+    fn a_cancel_stops_a_build_ahead_while_it_reads() {
+        let tickets = part_tickets::PartTickets::default();
+        let reading = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let build = scope.spawn(|| {
+                under_ticket(&tickets, "main", 9, |progress| loop {
+                    reading.store(true, Ordering::SeqCst);
+                    progress.check()?;
+                    std::thread::sleep(Duration::from_millis(10));
+                })
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !reading.load(Ordering::SeqCst) {
+                assert!(Instant::now() < deadline, "the build never read");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            // Another window's, or another ticket's, cancel leaves it reading.
+            tickets.cancel("second", &[9]);
+            tickets.cancel("main", &[10]);
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!build.is_finished());
+            let cancelled = Instant::now();
+            tickets.cancel("main", &[9]);
+            assert_eq!(build.join().unwrap(), Err(progress::CANCELLED.to_string()));
+            assert!(cancelled.elapsed() < Duration::from_secs(1), "{:?}", cancelled.elapsed());
+        });
     }
 }
 

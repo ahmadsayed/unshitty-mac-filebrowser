@@ -334,8 +334,10 @@ of them (with the files chosen with them) ahead of the one it is putting in
 the folder, within the same limits, while it still puts them there one at a
 time and in order, asking about each name taken as before. Cancel stops
 those downloads too; what was downloaded ahead and not copied (a Skip, a
-Cancel) stays in the app cache, never in the folder. A download ahead that
-fails is tried again at its turn, and only a failure then is shown.
+Cancel) stays in the app cache, never in the folder, and the download of an
+item skipped stops. A download ahead that fails before its turn is tried
+again then, and only a failure then is shown; one still under way at its
+turn is waited for, and its failure is shown as the copy's.
 The deployment's settings are kept for five minutes. Which manifest a
 collection points at now is read from the chain and kept for five seconds,
 so one action's reads (a preview's model, saves and files; a scene's links
