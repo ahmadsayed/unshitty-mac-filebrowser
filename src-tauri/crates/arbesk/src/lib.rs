@@ -57,7 +57,7 @@ pub use location::{ArbeskPath as Location, is_arbesk, is_folder, parse, parse_ta
 pub use progress::{CANCELLED, Phase, Progress, Snapshot};
 pub use representations::RepresentationInfo;
 pub use provider::SCHEME;
-pub use scene::Scene;
+pub use scene::{Scene, SceneAt};
 pub use service::Version;
 pub use share::Shared;
 
@@ -300,15 +300,23 @@ impl Client {
         service::versions(http, &site, path, &self.cache_dir)
     }
 
-    /// `service::scene` for the account `path` belongs to, kept for `part`.
-    pub fn scene(&self, path: &str, version: Option<&str>) -> Result<scene::Scene, String> {
+    /// `service::scene_at` for the account `path` belongs to: the scene and
+    /// the save's CID it was resolved from, kept for `part` under that CID
+    /// (the preview asks for the parts by it) and, without `version`, under
+    /// the asset's path too, as before.
+    pub fn scene(&self, path: &str, version: Option<&str>) -> Result<scene::SceneAt, String> {
         let (http, site) = self.reach(path)?;
-        let resolved = service::scene(http, &site, path, version, &self.cache_dir)?;
-        Ok(self
-            .scenes
-            .keep(&kept(path, version), resolved)
-            .as_ref()
-            .clone())
+        let (cid, resolved) = service::scene_at(http, &site, path, version, &self.cache_dir)?;
+        // The CID's last: a full store clears before it keeps, so the
+        // entry the parts are asked by is the one sure to stay.
+        if version.is_none() {
+            self.scenes.keep(&kept(path, None), resolved.clone());
+        }
+        let scene = self.scenes.keep(&kept(path, Some(&cid)), resolved);
+        Ok(scene::SceneAt {
+            cid,
+            scene: scene.as_ref().clone(),
+        })
     }
 
     /// `service::part` for the account `path` belongs to, from the scene of

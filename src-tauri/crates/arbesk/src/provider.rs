@@ -865,6 +865,26 @@ mod tests {
         assert_eq!(sharing.share(ACCOUNT, "a@example.com", 1).unwrap_err(), Error::Other("Share a collection.".into()));
     }
 
+    /// The newest scene names the save it was resolved from, the newest
+    /// save `versions` reads, and is kept under that CID, so the parts the
+    /// preview asks for by it (performance plan, phase 1) don't resolve it
+    /// again; it is still kept under the path too.
+    #[test]
+    fn the_newest_scene_names_its_save_and_is_kept_by_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, _, _) = client(dir.path());
+        let asset = location::asset_path(&testing::shapes(), "a1", "Box", "gltf");
+        let preview = client.extensions().preview.unwrap();
+        let answered: serde_json::Value = serde_json::from_str(preview.scene(&asset, None).unwrap().as_str()).unwrap();
+        let newest = Client::versions(&client, &asset).unwrap().pop().unwrap().id;
+        assert_eq!(answered["cid"], newest.as_str());
+        let kept_by_cid = client.scenes.get(&crate::kept(&asset, Some(&newest))).unwrap();
+        assert_eq!(answered["parts"], serde_json::to_value(&kept_by_cid.parts).unwrap());
+        assert_eq!(client.scenes.get(&crate::kept(&asset, None)).unwrap(), kept_by_cid);
+        let by_cid = Client::scene(&client, &asset, Some(&newest)).unwrap();
+        assert_eq!((by_cid.cid.as_str(), &by_cid.scene), (newest.as_str(), kept_by_cid.as_ref()));
+    }
+
     /// The accounts are the client's, each as its JSON; signing in starts,
     /// cancels and is refused as the client's flow is, and disconnecting
     /// forgets the account and its session.
