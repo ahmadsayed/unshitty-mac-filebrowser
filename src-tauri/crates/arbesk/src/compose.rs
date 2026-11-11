@@ -256,11 +256,17 @@ struct Window {
     flying: HashSet<String>,
     /// What each part holds of the limiter's shared byte budget.
     held: HashMap<String, u64>,
+    /// Each part's place in the source, which the assembler follows.
+    order: HashMap<String, usize>,
     /// Each failed part's failure (a read, the budget), which a wait for
     /// that part answers with.
     errors: HashMap<String, String>,
-    /// The first failure: a read, the budget, a cancel. It fails the build.
-    failed: Option<String>,
+    /// The build's failure and the place it fails at: the earliest failed
+    /// part in source order, or 0 for a cancel or a worker that panicked.
+    /// Parts queued before it are still fetched, each to its own verdict
+    /// (only a part put back as larger than declared can be); the rest are
+    /// dropped from the queue.
+    failed: Option<(usize, String)>,
     /// The assembler is done: workers start nothing more.
     done: bool,
     /// Workers still running: once none is, nothing more lands.
@@ -332,7 +338,9 @@ impl Window {
         let landed = match answer {
             Ok(None) => {
                 self.let_go(&plan.cid, limiter);
-                self.queue.push_front(Plan { size: None, ..plan.clone() });
+                if self.precedes_failure(&plan.cid) {
+                    self.queue.push_front(Plan { size: None, ..plan.clone() });
+                }
                 return;
             }
             Ok(Some(bytes)) => self.charge(bytes, plan.refs),
@@ -353,9 +361,32 @@ impl Window {
             Err(error) => {
                 self.let_go(&plan.cid, limiter);
                 self.errors.insert(plan.cid.clone(), error.clone());
-                self.failed.get_or_insert(error);
+                self.fail(self.place(&plan.cid), error);
             }
         }
+    }
+
+    /// Where `cid` comes in the source (an undeclared part: last).
+    fn place(&self, cid: &str) -> usize {
+        self.order.get(cid).copied().unwrap_or(usize::MAX)
+    }
+
+    /// Whether `cid` comes before the build's failure, so it is still
+    /// fetched to a verdict of its own.
+    fn precedes_failure(&self, cid: &str) -> bool {
+        self.failed.as_ref().is_none_or(|(at, _)| self.place(cid) < *at)
+    }
+
+    /// Fail the build at `at` unless it already fails as early, and drop
+    /// the queued parts from there on: nothing will ask for them.
+    fn fail(&mut self, at: usize, error: String) {
+        if self.failed.as_ref().is_some_and(|(failed_at, _)| *failed_at <= at) {
+            return;
+        }
+        let order = &self.order;
+        self.queue
+            .retain(|plan| order.get(&plan.cid).copied().unwrap_or(usize::MAX) < at);
+        self.failed = Some((at, error));
     }
 
     /// Give back what `cid` holds of the shared byte budget.
@@ -390,9 +421,10 @@ impl Window {
     }
 
     /// What a wait for `cid` answers now, if anything: its bytes, its own
-    /// failure, or the build's once `cid` can no longer land (it is not on
-    /// its way). So of several failed parts, the assembler hears the one it
-    /// asks for first, as it did when parts went in order.
+    /// failure, or the build's once `cid` can no longer land (it is neither
+    /// on its way nor queued). So of several failed parts, the assembler
+    /// hears the one it asks for first, as it did when parts went in order,
+    /// a part fetched again after an understated size included.
     fn ready(&mut self, cid: &str, limiter: Option<&Limiter>) -> Option<Result<Vec<u8>, String>> {
         if self.fetched.contains_key(cid) {
             return Some(self.take(cid, limiter));
@@ -400,12 +432,14 @@ impl Window {
         if let Some(error) = self.errors.get(cid) {
             return Some(Err(error.clone()));
         }
-        if let Some(error) = self.failed.as_ref().filter(|_| !self.flying.contains(cid)) {
+        let landing = self.flying.contains(cid) || self.queue.iter().any(|plan| plan.cid == cid);
+        if let Some((_, error)) = self.failed.as_ref().filter(|_| !landing) {
             return Some(Err(error.clone()));
         }
         if self.workers == 0 {
             // Nothing more lands: a worker ended without landing `cid`.
-            return Some(Err(self.failed.clone().unwrap_or_else(|| STOPPED.into())));
+            let failed = self.failed.as_ref().map(|(_, error)| error.clone());
+            return Some(Err(failed.unwrap_or_else(|| STOPPED.into())));
         }
         None
     }
@@ -451,6 +485,7 @@ impl<'g> Parts<'g> {
             limiter: gateway.limits().map(|limits| limits.limiter),
             window: Mutex::new(Window {
                 remaining: plans.iter().map(|plan| (plan.cid.clone(), plan.refs)).collect(),
+                order: plans.iter().enumerate().map(|(at, plan)| (plan.cid.clone(), at)).collect(),
                 queue: plans.into(),
                 left: cap,
                 reserved: 0,
@@ -500,7 +535,7 @@ impl<'g> Parts<'g> {
                 let mut window = self.0.lock();
                 window.workers -= 1;
                 if std::thread::panicking() {
-                    window.failed.get_or_insert_with(|| STOPPED.into());
+                    window.fail(0, STOPPED.into());
                 }
                 drop(window);
                 self.0.changed.notify_all();
@@ -511,11 +546,12 @@ impl<'g> Parts<'g> {
             let plan = {
                 let mut window = self.lock();
                 loop {
-                    if window.done || window.failed.is_some() || window.queue.is_empty() {
+                    // A failure leaves queued only parts before it.
+                    if window.done || window.queue.is_empty() {
                         return;
                     }
                     if self.gateway.stopped() {
-                        window.failed = Some(CANCELLED.into());
+                        window.fail(0, CANCELLED.into());
                         self.changed.notify_all();
                         return;
                     }
@@ -1465,6 +1501,27 @@ mod tests {
         let cids = ["bafyP0", "bafyP1", "bafyP2", "bafyP3", "bafyP4", "bafyP5"];
         let error = compose_preview(&gateway_for(&http, cache.path()), &sized_buffers(&cids, 10)).unwrap_err();
         assert!(error.starts_with("Arbesk's storage has nothing at bafyP1."), "{error}");
+    }
+
+    /// Parts put back as larger than their source says are still fetched
+    /// after a later part fails, each to its own verdict, so the build tells
+    /// the failure main's pairs told: P1's, too large to build, not P4's,
+    /// which landed first.
+    #[test]
+    fn a_part_fetched_again_is_told_before_a_later_failure() {
+        let http = FakeHttp::new(|request| {
+            if request.url.ends_with("/bafyP4") {
+                return Err(not_found());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            let size = if request.url.ends_with("/bafyP1") { 60_000 } else { 10_000 };
+            Ok(vec![1u8; size])
+        });
+        let cache = tempfile::tempdir().unwrap();
+        let cids = ["bafyP0", "bafyP1", "bafyP2", "bafyP3", "bafyP4", "bafyP5"];
+        let gateway = gateway_for(&http, cache.path());
+        let error = compose_preview_within(&gateway, &sized_buffers(&cids, 1), 50_000).unwrap_err();
+        assert_eq!(error, TOO_LARGE_TO_BUILD);
     }
 
     /// Builds share the limiter's byte budget: two at once never have

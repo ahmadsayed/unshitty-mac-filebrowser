@@ -133,7 +133,7 @@ flight never pass 8, whatever runs at once.
   `eth_call` an RPC permit. The stop is the operation's `Progress` for a
   build, an export, a file and a part; a thumbnail's view stop, which may
   only be asked on its own thread, through `limiter::bridged`; listings,
-  scenes, versions, Properties and file lists never stop. Writes (save,
+  scenes (a part's own scene aside, below), versions, Properties and file lists never stop. Writes (save,
   attach, detach, create, share, attach's planning) keep the bare client:
   unlimited, as before, so a save under its collection hold never queues
   behind a listing.
@@ -153,10 +153,12 @@ flight never pass 8, whatever runs at once.
   gives. A part of unknown size (an older source that records none) goes
   as before: in pairs (`PARALLEL_PARTS` = 2) charged when both land, never
   beside a sized one. Any failure (a read, the budget, a cancel) fails the
-  build with its words; reads under way finish, workers start nothing more.
+  build with its words; reads under way finish, and workers start nothing
+  more past the failed part in source order (a cancel: nothing at all).
   Of several failed parts, the build tells the failure of the part the
-  assembler asks for first (each part's failure is kept), as when parts
-  went in order; a worker that panics fails the build rather than keeping
+  assembler asks for first (each part's failure is kept, and parts put
+  back before the failed one are still fetched to their own verdicts), as
+  when parts went in order; a worker that panics fails the build rather than keeping
   its slot (the panic still reaches the caller).
 - A part of known size is read no further than that size
   (`Gateway::bytes_within` through `Http::get_within`, with the slack of
@@ -173,9 +175,11 @@ flight never pass 8, whatever runs at once.
   part's bytes go back when the assembler takes its last reference, or when
   the build ends. Each build still refuses past its own cap; a waiting
   build hears a freed budget at the next `TICK`.
-- `Client::part` resolves the scene without the part's stop, as
-  `Client::scene` does: resolving leaves out what it can't read, so a
-  cancelled read there would keep a scene with parts missing.
+- `Client::part` resolves the scene under the part's stop, so a Cancel is
+  heard while its reads queue for permits, but never keeps a scene
+  resolved once stopped: resolving leaves out what it can't read, and a
+  read is only cancelled once the stop (which never goes back) says so, so
+  such a scene could be missing parts.
 - A shared read nobody else joined is handed back as it was read, never
   copied; only a read with followers is published for them to copy.
 - Not changed: what is read and where results land, the frontend's caps
@@ -191,7 +195,8 @@ flight never pass 8, whatever runs at once.
   `a_build_waiting_for_a_permit_stops_on_a_cancel`,
   `a_source_that_understates_its_sizes_cannot_overshoot_the_budget`,
   `a_worker_that_panics_does_not_hang_the_build`,
-  `of_two_failed_parts_the_first_in_order_is_told` and
+  `of_two_failed_parts_the_first_in_order_is_told`,
+  `a_part_fetched_again_is_told_before_a_later_failure` and
   `builds_at_once_share_one_byte_budget`, and the client's
   `every_read_shares_one_limit` (a listing, a build and four thumbnails:
   12 reads at once without the limiter, at most 8 with it),

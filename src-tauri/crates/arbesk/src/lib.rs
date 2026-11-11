@@ -348,13 +348,19 @@ impl Client {
         progress: &Progress,
     ) -> Result<PathBuf, String> {
         let site = self.reach(path)?;
-        // The scene is resolved without the part's stop, as `scene` does:
-        // resolving drops what it cannot read, so a read cancelled there
-        // would keep a scene missing parts.
+        // The scene's reads hear the part's stop, so a Cancel while they
+        // queue for permits is heard at once. Resolving drops what it cannot
+        // read, and a read is only cancelled once the stop says so (it never
+        // goes back), so a scene resolved while stopped is never kept: it
+        // may be missing parts.
         let scene = self.scenes.get_or_keep(&kept(path, version), || {
-            self.limited(&limiter::never, |http| {
+            let scene = self.limited(&|| progress.is_cancelled(), |http| {
                 service::scene(http, &site, path, version, &self.cache_dir)
-            })
+            })?;
+            if progress.is_cancelled() {
+                return Err(CANCELLED.into());
+            }
+            Ok(scene)
         })?;
         self.limited(&|| progress.is_cancelled(), |http| {
             service::part(http, &site, &scene, key, &self.cache_dir, progress, &self.builds)
@@ -1103,9 +1109,10 @@ mod tests {
         assert_eq!(client.limiter.reading(), 0);
     }
 
-    /// A part cancelled while its scene's reads wait for a permit keeps no
-    /// scene with parts missing: the scene resolves without the part's
-    /// stop, so its linked child's part is still there for the next ask.
+    /// A part cancelled while its scene's reads wait for a permit hears its
+    /// cancel at once, behind a listing that never lets go, and keeps no
+    /// scene with parts missing: its linked child's part is still there for
+    /// the next ask.
     #[test]
     fn a_cancelled_part_keeps_no_scene_missing_parts() {
         let dir = tempfile::tempdir().unwrap();
@@ -1123,18 +1130,28 @@ mod tests {
             assert!(http.wait_running(limiter::READS), "the listing holds every permit");
             let progress = Progress::default();
             let cancel = progress.clone();
-            let release = http.clone();
+            let late = http.clone();
             scope.spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 cancel.cancel();
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                release.release();
+                // Only so a part that never hears its cancel fails, not hangs.
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                late.release();
             });
-            assert_eq!(client.part(&table, None, "bafySrcTable", &progress).unwrap_err(), CANCELLED);
+            let started = std::time::Instant::now();
+            let part = client.part(&table, None, "bafySrcTable", &progress);
+            let took = started.elapsed();
+            // Released only once the part has answered: its cancel never
+            // waited for the listing.
+            http.release();
+            assert_eq!(part.unwrap_err(), CANCELLED);
+            let bound = std::time::Duration::from_millis(100) + 2 * crate::http::TICK;
+            assert!(took < bound, "{took:?}");
             assert!(listed.join().unwrap().is_ok());
         });
         let child = client.part(&table, None, "bafySrcGltf", &Progress::default());
         assert!(child.unwrap().is_file());
+        assert_eq!(client.limiter.reading(), 0);
     }
 
     /// One read that fails in a listing's batch still fails the listing,
