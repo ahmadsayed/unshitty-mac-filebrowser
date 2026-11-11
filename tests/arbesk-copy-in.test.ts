@@ -189,7 +189,7 @@ test("a text file or a folder is refused with the D1 toast, before any dialog", 
     expect(toasts()).toContain(ONLY_MODELS);
     await closeOverlays();
   }
-  expect(names().sort()).toEqual(["Big.gltf", "Box.3mf", "Box.gltf"]);
+  expect(names().sort()).toEqual(["Big.gltf", "Box.3mf", "Box.gltf", "Bracket.gltf"]);
 });
 
 test("a drop on a collection copies; a forced move or a folder does nothing", async () => {

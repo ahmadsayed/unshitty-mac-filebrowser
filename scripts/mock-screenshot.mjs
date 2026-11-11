@@ -11,7 +11,7 @@
 // --size <width>x<height> (default 1100x720), --theme gnome|macos (default
 // macos; the theme follows the platform, so gnome loads the page with a
 // Linux user agent and the app takes its Linux code paths), --scene
-// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-item-menu|arbesk-grid|network-arbesk|arbesk-preview (default grid: the folder as it
+// grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-item-menu|arbesk-grid|network-arbesk|arbesk-preview|arbesk-properties|arbesk-files (default grid: the folder as it
 // opens; list: list view with the second item selected; menu: the main menu
 // open; item-menu: the right-click menu of --item; background-menu: the
 // right-click menu of the empty area; dialog: the Keyboard Shortcuts dialog; search, search-list: a search
@@ -28,7 +28,9 @@
 // there (--item, default Box.gltf); arbesk-grid: the same collection
 // in the grid view, with the thumbnails its assets were saved with;
 // network-arbesk: Network with the
-// Arbesk account; arbesk-preview: Space on --item there, default Box.3mf). Uses ?demo (no
+// Arbesk account; arbesk-preview: Space on --item there, default Box.3mf;
+// arbesk-properties: Properties of --item there, default Bracket.gltf;
+// arbesk-files: its Files… page). Uses ?demo (no
 // test-only folders). The page's clock is fixed, so the same scene always
 // gives the same image.
 import { createRequire } from "node:module";
@@ -42,7 +44,7 @@ const option = (name, fallback) => {
 const VALUE_OPTIONS = ["--url", "--size", "--theme", "--scene", "--query", "--item"];
 const [path, out] = args.filter((a, i) => !a.startsWith("--") && !VALUE_OPTIONS.includes(args[i - 1]));
 if (!path || !out) {
-  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-item-menu|arbesk-grid|network-arbesk|arbesk-preview] [--query <text>] [--item <name>]");
+  console.error("usage: node scripts/mock-screenshot.mjs <path in the mock> <out.png> [--dark] [--url <base>] [--size WxH] [--theme gnome|macos] [--scene grid|list|menu|item-menu|background-menu|dialog|search|search-list|open-with|qr-share|preview|preview-loading|network-drive|drive-expired|online-accounts|network-address-help|arbesk-connect|arbesk-collection|arbesk-item-menu|arbesk-grid|network-arbesk|arbesk-preview|arbesk-properties|arbesk-files] [--query <text>] [--item <name>]");
   process.exit(2);
 }
 
@@ -202,6 +204,17 @@ const SCENES = {
     await page.locator(".sidebar-row", { hasText: "Network" }).click();
     await page.waitForSelector("#view .item:has-text('Arbesk')");
   },
+  // An asset's Properties (--item, default Bracket.gltf), from its menu.
+  "arbesk-properties": async (page) => {
+    await openArbeskProperties(page);
+  },
+  // Its Files… page, over Properties.
+  "arbesk-files": async (page) => {
+    await openArbeskProperties(page);
+    await page.getByRole("button", { name: "Files…", exact: true }).click();
+    await page.waitForSelector(".files-dialog .files-row");
+    await page.waitForTimeout(200);
+  },
   // Space on an Arbesk asset (--item, default Box.3mf).
   "arbesk-preview": async (page) => {
     await openMockArbeskCollection(page);
@@ -217,6 +230,17 @@ async function openArbeskConnect(page) {
   await page.getByRole("menuitem", { name: "Online Accounts…", exact: true }).click();
   await page.locator(".dialog .action-row", { hasText: "Arbesk" }).click();
   await page.waitForSelector("#arbesk-email");
+}
+
+/** An Arbesk asset's Properties (--item, default Bracket.gltf), from its menu. */
+async function openArbeskProperties(page) {
+  await openMockArbeskCollection(page);
+  const item = page.locator("#view .item").filter({ hasText: option("--item", "Bracket.gltf") });
+  await item.click();
+  await item.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Properties", exact: true }).click();
+  await page.waitForSelector(".properties-dialog .prop-row");
+  await page.waitForTimeout(200);
 }
 
 /** Connect the mock's Arbesk account, then open its Shapes collection as a list. */

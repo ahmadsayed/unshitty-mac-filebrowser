@@ -133,6 +133,22 @@ export function knowsSizes(kind: LocationKind): boolean {
   return capsOf(kind)?.knows_sizes ?? true;
 }
 
+/** Whether the Properties dialog shows an item's local file facts there
+ *  (Accessed, Created, Link target, Permissions, Group, Others): a
+ *  folder's items and the Trash's are files on this computer; Drive and
+ *  Arbesk keep none of them, and the rest have no Properties. Stays here:
+ *  Properties is an extension, not one of the capabilities. */
+const LOCAL_FILE_FACTS: Record<LocationKind, boolean> = {
+  folder: true, trash: true, "in-trash": true,
+  drive: false, arbesk: false, share: false, sftp: false,
+  recent: false, starred: false, network: false,
+};
+
+/** `LOCAL_FILE_FACTS` for `kind` (spec F7). */
+export function hasLocalFileFacts(kind: LocationKind): boolean {
+  return LOCAL_FILE_FACTS[kind];
+}
+
 /** The remote places whose files Space previews: Arbesk's 3D models, built
  *  into the app cache. Drive, shares and SSH servers have no preview yet.
  *  Stays here: the preview is an extension, not one of the capabilities. */

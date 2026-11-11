@@ -47,6 +47,8 @@ export const MACOS_SYMBOLIC: Record<string, string> = {
   "folder-templates": `<rect x="4.75" y="1.75" width="8.5" height="10" rx="1.5" ${LINE}/><path d="M2.75 4.75v8.5a1 1 0 0 0 1 1h6.5" ${LINE}/>`,
   // An alias arrow: thin and curved, for the small badge on links.
   "emblem-symbolic-link": `<path d="M4.5 12.5V9.75A3.25 3.25 0 0 1 7.75 6.5h4.5" ${LINE} stroke-width="1.8"/><path d="m9.75 3.75 2.75 2.75-2.75 2.75" ${LINE} stroke-width="1.8"/>`,
+  // Two sheets, the front one with a folded corner: "has other files".
+  "emblem-files": `<path d="M5.5 3.75v-1.5a1 1 0 0 1 1-1h6.75a1 1 0 0 1 1 1v8.25a1 1 0 0 1-1 1H12" ${LINE} stroke-width="1.6"/><path d="M1.75 6.25a1 1 0 0 1 1-1H7l2.75 2.75v6.25a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1z" ${LINE} stroke-width="1.6"/><path d="M7 5.5v2.75h2.5" ${LINE} stroke-width="1.3"/>`,
   "drive-harddisk": `<rect x="1.75" y="4.5" width="12.5" height="7" rx="2" ${LINE}/><path d="M4.25 9h3" ${LINE} stroke-width="1.1"/><circle cx="11.5" cy="8" r=".9" fill="currentColor"/>`,
 };
 

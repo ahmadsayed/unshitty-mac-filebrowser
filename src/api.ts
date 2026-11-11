@@ -671,6 +671,8 @@ export interface FileProperties {
   owner: string;
   group: string;
   others: string;
+  /** The item's version number where its place numbers saves (an Arbesk asset). */
+  version?: number;
 }
 
 /** Metadata for the Properties dialog. */

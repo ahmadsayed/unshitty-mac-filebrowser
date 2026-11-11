@@ -1,4 +1,4 @@
-import { encodeCloudName, isUnder, placeOf, type Place } from "../../src/paths";
+import { encodeCloudName, isArbeskAsset, isUnder, placeOf, type Place } from "../../src/paths";
 import { fold } from "../../src/search";
 import { BUILT_IN_CAPABILITIES } from "../../src/capabilities";
 import { sample3mf, sampleGlb, sampleModelBytes } from "./models";
@@ -1690,6 +1690,27 @@ const ARBESK_COLLECTIONS: Array<{ token: string; name: string; assets: MockAsset
       },
       { id: "box-m", name: "Box", ext: "3mf" },
       { id: "big", name: "Big", ext: "gltf", huge: true },
+      // The spec's Bracket: a source, a fresh STL, a G-code for an Original
+      // Prusa MK4 in PETG made from an earlier model (out of date), a 3MF,
+      // and an entry File Browser can't read (left out, but stored).
+      {
+        id: "bracket",
+        name: "Bracket",
+        ext: "gltf",
+        saves: { prefix: "bracket", count: 2 },
+        representations: [
+          mockRep("bracket", "source", "source", "blend", "Bracket.blend", 96_240),
+          mockRep("bracket", "stl", "mesh", "stl", "Bracket.stl", 5_684, { derived_from: { ref: "primary", cid: "bafy-bracket-v2" } }),
+          mockRep("bracket", "gcode-original-prusa-mk4-petg", "machine", "gcode", "Bracket_0.2mm_PETG_MK4.gcode", 1_204_118, {
+            derived_from: { ref: "primary", cid: "bafy-bracket-v1" },
+            tool: { name: "PrusaSlicer", version: "2.9.2" },
+            profile: { printer: "Original Prusa MK4", material: "PETG", layer_mm: 0.2, nozzle_mm: 0.4 },
+            stats: { print_time_s: 7380, filament_g: 38.5 },
+          }),
+          mockRep("bracket", "3mf", "mesh", "3mf", "Bracket.3mf", 2_204),
+          { id: "Print Plan", role: "plan", format: "json" },
+        ],
+      },
     ],
   },
   {
@@ -1854,6 +1875,23 @@ function listArbesk(path: string): Entry[] {
   return collection.assets.map((a) => arbeskEntry(`${a.name}.${a.ext}`, `${base}/${arbeskSegment(a.id, `${a.name}.${a.ext}`)}`, false, a));
 }
 
+/** `file_properties` for an Arbesk asset (spec F7): its name, collection,
+ *  save date and version (one per save here); anything else is refused. */
+function arbeskProperties(path: string) {
+  if (!isArbeskAsset(path)) {
+    arbeskIds(path);
+    throw "Properties aren't available for Arbesk yet.";
+  }
+  const asset = arbeskAsset(path);
+  const saves = arbeskVersions(path);
+  return {
+    name: `${asset.name}.${asset.ext}`, path, parent: path.slice(0, path.lastIndexOf("/")),
+    is_dir: false, is_symlink: false, symlink_target: null, size: 0, item_count: null,
+    modified: Math.floor(saves[saves.length - 1].timestamp / 1000), accessed: 0, created: 0,
+    mode: "", octal: "", owner: "", group: "", others: "", version: saves.length,
+  };
+}
+
 function arbeskAsset(path: string): MockAsset {
   const { token, asset } = arbeskIds(path);
   const found = ARBESK_COLLECTIONS.find((c) => c.token === token)?.assets.find((a) => a.id === asset);
@@ -1916,6 +1954,19 @@ const arbeskSession = { signedIn: true, expireNext: false };
   /** The next write is refused as Arbesk refuses an expired session (401), which forgets it. */
   expireOnce() {
     arbeskSession.expireNext = true;
+  },
+  /** For tests of a virtualized view: a collection "Many" (token 9) of
+   *  `count` assets, every third without other files, one with a fresh
+   *  STL, one with an out-of-date one. Its path. */
+  addManyAssets(count: number): string {
+    const assets: MockAsset[] = Array.from({ length: count }, (_, i) => {
+      const id = `m${i}`;
+      const made = i % 3 === 2 ? "bafy-old" : `bafy-${id}-v1`;
+      const stl = mockRep(id, "stl", "mesh", "stl", `Part ${i}.stl`, 100, { derived_from: { ref: "primary", cid: made } });
+      return { id, name: `Part ${String(i).padStart(4, "0")}`, ext: "gltf", representations: i % 3 === 0 ? undefined : [stl] };
+    });
+    ARBESK_COLLECTIONS.push({ token: "9", name: "Many", assets });
+    return `arbesk://${ARBESK_MOCK_ADDRESS}/${arbeskSegment("9", "Many")}`;
   },
 };
 let arbeskAssetSeq = 0;
@@ -2465,7 +2516,7 @@ const COMMANDS: Record<string, (args: Args) => unknown> = {
     const path = str(a, "path");
     if (placeOf(path) === "share") throw "Properties aren't available for shared folders yet.";
     if (placeOf(path) === "sftp") throw "Properties aren't available for SSH servers yet.";
-    if (placeOf(path) === "arbesk") throw "Properties aren't available for Arbesk yet.";
+    if (placeOf(path) === "arbesk") return arbeskProperties(path);
     return placeOf(path) === "drive" ? driveProperties(path) : fileProperties(localPath(path));
   },
   set_permissions: (a) => {

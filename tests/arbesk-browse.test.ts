@@ -60,7 +60,7 @@ test("a collection lists its assets as files, without sizes", async () => {
   await open("Shapes");
   await settle(20);
   expect(crumbs()).toEqual(["Arbesk", "Shapes"]);
-  expect(names().sort()).toEqual(["Big.gltf", "Box.3mf", "Box.gltf"]);
+  expect(names().sort()).toEqual(["Big.gltf", "Box.3mf", "Box.gltf", "Bracket.gltf"]);
   expect(row("Box.gltf").querySelector(".meta.size")?.textContent).toBe("");
   await click(row("Box.3mf"));
   expect($("#floating-bar").textContent).toBe("“Box.3mf” selected");
@@ -77,7 +77,7 @@ test("an asset shows the thumbnail it was saved with, and one saved without keep
 test("nothing in Arbesk can be written, renamed or cut", async () => {
   await click(row("Box.gltf"));
   await rightClick(row("Box.gltf"));
-  expect(menuLabels()).toEqual(["Open", "Copy"]);
+  expect(menuLabels()).toEqual(["Open", "Copy", "Properties"]);
   await closeOverlays();
 
   await click(row("Box.gltf"));
@@ -97,7 +97,7 @@ test("nothing in Arbesk can be written, renamed or cut", async () => {
   await key("v", { mod: true });
   await settle();
   expect(toasts()).toContain("Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.");
-  expect(names().sort()).toEqual(["Big.gltf", "Box.3mf", "Box.gltf"]);
+  expect(names().sort()).toEqual(["Big.gltf", "Box.3mf", "Box.gltf", "Bracket.gltf"]);
 });
 
 test("a collection can't be copied out yet", async () => {

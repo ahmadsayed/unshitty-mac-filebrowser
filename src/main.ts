@@ -30,9 +30,10 @@ import {
   type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
-import { capabilities } from "./api";
+import { arbeskRepresentations, capabilities } from "./api";
+import { showFilesDialog } from "./representation-dialogs";
 import { loadCapabilities } from "./capabilities";
-import { entryIcon, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
+import { entryIcon, filesEmblemOf, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
 import { appIconKey } from "./native-icons";
 import { GRID_SIZES, ItemIcons, LIST_SIZES, THUMB_KINDS } from "./item-icons";
 import { thumbType } from "./thumbnails";
@@ -59,9 +60,9 @@ import { companionPath, gltfCompanions, isGlb, modelFormat, type ModelFormat } f
 import { accountOf, fromArbesk, fromDrive, PROVIDERS, providerOf, withAccount, withoutAccount, type Account, type ProviderActions, type ProviderId } from "./providers";
 import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
-import { acceptsNewItems, arbeskPasteRefusal, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, knowsSizes, takesDrops, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
+import { acceptsNewItems, arbeskPasteRefusal, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, hasLocalFileFacts, knowsSizes, takesDrops, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
-import { childPath, cloudAccountKey, homeFolder, isArbeskAccount, isArbeskCollection, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
+import { childPath, cloudAccountKey, homeFolder, isArbeskAccount, isArbeskAsset, isArbeskCollection, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
 // ---------------------------------------------------------------------------
 // Preferences (persisted per machine; storage may be unavailable)
@@ -1653,6 +1654,7 @@ function iconHtml(e: Entry): string {
     link: e.is_symlink,
     versions: summaries.versioned(e.path),
     shared: location === NETWORK || sharedFolders.some((share) => share.path === e.path),
+    files: filesEmblemOf(e),
   });
 }
 
@@ -2246,8 +2248,9 @@ function openItemMenu(at: Anchor): void {
 }
 
 /** An Arbesk asset: Open goes to Arbesk's Studio, Copy takes its file out
- *  (built first); no Copy Location (an arbesk:// address means nothing
- *  outside the app). A collection can be shared by email. */
+ *  (built first), Properties shows its version and other files; no Copy
+ *  Location (an arbesk:// address means nothing outside the app). A
+ *  collection can be shared by email. */
 function arbeskItemMenu(sel: Entry[]): MenuItem[] {
   const single = sel.length === 1 ? sel[0] : null;
   return [
@@ -2260,6 +2263,8 @@ function arbeskItemMenu(sel: Entry[]): MenuItem[] {
           { label: "Share Collection…", action: () => promptShareCollection(single.path) },
         ]
       : []),
+    // An asset's version and its other files (spec F7).
+    ...(single && isArbeskAsset(single.path) ? [{ separator: true } as const, propertiesMenuItem(single)] : []),
   ];
 }
 
@@ -3007,8 +3012,10 @@ async function showProperties(entry: Entry): Promise<void> {
   let sizeValue: HTMLElement | null = null;
   let historyBytes = 0;
   let closePropertiesDialog: (() => void) | null = null;
+  const kind = locationKind(info.path, trashPath);
+  const localFacts = hasLocalFileFacts(kind);
   if (info.is_dir) {
-    if (isCloud(info.path)) {
+    if (!localFacts) {
       // Drive does not report recursive folder sizes cheaply.
       add("Size", "—");
     } else {
@@ -3017,12 +3024,15 @@ async function showProperties(entry: Entry): Promise<void> {
       list.appendChild(row);
     }
     if (info.item_count !== null) add("Contents", formatItemCount(info.item_count));
-  } else {
+  } else if (knowsSizes(kind)) {
     add("Size", sizeAndBytes(info.size));
   }
-  add("Parent folder", info.parent, info.parent);
+  // An Arbesk asset's parent is its collection, shown by name: an arbesk://
+  // address means nothing to read (its tooltip still holds it).
+  add("Parent folder", kind === "arbesk" ? pathName(info.parent) : info.parent, info.parent);
   add("Modified", formatDateDetailed(info.modified));
-  if (!isCloud(info.path)) {
+  if (info.version !== undefined) add("Version", String(info.version));
+  if (localFacts) {
     add("Accessed", formatDateDetailed(info.accessed));
     add("Created", formatDateDetailed(info.created));
     if (info.symlink_target) add("Link target", info.symlink_target, info.symlink_target);
@@ -3050,11 +3060,17 @@ async function showProperties(entry: Entry): Promise<void> {
     extra,
     responses: [
       ...(canChangePermissions ? [{ id: "permissions", label: "Permissions…" }] : []),
+      // An Arbesk asset's other files, a page of their own as Permissions… is.
+      ...(entry.representations?.count ? [{ id: "files", label: "Files…" }] : []),
       { id: "close", label: "Close" },
     ],
     defaultResponse: "close",
     closeResponse: "close",
     onResponse: (id) => {
+      if (id === "files") {
+        void showAssetFiles(entry);
+        return false;
+      }
       if (id === "permissions") {
         showPermissionsDialog(info.path, parseInt(info.octal, 8) & 0o777, () => {
           if (walk) cancelFolderSize(walk).catch(() => {});
@@ -3076,6 +3092,19 @@ async function showProperties(entry: Entry): Promise<void> {
       if (sizeValue.isConnected) sizeValue.textContent = "Unknown";
     }
   }
+}
+
+/** The Files… page of an Arbesk asset's Properties: its other files, read
+ *  from the asset's current save (spec F3), shown over Properties. */
+async function showAssetFiles(entry: Entry): Promise<void> {
+  let files;
+  try {
+    files = await arbeskRepresentations(entry.path);
+  } catch (err) {
+    showToast(`Could not show the files: ${cleanError(err)}`);
+    return;
+  }
+  showFilesDialog(entry, files);
 }
 
 // ---------------------------------------------------------------------------

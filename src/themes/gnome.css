@@ -10,6 +10,7 @@
   --accent-fg: #ffffff;
   --accent: #1c71d8;
   --destructive: #c01c28;
+  --warning: #9c6e03;
   --success: #2ec27e;
 
   --window-bg: #fafafb;
@@ -71,6 +72,7 @@
   :root[data-theme="gnome"] {
     --accent: #78aeed;
     --destructive: #ff7b63;
+    --warning: #f8e45c;
     --success: #57e389;
 
     --window-bg: #222226;

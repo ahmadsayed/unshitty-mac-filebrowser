@@ -666,6 +666,25 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   right: 8%;
   color: var(--accent);
 }
+/* Has other files (an Arbesk asset's): bottom-right, where the versions
+   badge would be (an asset never keeps versions). Shown on thumbnails too. */
+.emblem-files {
+  left: auto;
+  right: 8%;
+}
+/* One of them is out of date: a dot at the emblem's top-right, ringed with
+   the view's background so it reads on any picture. */
+.emblem-files.stale::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+  box-shadow: 0 0 0 1.5px var(--view-bg);
+}
 /* The same badge, inline after a path bar crumb or a sidebar bookmark. */
 .crumb-badge,
 .sidebar-badge {
@@ -1522,6 +1541,25 @@ kbd {
 .properties-dialog .dialog-body { gap: 16px; }
 
 .permissions-dialog { width: min(380px, calc(100vw - 24px)); }
+
+/* Files of an Arbesk asset: read-only rows in a boxed list. */
+.files-dialog { width: min(520px, calc(100vw - 24px)); }
+.files-page .boxed-list { max-height: min(420px, 60vh); overflow-y: auto; }
+.files-row:hover,
+.files-row:active { background: transparent; }
+.files-row-icon { flex: none; width: 32px; height: 32px; }
+.files-row-icon .fc { width: 100%; height: 100%; display: block; }
+.files-row .action-row-subtitle { white-space: normal; }
+.out-of-date-tag {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  font-size: 9pt;
+  font-weight: 700;
+  white-space: nowrap;
+}
 
 .perm-grid {
   display: grid;

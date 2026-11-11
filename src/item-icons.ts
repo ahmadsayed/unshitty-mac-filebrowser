@@ -145,7 +145,7 @@ export class ItemIcons {
    *  path, or an `appIconKey`) once it loads; the app's drawing stays meanwhile,
    *  and wherever the OS has none. The link emblem shows on both. */
   dialogIcon(icon: HTMLElement, entry: Entry, shownAt: number, key = entry.path): void {
-    const emblems = { link: entry.is_symlink, versions: false, shared: false };
+    const emblems = { link: entry.is_symlink, versions: false, shared: false, files: "none" as const };
     icon.innerHTML = itemIcon(entry, { drawn: this.host.folderKind(entry) }, emblems);
     if (!hasOsIcons(key)) return;
     void nativeIcon(key, nativeIconSize(shownAt)).then((url) => {

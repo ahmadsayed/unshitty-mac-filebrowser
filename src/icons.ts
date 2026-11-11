@@ -1,5 +1,6 @@
 import type { Entry } from "./api";
 import { MACOS_DEFS, MACOS_SYMBOLIC, macFileSymbol, macFolderBackLayer, macFolderSymbol } from "./icons-macos";
+import { isArbeskAsset } from "./paths";
 import type { Theme } from "./theme";
 
 // ---------------------------------------------------------------------------
@@ -53,6 +54,9 @@ const SYMBOLIC: Record<string, string> = {
   "emblem-symbolic-link": `<path d="M4 12V9.5a3 3 0 0 1 3-3h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="m9.5 3.5 3 3-3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`,
   // Three stacked layers: "keeps earlier versions" without a clock.
   "emblem-versions": `<path d="M8 2.4 14 5.8 8 9.2 2 5.8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M2 8.6 8 12l6-3.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 10.9 8 14.3l6-3.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>`,
+  // Two sheets, the back one up and to the right, the front one with a
+  // folded corner: "has other files". Not the versions stack, not a clip.
+  "emblem-files": `<path d="M5.25 4V2.25a1 1 0 0 1 1-1h7.5a1 1 0 0 1 1 1v8.5a1 1 0 0 1-1 1H12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M1.25 6.25a1 1 0 0 1 1-1H7l3 3v6.5a1 1 0 0 1-1 1H2.25a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M6.75 5.5v2.75h2.75" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`,
   "object-select": `<path d="m3 8.5 3.25 3.25L13 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`,
   "window-close": `<path d="m4.5 4.5 7 7m0-7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`,
   "window-minimize": `<path d="M4.5 11.5h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`,
@@ -233,8 +237,15 @@ const KIND_DESCRIPTION: Record<FileKind, string> = {
   executable: "Application",
 };
 
+/** An Arbesk asset's format as the type line names it, by its listed extension. */
+const ARBESK_FORMATS: Record<string, string> = { gltf: "glTF", "3mf": "3MF" };
+
 /** The type line under the name in the Properties dialog. */
 export function fileTypeDescription(entry: Entry): string {
+  if (isArbeskAsset(entry.path)) {
+    const ext = entry.name.slice(entry.name.lastIndexOf(".") + 1).toLowerCase();
+    return ARBESK_FORMATS[ext] ? `Arbesk asset (${ARBESK_FORMATS[ext]})` : "Arbesk asset";
+  }
   if (entry.is_symlink) return entry.is_dir ? "Link to folder" : "Link to file";
   if (isAppBundle(entry)) return "Application";
   if (entry.is_dir) return "Folder";
@@ -275,16 +286,45 @@ export type IconBase =
   | { thumb: string }
   | { glyph: string };
 
+/** Whether an item has other files (an Arbesk asset's representations),
+ *  and whether any of them is out of date. */
+export type FilesEmblem = "none" | "fresh" | "stale";
+
 /** The emblems an item may carry: a symbolic link, a folder that keeps
- *  versions, a folder this computer shares (or anything in Network). */
+ *  versions, a folder this computer shares (or anything in Network), other
+ *  files (spec F6). */
 export interface Emblems {
   link: boolean;
   versions: boolean;
   shared: boolean;
+  files: FilesEmblem;
 }
 
 const LINK_EMBLEM = `<span class="emblem">${sym("emblem-symbolic-link")}</span>`;
 const SHARED_EMBLEM = `<span class="emblem">${sym("network-workgroup")}</span>`;
+
+/** Which files emblem `entry` carries, from its listing's summary alone
+ *  (no request, so a recycled row always draws the same markup). */
+export function filesEmblemOf(entry: Entry): FilesEmblem {
+  const files = entry.representations;
+  if (!files || files.count <= 0) return "none";
+  return files.stale > 0 ? "stale" : "fresh";
+}
+
+/** The files emblem's tooltip: "Has 3 other files, 1 out of date". */
+export function filesTitle(files: { count: number; stale: number }): string {
+  const count = `Has ${files.count} other ${files.count === 1 ? "file" : "files"}`;
+  return files.stale > 0 ? `${count}, ${files.stale} out of date` : count;
+}
+
+/** The files emblem, at the bottom-right where the versions badge sits (an
+ *  Arbesk asset never keeps versions, so they never meet); "stale" adds the
+ *  out-of-date dot. Its title is built from numbers only. */
+function filesEmblem(entry: Entry, files: FilesEmblem): string {
+  if (files === "none" || !entry.representations) return "";
+  const stale = files === "stale" ? " stale" : "";
+  return `<span class="emblem emblem-files${stale}" title="${filesTitle(entry.representations)}">${sym("emblem-files")}</span>`;
+}
 
 /** The app's full-colour drawing; a stacked folder has a darker one behind it. */
 function drawing(entry: Entry, folderKind: FolderKind, stacked: boolean): string {
@@ -300,26 +340,28 @@ function drawing(entry: Entry, folderKind: FolderKind, stacked: boolean): string
 }
 
 /** An item's icon. Emblems follow the picture in this order: link, versions,
- *  shared. A glyph carries none, a thumbnail only the link. A folder the app
+ *  shared, files. A glyph carries none, a thumbnail only the link and the
+ *  files emblem (an Arbesk asset usually has a thumbnail). A folder the app
  *  draws (not an app bundle) shows that it keeps versions by being stacked;
  *  every other picture gets the badge. */
 export function itemIcon(entry: Entry, base: IconBase, emblems: Emblems): string {
   if ("glyph" in base) return `<span class="server-glyph">${sym(base.glyph)}</span>`;
   const link = emblems.link ? LINK_EMBLEM : "";
-  if ("thumb" in base) return `<img class="thumb" src="${base.thumb}" alt="" draggable="false">${link}`;
+  const files = filesEmblem(entry, emblems.files);
+  if ("thumb" in base) return `<img class="thumb" src="${base.thumb}" alt="" draggable="false">${link}${files}`;
   const stacked = "drawn" in base && emblems.versions && entry.is_dir && !isAppBundle(entry);
   const picture = "drawn" in base
     ? drawing(entry, base.drawn, stacked)
     : `<img class="native-icon" src="${base.native}" alt="" draggable="false">`;
   const versions = emblems.versions && !stacked ? versionsBadge() : "";
   const shared = emblems.shared ? SHARED_EMBLEM : "";
-  return `${picture}${link}${versions}${shared}`;
+  return `${picture}${link}${versions}${shared}${files}`;
 }
 
 /** The app's drawing of an entry with its link and versions emblems;
  *  `folderKind` comes from the XDG folder map. */
 export function entryIcon(entry: Entry, folderKind: FolderKind = "plain", versioned = false): string {
-  return itemIcon(entry, { drawn: folderKind }, { link: entry.is_symlink, versions: versioned, shared: false });
+  return itemIcon(entry, { drawn: folderKind }, { link: entry.is_symlink, versions: versioned, shared: false, files: "none" });
 }
 
 const FOLDER_KINDS: FolderKind[] = ["plain", "home", "desktop", "documents", "download", "music", "pictures", "videos", "publicshare", "templates"];

@@ -19,6 +19,7 @@ import {
   mayHaveVersions,
   searchesRecursively,
   knowsSizes,
+  hasLocalFileFacts,
   previewsRemotely,
   providesThumbnails,
   type LocationKind,
@@ -128,6 +129,11 @@ test("sizes are known everywhere but Arbesk, and only Arbesk previews remotely",
   const kinds: LocationKind[] = ["recent", "starred", "network", "trash", "in-trash", "share", "sftp", "drive", "arbesk", "folder"];
   expect(kinds.filter((kind) => !knowsSizes(kind))).toEqual(["arbesk"]);
   expect(kinds.filter(previewsRemotely)).toEqual(["arbesk"]);
+});
+
+test("only a folder's and the Trash's items show local file facts in Properties", () => {
+  const kinds: LocationKind[] = ["recent", "starred", "network", "trash", "in-trash", "share", "sftp", "arbesk", "drive", "folder"];
+  expect(kinds.filter(hasLocalFileFacts)).toEqual(["trash", "in-trash", "folder"]);
 });
 
 test("only Arbesk hands over its own thumbnails, whatever kind of file an item is", () => {
