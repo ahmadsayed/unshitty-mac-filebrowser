@@ -4922,8 +4922,15 @@ async function showPreview(entry: Entry): Promise<void> {
     return;
   }
   previewLoading(entry, seq);
-  void loadPreviewVersions(entry, seq);
-  await previewEntry(entry, seq, fileKind(entry.name));
+  const newest = loadPreviewVersions(entry, seq);
+  // An Arbesk asset's first view is the newest save that arbesk_versions
+  // read, by its CID, as its files beside it are: a save made meanwhile
+  // can't put another save's model beside them. Saves that can't be read:
+  // the asset as it is now (and no switcher). Only its scene waits for them.
+  const scene = locationKind(entry.path, trashPath) === "arbesk" && modelFormat(entry.name) !== null;
+  const at: PreviewAt = scene ? { arbeskVersion: (await newest)?.id ?? null } : {};
+  if (previewStale(seq)) return;
+  await previewEntry(entry, seq, fileKind(entry.name), at);
 }
 
 // ---- Versions in the preview -------------------------------------------------
@@ -4949,14 +4956,16 @@ async function previewVersionsOf(entry: Entry): Promise<VersionList> {
   return { versions: fromLocal(rows, entry.modified), more: total > rows.length, copies };
 }
 
-/** The version control, once the item's versions are known and there are two or more. */
-async function loadPreviewVersions(entry: Entry, seq: number): Promise<void> {
+/** The version control, once the item's versions are known and there are
+ *  two or more. Resolves to the newest version read, if any. */
+async function loadPreviewVersions(entry: Entry, seq: number): Promise<PreviewVersion | undefined> {
   const list = await previewVersionsOf(entry).catch((): VersionList => ({ versions: [], more: false, copies: new Map() }));
-  if (previewStale(seq)) return;
+  if (previewStale(seq)) return undefined;
   if (list.versions.length >= 2) drawPreviewVersions(entry, list, list.versions.length - 1);
   // The asset now: its files only when the listing says it has some.
   const newest = list.versions[list.versions.length - 1];
   if (newest && entry.representations?.count) void loadPreviewFiles(entry, newest, seq);
+  return newest;
 }
 
 function drawPreviewVersions(entry: Entry, list: VersionList, shown: number): void {
@@ -5002,8 +5011,9 @@ function versionRefusal(entry: Entry, version: PreviewVersion): string | null {
 /** Where `version` of the item is read from: an older local version is
  *  materialized once as the read-only copy Versions… → Open makes. */
 async function previewAtVersion(entry: Entry, list: VersionList, version: PreviewVersion): Promise<PreviewAt> {
-  if (version.current) return {};
+  // An Arbesk save by its CID, the current one's too, as its files are listed.
   if (locationKind(entry.path, trashPath) === "arbesk") return { arbeskVersion: version.id };
+  if (version.current) return {};
   let copy = list.copies.get(version.id);
   if (!copy) {
     copy = openVersion(entry.path, Number(version.id), restoreName(entry.path, Math.round((version.date ?? 0) / 1000)));

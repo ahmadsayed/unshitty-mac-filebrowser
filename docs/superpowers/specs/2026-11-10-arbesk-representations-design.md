@@ -859,10 +859,14 @@ As built (phase 5):
   the asset's own saves (another asset's manifest, a stale CID) is
   refused with *This version is not in the asset.*, by the files list and
   the fetch alike, as `scene` refuses it (only cached reads of the chain).
-- The switcher's Model row loads the scene by the shown save's CID, the
-  current save's too, never by the asset's path: if the asset is saved
-  again while the preview is open, the model and the files listed beside
-  it still come from one save.
+- The preview loads an asset's scene by the shown save's CID, the current
+  save's too, never by the asset's path: the first view waits for
+  `arbesk_versions` and loads its newest save (the one whose files the
+  switcher lists), and so do the switcher's Model row and the version
+  control stepping back to the current save. If the asset is saved again
+  while the preview is open, the model and the files listed beside it
+  still come from one save. When the saves can't be read, the first view
+  loads the asset by its path, as it is now (and there is no switcher).
 - The switcher is asked for only when the listing's summary says the
   asset has files now (no request for an asset without), and for every
   version stepped to (an older save may have files the newest dropped).

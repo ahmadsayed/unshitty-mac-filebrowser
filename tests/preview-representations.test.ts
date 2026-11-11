@@ -113,6 +113,26 @@ test("an asset with other files gets the switcher, showing the model; one withou
   expect(calls().count("arbesk_representations")).toBe(before);
 });
 
+test("the first view and the current version picked again load the scene by the save its files come from", async () => {
+  await goTo(SHAPES);
+  await preview("Bracket.gltf");
+  await until(() => !switcher().hidden);
+  // The first view: the newest save arbesk_versions read, by its CID, never
+  // the asset's path, so a save made meanwhile can't mix with the files.
+  expect(calls().argsOf("arbesk_scene")).toEqual([expect.objectContaining({ version: "bracket-v2" })]);
+  expect(calls().argsOf("arbesk_representations").at(-1)).toMatchObject({ version: "bracket-v2" });
+  // Older, then Newer again: the current save, by its CID too.
+  await click($("#preview-versions").querySelector<HTMLButtonElement>("[aria-label='Older Version']")!);
+  await until(shown);
+  await until(() => !switcher().hidden);
+  expect(calls().argsOf("arbesk_scene").at(-1)).toMatchObject({ version: "bracket-v1" });
+  await click($("#preview-versions").querySelector<HTMLButtonElement>("[aria-label='Newer Version']")!);
+  await until(shown);
+  await until(() => !switcher().hidden);
+  expect(calls().argsOf("arbesk_scene").at(-1)).toMatchObject({ version: "bracket-v2" });
+  expect(calls().argsOf("arbesk_representations").at(-1)).toMatchObject({ version: "bracket-v2" });
+});
+
 test("an STL is fetched from the version on screen and previewed as a model", async () => {
   await goTo(SHAPES);
   await preview("Bracket.gltf");
