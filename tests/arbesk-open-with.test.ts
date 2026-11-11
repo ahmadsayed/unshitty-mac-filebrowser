@@ -64,7 +64,7 @@ async function openWith(asset: string, app: string): Promise<void> {
 test("an asset's menu offers Open With…; an app that declares none of its files gets the model", async () => {
   await click(row("Bracket.gltf"));
   await rightClick(row("Bracket.gltf"));
-  expect(menuLabels()).toEqual(["Open", "Open With…", "Copy", "Properties"]);
+  expect(menuLabels()).toEqual(["Open", "Open With…", "Copy", "Paste Into Asset", "Properties"]);
   await closeOverlays();
   const recentBefore = calls().count("add_recent");
   await openWith("Bracket.gltf", "TextEdit");
@@ -169,7 +169,7 @@ test("the Files… page opens a chosen file with any app, without asking which",
   mockApps().set({ list: APPS });
   const blend = $$(".files-dialog .files-row").find((el) => el.querySelector(".action-row-title")?.textContent === "Bracket.blend")!;
   await click(blend.querySelector(".files-row-menu")!);
-  expect(menuLabels()).toEqual(["Open With…", "Copy"]);
+  expect(menuLabels()).toEqual(["Open With…", "Copy", "Remove…"]);
   // Escape closes the row's menu, not the page beneath it.
   await key("Escape");
   await settle(5);

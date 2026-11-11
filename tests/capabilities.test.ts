@@ -103,3 +103,12 @@ test("cut's read-only toast is picked by the item's kind", async () => {
   const asset = "arbesk://0x00000000000000000000000000000000000000ab/12~Set/a1~Box.gltf";
   expect(refusal("cut", { kind: "arbesk", items: ["arbesk"], paths: [asset] })).toBe("Arbesk is read only.");
 });
+
+test("adding files to an asset reads can_attach (spec F13)", async () => {
+  const asset = fixture.paths["arbesk-asset"];
+  expect(refusal("attach", { kind: "arbesk", items: [], dir: asset, paths: ["/Users/me/Box.stl"] })).toBeNull();
+  const changed: CapabilityTable = structuredClone(table);
+  changed["arbesk-asset"] = { ...changed["arbesk-asset"], can_attach: false };
+  await loadCapabilities(async () => changed);
+  expect(refusal("attach", { kind: "arbesk", items: [], dir: asset, paths: ["/Users/me/Box.stl"] })).toBe("Add files to an asset.");
+});

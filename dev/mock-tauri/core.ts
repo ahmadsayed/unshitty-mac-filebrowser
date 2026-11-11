@@ -1660,6 +1660,9 @@ type MockAsset = {
   /** Its other files, as Arbesk stores the entries (an invalid one
    *  included), in the newest save only. */
   representations?: MockRepresentation[];
+  /** The save whose model the newest save holds, when a later save only
+   *  changed its other files (an attach or a remove); the newest otherwise. */
+  model?: number;
 };
 
 /** A representation entry as stored, loosely typed as another client may write it. */
@@ -1667,7 +1670,7 @@ type MockRepresentation = Record<string, unknown>;
 
 /** The CID of an asset's model in its newest save: a file made from an
  *  earlier save names another one, so it reads out of date. */
-const arbeskModelCid = (asset: MockAsset) => `bafy-${asset.id}-v${asset.saves?.count ?? 1}`;
+const arbeskModelCid = (asset: MockAsset) => `bafy-${asset.id}-v${asset.model ?? asset.saves?.count ?? 1}`;
 
 /** A representation entry of asset `asset` as `besk attach` records one.
  *  Its CID is letters and digits, as real ones are (a pinned path takes
@@ -2020,11 +2023,20 @@ const arbeskSession = { signedIn: true, expireNext: false };
     ARBESK_COLLECTIONS.push({ token: "9", name: "Many", assets });
     return `arbesk://${ARBESK_MOCK_ADDRESS}/${arbeskSegment("9", "Many")}`;
   },
-  /** For copy-out tests: a glTF asset `id` named `name` in collection
-   *  `token`, with `files` (each a mesh, made from nothing). */
-  addAsset(token: string, id: string, name: string, files: Array<{ id: string; format: string; name: string; bytes: number }>): void {
-    const representations = files.map((file) => mockRep(id, file.id, "mesh", file.format, file.name, file.bytes));
+  /** For copy-out and attach tests: a glTF asset `id` named `name` in
+   *  collection `token`, with `files` (each a mesh, made from nothing) and
+   *  `unreadable` entries stored after them as given. */
+  addAsset(token: string, id: string, name: string, files: Array<{ id: string; format: string; name: string; bytes: number }>, unreadable: MockRepresentation[] = []): void {
+    const representations = [...files.map((file) => mockRep(id, file.id, "mesh", file.format, file.name, file.bytes)), ...unreadable];
     ARBESK_COLLECTIONS.find((c) => c.token === token)!.assets.push({ id, name, ext: "gltf", representations });
+  },
+  /** The next attach or remove meets another save twice: CONFLICT, nothing changes. */
+  conflictNext(): void {
+    arbeskWrites.conflictNext = true;
+  },
+  /** The next attach or remove fails uploading: nothing changes. */
+  failUploadNext(): void {
+    arbeskWrites.failUploadNext = true;
   },
   /** As a save elsewhere would: the file `file` of asset `asset` now holds other bytes (another CID). */
   changeFile(token: string, asset: string, file: string): void {
@@ -2100,6 +2112,8 @@ function arbeskAdd(a: Args): string {
   if (taken) {
     const saves = taken.saves ?? { prefix: taken.id, count: 1 };
     taken.saves = { ...saves, count: saves.count + 1 };
+    // A new model: the newest save's own.
+    delete taken.model;
     // `next_version`: one more than the stored version's number.
     if (taken.version !== undefined) taken.version = arbeskVersionOf(taken) + 1;
     return `${dir}/${arbeskSegment(taken.id, name)}`;
@@ -2108,6 +2122,167 @@ function arbeskAdd(a: Args): string {
   const asset: MockAsset = { id: freshArbeskId(), name: (dot > 0 ? name.slice(0, dot) : name) || "Uploaded Asset", ext };
   collection.assets.push(asset);
   return `${dir}/${arbeskSegment(asset.id, `${asset.name}.${asset.ext}`)}`;
+}
+
+// ----- Adding files to an asset and removing them (spec F10–F12) -----
+
+const ARBESK_ATTACH_SIGN_IN = "Sign in to Arbesk again to add files to it.";
+const ARBESK_DETACH_SIGN_IN = "Sign in to Arbesk again to remove files from it.";
+const ARBESK_ONLY_LOCAL = "Only files on this computer can be added to an asset.";
+const ARBESK_MAX_FILE = 256 * 1024 * 1024;
+
+/** `default_role`: what a file of a format usually is. */
+function mockDefaultRole(format: string): string {
+  if (["blend", "step", "stp", "f3d", "fcstd", "scad", "iges", "igs"].includes(format)) return "source";
+  if (["stl", "obj", "ply", "3mf"].includes(format)) return "mesh";
+  if (["glb", "gltf", "usdz"].includes(format)) return "view";
+  if (["gcode", "bgcode"].includes(format)) return "machine";
+  return "other";
+}
+
+/** A local file a paste would add, as `attach::local_file` reads it (the
+ *  mock reads no G-code header: the id is the role's or the format's). */
+function mockLocalFile(path: string) {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const node = placeOf(path) === "local" ? lookup(path) : undefined;
+  if (!node || node.dir || !path.startsWith("/")) throw ARBESK_ONLY_LOCAL;
+  const dot = name.lastIndexOf(".");
+  const format = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+  if (!/^[a-z0-9]{1,16}$/.test(format)) throw `“${name}” has no file type to record.`;
+  if (node.size > ARBESK_MAX_FILE) throw `“${name}” is larger than 256 MB.`;
+  const role = mockDefaultRole(format);
+  return { path, name, format, role, bytes: node.size, id: role === "source" ? "source" : format };
+}
+
+/** An asset's stored ids: valid ones with their CID, and those of entries
+ *  File Browser can't read. */
+function storedIds(asset: MockAsset) {
+  const valid = new Map<string, string>();
+  for (const rep of arbeskFiles(asset)) if (!valid.has(rep.id)) valid.set(rep.id, rep.cid);
+  const all = (asset.representations ?? []).flatMap((rep) => (typeof rep.id === "string" ? [rep.id] : []));
+  return { valid, all: new Set(all), unreadable: new Set(all.filter((id) => !valid.has(id))) };
+}
+
+const heldByUnreadable = (id: string) => `This asset already has a file “${id}” that File Browser can't show.`;
+
+/** `arbesk_attach_plan`: each file as it would be recorded, and its clash. */
+function arbeskAttachPlan(path: string, files: string[]) {
+  const asset = arbeskAsset(path);
+  const local = files.map(mockLocalFile);
+  const stored = storedIds(asset);
+  const infos = arbeskRepresentations(path, null);
+  return local.map((file) => {
+    let clash: unknown = null;
+    if (stored.unreadable.has(file.id)) clash = { kind: "unreadable", message: heldByUnreadable(file.id) };
+    else if (stored.valid.has(file.id)) clash = { kind: "valid", cid: stored.valid.get(file.id), existing: infos.find((info) => info.id === file.id) };
+    return { ...file, clash };
+  });
+}
+
+/** The first `<id>-2`, `<id>-3`… neither stored nor taken by the paste. */
+function mockFreeId(id: string, taken: Set<string>): string {
+  for (let n = 2; ; n++) {
+    const suffix = `-${n}`;
+    const candidate = `${id.slice(0, 64 - suffix.length).replace(/-+$/, "")}${suffix}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/** Test switches: the next attach or remove meets another save (CONFLICT,
+ *  twice: nothing changes) or a failed upload; both change nothing. */
+const arbeskWrites = { conflictNext: false, failUploadNext: false };
+
+/** A new mock version of `asset` that keeps its model: one more save. */
+function newFilesVersion(asset: MockAsset): void {
+  const saves = asset.saves ?? { prefix: asset.id, count: 1 };
+  asset.model ??= saves.count;
+  asset.saves = { ...saves, count: saves.count + 1 };
+  if (asset.version !== undefined) asset.version = arbeskVersionOf(asset) + 1;
+}
+
+/** What a write leaves (`attach::Attached`). */
+function attached(path: string, refused: string[]) {
+  const asset = arbeskAsset(path);
+  return { files: arbeskRepresentations(path, null), representations: arbeskSummary(asset) ?? null, refused };
+}
+
+/** Once a write's checks pass: the test switches. */
+function arbeskWriteChecks(name: string, removing: boolean): void {
+  if (arbeskWrites.conflictNext) {
+    arbeskWrites.conflictNext = false;
+    throw removing
+      ? `“${name}” changed while the file was being removed. Nothing was changed; try again.`
+      : `“${name}” changed while the files were being added. Nothing was changed; try again.`;
+  }
+  if (arbeskWrites.failUploadNext) {
+    arbeskWrites.failUploadNext = false;
+    throw `Couldn't upload “${name}” to IPFS: The server answered 500.`;
+  }
+}
+
+/** `arbesk_attach` (spec F10, F11): the files as one new version, with
+ *  the backend's rules: the session, each file, the ids settled against
+ *  the stored ones (Replace only while the entry holds the file agreed to,
+ *  Keep Both otherwise and when nobody answered), room for 32. */
+function arbeskAttach(a: Args) {
+  const path = str(a, "path");
+  const asset = arbeskAsset(path);
+  const name = `${asset.name}.${asset.ext}`;
+  arbeskSessionFor(ARBESK_ATTACH_SIGN_IN);
+  const adding = a.files as Array<{ path: string; choice?: { kind: string; cid?: string } }>;
+  const local = adding.map((file) => mockLocalFile(file.path));
+  arbeskWriteChecks(name, false);
+  const stored = storedIds(asset);
+  const taken = new Set(stored.all);
+  const given = new Set<string>();
+  const refused: string[] = [];
+  const settled: Array<{ file: ReturnType<typeof mockLocalFile>; id: string }> = [];
+  for (const [i, file] of local.entries()) {
+    const choice = adding[i].choice;
+    if (stored.unreadable.has(file.id)) {
+      refused.push(heldByUnreadable(file.id));
+      continue;
+    }
+    let id = file.id;
+    if (stored.valid.has(id)) {
+      if (choice?.kind === "skip") continue;
+      const replace = choice?.kind === "replace" && choice.cid === stored.valid.get(id) && !given.has(id);
+      if (!replace) id = mockFreeId(id, new Set([...taken, ...given]));
+    } else if (given.has(id)) id = mockFreeId(id, new Set([...taken, ...given]));
+    given.add(id);
+    settled.push({ file, id });
+  }
+  if (settled.length === 0) throw `Nothing was added to “${name}”.`;
+  const adds = settled.filter(({ id }) => !stored.all.has(id)).length;
+  if ((asset.representations?.length ?? 0) + adds > 32) throw "An asset holds at most 32 files.";
+  const list = [...(asset.representations ?? [])];
+  for (const { file, id } of settled) {
+    const derived = ["machine", "mesh"].includes(file.role) ? { derived_from: { ref: "primary", cid: arbeskModelCid(asset) } } : {};
+    const entry = mockRep(asset.id, id, file.role, file.format, file.name, file.bytes, derived);
+    entry.cid = `${String(entry.cid)}v${(asset.saves?.count ?? 1) + 1}`;
+    const at = list.findIndex((rep) => rep.id === id);
+    const kept = list.filter((rep) => rep.id !== id);
+    kept.splice(at >= 0 ? at : kept.length, 0, entry);
+    list.splice(0, list.length, ...kept);
+  }
+  asset.representations = list;
+  newFilesVersion(asset);
+  return attached(path, refused);
+}
+
+/** `arbesk_detach` (spec F12): the next version without the entry; the
+ *  list dropped once it empties. */
+function arbeskDetach(a: Args) {
+  const path = str(a, "path");
+  const asset = arbeskAsset(path);
+  arbeskSessionFor(ARBESK_DETACH_SIGN_IN);
+  arbeskWriteChecks(`${asset.name}.${asset.ext}`, true);
+  const id = str(a, "id");
+  if (!(asset.representations ?? []).some((rep) => rep.id === id)) throw "This file is no longer in the asset.";
+  const kept = (asset.representations ?? []).filter((rep) => rep.id !== id);
+  asset.representations = kept.length ? kept : undefined;
+  newFilesVersion(asset);
+  return attached(path, []);
 }
 
 /** Whether a pending name is listed in its collection (Client::exists). */
@@ -2197,6 +2372,9 @@ const ARBESK_COMMANDS: Record<string, (args: Args) => unknown> = {
   arbesk_scene: (a) => arbeskScene(str(a, "path"), (a.version as string | null | undefined) ?? null),
   arbesk_representations: (a) => arbeskRepresentations(str(a, "path"), (a.version as string | null | undefined) ?? null),
   arbesk_export: gated((a) => arbeskExport(str(a, "path"))),
+  arbesk_attach_plan: (a) => arbeskAttachPlan(str(a, "path"), a.files as string[]),
+  arbesk_attach: gated(arbeskAttach),
+  arbesk_detach: gated(arbeskDetach),
   arbesk_part: (a) => arbeskPart(str(a, "path"), (a.version as string | null | undefined) ?? null, str(a, "key"), Number(a.limit)),
   arbesk_accounts: () => arbeskAccountList.map((account) => ({ ...account })),
   arbesk_connect_start: (a) => {

@@ -12,7 +12,7 @@
 // each saying so.
 
 import { capabilitiesOf, type CapabilityRow, type PlaceCapabilities } from "./capabilities";
-import { isArbeskAsset, isArbeskCollection, isArbeskFile, isWithin, placeOf, PSEUDO_PREFIX, type Place, type Pseudo } from "./paths";
+import { isArbeskAsset, isArbeskCollection, isArbeskFile, isWithin, pathName, placeOf, PSEUDO_PREFIX, type Place, type Pseudo } from "./paths";
 
 /** Every pseudo location starts with this, and Recent, Starred and Network
  *  (the places that aren't folders) are its names: spelled in paths.ts,
@@ -289,6 +289,36 @@ export function arbeskPasteRefusal(dir: string, paths: readonly string[], moving
   if (!copiesOf("arbesk", dir)?.can_copy_in) return "Paste into a collection.";
   if (!paths.every((path) => !dirs.has(path) && isArbeskModelFile(path))) return "Only .gltf, .glb and .3mf files on this computer can be copied to Arbesk.";
   return null;
+}
+
+/** Whether files can be added to the item at `path` as its other files
+ *  (the provider's `can_attach`, read from the path's row as the copy
+ *  flags are: only an Arbesk asset; spec F13). */
+export function takesFiles(path: string): boolean {
+  const row = capabilityRow(locationKind(path, ""), path);
+  return row !== null && capabilitiesOf(row).can_attach;
+}
+
+/** The format a file added to an asset records: its lower-case extension,
+ *  when it is `[a-z0-9]{1,16}`; null for a name with none (spec F10). */
+export function attachFormat(name: string): string | null {
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+  return /^[a-z0-9]{1,16}$/.test(ext) ? ext : null;
+}
+
+/** Why `paths` can't be added to the item at `target` (spec F10), in
+ *  order: a cut or forced move, a target that takes no files (only an
+ *  Arbesk asset does; quiet outside Arbesk), anything but a file on this
+ *  computer (any of `dirs`, the folders among `paths`), a file with no
+ *  type to record. Null when they can be; their sizes and a .gltf's
+ *  companions are checked once read. */
+export function attachRefusal(target: string, paths: readonly string[], moving: boolean, dirs: ReadonlySet<string> = new Set()): string | null {
+  if (moving) return "Arbesk is read only.";
+  if (!takesFiles(target)) return placeOf(target) === "arbesk" ? "Add files to an asset." : "";
+  if (!paths.every((path) => !dirs.has(path) && placeOf(path) === "local")) return "Only files on this computer can be added to an asset.";
+  const untyped = paths.find((path) => attachFormat(pathName(path)) === null);
+  return untyped === undefined ? null : `“${pathName(untyped)}” has no file type to record.`;
 }
 
 /** The name a copied file has once Arbesk lists it: a `.glb` is stored as

@@ -30,8 +30,8 @@ import {
   type Entry, type DriveAccount, type ReceivedShare, type ShareSummary, type ShareInfo,
   type AccessEntry,
 } from "./api";
-import { appFormats, arbeskExport, arbeskRepresentations, capabilities, openWith, type AppChoice } from "./api";
-import { chooseFileToOpen, chooseFilesToCopy, showFilesDialog, type FilesActions } from "./representation-dialogs";
+import { appFormats, arbeskAttach, arbeskAttachPlan, arbeskDetach, arbeskExport, arbeskRepresentations, capabilities, openWith, type AppChoice, type AttachChoice, type Attached, type PlannedFile, type RepresentationInfo } from "./api";
+import { askAttachClash, chooseFileToOpen, chooseFilesToCopy, confirmAttach, confirmRemoveFile, showFilesDialog, type ClashChoice, type FilesActions, type FilesPage } from "./representation-dialogs";
 import { assetFormat, copyNameAt, copySources, onlyChoice, openWithCandidates, uniqueNames, type AssetFiles, type CopyChoice, type FileChoice } from "./representations";
 import { loadCapabilities } from "./capabilities";
 import { entryIcon, filesEmblemOf, itemIcon, versionsBadge, fileKind, fileTypeDescription, fileTypeLabel, installIconSprite, isAppBundle, sym, type FileKind, type FolderKind } from "./icons";
@@ -61,7 +61,7 @@ import { companionPath, gltfCompanions, isGlb, modelFormat, type ModelFormat } f
 import { accountOf, fromArbesk, fromDrive, PROVIDERS, providerOf, withAccount, withoutAccount, type Account, type ProviderActions, type ProviderId } from "./providers";
 import { showOnlineAccounts, type OnlineAccountsHost } from "./online-accounts";
 import { LatestSave } from "./latest-save";
-import { acceptsNewItems, arbeskPasteRefusal, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, hasLocalFileFacts, knowsSizes, takesDrops, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
+import { acceptsNewItems, arbeskPasteRefusal, attachRefusal, takesFiles, arbeskTargetName, copyOutRefusal, isInTrash, isPseudo, hasLocalFileFacts, knowsSizes, takesDrops, locationKind, mayHaveVersions, previewsRemotely, PSEUDO_PREFIX, searchesRecursively, type LocationKind, type Pseudo } from "./locations";
 import { allows, refusal, type Here, type SharedAction } from "./item-actions";
 import { childPath, cloudAccountKey, homeFolder, isArbeskAccount, isArbeskAsset, isArbeskCollection, isCloudPath as isCloud, isKnownPath, isRemotePath, isShareLink, isUnder, isWithin, localSegments, parentPath, pathName, pathSegments, placeOf, shareId, shareTicket, resolveTypedPath, safeLocalName, SHARE_PREFIX, isSharePath, isSftpPath, sftpAuthority, type Place } from "./paths";
 
@@ -2261,6 +2261,8 @@ function arbeskItemMenu(sel: Entry[]): MenuItem[] {
     ...(asset ? [{ label: "Open With…", action: () => openItemWith(asset) }] : []),
     // Collections can't be copied yet.
     { label: "Copy", disabled: sel.some((entry) => entry.is_dir), action: () => setClipboard("copy") },
+    // Files from this computer, added to the asset as its other files (spec F10).
+    ...(asset ? [{ label: "Paste Into Asset", disabled: !clipboard, action: () => pasteIntoAsset(asset) }] : []),
     ...(single && isArbeskCollection(single.path)
       ? [
           { separator: true } as const,
@@ -3086,7 +3088,7 @@ async function showProperties(entry: Entry): Promise<void> {
             })
           )
           .then((files) => {
-            if (files && extra.isConnected) showFilesDialog(entry, files, filesActions(entry));
+            if (files && extra.isConnected) openFilesPage(entry, files);
           });
         return false;
       }
@@ -3827,11 +3829,14 @@ async function runEmptyTrash(): Promise<void> {
 // Finder arrive through Tauri's native drag-drop events instead.
 // ---------------------------------------------------------------------------
 
-type DropOp = "move" | "copy" | "trash";
+type DropOp = "move" | "copy" | "trash" | "attach";
 
+/** Where a drop lands: a folder (`dir`), or an item that takes files as
+ *  its own (`attach`: an Arbesk asset, spec F10), whose path `dir` holds. */
 interface DropTarget {
   dir: string;
   el: HTMLElement | null;
+  kind: "dir" | "attach";
 }
 
 /** Where a drop at client point (x, y) lands, ignoring the dragged `sources`. */
@@ -3841,18 +3846,20 @@ function dropTargetAt(x: number, y: number, sources: string[]): DropTarget | nul
   const item = el.closest<HTMLElement>(".item");
   if (item && viewEl.contains(item)) {
     const e = shown[Number(item.dataset.index)];
-    if (e?.is_dir && !isAppBundle(e) && !sources.includes(e.path)) return { dir: e.path, el: item };
+    if (e?.is_dir && !isAppBundle(e) && !sources.includes(e.path)) return { dir: e.path, el: item, kind: "dir" };
+    // An item that takes files highlights as a folder does (spec F10).
+    if (e && !e.is_dir && takesFiles(e.path)) return { dir: e.path, el: item, kind: "attach" };
   }
   const row = el.closest<HTMLElement>(".sidebar-row");
   if (row) {
     const loc = row.dataset.location;
-    return !loc || isPseudo(loc) ? null : { dir: loc, el: row };
+    return !loc || isPseudo(loc) ? null : { dir: loc, el: row, kind: "dir" };
   }
   const crumb = el.closest<HTMLElement>(".crumb");
-  if (crumb) return crumb.dataset.path && !isPseudo(crumb.dataset.path) ? { dir: crumb.dataset.path, el: crumb } : null;
+  if (crumb) return crumb.dataset.path && !isPseudo(crumb.dataset.path) ? { dir: crumb.dataset.path, el: crumb, kind: "dir" } : null;
   // Anywhere else in the view means the folder being shown.
   if (el.closest(".view-overlay") && !isPseudo(location) && listingError === null) {
-    return { dir: location, el: $(".view-overlay") };
+    return { dir: location, el: $(".view-overlay"), kind: "dir" };
   }
   return null;
 }
@@ -3867,8 +3874,10 @@ function volumeRoot(path: string): string {
 /** The operation a drop would do, or null if it would do nothing useful. */
 function dropOp(target: DropTarget, sources: string[], mods: { altKey: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, devices?: Map<string, number>, dirs?: ReadonlySet<string>): DropOp | null {
   const dir = target.dir;
-  // A collection in Arbesk takes only copies of model files; a forced move or a folder says no.
   const forceMoveKey = isMac ? mods.metaKey : mods.shiftKey;
+  // An asset takes copies of files on this computer as its own (spec F10).
+  if (target.kind === "attach") return attachRefusal(dir, sources, forceMoveKey && !(isMac ? mods.altKey : mods.ctrlKey), dirs) === null ? "attach" : null;
+  // A collection in Arbesk takes only copies of model files; a forced move or a folder says no.
   if (placeOf(dir) === "arbesk") return arbeskPasteRefusal(dir, sources, forceMoveKey && !(isMac ? mods.altKey : mods.ctrlKey), dirs) === null ? "copy" : null;
   // A place that takes no copies, or is read only, takes no drop: Paste's rule (`can_copy_in`).
   if (!takesDrops(dir) || copyOutRefusal(sources) !== null) return null;
@@ -3913,6 +3922,7 @@ async function deviceMap(paths: string[]): Promise<Map<string, number>> {
 /** Run a drop exactly as its cursor showed: trash, copy or move. */
 async function performDrop(sources: string[], dirs: Set<string>, target: DropTarget, op: DropOp): Promise<void> {
   if (op === "trash") return trashPaths(sources);
+  if (op === "attach") return attachFiles(target.dir, sources, dirs, false);
   await runTransfer(sources, dirs, () => op === "move", target.dir);
 }
 
@@ -4072,7 +4082,7 @@ function updateDrag(): void {
   // Hovering a folder for a moment opens it, so the drop can go deeper.
   if (target?.dir !== d.target?.dir) {
     clearTimeout(d.springTimer);
-    if (target && op && op !== "trash" && target.dir !== location && target.el !== $(".view-overlay")) {
+    if (target && op && op !== "trash" && op !== "attach" && target.dir !== location && target.el !== $(".view-overlay")) {
       d.springTimer = window.setTimeout(() => {
         if (drag === d && d.target?.dir === target.dir) navigate(target.dir).then(() => updateDrag());
       }, 1000);
@@ -4081,8 +4091,9 @@ function updateDrag(): void {
   d.target = target;
   d.op = op;
   setDropHighlight(op ? target!.el : null);
-  d.ghost.querySelector<HTMLElement>(".drag-op")!.hidden = op !== "copy";
-  document.documentElement.style.cursor = op === "copy" ? "copy" : op ? "default" : "no-drop";
+  const copying = op === "copy" || op === "attach";
+  d.ghost.querySelector<HTMLElement>(".drag-op")!.hidden = !copying;
+  document.documentElement.style.cursor = copying ? "copy" : op ? "default" : "no-drop";
 }
 
 function autoScrollDuringDrag(): void {
@@ -4136,6 +4147,8 @@ function localDropPaths(paths: string[]): string[] {
  * Into Arbesk it copies, and the copy says in words what Arbesk can't take
  * (the system showed a copy cursor, so silence would look like a lost drop). */
 function externalDropOp(target: DropTarget, sources: string[], own: boolean, devices?: Map<string, number>): DropOp | null {
+  // Onto an asset it adds the files (spec F10), saying in words what it can't.
+  if (target.kind === "attach") return "attach";
   if (placeOf(target.dir) === "arbesk") return "copy";
   const op = dropOp(target, sources, { altKey: false, metaKey: false, ctrlKey: false, shiftKey: false }, devices);
   // The window's own drag that left it and came back keeps the window's rule.
@@ -5328,7 +5341,160 @@ function filesActions(asset: Entry): FilesActions {
       if (!refuse("openWith", hereFor([asset.path]))) showOpenWith(asset, choice, named(choice));
     },
     copy: (choice) => putOnClipboard([choice.kind === "model" ? asset.path : choice.rep.path], new Set(), "copy"),
+    remove: (rep) => removeAssetFile(asset, rep),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Adding files to an Arbesk asset and removing them (spec F10–F12)
+// ---------------------------------------------------------------------------
+
+/** The Files… page open now, which a write to its asset draws again. */
+let filesPage: { asset: string; page: FilesPage } | null = null;
+
+function openFilesPage(asset: Entry, files: RepresentationInfo[]): void {
+  const page = showFilesDialog(asset, files, filesActions(asset));
+  filesPage = { asset: asset.path, page };
+}
+
+/** After a write to `asset` (spec F11): its row's emblem from the new
+ *  summary at once, an open Files… page drawn again, then the collection
+ *  reloaded (the write waited for it to settle, so it lists the new one). */
+async function afterAssetWrite(asset: string, done: Attached): Promise<void> {
+  const row = shown.find((entry) => entry.path === asset);
+  if (row) {
+    row.representations = done.representations ?? undefined;
+    patchIcon(asset);
+  }
+  if (filesPage?.asset === asset) filesPage.page.redraw(done.files);
+  if (isUnder(asset, location)) await reload();
+}
+
+/** The error a write to an asset ends with when it needs a new sign-in. */
+const ATTACH_SIGN_IN = "Sign in to Arbesk again to add files to it.";
+
+/** Paste Into Asset: the clipboard's files added to `asset`. */
+function pasteIntoAsset(asset: Entry): void {
+  if (!clipboard) return;
+  const { paths, dirs, mode } = clipboard;
+  void attachFiles(asset.path, paths, dirs, mode === "cut");
+}
+
+/** Whether the local `.gltf` at `path` loads files beside it (buffers or
+ *  images by a relative URI): only the one file would be stored. */
+async function usesFilesBeside(path: string): Promise<boolean> {
+  if (!/\.gltf$/i.test(path)) return false;
+  try {
+    const bytes = await previewBytes(path, MODEL_PREVIEW_LIMIT);
+    return gltfCompanions(JSON.parse(new TextDecoder().decode(bytes))).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** For each file of the plan whose id a file the asset shows has, what
+ *  the user answers; null when the paste stops (Escape). */
+async function answerClashes(planned: PlannedFile[], assetName: string): Promise<Map<string, AttachChoice> | null> {
+  const answers = new Map<string, AttachChoice>();
+  const clashing = planned.filter((file) => file.clash?.kind === "valid");
+  let all: ClashChoice | null = null;
+  for (const [i, file] of clashing.entries()) {
+    const clash = file.clash as Extract<PlannedFile["clash"], { kind: "valid" }>;
+    let choice: ClashChoice | null = all;
+    if (choice === null) {
+      const answer = await askAttachClash(assetName, clash.existing, file.name, clashing.length - i - 1);
+      if (!answer) return null;
+      choice = answer.choice;
+      if (answer.all) all = choice;
+    }
+    answers.set(file.path, choice === "replace" ? { kind: "replace", cid: clash.cid } : { kind: choice });
+  }
+  return answers;
+}
+
+/**
+ * Paste Into Asset and a drop on an asset (spec F10): refuse what can't be
+ * added, in one toast; settle each clash with a file the asset has; confirm
+ * the files go public; sign in when needed; then add them as one new
+ * version, as an operation. Nothing is written when every file is skipped
+ * or refused.
+ */
+async function attachFiles(asset: string, paths: string[], dirs: ReadonlySet<string>, moving: boolean): Promise<void> {
+  if (refuse("attach", { kind: locationKind(asset, trashPath), items: [], paths, dir: asset, moving, dirs })) return;
+  const assetName = pathName(asset);
+  for (const path of paths) {
+    if (await usesFilesBeside(path)) return showToast(`“${basename(path)}” uses files beside it. Add a .glb instead.`);
+  }
+  let planned: PlannedFile[];
+  try {
+    planned = await arbeskAttachPlan(asset, paths);
+  } catch (err) {
+    return showToast(cleanError(err));
+  }
+  // libadwaita shows one toast at a time: the refusals go in one.
+  const refused = planned.flatMap((file) => (file.clash?.kind === "unreadable" ? [file.clash.message] : []));
+  if (refused.length) showToast(refused.join(" "));
+  const answers = await answerClashes(planned, assetName);
+  if (!answers) return;
+  const adding = planned
+    .filter((file) => file.clash?.kind !== "unreadable" && answers.get(file.path)?.kind !== "skip")
+    .map((file) => ({ path: file.path, choice: answers.get(file.path) }));
+  if (adding.length === 0) return showToast([...refused, `Nothing was added to “${assetName}”.`].join(" "));
+  const sources = planned.filter((file) => file.role === "source" && adding.some((add) => add.path === file.path)).map((file) => file.name);
+  if (!(await confirmAttach(assetName, sources))) return;
+  if (!(await arbeskSignedIn(asset).catch(() => false)) && !(await connectArbesk(await arbeskAccountFor(asset), { stay: true }))) return;
+  await runAttach(asset, assetName, adding);
+}
+
+/** The attach as an operation, *Adding 2 files to “Box.gltf”*: progress
+ *  over the uploaded bytes, Cancel until the collection is written. A lost
+ *  session signs in again once and carries on. */
+async function runAttach(asset: string, assetName: string, adding: Array<{ path: string; choice?: AttachChoice }>): Promise<void> {
+  const what = adding.length === 1 ? `“${basename(adding[0].path)}”` : `${adding.length} files`;
+  const op = startOperation(`Adding ${what} to “${assetName}”`, {
+    totalItems: 1,
+    onCancel: () => void cancelOperation(op.id).catch(() => {}),
+  });
+  setOperationState(op, "working");
+  const attempt = () => arbeskAttach(asset, adding, { op: op.id, onProgress: (u) => updateOperation(op, u) });
+  try {
+    let done: Attached;
+    try {
+      done = await attempt();
+    } catch (err) {
+      if (cleanError(err) !== ATTACH_SIGN_IN) throw err;
+      const account = await arbeskAccountFor(asset);
+      if (account) signInNeeded.add(accountRef(account));
+      if (!(await connectArbesk(account, { stay: true }))) return;
+      done = await attempt();
+    }
+    if (done.refused.length) showToast(done.refused.join(" "));
+    await afterAssetWrite(asset, done);
+  } catch (err) {
+    if (cleanError(err) !== CANCELLED) showToast(`Could not add to “${assetName}”: ${cleanError(err)}`);
+    if (isUnder(asset, location)) void reload();
+  } finally {
+    endOperation(op);
+  }
+}
+
+/** Remove… on a file of the Files… page (spec F12): asked first, Cancel
+ *  the default; the write waits in the dialog (Cancel live until the
+ *  collection is written), its failure said there. */
+function removeAssetFile(asset: Entry, rep: RepresentationInfo): void {
+  let op: string | null = null;
+  confirmRemoveFile(
+    asset.name,
+    rep,
+    async () => {
+      op = `remove-${Date.now().toString(36)}`;
+      const done = await arbeskDetach(asset.path, rep.id, { op });
+      await afterAssetWrite(asset.path, done);
+    },
+    () => {
+      if (op) void cancelOperation(op).catch(() => {});
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
