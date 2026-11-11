@@ -35,7 +35,7 @@ function fileRow(iconOf: Entry | null, title: string, subtitle: string, staleWhy
 }
 
 /** An entry shaped only to pick a file's icon by its name. */
-const iconEntry = (name: string): Entry => ({ name, path: name, is_dir: false, size: 0, modified: 0, is_hidden: false, is_symlink: false });
+export const iconEntry = (name: string): Entry => ({ name, path: name, is_dir: false, size: 0, modified: 0, is_hidden: false, is_symlink: false });
 
 /** A boxed list for a dialog's page. */
 function boxedList(label: string): HTMLElement {
