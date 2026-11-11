@@ -53,6 +53,8 @@ if command -v gh >/dev/null; then
   gh_draft_releases || echo "!! listing releases failed"
   echo "== Release builds not finished (queued or running)"
   gh_unfinished_runs release.yml || echo "!! listing release runs failed"
+  echo "== Issues waiting for verification on a real build or platform"
+  gh_open_issues needs-verification || echo "!! listing issues failed"
   echo "== Open issues"
   gh_open_issues || echo "!! listing issues failed"
 fi
