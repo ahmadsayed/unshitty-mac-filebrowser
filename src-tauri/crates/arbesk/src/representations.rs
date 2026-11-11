@@ -182,14 +182,12 @@ pub(crate) fn list(manifest: &Value) -> Vec<Rep> {
 }
 
 /// How many entries are stored, valid or not (what `hasRoomFor` counts).
-#[cfg_attr(not(test), allow(dead_code))] // Attaching files (spec F10, phase 4) uses it.
 pub(crate) fn stored_count(manifest: &Value) -> usize {
     stored(manifest).len()
 }
 
 /// The `id` of each stored entry that has a string one, valid or not
 /// (`hasRoomFor`'s `entry?.id`): every id decision reads these.
-#[cfg_attr(not(test), allow(dead_code))] // Attaching files (spec F10, phase 4) uses it.
 pub(crate) fn stored_ids(manifest: &Value) -> Vec<String> {
     stored(manifest)
         .iter()
@@ -295,16 +293,26 @@ pub(crate) fn is_stale_in(current: &Current, rep: &Rep) -> bool {
 /// `derivedFromOf`: what a new entry made from `reference` records (the
 /// ref, its current CID and, for `primary`, the model's placement); `None`
 /// when the ref names nothing.
-#[cfg_attr(not(test), allow(dead_code))] // Attaching files (spec F10, phase 4) uses it.
 pub(crate) fn derived_from_of(manifest: &Value, reference: &str) -> Option<Value> {
     let cid = current_cid_of(manifest, reference)?;
     let mut from = json!({ "ref": reference, "cid": cid });
     if reference == PRIMARY
         && let Some(matrix) = primary_transform_of(manifest)
     {
-        from["transform_matrix"] = json!(matrix);
+        // As JavaScript writes the numbers: `2`, never `2.0`.
+        from["transform_matrix"] = Value::Array(matrix.into_iter().map(js_value).collect());
     }
     Some(from)
+}
+
+/// `n` as `JSON.stringify` writes it: a whole number without a fraction,
+/// NaN and the infinities as `null`.
+pub(crate) fn js_value(n: f64) -> Value {
+    if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
+        json!(n as i64)
+    } else {
+        serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number)
+    }
 }
 
 // ---- JavaScript's reading of a value ----------------------------------------------------
@@ -484,7 +492,6 @@ pub(crate) fn carried(manifest: &Value) -> Option<Value> {
 
 /// `defaultRole`: the role a file of this format usually plays (a 3MF is a
 /// `mesh`: only a sliced one is `machine`, which the caller says).
-#[cfg_attr(not(test), allow(dead_code))] // Attaching files (spec F10, phase 4) uses it.
 pub(crate) fn default_role(format: &str) -> &'static str {
     match format.to_lowercase().as_str() {
         "blend" | "step" | "stp" | "f3d" | "fcstd" | "scad" | "iges" | "igs" => "source",
@@ -510,7 +517,6 @@ pub(crate) fn encoding_for(format: &str) -> Encoding {
 
 /// asset-core's `slug`: lower case, each run of anything but `[a-z0-9]` one
 /// `-`, no `-` at either end.
-#[cfg_attr(not(test), allow(dead_code))] // Attaching files (spec F10, phase 4) uses it.
 fn slug(text: &str) -> String {
     let mut out = String::new();
     for c in text.to_lowercase().chars() {
@@ -526,7 +532,6 @@ fn slug(text: &str) -> String {
 /// `representationId`: `source` for a source file, else the format, then
 /// the profile's printer and material when it names them
 /// (`gcode-original-prusa-mk4-petg`), at most 64 characters.
-#[cfg_attr(not(test), allow(dead_code))] // Attaching files (spec F10, phase 4) uses it.
 pub(crate) fn representation_id(role: &str, format: &str, profile: Option<&Map<String, Value>>) -> String {
     let base = match (role, slug(format)) {
         ("source", _) => "source".to_string(),
@@ -578,7 +583,6 @@ pub(crate) fn decode(bytes: Vec<u8>, encoding: Encoding, cap: u64) -> Result<Vec
 /// `encodeRepresentation`: brotli-framed for a text format (quality 5,
 /// window 22, what `compressAuto` writes with the `binary` hint), raw
 /// otherwise; and the encoding to record.
-#[cfg_attr(not(test), allow(dead_code))] // Attaching files (spec F10, phase 4) uses it.
 pub(crate) fn encode(bytes: &[u8], format: &str) -> (Vec<u8>, Encoding) {
     match encoding_for(format) {
         Encoding::Raw => (bytes.to_vec(), Encoding::Raw),
@@ -900,7 +904,8 @@ mod tests {
     fn derived_from_records_the_ref_cid_and_placement() {
         let manifest = json!({ "scene": { "nodes": [{ "source": { "cid": "bafyM" } }] },
             "representations": [entry()] });
-        let identity: Vec<f64> = IDENTITY.to_vec();
+        // Written as JavaScript writes the numbers (`1`, not `1.0`), as besk's entries are.
+        let identity = json!([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
         assert_eq!(
             derived_from_of(&manifest, PRIMARY),
             Some(json!({ "ref": "primary", "cid": "bafyM", "transform_matrix": identity }))
@@ -908,6 +913,10 @@ mod tests {
         assert_eq!(derived_from_of(&manifest, "stl"), Some(json!({ "ref": "stl", "cid": "bafyStl" })));
         assert_eq!(derived_from_of(&manifest, "gone"), None);
         assert_eq!(derived_from_of(&json!({}), PRIMARY), None);
+        let placed = json!({ "scene": { "nodes": [{ "source": { "cid": "bafyM" },
+            "transform_matrix": [0.5, "2", null, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }] } });
+        let from = derived_from_of(&placed, PRIMARY).unwrap();
+        assert_eq!(from["transform_matrix"].to_string(), "[0.5,2,0,0,0,1,0,0,0,0,1,0,0,0,0,1]");
     }
 
     #[test]

@@ -12,12 +12,13 @@
 // Where a place's capabilities answer a rule (design D5: rename, Move to
 // Trash, copy out, paste through `can_copy_in`, cut), it reads them, through `locations.ts` or
 // `byPlace`, and keeps cells only for the frontend's own views (Recent,
-// Starred, Network, the Trash). Delete Permanently, Star, Add to Bookmarks,
+// Starred, Network, the Trash); adding files to an asset reads `can_attach`.
+// Delete Permanently, Star, Add to Bookmarks,
 // Properties, Open With and Open Item Location have no matching capability
 // and keep their tables. The toasts are the frontend's own either way.
 
 import { capabilitiesOf, type PlaceCapabilities } from "./capabilities";
-import { arbeskPasteRefusal, capabilityRow, copyOutRefusalOf, isPseudoKind, isReadOnlyKind, isTrashKind, kindTakesPastes, type LocationKind, type ViewKind } from "./locations";
+import { arbeskPasteRefusal, attachRefusal, capabilityRow, copyOutRefusalOf, isPseudoKind, isReadOnlyKind, isTrashKind, kindTakesPastes, type LocationKind, type ViewKind } from "./locations";
 
 export type SharedAction =
   | "cut"
@@ -30,7 +31,8 @@ export type SharedAction =
   | "bookmark"
   | "properties"
   | "openWith"
-  | "openLocation";
+  | "openLocation"
+  | "attach";
 
 /** Where an action is asked for. */
 export interface Here {
@@ -42,7 +44,8 @@ export interface Here {
   paths?: readonly string[];
   /** The items aren't in the folder on screen: search results, Recent, Starred. */
   elsewhere?: boolean;
-  /** A paste's folder (a drop's too), which Arbesk checks is a collection. */
+  /** A paste's folder (a drop's too), which Arbesk checks is a collection;
+   *  for `attach`, the asset the files are added to. */
   dir?: string;
   /** A paste that moves (Cut, a forced-move drag): Arbesk takes copies only. */
   moving?: boolean;
@@ -211,6 +214,11 @@ const cut = (here: Here): Verdict => {
   return copyOut(here) ?? (stuck === undefined ? OK : cutRefusalOf(stuck));
 };
 
+/** Paste Into Asset and a drop on an asset (spec F10): files on this
+ *  computer, copied, onto an item whose place takes them (`can_attach`:
+ *  an Arbesk asset), each with a type to record. */
+const attach = (here: Here): Verdict => attachRefusal(here.dir ?? "", here.paths ?? [], here.moving ?? false, here.dirs);
+
 const RULES: Record<SharedAction, (here: Here) => Verdict> = {
   cut,
   copy: copyOut,
@@ -223,6 +231,7 @@ const RULES: Record<SharedAction, (here: Here) => Verdict> = {
   bookmark: (here) => BOOKMARK[here.kind],
   properties,
   openWith,
+  attach,
   // Only for an item shown away from its folder, and never in the Trash,
   // where Restore From Trash is the way back.
   openLocation: (here) =>

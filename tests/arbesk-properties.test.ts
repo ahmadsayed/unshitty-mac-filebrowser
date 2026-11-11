@@ -33,7 +33,7 @@ test("an asset's menu ends with Properties, which shows its version and no local
   await openArbesk("Shapes");
   await click(row("Bracket.gltf"));
   await rightClick(row("Bracket.gltf"));
-  expect(menuLabels()).toEqual(["Open", "Open With…", "Copy", "Properties"]);
+  expect(menuLabels()).toEqual(["Open", "Open With…", "Copy", "Paste Into Asset", "Properties"]);
   expect($$(".popover .menu-separator").length).toBe(1);
   await click($$(".popover .menu-item").find((el) => el.textContent?.trim() === "Properties")!);
   await settle(10);

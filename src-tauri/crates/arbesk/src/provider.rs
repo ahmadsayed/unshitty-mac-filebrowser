@@ -53,7 +53,7 @@ fn not_yet<T>(what: &str) -> Result<T> {
 }
 
 /// `refused` with each operation that has words.
-fn refusals(each: [(Operation, Option<String>); 6]) -> Vec<Refused> {
+fn refusals(each: [(Operation, Option<String>); 7]) -> Vec<Refused> {
     each.into_iter()
         .filter_map(|(operation, message)| message.map(|message| Refused { operation, message }))
         .collect()
@@ -93,6 +93,13 @@ pub fn capabilities(path: &str) -> Capabilities {
         Ok(_) => Some(COLLECTION_COPY.to_string()),
         Err(error) => Some(error.clone()),
     };
+    // Files are added to an asset (spec F13): an account, a collection or
+    // an asset's other file says where they go.
+    let attach = match &parsed {
+        Ok(ArbeskPath::Asset { .. }) => None,
+        Ok(_) => Some(places::ADD_TO_AN_ASSET.to_string()),
+        Err(error) => Some(error.clone()),
+    };
     let read_only = || Some(READ_ONLY.to_string());
     Capabilities {
         read_only: true,
@@ -116,6 +123,7 @@ pub fn capabilities(path: &str) -> Capabilities {
             (Operation::Trash, read_only()),
             (Operation::CopyIn, copy_in),
             (Operation::CopyOut, copy_out),
+            (Operation::Attach, attach),
             (Operation::LocalOnly, Some(NOT_LOCAL.into())),
         ]),
     }
@@ -318,6 +326,18 @@ impl ext::Representations for Client {
     fn file(&self, path: &str, version: Option<&str>, id: &str, cx: &Cx) -> Result<PathBuf> {
         self.representation_file(path, version, id, &cx.progress).map_err(words)
     }
+    fn plan_attach(&self, path: &str, files: &[String]) -> Result<Json> {
+        Json::of(&Client::plan_attach(self, path, files).map_err(words)?)
+    }
+    /// `files`: each `{ path, choice? }` (`attach::Adding`).
+    fn attach(&self, path: &str, files: &serde_json::Value, cx: &Cx) -> Result<Json> {
+        let adding: Vec<crate::attach::Adding> =
+            serde_json::from_value(files.clone()).map_err(|error| Error::Other(error.to_string()))?;
+        Json::of(&Client::attach(self, path, &adding, &cx.progress).map_err(words)?)
+    }
+    fn detach(&self, path: &str, id: &str, cid: &str, cx: &Cx) -> Result<Json> {
+        Json::of(&Client::detach(self, path, id, cid, &cx.progress).map_err(words)?)
+    }
 }
 
 impl ext::Properties for Client {
@@ -433,6 +453,20 @@ mod tests {
         assert_eq!(refusal(&capabilities("arbesk://bad"), Operation::Create), Some(bad.clone()));
         assert_eq!(refusal(&capabilities("arbesk://bad"), Operation::CopyIn), Some(bad.clone()));
         assert_eq!(refusal(&capabilities("arbesk://bad"), Operation::CopyOut), Some(bad));
+    }
+
+    /// Files are added to an asset only (spec F13): an account, a
+    /// collection and an asset's other file say so, a malformed path is
+    /// refused by its parser.
+    #[test]
+    fn only_an_asset_takes_files() {
+        let file = format!("{ASSET}/stl@bafyStl~Box.stl");
+        assert_eq!(refusal(&capabilities(ASSET), Operation::Attach), None);
+        for path in [ACCOUNT, COLLECTION, file.as_str()] {
+            assert_eq!(refusal(&capabilities(path), Operation::Attach).as_deref(), Some("Add files to an asset."), "{path}");
+        }
+        let bad = location::parse("arbesk://bad").unwrap_err();
+        assert_eq!(refusal(&capabilities("arbesk://bad"), Operation::Attach), Some(bad));
     }
 
     /// An asset's other file allows what its asset allows, but has no
@@ -844,5 +878,42 @@ mod tests {
         assert!(accounts.accounts().is_empty());
         assert!(!accounts.signed_in(ACCOUNT));
         assert_eq!(sessions.load(&account.id), None);
+    }
+
+    /// Adding and removing files go through the extension with their own
+    /// sign-in words: none kept, or one Arbesk refuses (which is
+    /// forgotten), before anything is read or uploaded.
+    #[test]
+    fn adding_and_removing_files_say_their_own_sign_in_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Box.stl");
+        std::fs::write(&file, b"solid").unwrap();
+        let asset = format!("{}/a1~Box.gltf", testing::shapes());
+        let files = serde_json::json!([{ "path": file.to_string_lossy() }]);
+        let (client, account, sessions) = client(dir.path());
+        let reps = client.extensions().representations.unwrap();
+        let planned = reps.plan_attach(&asset, &[file.to_string_lossy().into_owned()]).unwrap();
+        assert!(planned.as_str().contains("\"id\":\"stl\""), "{}", planned.as_str());
+        let words = |error: Error| error.to_string();
+        // Arbesk refuses the kept session: the words, and it is forgotten.
+        sessions.save(&account.id, &Session { token: "stale".into(), expires_at_ms: signin::now_ms() + 3_600_000 }).unwrap();
+        assert_eq!(words(reps.attach(&asset, &files, &Cx::default()).unwrap_err()), "Sign in to Arbesk again to add files to it.");
+        assert_eq!(sessions.load(&account.id), None);
+        assert_eq!(words(reps.attach(&asset, &files, &Cx::default()).unwrap_err()), "Sign in to Arbesk again to add files to it.");
+        assert_eq!(words(reps.detach(&asset, "stl", "bafyAny", &Cx::default()).unwrap_err()), "Sign in to Arbesk again to remove files from it.");
+        // Signed in again, the file goes in, and comes out.
+        let kept = Session { token: "t".into(), expires_at_ms: signin::now_ms() + 3_600_000 };
+        sessions.save(&account.id, &kept).unwrap();
+        let attached = reps.attach(&asset, &files, &Cx::default()).unwrap();
+        assert!(attached.as_str().contains("\"count\":1"), "{}", attached.as_str());
+        let attached: serde_json::Value = serde_json::from_str(attached.as_str()).unwrap();
+        // The file the page shows: its path's pin.
+        let shown = attached["files"][0]["path"].as_str().unwrap();
+        let crate::location::ArbeskPath::File { pin: Some(cid), .. } = crate::location::parse(shown).unwrap() else {
+            panic!("{shown}")
+        };
+        let detached = reps.detach(&asset, "stl", &cid, &Cx::default()).unwrap();
+        assert!(detached.as_str().contains("\"files\":[]"), "{}", detached.as_str());
+        assert_eq!(words(reps.attach(COLLECTION, &files, &Cx::default()).unwrap_err()), "Add files to an asset.");
     }
 }

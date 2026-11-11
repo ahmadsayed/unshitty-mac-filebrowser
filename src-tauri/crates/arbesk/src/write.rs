@@ -226,6 +226,13 @@ impl CollectionLocks {
         self.take(address, token_id)
     }
 
+    /// Locks that re-read the chain `reads` times, `every` apart, and
+    /// forget an unsettled change after `expiry`.
+    #[cfg(test)]
+    pub(crate) fn quick(reads: usize, every: Duration, expiry: Duration) -> Self {
+        Self { reads, every, expiry, ..Self::default() }
+    }
+
     pub(crate) fn take(&self, address: &str, token_id: &str) -> Hold<'_> {
         let key = format!("{}/{token_id}", address.to_ascii_lowercase());
         let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
@@ -257,7 +264,7 @@ impl Hold<'_> {
 
     /// Remember the change from `replaced` to `relayed` the relay answered
     /// with `outcome`; one it refused or that reverted changed nothing.
-    fn remember(&self, replaced: &str, relayed: &str, outcome: &Outcome) {
+    pub(crate) fn remember(&self, replaced: &str, relayed: &str, outcome: &Outcome) {
         let landed = match outcome {
             Outcome::Landed => true,
             Outcome::Unsettled(_) => false,
@@ -357,11 +364,19 @@ impl<'a> Uploader<'a> {
         self.fresh.pop_front().ok_or_else(|| UNREADABLE.to_string())
     }
 
-    /// Upload `bytes` as `file_name`; the CID IPFS gave it.
+    /// Upload `bytes` as `file_name`; the CID IPFS gave it. A failure
+    /// names the file the uploader was made for.
     pub(crate) fn upload(&mut self, file_name: &str, bytes: &[u8]) -> Result<String, String> {
+        let shown = self.name;
+        self.upload_shown(file_name, bytes, shown)
+    }
+
+    /// Upload `bytes` as `file_name`, a failure naming `shown` (one file of
+    /// several an attach uploads).
+    pub(crate) fn upload_shown(&mut self, file_name: &str, bytes: &[u8], shown: &str) -> Result<String, String> {
         let url = self.next_url()?;
         let fields = [("network", "public")];
-        let failed = |why: &str| format!("Couldn't upload “{}” to IPFS: {why}", self.name);
+        let failed = |why: &str| format!("Couldn't upload “{shown}” to IPFS: {why}");
         let answer = self
             .http
             .post_multipart(&url, file_name, bytes, &fields, None)
@@ -443,7 +458,7 @@ pub fn add(
 }
 
 /// A collection read whose manifest is a JSON object, as every collection's is.
-fn an_object(read: (String, Value)) -> Result<(String, Value), String> {
+pub(crate) fn an_object(read: (String, Value)) -> Result<(String, Value), String> {
     match read.1.is_object() {
         true => Ok(read),
         false => Err(UNREADABLE.into()),
@@ -464,7 +479,7 @@ pub(crate) enum Outcome {
 /// The caller's proof in the collection's current editor tree, for the relay.
 /// A collection with several editors needs it for every write; a Viewer (or
 /// an account that isn't listed) can't add.
-fn editor_proof(reader: &Reader, target: &Target) -> Result<Vec<String>, String> {
+pub(crate) fn editor_proof(reader: &Reader, target: &Target) -> Result<Vec<String>, String> {
     let (version, _, list) = reader.editor_list(&target.token_id)?;
     let list: Vec<Editor> =
         serde_json::from_value(list).map_err(|_| FORBIDDEN.to_string())?;
@@ -581,21 +596,7 @@ impl Write<'_> {
     /// it has settled ([`Hold::settled`]), re-reading `tokenURI` while it
     /// hasn't; refused when it still hasn't.
     fn settled_collection(&self, held: &Hold) -> Result<(String, Value), String> {
-        let token_id = &self.target.token_id;
-        let read = || an_object(self.reader.collection_manifest_with_cid(token_id)?);
-        let mut current = read()?;
-        for _ in 0..held.locks.reads {
-            if held.settled(&current.0) {
-                return Ok(current);
-            }
-            self.progress.check()?;
-            std::thread::sleep(held.locks.every);
-            current = read()?;
-        }
-        match held.settled(&current.0) {
-            true => Ok(current),
-            false => Err(EARLIER_UNSETTLED.into()),
-        }
+        settled_collection(&self.reader, &self.target.token_id, held, self.progress)
     }
 
     /// Upload the asset manifest: a new asset, or the next version of
@@ -637,30 +638,77 @@ impl Write<'_> {
         Ok((asset_id, cid))
     }
 
-    /// Point the collection's token at `collection_cid` through Arbesk's
-    /// wallet relay, as an editor of the collection (the owner alone was not
-    /// enough once a collection was shared).
+    /// [`relay`] for this write's collection.
     fn relay(&self, collection_cid: &str, asset_id: &str) -> Outcome {
-        let body = json!({
-            "op": "updateUri",
-            "tokenId": self.target.token_id,
-            // The relay authorizes from the top level and the contract checks
-            // the proof passed in `params`.
-            "requiredRole": merkle::EDITOR,
-            "proof": self.editor_proof,
-            "params": {
-                "newUri": collection_cid,
-                "proof": self.editor_proof,
-                "assetScope": NO_SCOPE,
-                "assetId": asset_id,
-            },
-        });
-        let url = format!("{}/api/v1/wallet/relay", self.site.origin);
-        let name = &self.target.name;
-        match self.http.post_json_slow(&url, &body, Some(self.session)) {
-            Ok(answer) => receipt_outcome(&answer, name),
-            Err(error) => relay_failure(error, name),
+        let to = Relaying {
+            http: self.http,
+            site: self.site,
+            session: self.session,
+            token_id: &self.target.token_id,
+            editor_proof: &self.editor_proof,
+        };
+        relay(&to, collection_cid, asset_id, &self.target.name)
+    }
+}
+
+/// Collection `token_id`'s CID and manifest once this app's last change to
+/// it has settled ([`Hold::settled`]), re-reading `tokenURI` while it
+/// hasn't; refused when it still hasn't. Every write that builds on a
+/// collection reads it so, under its hold.
+pub(crate) fn settled_collection(
+    reader: &Reader,
+    token_id: &str,
+    held: &Hold,
+    progress: &Progress,
+) -> Result<(String, Value), String> {
+    let read = || an_object(reader.collection_manifest_with_cid(token_id)?);
+    let mut current = read()?;
+    for _ in 0..held.locks.reads {
+        if held.settled(&current.0) {
+            return Ok(current);
         }
+        progress.check()?;
+        std::thread::sleep(held.locks.every);
+        current = read()?;
+    }
+    match held.settled(&current.0) {
+        true => Ok(current),
+        false => Err(EARLIER_UNSETTLED.into()),
+    }
+}
+
+/// Who asks the wallet relay to change a collection, and with what proof.
+pub(crate) struct Relaying<'a> {
+    pub(crate) http: &'a dyn Http,
+    pub(crate) site: &'a Site,
+    pub(crate) session: &'a str,
+    pub(crate) token_id: &'a str,
+    /// The caller's proof in the collection's current editor tree.
+    pub(crate) editor_proof: &'a [String],
+}
+
+/// Point the collection's token at `collection_cid` through Arbesk's
+/// wallet relay, as an editor of the collection (the owner alone was not
+/// enough once a collection was shared); `name` words the outcome.
+pub(crate) fn relay(to: &Relaying, collection_cid: &str, asset_id: &str, name: &str) -> Outcome {
+    let body = json!({
+        "op": "updateUri",
+        "tokenId": to.token_id,
+        // The relay authorizes from the top level and the contract checks
+        // the proof passed in `params`.
+        "requiredRole": merkle::EDITOR,
+        "proof": to.editor_proof,
+        "params": {
+            "newUri": collection_cid,
+            "proof": to.editor_proof,
+            "assetScope": NO_SCOPE,
+            "assetId": asset_id,
+        },
+    });
+    let url = format!("{}/api/v1/wallet/relay", to.site.origin);
+    match to.http.post_json_slow(&url, &body, Some(to.session)) {
+        Ok(answer) => receipt_outcome(&answer, name),
+        Err(error) => relay_failure(error, name),
     }
 }
 
@@ -694,7 +742,7 @@ fn relay_failure(error: HttpError, name: &str) -> Outcome {
 
 /// What the Studio names a collection manifest's file after: its
 /// `asset_id`, else the time.
-fn collection_key(collection: &Value) -> String {
+pub(crate) fn collection_key(collection: &Value) -> String {
     collection["asset_id"]
         .as_str()
         .map_or_else(|| now_ms().to_string(), String::from)

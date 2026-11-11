@@ -605,7 +605,11 @@ version.** Sources: regular files on this computer, at most 256 MB each
 
 **The rule.** `item-actions.ts` gains **`attach`** (a `SharedAction`), read
 from `here.paths` as `copyOut` is: the target's `can_attach` (F13) and every
-source a local regular file (`isLocalRegularFile`), with the toasts below.
+source a local regular file, with the toasts below. (As built: the
+clipboard holds `{ paths, dirs }` and no link facts, so the rule takes
+every source on this computer that isn't one of `dirs`, `locations.ts`'
+`attachRefusal`; the backend's plan refuses anything but a regular file,
+links followed, with the same words.)
 Paste Into Asset and the drop both call `refuse("attach", hereFor(…))`, and
 `tests/item-actions.test.ts` gains its cells.
 
@@ -614,10 +618,19 @@ Refused with one toast, before anything starts: Cut or a forced-move drag
 shares or SSH servers (*Only files on this computer can be added to an
 asset.*), a file with no extension or one that isn't `[a-z0-9]{1,16}`
 (*“README” has no file type to record.*), a `.gltf` whose buffers or images
-point at files beside it (*“Box.gltf” uses files beside it. Add a .glb
-instead.*, read with `models.ts`' `companionPath`, since only the one file
-would be stored), and a file over 256 MB (*“Print.gcode” is larger than
-256 MB.*). Room is checked **after** the ids are settled (below).
+name anything but a `data:` URI, beside it, above its folder or an absolute
+`file:` URI (*“Box.gltf” uses files beside it. Add a .glb instead.*, read
+with `models.ts`' `gltfExternalUris`, since only the one file would be
+stored; as built, a `.gltf` whose bytes aren't JSON is refused too:
+*“Box.gltf” couldn't be read as glTF. Add a .glb instead.*, while one that
+can't be read at all goes on to the plan, which names why: too large,
+gone or not allowed), and a
+file over 256 MB (*“Print.gcode” is larger than 256 MB.*). As built, an
+asset whose `representations` is there but isn't a list (a newer schema's,
+or a broken write) is refused before anything is asked or uploaded, by the
+plan, an attach and a remove alike, rather than overwritten or dropped:
+*“Box.gltf” has files File Browser can't show.* Room is checked **after**
+the ids are settled (below).
 
 **What each file records**, as `besk attach` records it (Arbesk R6): format
 = the lower-case extension; role = `default_role(format)` (a 3MF is a
@@ -659,6 +672,8 @@ never against what the Files… page shows:
   automatic, with no dialog: neither file was there before.
 - When every file is skipped or refused, **no version is written** and
   nothing is relayed; a toast says *Nothing was added to “Box.gltf”.*
+  (libadwaita shows one toast at a time: as built, a paste's refusals and
+  this sentence share one toast.)
 
 Then room: stored entries + files that add an entry (new ids, Keep Both)
 must be at most 32; Replace adds none. Past it: *An asset holds at most 32
@@ -692,11 +707,15 @@ until the collection manifest is uploaded, as copy-in does
    (`CollectionLocks::take`), read the collection through
    `settled_collection` (so this app's own last write to it, still
    settling, shows first), note the asset's manifest CID, and **let the
-   hold go** before uploading; the manifest itself; every F10 check, ids
+   hold go** before uploading (an asset gone from the collection here
+already: *“Box.gltf” is no longer in the collection.*, its listed name
+taken from its path); the manifest itself; every F10 check, ids
    and room included, against it; and each entry as it will be recorded
    checked by F1's validator with a placeholder CID (`checkEntry`,
    `besk/representations.ts:204`). A failure here uploads nothing.
-2. Upload each file, encoded (F1). A failed or cancelled upload stops
+2. Upload each file, encoded (F1); a failed upload names that file
+   (*Couldn't upload “Box.stl” to IPFS: …*), the manifests' the asset's.
+   A failed or cancelled upload stops
    here: **the asset and the collection are unchanged**; what was uploaded
    stays on IPFS unreferenced, as for copy-in.
 3. Build the next manifest **from the manifest read in step 1, as JSON**:
@@ -708,7 +727,9 @@ until the collection manifest is uploaded, as copy-in does
    `scene.nodes` array) is first wrapped exactly as besk's
    `compositeWrapper` does, field for field (F1's "What Arbesk stores"):
    `type: "asset"`, `name` = the composite's `name` else the listed name,
-   `asset_id`, `version` = `version_of(composite)`, one node `node_id:
+   `asset_id` (as built: with no `name` of its own, the listed name
+   without its extension, where besk takes the name the user typed),
+   `version` = `version_of(composite)`, one node `node_id:
    "node_1"` with the identity `transform_matrix` and `source {cid,
    format, path}` (`path` for gltf and 3mf), the format from
    `compose::format_of` (glTF, or 3MF for `composite-3mf`, as
@@ -731,9 +752,12 @@ until the collection manifest is uploaded, as copy-in does
 **A conflict** is retried once by itself, from the new tip: steps 1, 3 and
 4 again, reusing the file CIDs step 2 uploaded (content-addressed: the same
 bytes have the same CID, so nothing is uploaded twice), with
-`derived_from` recomputed from the new tip and the ids settled again (a
-new clash with a valid entry asks again; one with an unparseable entry is
-refused). It keeps whatever the other save changed. A second conflict stops
+`derived_from` recomputed from the new tip and the ids settled again (one
+clashing with an unparseable entry is refused). As built, a new clash with
+a valid entry is not asked again: a command can't ask mid-write, so a clash
+nobody answered is Keep Both, which overwrites nothing, and Replace
+replaces only while the entry still holds the file the user agreed to
+replace (the plan's CID), else Keep Both too. It keeps whatever the other save changed. A second conflict stops
 with *“Box.gltf” changed while the files were being added. Nothing was
 changed; try again.* (the `CONFLICT` of `catalog.ts:184`). The asset's model
 and every other representation are never dropped by an attach: a test
@@ -757,17 +781,27 @@ returns the `arbesk_detach` promise from `onResponse`, Cancel stays live
 is shown in the dialog in words, as AGENTS.md asks of a dialog whose
 response waits on the backend. It writes the next version without that
 entry, matched by stored id (`withoutRepresentation`: the key dropped when
-the list empties), with F11's steps 1, 3 and 4 (nothing to upload; the
+the list empties), and only while that entry still holds the file the row
+showed (the CID its path is pinned to, F4), on the first read and on a
+conflict's retry alike: an entry gone is *This file is no longer in the
+asset.*, one holding another file (or one File Browser can't show, or
+an id such an entry also holds, beside the file shown, since every entry
+of the id goes) is
+*This file was replaced in the asset since it was shown. Nothing was
+removed.*, as Replace replaces only the file the user agreed to; with F11's steps 1, 3 and 4 (nothing to upload; the
 same hold, settle and `remember`). Files derived from the removed one
 become out of date, which the Files… dialog shows when it is redrawn. The
 model can't be removed. Removing needs the session (*Sign in to Arbesk
-again to remove files from it.*).
+again to remove files from it.*, which marks the account as needing a
+sign-in, as an attach does).
 
 **F13. Capabilities: `can_attach`.** `places::Operation` gains `Attach`;
 `providers::capability_table` derives `can_attach` from it as it derives
 `can_copy_in` (`providers.rs:168-190`): true only for the `arbesk-asset`
 row. Every other row refuses it with its own read-only or local-only
-words; an Arbesk account, collection or file with *Add files to an asset.*.
+words; an Arbesk account, collection or file with *Add files to an asset.*
+(as built, `places::ADD_TO_AN_ASSET`), and so does a folder on this
+computer, which has no read-only or local-only words of its own.
 The column is added to `tests/capabilities.json`, `capabilities.ts`'
 `PlaceCapabilities` and built-in table, and the mock's answer. The
 frontend's `attach` rule (F10) reads it.

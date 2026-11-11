@@ -1,14 +1,15 @@
 // The dialogs that show an Arbesk asset's other files: the Properties
-// dialog's Files… page (spec F7: each row's Open With… and Copy, F8 and
-// F9; Remove… comes with adding files), the choice of which file an
-// application opens (F8) and of which files a copy takes out (F9). Built
+// dialog's Files… page (spec F7: each row's Open With…, Copy and Remove…,
+// F8, F9 and F12), the choice of which file an application opens (F8), of
+// which files a copy takes out (F9), and adding files and removing one
+// (F10, F12: the confirmations and the id clash). Built
 // with ui.ts' openDialog and openMenu; the words and rules come from
 // representations.ts.
 
 import type { Entry, RepresentationInfo } from "./api";
 import { entryIcon, sym } from "./icons";
 import { defaultChoice, fileSubtitle, formatRowLabel, formatsAcross, staleReason, type AssetFiles, type CopyChoice, type FileChoice } from "./representations";
-import { openDialog, openMenu, type DialogHandle } from "./ui";
+import { applyToAllRow, openDialog, openMenu, type DialogHandle } from "./ui";
 
 /** A row of the boxed list: the file kind's icon, a title, a subtitle and,
  *  when out of date, its tag. Text goes in with textContent only. A
@@ -52,13 +53,16 @@ function choiceParts(asset: Entry, choice: FileChoice, files: readonly Represent
   return [iconEntry(rep.name), rep.name, fileSubtitle(rep), rep.stale ? staleReason(rep, files) : null];
 }
 
-/** What the Files… page's rows do: Open With… and Copy, for the model and each file. */
+/** What the Files… page's rows do: Open With… and Copy, for the model and
+ *  each file; Remove…, for each file. */
 export interface FilesActions {
   openWith(choice: FileChoice): void;
   copy(choice: FileChoice): void;
+  remove?(rep: RepresentationInfo): void;
 }
 
-/** A row's menu button (`view-more`), opening Open With… and Copy. */
+/** A row's menu button (`view-more`), opening Open With…, Copy and, for a
+ *  file, Remove…. */
 function rowMenu(name: string, choice: FileChoice, actions: FilesActions): HTMLButtonElement {
   const button = document.createElement("button");
   button.className = "flat-btn files-row-menu";
@@ -69,33 +73,149 @@ function rowMenu(name: string, choice: FileChoice, actions: FilesActions): HTMLB
     openMenu(button, [
       { label: "Open With…", action: () => actions.openWith(choice) },
       { label: "Copy", action: () => actions.copy(choice) },
+      ...(choice.kind === "file" && actions.remove
+        ? [{ separator: true } as const, { label: "Remove…", action: () => actions.remove!(choice.rep) }]
+        : []),
     ])
   );
   return button;
 }
 
+/** An open Files… page: its dialog, and how to draw it again from the
+ *  asset's files after a write (spec F11). */
+export interface FilesPage {
+  dialog: DialogHandle;
+  redraw(files: readonly RepresentationInfo[]): void;
+}
+
 /** Files of “Box.gltf”: the model first, then each other file in stored
  *  order with its subtitle and, when out of date, a tag saying why; each
- *  row's menu offers Open With… and Copy. */
-export function showFilesDialog(asset: Entry, files: readonly RepresentationInfo[], actions: FilesActions): DialogHandle {
+ *  row's menu offers Open With…, Copy and, for a file, Remove…. A dim line
+ *  below says how to add files. */
+export function showFilesDialog(asset: Entry, files: readonly RepresentationInfo[], actions: FilesActions): FilesPage {
   const extra = document.createElement("div");
   extra.className = "files-page";
   const list = boxedList("Files");
-  const choices: FileChoice[] = [{ kind: "model" }, ...files.map((rep): FileChoice => ({ kind: "file", rep }))];
-  for (const choice of choices) {
-    const [icon, title, subtitle, staleWhy] = choiceParts(asset, choice, files);
-    const row = fileRow(icon, title, subtitle, staleWhy);
-    row.appendChild(rowMenu(title, choice, actions));
-    list.appendChild(row);
-  }
-  extra.appendChild(list);
-  return openDialog({
+  const fill = (shown: readonly RepresentationInfo[]) => {
+    const choices: FileChoice[] = [{ kind: "model" }, ...shown.map((rep): FileChoice => ({ kind: "file", rep }))];
+    list.replaceChildren(
+      ...choices.map((choice) => {
+        const [icon, title, subtitle, staleWhy] = choiceParts(asset, choice, shown);
+        const row = fileRow(icon, title, subtitle, staleWhy);
+        row.appendChild(rowMenu(title, choice, actions));
+        return row;
+      })
+    );
+  };
+  fill(files);
+  const hint = document.createElement("p");
+  hint.className = "files-hint";
+  hint.textContent = "Paste or drop files onto the asset to add them.";
+  extra.append(list, hint);
+  const dialog = openDialog({
     heading: `Files of “${asset.name}”`,
     className: "files-dialog",
     extra,
     responses: [{ id: "close", label: "Close" }],
     defaultResponse: "close",
     closeResponse: "close",
+  });
+  return { dialog, redraw: (shown) => list.isConnected && fill(shown) };
+}
+
+/** Remove “Bracket.gcode” From “Box.gltf”? (spec F12): Cancel is the
+ *  default; Remove runs `remove` in the dialog's busy mode, Cancel staying
+ *  live (`cancel` stops the write while it can) and a failure shown in the
+ *  dialog in words. */
+export function confirmRemoveFile(assetName: string, rep: RepresentationInfo, remove: () => Promise<unknown>, cancel: () => void): DialogHandle {
+  const status = document.createElement("div");
+  status.className = "field-message error";
+  status.setAttribute("role", "status");
+  let dialog: DialogHandle | undefined = undefined;
+  dialog = openDialog({
+    heading: `Remove “${rep.name}” From “${assetName}”?`,
+    body: "Arbesk keeps it in the asset's earlier versions.",
+    extra: status,
+    responses: [
+      { id: "cancel", label: "Cancel" },
+      { id: "remove", label: "Remove", style: "destructive" },
+    ],
+    defaultResponse: "cancel",
+    closeResponse: "cancel",
+    busy: { liveWhileBusy: ["cancel"], status },
+    onResponse: (id) => {
+      if (id === "remove") {
+        dialog?.setStatus("Removing…");
+        return remove().then(() => undefined);
+      }
+      if (dialog?.busy) cancel();
+    },
+  });
+  return dialog;
+}
+
+/** A paragraph of a dialog's text. */
+function paragraph(text: string): HTMLElement {
+  const p = document.createElement("p");
+  p.className = "dialog-text";
+  p.textContent = text;
+  return p;
+}
+
+/** Add to “Box.gltf”? (spec F10), asked before every paste or drop onto an
+ *  asset: the files go public; a source file can hold more than the model
+ *  (Arbesk R7), said of each. Cancel is the default. */
+export function confirmAttach(assetName: string, sources: readonly string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    const extra = document.createElement("div");
+    extra.className = "dialog-paragraphs";
+    for (const name of sources) {
+      extra.appendChild(paragraph(`“${name}” is a source file. It can hold more than the model, such as other scenes and embedded images.`));
+    }
+    openDialog({
+      heading: `Add to “${assetName}”?`,
+      body: "Files in Arbesk are public: anyone with their address can download them, and they can't be removed from IPFS.",
+      extra: sources.length ? extra : undefined,
+      responses: [
+        { id: "cancel", label: "Cancel" },
+        { id: "add", label: "Add", style: "suggested" },
+      ],
+      defaultResponse: "cancel",
+      closeResponse: "cancel",
+      onResponse: (id) => resolve(id === "add"),
+    });
+  });
+}
+
+/** What was answered for a file whose id the asset already has. */
+export type ClashChoice = "replace" | "skip" | "keep_both";
+
+/** Replace “Bracket.stl” in “Box.gltf”? (spec F10): the file the asset
+ *  has, with its subtitle, and the new one's name; Skip, Keep Both
+ *  (Enter) and Replace, and Apply this action to all when `remaining`
+ *  more clash. Null on Escape, which stops the paste. */
+export function askAttachClash(assetName: string, existing: RepresentationInfo, newName: string, remaining: number): Promise<{ choice: ClashChoice; all: boolean } | null> {
+  return new Promise((resolve) => {
+    const extra = document.createElement("div");
+    extra.className = "dialog-paragraphs";
+    extra.appendChild(paragraph(`The new file is “${newName}”.`));
+    let all = false;
+    const check = applyToAllRow(remaining, (ticked) => (all = ticked));
+    if (check) extra.appendChild(check);
+    openDialog({
+      heading: `Replace “${existing.name}” in “${assetName}”?`,
+      body: fileSubtitle(existing),
+      extra,
+      responses: [
+        { id: "skip", label: "Skip" },
+        { id: "keep_both", label: "Keep Both" },
+        { id: "replace", label: "Replace", style: "destructive" },
+      ],
+      // Enter keeps both: nothing is replaced by accident.
+      defaultResponse: "keep_both",
+      closeResponse: "cancel",
+      onResponse: (id) => resolve(id === "cancel" ? null : { choice: id as ClashChoice, all }),
+    });
   });
 }
 

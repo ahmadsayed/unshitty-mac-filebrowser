@@ -77,7 +77,7 @@ test("an asset shows the thumbnail it was saved with, and one saved without keep
 test("nothing in Arbesk can be written, renamed or cut", async () => {
   await click(row("Box.gltf"));
   await rightClick(row("Box.gltf"));
-  expect(menuLabels()).toEqual(["Open", "Open With…", "Copy", "Properties"]);
+  expect(menuLabels()).toEqual(["Open", "Open With…", "Copy", "Paste Into Asset", "Properties"]);
   await closeOverlays();
 
   await click(row("Box.gltf"));

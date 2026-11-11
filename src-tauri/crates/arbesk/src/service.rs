@@ -894,7 +894,7 @@ impl<'a> Reader<'a> {
         self.name_of(&manifest, asset_id, cid)
     }
 
-    fn name_of(&self, manifest: &Value, asset_id: &str, cid: &str) -> Result<String, String> {
+    pub(crate) fn name_of(&self, manifest: &Value, asset_id: &str, cid: &str) -> Result<String, String> {
         let ext = if is_child_ref(manifest) {
             Some("gltf")
         } else {
@@ -911,7 +911,7 @@ impl<'a> Reader<'a> {
     }
 
     /// The CID and manifest of asset `asset_id` in collection `token_id`.
-    fn asset_manifest(&self, token_id: &str, asset_id: &str) -> Result<(String, Value), String> {
+    pub(crate) fn asset_manifest(&self, token_id: &str, asset_id: &str) -> Result<(String, Value), String> {
         let collection = self.collection_manifest(token_id)?;
         let cid = collection["assets"][asset_id]
             .as_str()

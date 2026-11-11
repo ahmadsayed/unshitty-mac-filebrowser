@@ -3,6 +3,7 @@
 import { expect, test, vi } from "vitest";
 import { Channel, fileShareMock, invoke, nativeIconMock, searchMock, setMockDriveEmail } from "../dev/mock-tauri/core";
 import { installFakeCanvas } from "./app";
+import { arbeskFilePin } from "../src/paths";
 
 const HOME = "/Users/me";
 
@@ -1706,5 +1707,91 @@ test("Arbesk: an asset's other files: the listing's summary, the list per save, 
   await invoke("copy_entry", { from: lamp, to: `${root}/1~Shapes/~Box.gltf`, overwrite: true });
   const replaced = await invoke<Row[]>("list_dir", { path: `${root}/1~Shapes`, showHidden: false });
   expect(replaced[0].representations).toEqual({ count: 1, stale: 1, formats: ["stl"] });
+  await invoke("arbesk_disconnect", { account: account.id });
+});
+
+test("Arbesk: adding files to an asset and removing them: arbesk_attach_plan, arbesk_attach, arbesk_detach (spec F10–F13)", async () => {
+  const core = await import("../dev/mock-tauri/core");
+  const root = `arbesk://${core.ARBESK_MOCK_ADDRESS}`;
+  const start = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  const account = await invoke<{ id: string }>("arbesk_connect_finish", { flowId: start.flow_id });
+  const hooks = (globalThis as unknown as { __mockArbesk: {
+    addAsset(token: string, id: string, name: string, files: unknown[], unreadable?: unknown[]): void;
+    conflictNext(): void; failUploadNext(): void; expireOnce(): void;
+  } }).__mockArbesk;
+  hooks.addAsset("2", "att", "Hook", [{ id: "stl", format: "stl", name: "Hook.stl", bytes: 10 }], [{ id: "plan", role: "someday" }]);
+  const asset = `${root}/2~Untitled%20Collection/att~Hook.gltf`;
+  const local = async (name: string) => {
+    await invoke("copy_entry", { from: `${HOME}/Desktop/todo.txt`, to: `${HOME}/${name}`, overwrite: false });
+    return `${HOME}/${name}`;
+  };
+  const [stl, gcode, blend, plan] = [await local("Hook.stl"), await local("Hook.gcode"), await local("Hook.blend"), await local("Hook.plan")];
+  type Planned = { id: string; role: string; format: string; clash: { kind: string; cid?: string } | null };
+  const planned = await invoke<Planned[]>("arbesk_attach_plan", { path: asset, files: [stl, gcode, blend, plan] });
+  expect(planned.map((file) => [file.id, file.role, file.clash?.kind ?? null])).toEqual([
+    ["stl", "mesh", "valid"], ["gcode", "machine", null], ["source", "source", null], ["plan", "other", "unreadable"],
+  ]);
+  await expect(invoke("arbesk_attach_plan", { path: asset, files: [`${HOME}/Desktop`] })).rejects.toBe("Only files on this computer can be added to an asset.");
+  await expect(invoke("arbesk_attach_plan", { path: asset, files: [await local("README")] })).rejects.toBe("“README” has no file type to record.");
+
+  type Attached = { files: Array<{ id: string; stale: boolean; path: string }>; representations: { count: number } | null; refused: string[] };
+  const listed = async () => (await invoke<Array<{ name: string; representations?: { count: number } }>>("list_dir", { path: `${root}/2~Untitled%20Collection`, showHidden: false })).find((row) => row.name === "Hook.gltf")!;
+  // One version for the paste: Keep Both for the clash nobody answered, the unreadable id refused.
+  const files = (paths: string[], choice?: unknown) => paths.map((path) => ({ path, choice }));
+  const added = await invoke<Attached>("arbesk_attach", { path: asset, files: files([stl, gcode, plan]), op: "" });
+  expect(added.files.map((file) => file.id)).toEqual(["stl", "stl-2", "gcode"]);
+  expect(added.refused).toEqual(["This asset already has a file “plan” that File Browser can't show."]);
+  expect(added.representations?.count).toBe(3);
+  expect((await listed()).representations?.count).toBe(3);
+  // Made from the model the attach kept: not out of date.
+  expect(added.files.every((file) => !file.stale)).toBe(true);
+  // Replace swaps in place; a stale agreement keeps both; Skip of everything adds nothing.
+  const cid = planned[0].clash!.cid;
+  expect((await invoke<Attached>("arbesk_attach", { path: asset, files: files([stl], { kind: "replace", cid }), op: "" })).files.map((f) => f.id)).toEqual(["stl", "stl-2", "gcode"]);
+  expect((await invoke<Attached>("arbesk_attach", { path: asset, files: files([stl], { kind: "replace", cid }), op: "" })).files.map((f) => f.id)).toEqual(["stl", "stl-2", "gcode", "stl-3"]);
+  await expect(invoke("arbesk_attach", { path: asset, files: files([stl], { kind: "skip" }), op: "" })).rejects.toBe("Nothing was added to “Hook.gltf”.");
+  // Another save twice, a failed upload, a lost session: nothing changes.
+  hooks.conflictNext();
+  await expect(invoke("arbesk_attach", { path: asset, files: files([blend]), op: "" })).rejects.toBe("“Hook.gltf” changed while the files were being added. Nothing was changed; try again.");
+  hooks.failUploadNext();
+  // The failed upload names the file going up, not the asset.
+  await expect(invoke("arbesk_attach", { path: asset, files: files([blend]), op: "" })).rejects.toBe("Couldn't upload “Hook.blend” to IPFS: The server answered 500.");
+  hooks.expireOnce();
+  await expect(invoke("arbesk_attach", { path: asset, files: files([blend]), op: "" })).rejects.toBe("Sign in to Arbesk again to add files to it.");
+  await expect(invoke("arbesk_detach", { path: asset, id: "stl", cid: "x", op: "" })).rejects.toBe("Sign in to Arbesk again to remove files from it.");
+  await invoke("arbesk_connect_finish", { flowId: (await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" })).flow_id });
+  expect((await listed()).representations?.count).toBe(4);
+
+  // Remove: a new version without the entry, only while it holds the file
+  // the row showed (its path's pin); gone once, refused after; the list
+  // goes when it empties.
+  const shown = await invoke<Attached["files"]>("arbesk_representations", { path: asset, version: null });
+  const pin = (id: string, list = shown) => arbeskFilePin(list.find((file) => file.id === id)!.path)!;
+  await expect(invoke("arbesk_detach", { path: asset, id: "stl-2", cid: pin("stl"), op: "" })).rejects.toBe("This file was replaced in the asset since it was shown. Nothing was removed.");
+  const removed = await invoke<Attached>("arbesk_detach", { path: asset, id: "stl-2", cid: pin("stl-2"), op: "" });
+  expect(removed.files.map((file) => file.id)).toEqual(["stl", "gcode", "stl-3"]);
+  await expect(invoke("arbesk_detach", { path: asset, id: "stl-2", cid: pin("stl-2"), op: "" })).rejects.toBe("This file is no longer in the asset.");
+  hooks.conflictNext();
+  await expect(invoke("arbesk_detach", { path: asset, id: "stl", cid: pin("stl"), op: "" })).rejects.toBe("“Hook.gltf” changed while the file was being removed. Nothing was changed; try again.");
+  for (const id of ["stl", "gcode", "stl-3"]) await invoke("arbesk_detach", { path: asset, id, cid: pin(id), op: "" });
+  // An entry File Browser can't show is never removed from here.
+  await expect(invoke("arbesk_detach", { path: asset, id: "plan", cid: "", op: "" })).rejects.toBe("This file was replaced in the asset since it was shown. Nothing was removed.");
+  // Nor beside the file shown: the remove would drop the entry nobody saw.
+  hooks.addAsset("2", "twin", "Twin", [{ id: "stl", format: "stl", name: "Twin.stl", bytes: 10 }], [{ id: "stl", role: "someday" }]);
+  const twin = `${root}/2~Untitled%20Collection/twin~Twin.gltf`;
+  const twinFiles = await invoke<Attached["files"]>("arbesk_representations", { path: twin, version: null });
+  await expect(invoke("arbesk_detach", { path: twin, id: "stl", cid: pin("stl", twinFiles), op: "" })).rejects.toBe("This file was replaced in the asset since it was shown. Nothing was removed.");
+  expect((await invoke<Attached["files"]>("arbesk_representations", { path: twin, version: null })).map((file) => file.id)).toEqual(["stl"]);
+  hooks.addAsset("2", "solo", "Solo", [{ id: "stl", format: "stl", name: "Solo.stl", bytes: 10 }]);
+  const solo = `${root}/2~Untitled%20Collection/solo~Solo.gltf`;
+  const soloFiles = await invoke<Attached["files"]>("arbesk_representations", { path: solo, version: null });
+  const last = await invoke<Attached>("arbesk_detach", { path: solo, id: "stl", cid: pin("stl", soloFiles), op: "" });
+  expect(last).toEqual({ files: [], representations: null, refused: [] });
+  const soloRow = (await invoke<Array<{ name: string; representations?: unknown }>>("list_dir", { path: `${root}/2~Untitled%20Collection`, showHidden: false })).find((row) => row.name === "Solo.gltf")!;
+  expect(soloRow.representations).toBeUndefined();
+
+  // Only an asset takes files.
+  const table = await invoke<Record<string, { can_attach: boolean }>>("capabilities", {});
+  expect(Object.entries(table).filter(([, row]) => row.can_attach).map(([kind]) => kind)).toEqual(["arbesk-asset"]);
   await invoke("arbesk_disconnect", { account: account.id });
 });

@@ -33,7 +33,10 @@
 // arbesk-files: its Files… page; arbesk-files-menu: that page with the
 // first file's menu open; arbesk-open-which: Open With… PrusaSlicer on
 // --item, asking which file; arbesk-copy-files: --item copied and pasted
-// in the path, asking which files). Uses ?demo (no
+// in the path, asking which files; arbesk-paste-menu: --item's menu with a
+// local file copied; arbesk-attach-confirm, arbesk-attach-clash: bracket.stl
+// pasted into --item or Box.gltf, asking; arbesk-attach-done: added, in the
+// grid; arbesk-remove: Remove… on the Files… page). Uses ?demo (no
 // test-only folders). The page's clock is fixed, so the same scene always
 // gives the same image.
 import { createRequire } from "node:module";
@@ -247,6 +250,40 @@ const SCENES = {
     await page.keyboard.press(`${MOD}+v`);
     await page.waitForSelector(".files-dialog .choice-row");
   },
+  // An asset's menu with a local file copied: Paste Into Asset (--item, default Box.gltf).
+  "arbesk-paste-menu": async (page) => {
+    await copyLocalModel(page);
+    await openMockArbeskCollection(page);
+    await page.locator("#view .item").filter({ hasText: option("--item", "Box.gltf") }).click({ button: "right" });
+    await page.waitForSelector(".popover .menu-item");
+  },
+  // bracket.stl pasted into --item (default Box.3mf): Add to “Box.3mf”?
+  "arbesk-attach-confirm": async (page) => {
+    await pasteIntoAsset(page, option("--item", "Box.3mf"));
+    await page.waitForSelector(".dialog-heading:has-text('Add to')");
+  },
+  // bracket.stl pasted into Box.gltf, which has an STL: Replace “Box.stl” in “Box.gltf”?
+  "arbesk-attach-clash": async (page) => {
+    await pasteIntoAsset(page, "Box.gltf");
+    await page.waitForSelector(".dialog-heading:has-text('Replace')");
+  },
+  // bracket.stl added to --item (default Box.3mf), in the grid: its emblem.
+  "arbesk-attach-done": async (page) => {
+    await pasteIntoAsset(page, option("--item", "Box.3mf"));
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    await page.waitForSelector("#view .item:has-text('Box.3mf') .emblem-files");
+    await page.keyboard.press(`${MOD}+2`);
+    await page.waitForTimeout(800);
+  },
+  // Remove… on the Files… page's second row: Remove “Bracket.blend” From “Bracket.gltf”?
+  "arbesk-remove": async (page) => {
+    await openArbeskProperties(page);
+    await page.getByRole("button", { name: "Files…", exact: true }).click();
+    await page.waitForSelector(".files-dialog .files-row");
+    await page.locator(".files-dialog .files-row-menu").nth(1).click();
+    await page.getByRole("menuitem", { name: "Remove…", exact: true }).click();
+    await page.waitForSelector(".dialog-heading:has-text('Remove')");
+  },
   // Space on an Arbesk asset (--item, default Box.3mf).
   "arbesk-preview": async (page) => {
     await openMockArbeskCollection(page);
@@ -281,6 +318,23 @@ async function openArbeskProperties(page) {
   await page.getByRole("menuitem", { name: "Properties", exact: true }).click();
   await page.waitForSelector(".properties-dialog .prop-row");
   await page.waitForTimeout(200);
+}
+
+/** Copy the mock's Prints/bracket.stl. */
+async function copyLocalModel(page) {
+  await page.locator(".sidebar-row", { hasText: "Documents" }).click();
+  await page.locator("#view .item", { hasText: "Projects" }).dblclick();
+  await page.locator("#view .item", { hasText: "Prints" }).dblclick();
+  await page.locator("#view .item", { hasText: "bracket.stl" }).first().click();
+  await page.keyboard.press(`${MOD}+c`);
+}
+
+/** bracket.stl copied, then Paste Into Asset on `name` in Shapes. */
+async function pasteIntoAsset(page, name) {
+  await copyLocalModel(page);
+  await openMockArbeskCollection(page);
+  await page.locator("#view .item").filter({ hasText: name }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Paste Into Asset", exact: true }).click();
 }
 
 /** Connect the mock's Arbesk account, then open its Shapes collection as a list. */

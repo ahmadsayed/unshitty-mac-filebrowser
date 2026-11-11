@@ -165,6 +165,15 @@ pub(crate) fn file_parts(path: &str) -> Option<(&str, String)> {
     Some((asset, percent_decode_str(name).decode_utf8().ok()?.into_owned()))
 }
 
+/// The name the last segment of `path` shows (decoded), if it has one: an
+/// asset's listed name, before its manifest is read.
+pub(crate) fn shown_name(path: &str) -> Option<String> {
+    let segment = path.trim_end_matches('/').rsplit('/').next()?;
+    let (_, name) = segment.split_once('~')?;
+    let name = percent_decode_str(name).decode_utf8().ok()?;
+    (!name.is_empty()).then(|| name.into_owned())
+}
+
 /// Where a copy into Arbesk goes: the collection and the listed name,
 /// from `arbesk://<address>/<token>~<name>/~<encoded name>`.
 pub fn parse_target(path: &str) -> Result<(String, String, String), String> {

@@ -13,6 +13,7 @@
 //! paths.
 
 mod accounts;
+mod attach;
 mod cache;
 mod callback;
 mod chain;
@@ -51,6 +52,7 @@ use crate::session::{Session, SessionStore};
 use crate::signin::{CALLBACK_TIMEOUT, Flow, now_ms};
 
 pub use accounts::Account;
+pub use attach::{Adding, Attached, Choice, Clash, PlannedFile};
 pub use location::{ArbeskPath as Location, is_arbesk, is_folder, parse, parse_target};
 pub use progress::{CANCELLED, Phase, Progress, Snapshot};
 pub use representations::RepresentationInfo;
@@ -433,6 +435,58 @@ impl Client {
             self.forget_session(&account);
         }
         added
+    }
+
+    /// What adding the local `files` to the asset at `path` would do
+    /// (`attach::plan`): each file as it would be recorded, and its clash.
+    pub fn plan_attach(&self, path: &str, files: &[String]) -> Result<Vec<PlannedFile>, String> {
+        let (http, site) = self.reach(path)?;
+        attach::plan(http, &site, path, files, &self.cache_dir)
+    }
+
+    /// Add the local files `adding` to the asset at `path` as one new
+    /// version (`attach::attach`, spec F10, F11). Arbesk's 401 ends the
+    /// session.
+    pub fn attach(&self, path: &str, adding: &[Adding], progress: &Progress) -> Result<Attached, String> {
+        self.writing(path, attach::SIGN_IN, progress, |writer| attach::attach(writer, path, adding))
+    }
+
+    /// Remove the file `id` from the asset at `path` as one new version,
+    /// only while it is still the file `cid` the user saw
+    /// (`attach::detach`, spec F12). Arbesk's 401 ends the session.
+    pub fn detach(&self, path: &str, id: &str, cid: &str, progress: &Progress) -> Result<Attached, String> {
+        self.writing(path, attach::SIGN_IN_REMOVE, progress, |writer| attach::detach(writer, path, id, cid))
+    }
+
+    /// `work` as the account `path` belongs to, signed in: a missing
+    /// session or Arbesk's 401 says `sign_in` and ends the session.
+    fn writing<T>(
+        &self,
+        path: &str,
+        sign_in: &str,
+        progress: &Progress,
+        work: impl FnOnce(&attach::Writer) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let address = parse(path)?.address().to_string();
+        let site = self.site_for(&address)?;
+        let account = location::account_path(&address);
+        let session = self.session_for(&account).map_err(|_| sign_in.to_string())?;
+        let writer = attach::Writer {
+            http: self.http()?,
+            site: &site,
+            session: &session,
+            cache_dir: &self.cache_dir,
+            locks: &self.locks,
+            progress,
+        };
+        let done = work(&writer).map_err(|error| match error.as_str() {
+            write::SIGN_IN => sign_in.to_string(),
+            _ => error,
+        });
+        if done.as_ref().err().is_some_and(|error| error == sign_in) {
+            self.forget_session(&account);
+        }
+        done
     }
 
     /// Create (mint) the named collection of the account `path` belongs to,

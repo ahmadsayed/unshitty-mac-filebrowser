@@ -1342,6 +1342,11 @@ input::selection { background: color-mix(in srgb, var(--accent-bg) 25%, transpar
   text-align: left;
 }
 
+/* More paragraphs of a dialog's text, after its body (adding files to an
+   Arbesk asset): centred as the body is. */
+.dialog-extra.dialog-paragraphs { text-align: center; }
+.dialog-paragraphs .dialog-text + .dialog-text { margin-top: 10px; }
+
 .dialog-links {
   display: flex;
   justify-content: center;
@@ -1555,6 +1560,8 @@ kbd {
 .files-row .action-row-subtitle { white-space: normal; }
 /* A Files… row's menu button (Open With…, Copy). */
 .files-row-menu { margin-right: -6px; }
+/* Below the Files… page's list: how files are added (spec F10). */
+.files-hint { margin: 10px 0 0; font-size: 9pt; text-align: center; opacity: var(--dim); }
 /* Which file to open, which files to copy: the whole row picks. */
 .files-row.choice-row:hover { background: var(--hover); }
 .files-row.choice-row:active { background: var(--active); }

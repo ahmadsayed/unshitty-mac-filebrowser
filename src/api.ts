@@ -788,6 +788,54 @@ export async function arbeskExport(path: string, tracked: Tracked): Promise<stri
   return invoke<string>("arbesk_export", { path, ...trackedArgs(tracked) });
 }
 
+/** A file of a paste whose id an asset's entry already has (spec F10):
+ *  one the asset shows (Replace, Skip or Keep Both; `cid` is what Replace
+ *  agrees to replace), or one File Browser can't read (refused, in words). */
+export type AttachClash =
+  | { kind: "valid"; cid: string; existing: RepresentationInfo }
+  | { kind: "unreadable"; message: string };
+
+/** One file of a paste onto an Arbesk asset as it would be recorded. */
+export interface PlannedFile {
+  path: string;
+  name: string;
+  format: string;
+  role: RepresentationInfo["role"];
+  bytes: number;
+  id: string;
+  clash: AttachClash | null;
+}
+
+/** What was answered for a file whose id is taken. */
+export type AttachChoice = { kind: "replace"; cid: string } | { kind: "keep_both" } | { kind: "skip" };
+
+/** What an attach or a remove leaves: the asset's files in its new
+ *  version, its listing summary, and each file refused on the way. */
+export interface Attached {
+  files: RepresentationInfo[];
+  representations: Entry["representations"] | null;
+  refused: string[];
+}
+
+/** What adding the local `files` to the Arbesk asset `path` would do,
+ *  before anything is asked or written (spec F10). */
+export async function arbeskAttachPlan(path: string, files: string[]): Promise<PlannedFile[]> {
+  return invoke<PlannedFile[]>("arbesk_attach_plan", { path, files });
+}
+
+/** Add local files to the Arbesk asset `path` as one new version (spec
+ *  F10, F11), as operation `tracked`. */
+export async function arbeskAttach(path: string, files: Array<{ path: string; choice?: AttachChoice }>, tracked: Tracked): Promise<Attached> {
+  return invoke<Attached>("arbesk_attach", { path, files, ...trackedArgs(tracked) });
+}
+
+/** Remove the file `id` from the Arbesk asset `path` as one new version
+ *  (spec F12), only while it is still the file `cid` the row showed, as
+ *  operation `tracked`. */
+export async function arbeskDetach(path: string, id: string, cid: string, tracked: Tracked): Promise<Attached> {
+  return invoke<Attached>("arbesk_detach", { path, id, cid, ...trackedArgs(tracked) });
+}
+
 export async function previewBytes(path: string, limit: number): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("preview_bytes", { path, limit });
 }

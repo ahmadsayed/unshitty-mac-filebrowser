@@ -148,3 +148,32 @@ test("openLocation: for an item shown away from its folder, never in the Trash",
   expect(allows("openLocation", { ...away, items: ["in-trash"] })).toBe(false);
   expect(allows("openLocation", { kind: "folder", items: ["folder"] })).toBe(false);
 });
+
+test("attach: files on this computer onto an Arbesk asset only, read from its path (spec F10, F13)", () => {
+  const account = "arbesk://0x00000000000000000000000000000000000000ab";
+  const asset = `${account}/1~S/a~B.gltf`;
+  const onto = (dir: string, paths: string[], moving = false): Here => ({ kind: "arbesk", items: [], dir, paths, moving });
+  // prettier-ignore
+  const rows: Array<[string, string | null]> = [
+    [account, "Add files to an asset."],
+    [`${account}/1~S`, "Add files to an asset."],
+    [asset, null],
+    [`${asset}/stl~B.stl`, "Add files to an asset."],
+    ["arbesk://", "Add files to an asset."],
+    ["/Users/me/Box.gltf", ""],
+    ["gdrive://acct/root~x", ""],
+  ];
+  for (const [dir, verdict] of rows) expect(refusal("attach", onto(dir, ["/Users/me/Box.stl"])), dir).toBe(verdict);
+  // Cut or a forced-move drag first, then where the sources are and what they are.
+  expect(refusal("attach", onto(asset, ["/Users/me/Box.stl"], true))).toBe("Arbesk is read only.");
+  for (const source of ["gdrive://acct/f~Box.stl", "share://r1/Box.stl", "sftp://me@host/Box.stl", `${asset}/stl~B.stl`]) {
+    expect(refusal("attach", onto(asset, ["/Users/me/Box.stl", source])), source).toBe("Only files on this computer can be added to an asset.");
+  }
+  expect(refusal("attach", { ...onto(asset, ["/Users/me/Parts.stl"]), dirs: new Set(["/Users/me/Parts.stl"]) })).toBe("Only files on this computer can be added to an asset.");
+  for (const name of ["README", ".gitignore", "Box.Ex_t", "Box.", "Box.abcdefghijklmnopq"]) {
+    expect(refusal("attach", onto(asset, [`/Users/me/${name}`])), name).toBe(`“${name}” has no file type to record.`);
+  }
+  for (const name of ["Box.STL", "Box.gcode", "Box.3mf", "Box.blend", "Box.abcdefghijklmnop"]) {
+    expect(refusal("attach", onto(asset, [`/Users/me/${name}`])), name).toBeNull();
+  }
+});

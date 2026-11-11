@@ -207,6 +207,8 @@ fn local_capabilities(path: &str) -> Capabilities {
             (Operation::Trash, not_local.clone()),
             (Operation::CopyIn, not_local.clone()),
             (Operation::CopyOut, not_local.clone()),
+            // A folder's files keep no other files of their own.
+            (Operation::Attach, Some(places::ADD_TO_AN_ASSET.to_string())),
             (Operation::LocalOnly, not_local),
         ]),
     }
