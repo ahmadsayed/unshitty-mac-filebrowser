@@ -27,6 +27,7 @@ mod location;
 mod merkle;
 mod progress;
 mod provider;
+mod representations;
 mod scene;
 mod service;
 mod session;

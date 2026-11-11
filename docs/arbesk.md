@@ -188,7 +188,10 @@ until it is saved in the Studio.
 A name already taken asks *Replace*, *Skip* or *Keep Both*. Replace saves
 the file as the asset's newest version; the earlier ones stay in its
 history (‹ and › in Space), and the dialog says so. Keep Both adds
-*Name (copy)*.
+*Name (copy)*. The new version keeps the asset's other files (the G-code,
+`.blend` or STL `besk attach` or the Studio added, its `representations`),
+exactly as they were: they now read as made from an earlier model. It is
+numbered as `besk` numbers it, one past the version before.
 
 The progress shows the bytes uploaded, then *Saving to Arbesk…* while
 Arbesk saves the change on the chain, which can take a few minutes.
