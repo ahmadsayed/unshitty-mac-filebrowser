@@ -60,6 +60,23 @@ pub struct Scene {
     pub parts: Vec<Part>,
 }
 
+/// A scene as the preview is handed it: the manifest CID of the save it
+/// was resolved from (the asked version, or the newest save the backend
+/// read), and its parts beside it, `{ "cid": …, "parts": [...] }`.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct SceneAt {
+    pub cid: String,
+    #[serde(flatten)]
+    pub scene: Scene,
+}
+
+impl std::ops::Deref for SceneAt {
+    type Target = Scene;
+    fn deref(&self) -> &Scene {
+        &self.scene
+    }
+}
+
 /// The scenes the preview resolved lately, by path, so each of its parts
 /// is checked against the scene without resolving it again.
 #[derive(Default)]
@@ -79,7 +96,7 @@ impl Scenes {
         scene
     }
 
-    fn get(&self, path: &str) -> Option<Arc<Scene>> {
+    pub(crate) fn get(&self, path: &str) -> Option<Arc<Scene>> {
         let kept = self.0.lock().unwrap_or_else(|e| e.into_inner());
         kept.get(path).cloned()
     }

@@ -56,6 +56,42 @@ manifests to check a version it could match on the first.
 
 **Gain.** Time to first model request: K + 2 serial reads become 3.
 
+**As built.**
+- `arbesk_scene` answers `{ cid, parts }` (`scene::SceneAt`, which derefs to
+  `Scene`): `cid` is the save the scene was resolved from, the version asked
+  for or, without one, the head `open_asset` read (`service::scene_at`).
+  `Client::scene` keeps the scene under that CID only, the key the parts are
+  asked by (a part asked for without a version resolves the newest scene
+  again; the preview never asks so), so a first view takes one of the
+  `KEPT_SCENES` slots, not two.
+- `chain()` became `find_save(read, head, version)`: newest first, stopping
+  at the match, within the newest `MAX_VERSIONS` as `versions` lists them;
+  `scene_at` and `manifest_of` (so `arbesk_representations` and
+  `arbesk_file`) skip it when the version is the head they just read. The
+  same saves are accepted and refused as before. `walk` lost its
+  `read_before` switch: `versions`, its only caller, always reads the save
+  past `MAX_VERSIONS`.
+- `showPreview` hands an Arbesk model to `previewArbeskFirst`: the scene is
+  asked at once (before three.js loads), its `cid` pins the parts and
+  `loadPreviewFiles` (now given a CID), and the parts are fetched by that
+  `cid` only (never by path), and `loadArbeskVersions` draws the
+  control when the walk ends and the scene has answered, at the shown save.
+  The control belongs to the open preview (`previewOpened`), so it still
+  comes if one of the save's files is shown by then.
+- A failed scene (the head can't be read): *No preview available.*, no
+  switcher; the control, if the saves read, at the newest, as before. A
+  shown save the walk doesn't hold (the walk read the head before that save
+  landed, the scene after) makes the saves be read once more, which then
+  hold it; only if they still don't is there no control rather than a
+  wrong *Version N of M*.
+- Mock: `arbesk_scene` answers its `cid`; `__mockArbesk.saveAgain` lands a
+  save from elsewhere; the delay switch for `arbesk_versions` is the
+  existing `__mockCalls.hold`/`release`. Tests:
+  `tests/arbesk-preview-head.test.ts`, the Rust `finding_a_save_*`,
+  `a_version_reads_the_chain_only_as_far_as_itself`,
+  `the_newest_scene_names_its_save` and
+  `the_newest_scene_names_its_save_and_is_kept_by_it`.
+
 ## Phase 2: one limiter for Arbesk reads, and wider parts
 
 **Now.** No single place caps Arbesk gateway reads. Listings run 8

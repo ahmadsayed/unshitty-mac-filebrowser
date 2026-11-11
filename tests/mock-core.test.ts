@@ -1845,3 +1845,26 @@ test("Arbesk: each save's files, what it changed and a file of a save: arbesk_ve
   expect((await keepAt("keep-v2"))[0].path).toBe(saved);
   expect((await keepAt("keep-v3"))[0].path).not.toBe(saved);
 });
+
+test("Arbesk: a scene names the save it was resolved from; a save from elsewhere adds one (performance plan, phase 1)", async () => {
+  const core = await import("../dev/mock-tauri/core");
+  const start = await invoke<{ flow_id: string }>("arbesk_connect_start", { email: "me@example.com" });
+  await invoke("arbesk_connect_finish", { flowId: start.flow_id });
+  const hooks = (globalThis as unknown as { __mockArbesk: { addAsset(token: string, id: string, name: string, files: unknown[]): void; saveAgain(token: string, asset: string): void } }).__mockArbesk;
+  hooks.addAsset("1", "head", "Head", [{ id: "stl", format: "stl", name: "Head.stl", bytes: 10 }]);
+  const head = `arbesk://${core.ARBESK_MOCK_ADDRESS}/1~Shapes/head~Head.gltf`;
+  type Scene = { cid: string; parts: unknown[] };
+  // The newest save without a version, the one asked for with one.
+  expect((await invoke<Scene>("arbesk_scene", { path: head, version: null })).cid).toBe("head-v1");
+  hooks.saveAgain("1", "head");
+  expect((await invoke<{ id: string }[]>("arbesk_versions", { path: head })).map((v) => v.id)).toEqual(["head-v1", "head-v2"]);
+  expect((await invoke<Scene>("arbesk_scene", { path: head, version: null })).cid).toBe("head-v2");
+  expect((await invoke<Scene>("arbesk_scene", { path: head, version: "head-v1" })).cid).toBe("head-v1");
+  // Both saves keep the file; the part of the save asked for is served.
+  for (const version of ["head-v1", "head-v2"]) {
+    expect((await invoke<{ id: string }[]>("arbesk_representations", { path: head, version })).map((r) => r.id)).toEqual(["stl"]);
+  }
+  expect((await invoke<ArrayBuffer>("arbesk_part", { path: head, version: "head-v1", key: "head-src", limit: 1 << 20 })).byteLength).toBeGreaterThan(0);
+  const account = (await invoke<{ id: string }[]>("arbesk_accounts", {}))[0];
+  await invoke("arbesk_disconnect", { account: account.id });
+});

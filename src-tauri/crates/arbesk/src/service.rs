@@ -345,10 +345,11 @@ fn manifest_of(
     let Some(version) = version else {
         return Ok(current);
     };
-    chain(reader, &current.0)
-        .into_iter()
-        .find(|(id, _)| id == version)
-        .ok_or_else(|| NOT_IN_ASSET.into())
+    // The newest save, just read: no walk.
+    if version == current.0 {
+        return Ok(current);
+    }
+    find_save(&|id| reader.gateway.json(id), &current.0, version).ok_or_else(|| NOT_IN_ASSET.into())
 }
 
 /// Why a version (a manifest CID) that isn't one of the asset's saves is refused.
@@ -551,14 +552,33 @@ pub fn scene(
     version: Option<&str>,
     cache_dir: &Path,
 ) -> Result<Scene, String> {
-    let (reader, cid) = open_asset(http, site, path, cache_dir)?;
-    let Some(version) = version else {
-        return Ok(resolve(&cid, &reader));
+    scene_at(http, site, path, version, cache_dir).map(|(_, scene)| scene)
+}
+
+/// [`scene`], and the manifest CID of the save it was resolved from:
+/// `version`, else the asset's newest save as its collection names it now
+/// (one `tokenURI` read and the collection's manifest), which the preview
+/// then pins its parts and files to (performance plan, phase 1). A
+/// `version` equal to that newest save is not looked for in the chain.
+pub fn scene_at(
+    http: &dyn Http,
+    site: &Site,
+    path: &str,
+    version: Option<&str>,
+    cache_dir: &Path,
+) -> Result<(String, Scene), String> {
+    let (reader, head) = open_asset(http, site, path, cache_dir)?;
+    let cid = match version {
+        None => head,
+        Some(version) if version == head => head,
+        Some(version) => {
+            find_save(&|id| reader.gateway.json(id), &head, version)
+                .ok_or(NOT_IN_ASSET)?
+                .0
+        }
     };
-    if !chain(&reader, &cid).iter().any(|(id, _)| id == version) {
-        return Err(NOT_IN_ASSET.into());
-    }
-    Ok(resolve(version, &reader))
+    let resolved = resolve(&cid, &reader);
+    Ok((cid, resolved))
 }
 
 /// How many saves of an asset are read back, as the Studio's `walkManifestChain`.
@@ -581,7 +601,7 @@ pub fn versions(
     cache_dir: &Path,
 ) -> Result<Vec<Version>, String> {
     let (reader, cid) = open_asset(http, site, path, cache_dir)?;
-    let (saves, before) = walk(&reader, &cid, true);
+    let (saves, before) = walk(&reader, &cid);
     let mut prev = match before {
         Before::First => Some(None),
         Before::Read(manifest) => Some(Some(manifest)),
@@ -610,18 +630,38 @@ enum Before {
     /// The save before it, read.
     Read(Value),
     /// A save before it that wasn't read (the walk stopped at a manifest
-    /// it couldn't read, or wasn't asked to read past `MAX_VERSIONS`).
+    /// it couldn't read, or the one past `MAX_VERSIONS` can't be read).
     Unread,
 }
 
-/// The manifests from `cid` back through `prev_asset_manifest_cid`, oldest first.
-fn chain(reader: &Reader, cid: &str) -> Vec<(String, Value)> {
-    walk(reader, cid, false).0
+/// The save `version` among the asset's saves, its newest `head`: the
+/// manifests from `head` back through `prev_asset_manifest_cid`, newest
+/// first, read (by `read`) only until the one that is `version`, within the
+/// newest `MAX_VERSIONS` as [`versions`] lists them; none past a manifest
+/// that can't be read.
+fn find_save(
+    read: &dyn Fn(&str) -> Result<Value, String>,
+    head: &str,
+    version: &str,
+) -> Option<(String, Value)> {
+    let mut next = Some(head.to_string());
+    for _ in 0..MAX_VERSIONS {
+        let id = next.take()?;
+        let manifest = read(&id).ok()?;
+        if id == version {
+            return Some((id, manifest));
+        }
+        next = manifest["prev_asset_manifest_cid"]
+            .as_str()
+            .map(String::from);
+    }
+    None
 }
 
-/// [`chain`], and what came before its oldest save: with `read_before`,
-/// the save past `MAX_VERSIONS` is read too.
-fn walk(reader: &Reader, cid: &str, read_before: bool) -> (Vec<(String, Value)>, Before) {
+/// The manifests from `cid` back through `prev_asset_manifest_cid`, oldest
+/// first, the newest `MAX_VERSIONS`, and what came before the oldest (the
+/// save past `MAX_VERSIONS` is read too, for the oldest's changes).
+fn walk(reader: &Reader, cid: &str) -> (Vec<(String, Value)>, Before) {
     let mut saves = Vec::new();
     let mut next = Some(cid.to_string());
     let before = loop {
@@ -629,9 +669,9 @@ fn walk(reader: &Reader, cid: &str, read_before: bool) -> (Vec<(String, Value)>,
             break Before::First;
         };
         if saves.len() >= MAX_VERSIONS {
-            break match read_before.then(|| reader.gateway.json(&id)) {
-                Some(Ok(manifest)) => Before::Read(manifest),
-                _ => Before::Unread,
+            break match reader.gateway.json(&id) {
+                Ok(manifest) => Before::Read(manifest),
+                Err(_) => Before::Unread,
             };
         }
         let Ok(manifest) = reader.gateway.json(&id) else {
@@ -1987,6 +2027,78 @@ mod tests {
         assert_eq!(keys(Some("bafyH1")), [("bafySrc3mf".to_string(), "3mf")]);
         assert_eq!(keys(None), [("bafySrcGltf".to_string(), "glb")]);
         assert_eq!(keys(Some("bafyH3")), keys(None));
+    }
+
+    /// The chain is read newest first, only as far as the save asked for
+    /// (performance plan, phase 1): every read counted, cached or not.
+    #[test]
+    fn finding_a_save_stops_at_it() {
+        let saves: std::collections::HashMap<&str, Value> = [
+            ("bafyH1", json!({ "timestamp": 1000 })),
+            ("bafyH2", json!({ "timestamp": 2000, "prev_asset_manifest_cid": "bafyH1" })),
+            ("bafyH3", json!({ "timestamp": 3000, "prev_asset_manifest_cid": "bafyH2" })),
+        ]
+        .into_iter()
+        .collect();
+        let reads = std::cell::RefCell::new(Vec::<String>::new());
+        let read = |cid: &str| {
+            reads.borrow_mut().push(cid.to_string());
+            saves.get(cid).cloned().ok_or_else(|| "missing".to_string())
+        };
+        let find = |version: &str| {
+            reads.borrow_mut().clear();
+            let found = find_save(&read, "bafyH3", version).map(|(id, _)| id);
+            (found, reads.borrow().clone())
+        };
+        assert_eq!(find("bafyH3"), (Some("bafyH3".into()), vec!["bafyH3".into()]));
+        assert_eq!(find("bafyH2"), (Some("bafyH2".into()), vec!["bafyH3".into(), "bafyH2".into()]));
+        let all: Vec<String> = ["bafyH3", "bafyH2", "bafyH1"].map(String::from).into();
+        assert_eq!(find("bafyH1"), (Some("bafyH1".into()), all.clone()));
+        // Not a save of the asset: the whole chain, and none.
+        assert_eq!(find("bafyA1"), (None, all));
+    }
+
+    /// No further back than `MAX_VERSIONS` saves, as `versions` lists them.
+    #[test]
+    fn finding_a_save_reads_no_more_than_the_listed_saves() {
+        let reads = std::cell::Cell::new(0);
+        let read = |cid: &str| {
+            reads.set(reads.get() + 1);
+            let n: usize = cid.trim_start_matches("bafyN").parse().unwrap();
+            Ok(json!({ "prev_asset_manifest_cid": format!("bafyN{}", n + 1) }))
+        };
+        assert_eq!(find_save(&read, "bafyN0", &format!("bafyN{}", MAX_VERSIONS - 1)).unwrap().0, format!("bafyN{}", MAX_VERSIONS - 1));
+        reads.set(0);
+        assert!(find_save(&read, "bafyN0", &format!("bafyN{MAX_VERSIONS}")).is_none());
+        assert_eq!(reads.get(), MAX_VERSIONS);
+    }
+
+    /// The scene of the newest save, asked for by its CID, and the files
+    /// of a save, read no older save; an older one reads back to it only.
+    #[test]
+    fn a_version_reads_the_chain_only_as_far_as_itself() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let read = |cid: &str| http.requests().iter().any(|r| r.url.ends_with(&format!("/{cid}")));
+        let (cid, _) = scene_at(&http, &site(), &history(), Some("bafyH3"), cache.path()).unwrap();
+        assert_eq!(cid, "bafyH3");
+        representations(&http, &site(), &history(), Some("bafyH3"), cache.path()).unwrap();
+        assert!(!read("bafyH2") && !read("bafyH1"));
+        let (cid, _) = scene_at(&http, &site(), &history(), Some("bafyH2"), cache.path()).unwrap();
+        assert_eq!(cid, "bafyH2");
+        assert!(read("bafyH2") && !read("bafyH1"));
+    }
+
+    /// Without a version, the scene says which save it was resolved from:
+    /// the newest, as the collection names it.
+    #[test]
+    fn the_newest_scene_names_its_save() {
+        let cache = tempfile::tempdir().unwrap();
+        let http = arbesk(Arc::new(Mutex::new(world())));
+        let (cid, newest) = scene_at(&http, &site(), &history(), None, cache.path()).unwrap();
+        assert_eq!(cid, "bafyH3");
+        assert_eq!(newest, scene(&http, &site(), &history(), Some("bafyH3"), cache.path()).unwrap());
+        assert_eq!(scene_at(&http, &site(), &history(), Some("bafyH1"), cache.path()).unwrap().0, "bafyH1");
     }
 
     #[test]

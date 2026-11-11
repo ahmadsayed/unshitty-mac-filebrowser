@@ -860,18 +860,24 @@ As built (phase 5):
   refused with *This version is not in the asset.*, by the files list and
   the fetch alike, as `scene` refuses it (only cached reads of the chain).
 - The preview loads an asset's scene by the shown save's CID, the current
-  save's too, never by the asset's path: the first view waits for
-  `arbesk_versions` and loads its newest save (the one whose files the
-  switcher lists), and so do the switcher's Model row and the version
-  control stepping back to the current save. If the asset is saved again
-  while the preview is open, the model and the files listed beside it
-  still come from one save. When the saves can't be read, the first view
-  loads the asset by its path, as it is now (and there is no switcher).
+  save's too, never by the asset's path: the first view asks
+  `arbesk_scene(path, null)` at once, which answers the CID of the newest
+  save the backend read (`cid`), and reads the parts and the switcher's
+  files by that CID; the version walk (`arbesk_versions`) runs alongside
+  and draws the version control at that save when it ends (performance
+  plan, phase 1; before it, the first view waited for the walk and loaded
+  its newest save). The switcher's Model row and the version control
+  stepping back to the current save load by CID too. If the asset is saved
+  again while the preview is open, even before the walk ends, the model
+  and the files listed beside it still come from one save, and the newer
+  save shows in the version control. When the newest save can't be read,
+  the first view has no preview (and there is no switcher).
 - The switcher is asked for only when the listing's summary says the
   asset has files now (no request for an asset without), and for every
   version stepped to (an older save may have files the newest dropped).
-  When the asset's saves can't be read, there is no save CID to fetch
-  from, so there is no switcher.
+  The first view's switcher is the scene's save: when the scene can't be
+  read, there is no save CID to fetch from, so there is no switcher.
+  Saves that can't be read leave out only the version control.
 - The menu's model row is titled with the asset's listed name over
   *Model*, as the Files… page's is; the shown row is marked as the
   version menu marks its own. The button is a header menu button

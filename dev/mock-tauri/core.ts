@@ -2134,6 +2134,14 @@ const arbeskSession = { signedIn: true, expireNext: false };
   failUploadNext(): void {
     arbeskWrites.failUploadNext = true;
   },
+  /** Another device saves asset `asset` of collection `token` again,
+   *  changing nothing: one more save, the model and files kept. */
+  saveAgain(token: string, asset: string): void {
+    const found = ARBESK_COLLECTIONS.find((c) => c.token === token)?.assets.find((a) => a.id === asset);
+    if (!found) return;
+    keepEarlierFiles(found);
+    newFilesVersion(found);
+  },
   /** As a save elsewhere would: the file `file` of asset `asset` now holds other bytes (another CID). */
   changeFile(token: string, asset: string, file: string): void {
     const found = ARBESK_COLLECTIONS.find((c) => c.token === token)?.assets.find((a) => a.id === asset);
@@ -2454,7 +2462,8 @@ function arbeskVersionsWithChanges(path: string): Array<{ id: string; timestamp:
 }
 
 /** An asset's scene as the backend answers it, for one save (the newest
- *  when `version` is null): a single model is one part, one copy per save. */
+ *  when `version` is null), with that save's CID: a single model is one
+ *  part, one copy per save. */
 function arbeskScene(path: string, version: string | null = null) {
   const asset = arbeskAsset(path);
   const saves = arbeskVersions(path).map((v) => v.id);
@@ -2463,6 +2472,7 @@ function arbeskScene(path: string, version: string | null = null) {
   const copies = Array.from({ length: save }, (_, i) => ({ x: i * 50 }));
   const parts = asset.scene ?? [{ key: `${asset.id}-src`, format: asset.ext === "3mf" ? "3mf" : "glb", copies }];
   return {
+    cid: saves[save - 1],
     parts: parts.map((part) => ({
       key: part.key,
       format: part.format,

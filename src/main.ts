@@ -21,7 +21,7 @@ import {
   previewBytes, previewText, thumbnail, arbeskScene, arbeskPart, arbeskVersions, listVersions, versionCount, openVersion,
   driveAccounts, driveConnectStart, driveConnectFinish, driveConnectCancel, driveDisconnect,
   arbeskAccounts, arbeskConnectStart, arbeskConnectFinish, arbeskConnectCancel, arbeskDisconnect, arbeskSignedIn, arbeskCreateCollection, arbeskShareCollection,
-  type ArbeskShared, type ArbeskRole,
+  type ArbeskShared, type ArbeskRole, type ArbeskScene,
   driveClientStatus, driveClientSet, driveClientClear,
   openExternal,
   setPermissions,
@@ -4904,9 +4904,15 @@ function previewLoaded(): void {
   previewBody.querySelector(".preview-loading")?.remove();
 }
 
+/** Each preview opened, counted: what belongs to the whole preview (its
+ *  version control) and not only to its content outlives a switch to one
+ *  of the save's files, which is a new `previewSeq`. */
+let previewOpened = 0;
+
 async function showPreview(entry: Entry): Promise<void> {
   if (!previewLayer) return;
   closePreview();
+  previewOpened += 1;
   const seq = previewSeq;
   previewLayer.hidden = false;
   previewName.textContent = entry.name;
@@ -4922,15 +4928,47 @@ async function showPreview(entry: Entry): Promise<void> {
     return;
   }
   previewLoading(entry, seq);
-  const newest = loadPreviewVersions(entry, seq);
-  // An Arbesk asset's first view is the newest save that arbesk_versions
-  // read, by its CID, as its files beside it are: a save made meanwhile
-  // can't put another save's model beside them. Saves that can't be read:
-  // the asset as it is now (and no switcher). Only its scene waits for them.
-  const scene = locationKind(entry.path, trashPath) === "arbesk" && modelFormat(entry.name) !== null;
-  const at: PreviewAt = scene ? { arbeskVersion: (await newest)?.id ?? null } : {};
-  if (previewStale(seq)) return;
-  await previewEntry(entry, seq, fileKind(entry.name), at);
+  if (locationKind(entry.path, trashPath) === "arbesk" && modelFormat(entry.name) !== null) return previewArbeskFirst(entry, seq);
+  void loadPreviewVersions(entry, seq);
+  await previewEntry(entry, seq, fileKind(entry.name));
+}
+
+/**
+ * An Arbesk model's first view (performance plan, phase 1): its scene is
+ * asked for at once, as the asset's newest save is now, and answers that
+ * save's CID; its parts and the files switcher are read by that CID, so a
+ * save made meanwhile can't put another save's model beside the files.
+ * The saves are read alongside and fill the version control when they
+ * end: a newer save that landed meanwhile shows there, and the preview
+ * stays on the save it shows. A scene that can't be read: no switcher.
+ */
+async function previewArbeskFirst(entry: Entry, seq: number): Promise<void> {
+  const scene = arbeskScene(entry.path, null);
+  const shown = scene.then(
+    (answer) => answer.cid,
+    () => null,
+  );
+  void shown.then((cid) => {
+    if (cid && !previewStale(seq) && entry.representations?.count) void loadPreviewFiles(entry, cid, seq);
+  });
+  void loadArbeskVersions(entry, previewOpened, shown);
+  await previewArbeskScene(entry, seq, null, scene);
+}
+
+/** The version control of an Arbesk model's first view, once its saves are
+ *  read and its scene has said which save it shows (`shown`), at that save:
+ *  while preview `opened` is open, even if one of the save's files is shown
+ *  by then. A scene that can't be read: at the newest, as before. A shown
+ *  save the saves read don't hold (the walk read the head before that save
+ *  landed): the saves are read once more, and hold it then. */
+async function loadArbeskVersions(entry: Entry, opened: number, shown: Promise<string | null>): Promise<void> {
+  const read = () => previewVersionsOf(entry).catch((): VersionList => ({ versions: [], more: false, copies: new Map() }));
+  const [first, cid] = await Promise.all([read(), shown]);
+  const behind = cid !== null && first.versions.length > 0 && !first.versions.some((version) => version.id === cid);
+  const list = behind && opened === previewOpened ? await read() : first;
+  if (opened !== previewOpened || previewLayer.hidden || list.versions.length < 2) return;
+  const index = cid === null ? list.versions.length - 1 : list.versions.findIndex((version) => version.id === cid);
+  if (index >= 0) drawPreviewVersions(entry, list, index);
 }
 
 // ---- Versions in the preview -------------------------------------------------
@@ -4957,15 +4995,14 @@ async function previewVersionsOf(entry: Entry): Promise<VersionList> {
 }
 
 /** The version control, once the item's versions are known and there are
- *  two or more. Resolves to the newest version read, if any. */
-async function loadPreviewVersions(entry: Entry, seq: number): Promise<PreviewVersion | undefined> {
+ *  two or more. */
+async function loadPreviewVersions(entry: Entry, seq: number): Promise<void> {
   const list = await previewVersionsOf(entry).catch((): VersionList => ({ versions: [], more: false, copies: new Map() }));
-  if (previewStale(seq)) return undefined;
+  if (previewStale(seq)) return;
   if (list.versions.length >= 2) drawPreviewVersions(entry, list, list.versions.length - 1);
   // The asset now: its files only when the listing says it has some.
   const newest = list.versions[list.versions.length - 1];
-  if (newest && entry.representations?.count) void loadPreviewFiles(entry, newest, seq);
-  return newest;
+  if (newest && entry.representations?.count) void loadPreviewFiles(entry, newest.id, seq);
 }
 
 function drawPreviewVersions(entry: Entry, list: VersionList, shown: number): void {
@@ -4981,7 +5018,7 @@ async function showPreviewVersion(entry: Entry, list: VersionList, index: number
   // Each save keeps its own files (Arbesk R4): the switcher follows the
   // version on screen, which shows its model again.
   clearPreviewFiles();
-  if (locationKind(entry.path, trashPath) === "arbesk") void loadPreviewFiles(entry, list.versions[index], seq);
+  if (locationKind(entry.path, trashPath) === "arbesk") void loadPreviewFiles(entry, list.versions[index].id, seq);
   const refusal = versionRefusal(entry, list.versions[index]);
   if (refusal) {
     previewEmpty(entry, refusal);
@@ -5079,9 +5116,13 @@ async function previewModelEntry(entry: Entry, seq: number, named: ModelFormat, 
  * goes; each part is loaded once and copied to every place. A part that
  * fails is left out; with none, the preview says why.
  */
-async function previewArbeskScene(entry: Entry, seq: number, version: string | null): Promise<void> {
+async function previewArbeskScene(entry: Entry, seq: number, version: string | null, asked?: Promise<ArbeskScene>): Promise<void> {
+  // The scene is asked for before three.js loads (the first view's already
+  // is); a refusal that comes first waits, handled, for loadArbeskParts.
+  const scene = asked ?? arbeskScene(entry.path, version);
+  void scene.catch(() => undefined);
   const viewer = await import("./model-viewer");
-  const { parts, tooLarge } = await loadArbeskParts(entry.path, version, seq, viewer).catch(() => ({ parts: [], tooLarge: false }));
+  const { parts, tooLarge } = await loadArbeskParts(entry.path, scene, seq, viewer).catch(() => ({ parts: [], tooLarge: false }));
   if (previewStale(seq)) return;
   if (!parts.length) {
     previewEmpty(entry, tooLarge ? "This file is too large to preview." : "No preview available.");
@@ -5097,13 +5138,14 @@ async function previewArbeskScene(entry: Entry, seq: number, version: string | n
 }
 
 /** Each part of the scene at `path`, loaded once, at most MODEL_PREVIEW_LIMIT
- *  bytes in all; none more once the preview has moved on. */
-async function loadArbeskParts(path: string, version: string | null, seq: number, viewer: typeof import("./model-viewer")) {
-  const scene = await arbeskScene(path, version);
+ *  bytes in all, from the save the scene was resolved from (its CID); none
+ *  more once the preview has moved on. */
+async function loadArbeskParts(path: string, scene: Promise<ArbeskScene>, seq: number, viewer: typeof import("./model-viewer")) {
+  const { parts: stored, cid: version } = await scene;
   const parts: { object: import("three").Object3D; placements: import("./model-viewer").ScenePlacement[] }[] = [];
   let left = MODEL_PREVIEW_LIMIT;
   let tooLarge = false;
-  for (const part of scene.parts) {
+  for (const part of stored) {
     if (previewStale(seq)) break;
     if (left <= 0) {
       tooLarge = true;
@@ -5157,11 +5199,11 @@ async function previewThumbnailEntry(entry: Entry, seq: number, at: PreviewAt): 
 
 // ---- An Arbesk save's other files in the preview (spec F14) -----------------
 
-/** The switcher's save on screen: the asset, the save, its files and which
- *  is shown (-1: the model). */
+/** The switcher's save on screen: the asset, the save (its manifest CID),
+ *  its files and which is shown (-1: the model). */
 interface PreviewFiles {
   entry: Entry;
-  version: PreviewVersion;
+  version: string;
   files: RepresentationInfo[];
   shown: number;
 }
@@ -5187,10 +5229,10 @@ function clearPreviewFiles(): void {
   previewFilesEl.replaceChildren();
 }
 
-/** The files of `version` of the asset; the switcher when it has some. A
- *  list that can't be read shows none. */
-async function loadPreviewFiles(entry: Entry, version: PreviewVersion, seq: number): Promise<void> {
-  const files = await arbeskRepresentations(entry.path, version.id).catch((): RepresentationInfo[] => []);
+/** The files of the save `version` (a manifest CID) of the asset; the
+ *  switcher when it has some. A list that can't be read shows none. */
+async function loadPreviewFiles(entry: Entry, version: string, seq: number): Promise<void> {
+  const files = await arbeskRepresentations(entry.path, version).catch((): RepresentationInfo[] => []);
   if (previewStale(seq) || files.length === 0) return;
   drawPreviewFiles({ entry, version, files, shown: -1 });
 }
@@ -5216,7 +5258,7 @@ async function showPreviewFile(state: PreviewFiles, index: number): Promise<void
     // The shown save's manifest CID, the current one's too: the model and
     // the files listed beside it come from the same save, even if the
     // asset is saved again while the preview is open.
-    await previewArbeskScene(entry, seq, version.id);
+    await previewArbeskScene(entry, seq, version);
     return;
   }
   const rep = next.files[index];
@@ -5234,7 +5276,7 @@ async function showPreviewFile(state: PreviewFiles, index: number): Promise<void
  *  as a local model. A glTF that loads files beside it gets the file page. */
 async function previewFileModel(state: PreviewFiles, rep: RepresentationInfo, named: ModelFormat, seq: number): Promise<void> {
   try {
-    const file = await arbeskFile(state.entry.path, state.version.id, rep.id, { op: previewFetchOp() });
+    const file = await arbeskFile(state.entry.path, state.version, rep.id, { op: previewFetchOp() });
     if (previewStale(seq)) return;
     const bytes = await previewBytes(file, MODEL_PREVIEW_LIMIT);
     if (previewStale(seq)) return;
@@ -5265,7 +5307,7 @@ function showFilePage(state: PreviewFiles, rep: RepresentationInfo): void {
  *  the save on screen, as the page shows it. */
 function openPreviewFileWith(state: PreviewFiles, rep: RepresentationInfo): void {
   if (refuse("openWith", hereFor([state.entry.path]))) return;
-  showOpenWith(state.entry, { kind: "file", rep }, fileEntry(state.entry, rep), state.version.id);
+  showOpenWith(state.entry, { kind: "file", rep }, fileEntry(state.entry, rep), state.version);
 }
 
 // ---- Preview actions (#48) -------------------------------------------------
