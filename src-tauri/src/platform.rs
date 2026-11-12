@@ -1015,7 +1015,7 @@ pub fn dmg_application_directory(home: &Path, destination: &str) -> Result<PathB
 
 #[cfg(target_os = "macos")]
 fn dmg_exclusive_rename(from: &Path, to: &Path) -> std::io::Result<()> {
-    rename_exclusive(from, to)
+    places_local::platform::rename_exclusive(from, to)
 }
 #[cfg(not(target_os = "macos"))]
 fn dmg_exclusive_rename(_: &Path, _: &Path) -> std::io::Result<()> { Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "DMG installation requires macOS.")) }
