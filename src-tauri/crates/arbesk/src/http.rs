@@ -36,6 +36,23 @@ pub trait Http: Send + Sync {
         expected: u64,
         chunk: &mut dyn FnMut(&[u8]) -> bool,
     ) -> Result<(), HttpError>;
+    /// GET a part (performance plan, phase 6) on the timeouts of
+    /// [`Http::get`], handing the body to `chunk` as [`Http::get_streamed`]
+    /// does (an empty piece every [`TICK`] while nothing arrives; `false`
+    /// stops the read, answering `Ok` at once), so a cancel is heard while
+    /// a large part downloads. A body past `cap` bytes, when given, is
+    /// refused with [`TOO_LONG`] (the real client by its length before
+    /// reading, or once it reads past it). Clients that only fake reads
+    /// (the tests') hand over [`Http::get_streamed`]'s pieces.
+    fn get_chunked(
+        &self,
+        url: &str,
+        cap: Option<u64>,
+        chunk: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<(), HttpError> {
+        let _ = cap;
+        self.get_streamed(url, 0, chunk)
+    }
     /// POST `body` as JSON; `session` goes in `Authorization: Session <token>`.
     fn post_json(
         &self,
@@ -215,6 +232,42 @@ fn open_streamed(
     Ok(response)
 }
 
+/// `request` sent and read [`STREAM_CHUNK`] at a time on a thread of its
+/// own ([`pump`]: the request is sent there too, so a cancel is heard while
+/// the server is silent), never more than `cap` bytes.
+fn stream(
+    request: reqwest::blocking::RequestBuilder,
+    cap: u64,
+    chunk: &mut dyn FnMut(&[u8]) -> bool,
+) -> Result<(), HttpError> {
+    use std::io::Read;
+    let mut request = Some(request);
+    let mut response = None;
+    let mut read = 0u64;
+    pump(
+        move || {
+            if let Some(request) = request.take() {
+                response = Some(open_streamed(request, cap)?);
+            }
+            let Some(response) = response.as_mut() else {
+                return Ok(None);
+            };
+            let status = response.status().as_u16();
+            let mut buffer = vec![0; STREAM_CHUNK];
+            let n = response
+                .read(&mut buffer)
+                .map_err(|error| HttpError::new(Some(status), error.to_string()))?;
+            read += n as u64;
+            if read > cap {
+                return Err(too_long(status));
+            }
+            buffer.truncate(n);
+            Ok((n > 0).then_some(buffer))
+        },
+        chunk,
+    )
+}
+
 fn too_long(status: u16) -> HttpError {
     HttpError::new(Some(status), TOO_LONG)
 }
@@ -245,16 +298,23 @@ impl ReqwestHttp {
     }
 
     pub fn with_cap(cap: u64) -> Result<Self, String> {
-        let client_with = |timeout: u64| {
+        Self::with_timeout(cap, Duration::from_secs(30))
+    }
+
+    /// A client whose short requests (everything but the relay, uploads and
+    /// streamed downloads) wait at most `short`: 30 seconds, shorter in
+    /// tests.
+    pub(crate) fn with_timeout(cap: u64, short: Duration) -> Result<Self, String> {
+        let client_with = |timeout: Duration| {
             reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(timeout))
+                .timeout(timeout)
                 .user_agent(concat!("FileBrowser/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .map_err(|error| error.to_string())
         };
         Ok(Self {
-            client: client_with(30)?,
-            slow: client_with(SLOW_TIMEOUT_SECS)?,
+            client: client_with(short)?,
+            slow: client_with(Duration::from_secs(SLOW_TIMEOUT_SECS))?,
             cap,
         })
     }
@@ -333,33 +393,23 @@ impl Http for ReqwestHttp {
         expected: u64,
         chunk: &mut dyn FnMut(&[u8]) -> bool,
     ) -> Result<(), HttpError> {
-        use std::io::Read;
-        let cap = self.cap;
-        let mut request = Some(self.slow.get(url).timeout(transfer_timeout(expected)));
-        let mut response = None;
-        let mut read = 0u64;
-        pump(
-            move || {
-                if let Some(request) = request.take() {
-                    response = Some(open_streamed(request, cap)?);
-                }
-                let Some(response) = response.as_mut() else {
-                    return Ok(None);
-                };
-                let status = response.status().as_u16();
-                let mut buffer = vec![0; STREAM_CHUNK];
-                let n = response
-                    .read(&mut buffer)
-                    .map_err(|error| HttpError::new(Some(status), error.to_string()))?;
-                read += n as u64;
-                if read > cap {
-                    return Err(too_long(status));
-                }
-                buffer.truncate(n);
-                Ok((n > 0).then_some(buffer))
-            },
-            chunk,
-        )
+        let request = self.slow.get(url).timeout(transfer_timeout(expected));
+        stream(request, self.cap, chunk)
+    }
+
+    /// On the short client, as [`Http::get`]: its timeout bounds the wait
+    /// for the answer and for each read of the body (blocking reqwest's
+    /// timeout is per operation, not one on the whole body), so a part
+    /// that keeps flowing is read however long it takes and one that
+    /// stalls fails as before. Streamed as [`Http::get_streamed`].
+    fn get_chunked(
+        &self,
+        url: &str,
+        cap: Option<u64>,
+        chunk: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<(), HttpError> {
+        let cap = cap.map_or(self.cap, |cap| cap.min(self.cap));
+        stream(self.client.get(url), cap, chunk)
     }
 
     fn post_json(

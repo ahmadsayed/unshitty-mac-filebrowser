@@ -494,7 +494,8 @@ pub(crate) fn webp(width: u32, height: u32) -> Vec<u8> {
 
 /// The fake Arbesk with its gateway reads watched: each takes `delay`, is
 /// counted while in flight (`running`, and the most at once, `peak`;
-/// streamed downloads of an asset's other files too), and a read of a CID
+/// streamed downloads of an asset's other files, and parts read in chunks,
+/// too), and a read of a CID
 /// in `held` waits until [`Watched::release`]. Chain RPC calls take `delay`
 /// too and are counted apart (`rpc_running`, `rpc_peak`).
 pub(crate) struct Watched {
@@ -504,7 +505,8 @@ pub(crate) struct Watched {
     pub(crate) peak: std::sync::atomic::AtomicUsize,
     pub(crate) rpc_running: std::sync::atomic::AtomicUsize,
     pub(crate) rpc_peak: std::sync::atomic::AtomicUsize,
-    /// Streamed downloads asked for.
+    /// Streamed downloads asked for (an asset's other files; parts, read
+    /// in chunks since performance plan phase 6, too).
     pub(crate) streamed: std::sync::atomic::AtomicUsize,
     held: Mutex<HashSet<String>>,
     released: std::sync::Condvar,

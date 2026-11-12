@@ -173,6 +173,13 @@ impl Limiter {
         self.rpcs.take(stop)
     }
 
+    /// How many callers wait for the read of `key` under way (tests).
+    #[cfg(test)]
+    pub fn followers(&self, key: &str) -> usize {
+        // The map's own `Arc`, the leader's, and one per follower.
+        lock(&self.flights).get(key).map_or(0, |flight| Arc::strong_count(flight).saturating_sub(2))
+    }
+
     /// How many gateway reads hold a permit now (tests).
     #[cfg(test)]
     pub fn reading(&self) -> usize {
@@ -321,6 +328,15 @@ impl Http for Limited<'_> {
         chunk: &mut dyn FnMut(&[u8]) -> bool,
     ) -> Result<(), HttpError> {
         self.inner.get_streamed(url, expected, chunk)
+    }
+
+    fn get_chunked(
+        &self,
+        url: &str,
+        cap: Option<u64>,
+        chunk: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<(), HttpError> {
+        self.inner.get_chunked(url, cap, chunk)
     }
 
     fn post_json(

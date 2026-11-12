@@ -1181,6 +1181,51 @@ mod tests {
         assert_eq!(client.limiter.reading(), 0);
     }
 
+    /// Performance plan, phase 6: a build cancelled while its parts are
+    /// being downloaded (the gateway gone silent mid-part) returns within a
+    /// tick, and gives back every read permit and the shared byte budget
+    /// its parts held.
+    #[test]
+    fn a_cancel_mid_read_returns_at_once_and_frees_permits_and_budget() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let (reached, at_chunk) = std::sync::mpsc::channel::<()>();
+        let reached = Mutex::new(reached);
+        let opened = Arc::new(AtomicBool::new(false));
+        let gate = opened.clone();
+        let http = testing::arbesk(Arc::new(Mutex::new(testing::busy_world()))).in_chunks(4, move |n| {
+            if n == 1 {
+                let _ = reached.lock().unwrap().send(());
+                while !gate.load(Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        });
+        let client = connected(Arc::new(http), dir.path());
+        let wide = format!("arbesk://{ADDRESS}/7~Many/w~Wide.gltf");
+        let progress = Progress::default();
+        std::thread::scope(|scope| {
+            let built = scope.spawn(|| client.build(&wide, &progress));
+            let streamed = at_chunk.recv_timeout(std::time::Duration::from_secs(5));
+            // Every worker is mid-part: each holds a permit and its bytes.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while streamed.is_ok() && client.limiter.reading() < limiter::READS && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let (reading, holding) = (client.limiter.reading(), client.limiter.holding());
+            let cancelled = std::time::Instant::now();
+            progress.cancel();
+            let built = built.join().unwrap();
+            let took = cancelled.elapsed();
+            opened.store(true, Ordering::SeqCst);
+            assert!(streamed.is_ok(), "the parts are streamed");
+            assert_eq!((reading, holding), (limiter::READS, 16 * limiter::READS as u64));
+            assert_eq!(built.unwrap_err(), CANCELLED);
+            assert!(took < 2 * crate::http::TICK, "{took:?}");
+        });
+        assert_eq!((client.limiter.reading(), client.limiter.holding()), (0, 0));
+    }
+
     /// One read that fails in a listing's batch still fails the listing,
     /// as before, and gives its permit back.
     #[test]

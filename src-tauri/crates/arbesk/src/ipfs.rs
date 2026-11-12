@@ -14,6 +14,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::http::{Http, TOO_LONG};
+use crate::progress::CANCELLED;
 
 const BROTLI_MAGIC: &[u8] = b"ARB\x01";
 const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
@@ -70,6 +71,15 @@ fn storage_error(cid: &str, error: crate::http::HttpError) -> String {
         // The gateway answered: it has nothing there. Not worth failing a listing for.
         Some(404 | 410) => format!("Arbesk's storage has nothing at {cid}."),
         _ => format!("{STORAGE_UNREACHABLE}: {}", error.message),
+    }
+}
+
+/// A failed read of `cid` in words: a capped read's body past its cap is
+/// [`OVER`], anything else [`storage_error`].
+fn read_error(cid: &str, cap: Option<u64>, error: crate::http::HttpError) -> String {
+    match cap {
+        Some(_) if error.message == TOO_LONG => OVER.to_string(),
+        _ => storage_error(cid, error),
     }
 }
 
@@ -373,27 +383,70 @@ impl<'a> Gateway<'a> {
     /// of the same cap.
     fn get_within(&self, cid: &str, cap: Option<u64>) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
-        let read = || {
+        self.limited(&url, cap, || {
             let answer = match cap {
                 Some(cap) => self.http.get_within(&url, cap),
                 None => self.http.get(&url),
             };
-            answer.map_err(|error| match cap {
-                Some(_) if error.message == TOO_LONG => OVER.to_string(),
-                _ => storage_error(cid, error),
-            })
-        };
+            answer.map_err(|error| read_error(cid, cap, error))
+        })
+    }
+
+    /// `read` of `url` (at most `cap` bytes, when given) through the
+    /// client's limits when it has some: a read permit, and a read of the
+    /// same URL and cap already under way shared rather than asked again.
+    fn limited(
+        &self,
+        url: &str,
+        cap: Option<u64>,
+        read: impl Fn() -> Result<Vec<u8>, String>,
+    ) -> Result<Vec<u8>, String> {
         let Some(limits) = self.http.limits() else {
             return read();
         };
         let key = match cap {
             Some(cap) => format!("{url} within {cap}"),
-            None => url.clone(),
+            None => url.to_string(),
         };
         limits.limiter.shared(&key, limits.stop, || {
             let _permit = limits.limiter.read(limits.stop)?;
             read()
         })
+    }
+
+    /// A part's stored bytes at `cid` (performance plan, phase 6): shared
+    /// and limited as [`Gateway::get_within`] is, and read on the same
+    /// timeouts (`Http::get_chunked`: a stall, never a limit on the whole
+    /// body), but handed over chunk by chunk, so between chunks, and every
+    /// `TICK` while none arrives, the read hears its operation's stop: a
+    /// Cancel or a closed preview ends it with [`CANCELLED`], its permit
+    /// given back at once. Past `cap` bytes, when given, it stops with
+    /// [`OVER`].
+    fn download(&self, cid: &str, cap: Option<u64>) -> Result<Vec<u8>, String> {
+        let url = format!("{}/{}", self.base, checked_cid(cid)?);
+        self.limited(&url, cap, || self.stream(&url, cid, cap))
+    }
+
+    /// One read of [`Gateway::download`], unshared.
+    fn stream(&self, url: &str, cid: &str, cap: Option<u64>) -> Result<Vec<u8>, String> {
+        let mut bytes = Vec::new();
+        let mut stopped = None;
+        let read = self.http.get_chunked(url, cap, &mut |chunk| {
+            stopped = if self.stopped() {
+                Some(CANCELLED.to_string())
+            } else if cap.is_some_and(|cap| (bytes.len() + chunk.len()) as u64 > cap) {
+                Some(OVER.to_string())
+            } else {
+                bytes.extend_from_slice(chunk);
+                None
+            };
+            stopped.is_none()
+        });
+        if let Some(error) = stopped {
+            return Err(error);
+        }
+        read.map_err(|error| read_error(cid, cap, error))?;
+        Ok(bytes)
     }
 
     /// What the gateway's client is limited by, if anything (a build's
@@ -448,9 +501,16 @@ impl<'a> Gateway<'a> {
         Ok(bytes)
     }
 
-    /// The content at `cid`, unpacked.
+    /// The content at `cid`, unpacked: a part of unknown size (or an older
+    /// save's model), downloaded as [`Gateway::download`] does.
     pub fn bytes(&self, cid: &str) -> Result<Vec<u8>, String> {
-        self.fetch(cid, self.part_cap)
+        self.part(cid, None)
+    }
+
+    /// A part's content at `cid`, unpacked to at most the part cap (or
+    /// `cap`): the body read no further than `cap` when given.
+    fn part(&self, cid: &str, cap: Option<u64>) -> Result<Vec<u8>, String> {
+        unpack(self.download(cid, cap)?, cap.unwrap_or(self.part_cap))
     }
 
     /// The content at `cid`, unpacked, when it is about the `size` its
@@ -463,12 +523,8 @@ impl<'a> Gateway<'a> {
         if cap >= self.part_cap {
             return self.bytes(cid).map(Some);
         }
-        let body = match self.get_within(cid, Some(cap)) {
-            Err(error) if error == OVER => return Ok(None),
-            body => body?,
-        };
-        match unpack(body, cap) {
-            Err(error) if error == TOO_LARGE => Ok(None),
+        match self.part(cid, Some(cap)) {
+            Err(error) if error == OVER || error == TOO_LARGE => Ok(None),
             unpacked => unpacked.map(Some),
         }
     }
@@ -859,6 +915,139 @@ mod tests {
         assert_eq!(http.requests().len(), 1);
         assert_eq!(gateway.bytes("bafyPart").unwrap(), b"part");
         assert_eq!(http.requests().len(), 2);
+        assert_eq!(limiter.reading(), 0);
+    }
+
+    /// Serves `requests` GETs, each answered with `body` in `pieces`
+    /// pieces `gap` apart: a part that keeps flowing, slowly. With
+    /// `silent`, it goes silent after that many pieces until told to end.
+    fn serve_slowly(
+        body: Vec<u8>,
+        pieces: usize,
+        gap: Duration,
+        requests: usize,
+        silent: Option<(usize, std::sync::mpsc::Receiver<()>)>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for _ in 0..requests {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut seen = Vec::new();
+                let mut buffer = [0u8; 4096];
+                while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    seen.extend_from_slice(&buffer[..read]);
+                }
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                if stream.write_all(head.as_bytes()).is_err() {
+                    continue;
+                }
+                for (n, piece) in body.chunks(body.len().div_ceil(pieces)).enumerate() {
+                    if let Some((after, end)) = &silent
+                        && n == *after
+                    {
+                        let _ = end.recv_timeout(Duration::from_secs(10));
+                        break;
+                    }
+                    std::thread::sleep(gap);
+                    if stream.write_all(piece).and_then(|()| stream.flush()).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        (url, server)
+    }
+
+    /// Performance plan, phase 6: a part that takes longer than the
+    /// client's timeout (30 s; 1 s here) but keeps flowing is read whole,
+    /// as it was before it was read in chunks: the timeout bounds each
+    /// wait, never the whole body.
+    #[test]
+    fn a_part_slower_than_the_timeout_but_flowing_completes() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = gzipped(&vec![7u8; 64 * 1024]);
+        let (url, server) = serve_slowly(body, 8, Duration::from_millis(250), 1, None);
+        let http = crate::http::ReqwestHttp::with_timeout(crate::http::MAX_BODY, Duration::from_secs(1)).unwrap();
+        let gateway = Gateway::new(&http, &url, ManifestCache::new(dir.path().to_path_buf(), 1 << 20));
+        let started = std::time::Instant::now();
+        assert_eq!(gateway.bytes("bafyPart").unwrap(), vec![7u8; 64 * 1024]);
+        assert!(started.elapsed() > Duration::from_secs(1), "{:?}", started.elapsed());
+        server.join().unwrap();
+    }
+
+    /// A part whose gateway goes silent mid-read fails once nothing has
+    /// arrived for the client's timeout (30 s; 1 s here), not later.
+    #[test]
+    fn a_stalled_part_fails_after_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let (silent, end) = std::sync::mpsc::channel::<()>();
+        let (url, server) = serve_slowly(vec![1u8; 1024], 4, Duration::ZERO, 1, Some((1, end)));
+        let http = crate::http::ReqwestHttp::with_timeout(crate::http::MAX_BODY, Duration::from_secs(1)).unwrap();
+        let gateway = Gateway::new(&http, &url, ManifestCache::new(dir.path().to_path_buf(), 1 << 20));
+        let started = std::time::Instant::now();
+        let error = gateway.bytes_within("bafyPart", 1024).unwrap_err();
+        let took = started.elapsed();
+        silent.send(()).unwrap();
+        server.join().unwrap();
+        assert!(error.starts_with(STORAGE_UNREACHABLE), "{error}");
+        assert!(took >= Duration::from_secs(1) && took < Duration::from_secs(3), "{took:?}");
+    }
+
+    /// A shared read cancelled by its leader's stop mid-download does not
+    /// fail the caller that joined it: that one reads again for itself and
+    /// gets the part; the leader hears its cancel within a tick.
+    #[test]
+    fn a_cancelled_leader_does_not_fail_its_follower() {
+        use crate::limiter::{Limited, Limiter};
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+        let dir = tempfile::tempdir().unwrap();
+        let (reached, at_chunk) = mpsc::channel::<()>();
+        let reached = Mutex::new(reached);
+        let opened = Arc::new(AtomicBool::new(false));
+        let gate = opened.clone();
+        let http = FakeHttp::new(|_| Ok(gzipped(b"part"))).in_chunks(4, move |n| {
+            if n == 1 && !gate.load(Ordering::SeqCst) {
+                let _ = reached.lock().unwrap().send(());
+                // Silent until the leader's cancel has been heard.
+                while !gate.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        });
+        let limiter = Limiter::default();
+        let (leader_stopped, follower_stopped) = (AtomicBool::new(false), AtomicBool::new(false));
+        let leader_stop = || leader_stopped.load(Ordering::SeqCst);
+        let follower_stop = || follower_stopped.load(Ordering::SeqCst);
+        let (leading, following) = (Limited::new(&http, &limiter, &leader_stop), Limited::new(&http, &limiter, &follower_stop));
+        let cache = || ManifestCache::new(dir.path().to_path_buf(), 1 << 20);
+        let leader = Gateway::new(&leading, "https://gw.test/ipfs/", cache());
+        let follower = Gateway::new(&following, "https://gw.test/ipfs/", cache());
+        std::thread::scope(|scope| {
+            let led = scope.spawn(|| leader.bytes("bafyPart"));
+            at_chunk.recv_timeout(Duration::from_secs(5)).expect("the part is streamed");
+            let followed = scope.spawn(|| follower.bytes("bafyPart"));
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while limiter.followers("https://gw.test/ipfs/bafyPart") == 0 {
+                assert!(std::time::Instant::now() < deadline, "the follower never joined");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let cancelled = std::time::Instant::now();
+            leader_stopped.store(true, Ordering::SeqCst);
+            let led = led.join().unwrap();
+            let took = cancelled.elapsed();
+            opened.store(true, Ordering::SeqCst);
+            assert_eq!(led.unwrap_err(), CANCELLED);
+            assert!(took < 2 * crate::http::TICK, "{took:?}");
+            assert_eq!(followed.join().unwrap().unwrap(), b"part");
+        });
+        assert_eq!(http.requests().len(), 2, "the follower read again");
         assert_eq!(limiter.reading(), 0);
     }
 
