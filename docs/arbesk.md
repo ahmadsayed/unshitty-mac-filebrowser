@@ -338,6 +338,13 @@ Cancel) stays in the app cache, never in the folder, and the download of an
 item skipped stops. A download ahead that fails before its turn is tried
 again then, and only a failure then is shown; one still under way at its
 turn is waited for, and its failure is shown as the copy's.
+A model's part downloads for as long as it keeps arriving, however large
+(30 seconds with nothing from Arbesk's storage fail it), and Cancel, a
+closed preview or a skipped copy stops it mid-download at once; its place
+among the downloads at once is given back when its connection closes, so a
+Cancel and a retry on a stalled connection never add downloads. A part its asset says is larger than the
+512 MB a build holds is refused before it is downloaded (*This asset is too
+large to open.*).
 The deployment's settings are kept for five minutes. Which manifest a
 collection points at now is read from the chain and kept for five seconds,
 so one action's reads (a preview's model, saves and files; a scene's links

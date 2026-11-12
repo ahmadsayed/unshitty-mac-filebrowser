@@ -60,7 +60,7 @@ impl Pool {
 
     /// A permit, once one is free; [`CANCELLED`] as soon as `stop` says so
     /// (heard every [`TICK`] while waiting), before anything is asked.
-    fn take(&self, stop: Stop) -> Result<Permit<'_>, String> {
+    fn take(self: &Arc<Self>, stop: Stop) -> Result<Permit, String> {
         let mut used = lock(&self.used);
         loop {
             if stop() {
@@ -68,7 +68,7 @@ impl Pool {
             }
             if *used < self.cap {
                 *used += 1;
-                return Ok(Permit { pool: self });
+                return Ok(Permit { pool: self.clone() });
             }
             used = match self.freed.wait_timeout(used, TICK) {
                 Ok((used, _)) => used,
@@ -78,12 +78,16 @@ impl Pool {
     }
 }
 
-/// One request's place in a [`Pool`], given back when dropped.
-pub struct Permit<'a> {
-    pool: &'a Pool,
+/// One request's place in a [`Pool`], given back when dropped. It owns
+/// its place (not borrowed from the [`Limiter`]), so a part's read can hand
+/// it to the thread that holds the connection (`http::pump`): a read
+/// cancelled while the gateway is silent keeps its place until that
+/// connection is really closed (performance plan, phase 6).
+pub struct Permit {
+    pool: Arc<Pool>,
 }
 
-impl Drop for Permit<'_> {
+impl Drop for Permit {
     fn drop(&mut self) {
         *lock(&self.pool.used) -= 1;
         self.pool.freed.notify_one();
@@ -99,8 +103,8 @@ struct Flight {
 
 /// The app's limits on Arbesk reads: one per [`crate::Client`].
 pub struct Limiter {
-    reads: Pool,
-    rpcs: Pool,
+    reads: Arc<Pool>,
+    rpcs: Arc<Pool>,
     /// The bytes of parts builds hold or have on their way, and the most
     /// they may before another part of known size starts.
     held: Mutex<u64>,
@@ -123,8 +127,8 @@ impl Default for Limiter {
 impl Limiter {
     pub fn new(reads: usize, rpcs: usize) -> Self {
         Self {
-            reads: Pool::new(reads.max(1)),
-            rpcs: Pool::new(rpcs.max(1)),
+            reads: Arc::new(Pool::new(reads.max(1))),
+            rpcs: Arc::new(Pool::new(rpcs.max(1))),
             held: Mutex::new(0),
             held_cap: HELD,
             flights: Mutex::new(HashMap::new()),
@@ -164,13 +168,20 @@ impl Limiter {
     }
 
     /// A gateway read's permit (see [`Pool::take`]).
-    pub fn read(&self, stop: Stop) -> Result<Permit<'_>, String> {
+    pub fn read(&self, stop: Stop) -> Result<Permit, String> {
         self.reads.take(stop)
     }
 
     /// A chain RPC call's permit (see [`Pool::take`]).
-    pub fn rpc(&self, stop: Stop) -> Result<Permit<'_>, String> {
+    pub fn rpc(&self, stop: Stop) -> Result<Permit, String> {
         self.rpcs.take(stop)
+    }
+
+    /// How many callers wait for the read of `key` under way (tests).
+    #[cfg(test)]
+    pub fn followers(&self, key: &str) -> usize {
+        // The map's own `Arc`, the leader's, and one per follower.
+        lock(&self.flights).get(key).map_or(0, |flight| Arc::strong_count(flight).saturating_sub(2))
     }
 
     /// How many gateway reads hold a permit now (tests).
@@ -310,10 +321,6 @@ impl Http for Limited<'_> {
         self.inner.get(url)
     }
 
-    fn get_within(&self, url: &str, cap: u64) -> Result<Vec<u8>, HttpError> {
-        self.inner.get_within(url, cap)
-    }
-
     fn get_streamed(
         &self,
         url: &str,
@@ -321,6 +328,16 @@ impl Http for Limited<'_> {
         chunk: &mut dyn FnMut(&[u8]) -> bool,
     ) -> Result<(), HttpError> {
         self.inner.get_streamed(url, expected, chunk)
+    }
+
+    fn get_chunked(
+        &self,
+        url: &str,
+        cap: Option<u64>,
+        held: crate::http::Held,
+        chunk: &mut dyn FnMut(&[u8]) -> bool,
+    ) -> Result<(), HttpError> {
+        self.inner.get_chunked(url, cap, held, chunk)
     }
 
     fn post_json(

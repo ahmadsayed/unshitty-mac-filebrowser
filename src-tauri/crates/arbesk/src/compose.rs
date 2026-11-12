@@ -240,6 +240,8 @@ impl Plan {
 /// way. The assembler takes the parts in its own order.
 struct Window {
     queue: VecDeque<Plan>,
+    /// The build's cap: a part declared larger is refused unread.
+    cap: u64,
     /// The budget left once what landed is charged.
     left: u64,
     /// What the known parts in flight will be charged.
@@ -291,7 +293,16 @@ impl Window {
     }
 
     /// The next part, if the window and the shared budget let it start.
+    /// A part whose declared size alone passes the build's cap is refused
+    /// first, never read (performance plan, phase 6): charged when it
+    /// landed, it would fail the build in the same words.
     fn start(&mut self, limiter: Option<&Limiter>) -> Option<Plan> {
+        while let Some(plan) = self.queue.front().filter(|plan| plan.need().is_some_and(|need| need > self.cap)) {
+            let cid = plan.cid.clone();
+            self.queue.pop_front();
+            self.errors.insert(cid.clone(), TOO_LARGE_TO_BUILD.into());
+            self.fail(self.place(&cid), TOO_LARGE_TO_BUILD.into());
+        }
         if !self.may_start() {
             return None;
         }
@@ -487,6 +498,7 @@ impl<'g> Parts<'g> {
                 remaining: plans.iter().map(|plan| (plan.cid.clone(), plan.refs)).collect(),
                 order: plans.iter().enumerate().map(|(at, plan)| (plan.cid.clone(), at)).collect(),
                 queue: plans.into(),
+                cap,
                 left: cap,
                 reserved: 0,
                 known: 0,
@@ -555,7 +567,13 @@ impl<'g> Parts<'g> {
                         self.changed.notify_all();
                         return;
                     }
-                    if let Some(plan) = window.start(self.limiter) {
+                    let failed = window.errors.len();
+                    let started = window.start(self.limiter);
+                    if window.errors.len() > failed {
+                        // A part refused unread: its wait answers now.
+                        self.changed.notify_all();
+                    }
+                    if let Some(plan) = started {
                         break plan;
                     }
                     window = self.wait(window);
@@ -1336,6 +1354,39 @@ mod tests {
         assert!(compose_preview_within(&gateway, &source, 400).is_ok());
     }
 
+    /// Performance plan, phase 6: a part whose declared size passes the
+    /// build's cap is refused in the words charging it would give, before
+    /// it is read; the parts before it are still read, those after it not.
+    #[test]
+    fn a_part_declared_past_the_cap_is_refused_unread() {
+        let http = FakeHttp::new(|_| Ok(vec![1u8; 10]));
+        let cache = tempfile::tempdir().unwrap();
+        let gateway = gateway_for(&http, cache.path());
+        let read = |cid: &str| http.requests().iter().filter(|request| request.url.ends_with(&format!("/{cid}"))).count();
+        let alone = json!({ "buffers": [{ "uri": "ipfs://bafyHuge", "byteLength": 101 }] });
+        for build in [compose_preview_within as fn(&Gateway, &Value, u64) -> Result<Vec<u8>, String>, compose_within] {
+            assert_eq!(build(&gateway, &alone, 100).unwrap_err(), TOO_LARGE_TO_BUILD);
+        }
+        assert_eq!(read("bafyHuge"), 0);
+        // Referenced twice, its two references pass the cap together.
+        let twice = json!({ "buffers": [
+            { "uri": "ipfs://bafyHalf", "byteLength": 60 },
+            { "uri": "ipfs://bafyHalf", "byteLength": 60 },
+        ] });
+        assert_eq!(compose_preview_within(&gateway, &twice, 100).unwrap_err(), TOO_LARGE_TO_BUILD);
+        assert_eq!(read("bafyHalf"), 0);
+        let among = json!({ "buffers": [
+            { "uri": "ipfs://bafyP0", "byteLength": 10 },
+            { "uri": "ipfs://bafyHuge", "byteLength": 101 },
+            { "uri": "ipfs://bafyP2", "byteLength": 10 },
+        ] });
+        assert_eq!(compose_preview_within(&gateway, &among, 100).unwrap_err(), TOO_LARGE_TO_BUILD);
+        assert_eq!((read("bafyP0"), read("bafyHuge"), read("bafyP2")), (1, 0, 0));
+        // At the cap it is read and built, as before.
+        let fits = json!({ "buffers": [{ "uri": "ipfs://bafyFits", "byteLength": 10 }] });
+        assert!(compose_preview_within(&gateway, &fits, 10).is_ok());
+    }
+
     /// One failed read among parts fetched together fails the build with
     /// its own words, as a failed read in a pair did.
     #[test]
@@ -1377,18 +1428,33 @@ mod tests {
             self.running.fetch_sub(1, Ordering::SeqCst);
             answer
         }
-        fn get_within(&self, url: &str, cap: u64) -> Result<Vec<u8>, crate::http::HttpError> {
-            self.caps.lock().unwrap().push(cap);
-            std::thread::sleep(Duration::from_millis(20));
-            // The real client stops reading at the cap; the fake checks after.
-            let body = self.inner.get(url)?;
-            if body.len() as u64 > cap {
-                return Err(crate::http::HttpError::new(Some(200), crate::http::TOO_LONG));
-            }
-            Ok(body)
-        }
         fn get_streamed(&self, _: &str, _: u64, _: &mut dyn FnMut(&[u8]) -> bool) -> Result<(), crate::http::HttpError> {
             unreachable!("parts are not streamed")
+        }
+        /// Parts are read in chunks (performance plan, phase 6): a capped
+        /// read's cap is recorded and its length checked after (the real
+        /// client stops reading at the cap), a whole one counted.
+        fn get_chunked(
+            &self,
+            url: &str,
+            cap: Option<u64>,
+            _held: crate::http::Held,
+            chunk: &mut dyn FnMut(&[u8]) -> bool,
+        ) -> Result<(), crate::http::HttpError> {
+            let body = match cap {
+                Some(cap) => {
+                    self.caps.lock().unwrap().push(cap);
+                    std::thread::sleep(Duration::from_millis(20));
+                    let body = self.inner.get(url)?;
+                    if body.len() as u64 > cap {
+                        return Err(crate::http::HttpError::new(Some(200), crate::http::TOO_LONG));
+                    }
+                    body
+                }
+                None => self.get(url)?,
+            };
+            chunk(&body);
+            Ok(())
         }
         fn post_json(&self, _: &str, _: &Value, _: Option<&str>) -> Result<Vec<u8>, crate::http::HttpError> {
             unreachable!("parts are not posted")
