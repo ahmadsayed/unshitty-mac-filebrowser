@@ -1,6 +1,6 @@
 # Arbesk performance and parallel downloads
 
-Status: proposed (2026-11-11)
+Status: done (2026-11-12): all six phases built (#274-#278 and phase 6).
 
 Every Arbesk read goes to an IPFS gateway or the chain's RPC, at 100 ms to
 several seconds each. An audit of the integration on `main` at 3bf68dd found
@@ -545,6 +545,74 @@ every retry starts again. The fetch can't be cancelled mid-read.
 
 **Gain.** Large models preview and copy on ordinary connections; a cancelled
 preview stops downloading at once.
+
+**Correction to *Now* and *Change* above.** The 30-second client never
+limited a whole part: blocking reqwest (0.12.28) applies a client's timeout
+to each operation (the connection, the wait for the answer, each read of
+the body), not to the body as a whole (`ClientBuilder::timeout`: "for
+connect, read and write operations"; `blocking::Response::read` waits for
+each read under it). So a part that keeps flowing was already read however
+long it took, and one that stalls already failed after 30 s without a
+byte: the stall timeout was there. `get_streamed`'s `transfer_timeout`, by
+contrast, is set on the request, which reqwest also applies to the whole
+body: on a part it would have added a limit there was none of (a part
+slower than 64 KiB/s on average would have failed). What this phase had to
+change was the rest: a read under way could not be cut short, and a part
+too large was only refused once downloaded.
+
+**As built.**
+- Parts are read in chunks on the timeouts they had: `Http::get_chunked`
+  (`http.rs`), on the short client's own timeout (30 s per operation, a
+  stall timeout; no limit on the whole body), sent and read on a thread of
+  its own through `pump`, as `get_streamed` is, so its caller hears every
+  chunk, and an empty piece every `TICK` while nothing arrives. A capped
+  read is refused by its `Content-Length` before reading, as `get_within`
+  was, or once it reads past the cap. `get_streamed`, `transfer_timeout`
+  and `Gateway::raw` (an asset's other files) are unchanged. Fakes reach
+  `get_chunked` through `get_streamed`'s chunks (its default).
+- `Gateway::bytes` and `bytes_within` (`ipfs.rs`) go through
+  `Gateway::download`: the same limits as before (a read permit;
+  `Limiter::shared`, keyed as before by the URL and the cap), the body kept
+  chunk by chunk, past the cap `OVER`, as `get_within` answered. Between
+  chunks, and every `TICK`, the read asks its operation's stop (the
+  `Progress` of a build, a part's ticket, a build ahead's): stopped, it
+  answers `CANCELLED` at once and gives its permit back; the build fails
+  with it and the parts it holds give the shared byte budget back, as on
+  any failure; `Parts::build`'s wait for its workers now ends within a
+  tick too. The download's own thread stops at its next chunk, or after the
+  client's timeout on a silent connection.
+- Single-flight is unchanged: a leader's read runs under the leader's stop;
+  cancelled, its followers hear `CANCELLED` and read again for themselves,
+  as phase 2 built, so a closed preview never fails a build ahead waiting
+  for the same part.
+- Which reads: the parts of a build (sized or not, an undeclared part the
+  assembler asks for) and an older save's raw model (`service::raw_part`),
+  all through `Gateway::bytes`/`bytes_within`. Manifests (`Gateway::json`)
+  and thumbnails' originals (`Gateway::image`, at most 16 MiB) keep the
+  whole-body `get`: small, and a thumbnail's download is out of this plan
+  (*Not in this plan*).
+- A part whose declared size (times its references) passes the build's cap
+  is refused before it is read (`compose::Window::start`), with the words
+  charging it after it landed gave (*This asset is too large to open.*);
+  the parts before it in the source are still fetched to their own
+  verdicts, those after it dropped, as for any failed part. The cap is the
+  build's (`BUILD_CAP`, the preview's build included): the preview's share
+  of `MODEL_PREVIEW_LIMIT` is applied to the built file afterwards, as
+  before, since a built 3MF is compressed and no part's size alone says
+  whether it fits (correction to *Change*: "the preview or build cap").
+  A part that understates its size is still caught when it lands.
+- No new command and nothing visible: the words and rows are today's.
+- Tests: the Rust `a_part_slower_than_the_timeout_but_flowing_completes`
+  and `a_stalled_part_fails_after_the_timeout` (a real client and server, a
+  1-second timeout; guards that pass on main too, see the correction),
+  `a_cancelled_leader_does_not_fail_its_follower` (the leader cancelled
+  mid-download returns within a tick; its follower reads again and gets
+  the part), `a_part_declared_past_the_cap_is_refused_unread` and the
+  client's `a_cancel_mid_read_returns_at_once_and_frees_permits_and_budget`
+  (a build whose eight parts are all mid-read returns within a tick of its
+  Cancel, every permit and byte of the shared budget given back); the last
+  three fail on main. `compose`'s `Capped` fake records a capped read's cap
+  through `get_chunked`, as it did through `get_within`.
 
 ## Not in this plan
 
