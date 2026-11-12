@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "filebrowser"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "arbesk",
  "argon2",
