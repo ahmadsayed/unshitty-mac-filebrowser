@@ -409,11 +409,12 @@ impl<'a> Gateway<'a> {
     /// timeouts (`Http::get_chunked`: a stall, never a limit on the whole
     /// body), but handed over chunk by chunk, so between chunks, and every
     /// `TICK` while none arrives, the read hears its operation's stop: a
-    /// Cancel or a closed preview ends it with [`CANCELLED`], its permit
-    /// given back at once. Past `cap` bytes, when given, it stops with
-    /// [`OVER`]. A read stopped while the gateway is silent keeps its
-    /// permit until its connection is closed (`Http::get_chunked`), so
-    /// a cancel and a retry never open more than `limiter::READS` at once.
+    /// Cancel or a closed preview ends it with [`CANCELLED`] at once (its
+    /// permit is given back when its connection closes, see below). Past
+    /// `cap` bytes, when given, it stops with [`OVER`]. A read stopped
+    /// while the gateway is silent keeps its permit until its connection
+    /// is closed (`Http::get_chunked`, up to the client's timeout), so a
+    /// cancel and a retry never open more than `limiter::READS` at once.
     fn download(&self, cid: &str, cap: Option<u64>) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
         self.limited(&url, cap, |permit| self.stream(&url, cid, cap, permit))
