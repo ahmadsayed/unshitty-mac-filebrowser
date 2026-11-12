@@ -161,7 +161,8 @@ flight never pass 8, whatever runs at once.
   when parts went in order; a worker that panics fails the build rather than keeping
   its slot (the panic still reaches the caller).
 - A part of known size is read no further than that size
-  (`Gateway::bytes_within` through `Http::get_within`, with the slack of
+  (`Gateway::bytes_within` through `Http::get_within`, since phase 6
+  `Http::get_chunked` with the cap, with the slack of
   `ipfs::within`): a source that understates a size can't start eight
   large reads at once. A part found larger than declared is put back,
   first, as a part of unknown size and fetched again in a pair, charged as
@@ -567,20 +568,29 @@ too large was only refused once downloaded.
   its own through `pump`, as `get_streamed` is, so its caller hears every
   chunk, and an empty piece every `TICK` while nothing arrives. A capped
   read is refused by its `Content-Length` before reading, as `get_within`
-  was, or once it reads past the cap. `get_streamed`, `transfer_timeout`
-  and `Gateway::raw` (an asset's other files) are unchanged. Fakes reach
-  `get_chunked` through `get_streamed`'s chunks (its default).
+  was, or once it reads past the cap. `Http::get_within` is gone (no read
+  used it any more; `Gateway::get` reads manifests and thumbnails whole,
+  uncapped by the source, on the short client). `get_streamed`,
+  `transfer_timeout` and `Gateway::raw` (an asset's other files) are
+  unchanged. Fakes reach `get_chunked` through `get_streamed`'s chunks
+  (its default).
 - `Gateway::bytes` and `bytes_within` (`ipfs.rs`) go through
   `Gateway::download`: the same limits as before (a read permit;
   `Limiter::shared`, keyed as before by the URL and the cap), the body kept
   chunk by chunk, past the cap `OVER`, as `get_within` answered. Between
   chunks, and every `TICK`, the read asks its operation's stop (the
   `Progress` of a build, a part's ticket, a build ahead's): stopped, it
-  answers `CANCELLED` at once and gives its permit back; the build fails
-  with it and the parts it holds give the shared byte budget back, as on
-  any failure; `Parts::build`'s wait for its workers now ends within a
-  tick too. The download's own thread stops at its next chunk, or after the
-  client's timeout on a silent connection.
+  answers `CANCELLED` at once; the build fails with it and the parts it
+  holds give the shared byte budget back, as on any failure;
+  `Parts::build`'s wait for its workers now ends within a tick too. The
+  download's own thread stops at its next chunk, or after the client's
+  timeout on a silent connection, and holds the read's permit until then
+  (`limiter::Permit` is owned, handed to `get_chunked` as `Held` and
+  moved into `pump`'s thread): a read cancelled on a stalled gateway still
+  counts against `READS` while its socket is open, so a cancel and a retry
+  never open more than `READS` reads at once, as when a part's read could
+  not be interrupted. A read that ends by itself waits for its thread, so
+  its permit is free when it answers.
 - Single-flight is unchanged: a leader's read runs under the leader's stop;
   cancelled, its followers hear `CANCELLED` and read again for themselves,
   as phase 2 built, so a closed preview never fails a build ahead waiting
@@ -611,8 +621,10 @@ too large was only refused once downloaded.
   client's `a_cancel_mid_read_returns_at_once_and_frees_permits_and_budget`
   (a build whose eight parts are all mid-read returns within a tick of its
   Cancel, every permit and byte of the shared budget given back); the last
-  three fail on main. `compose`'s `Capped` fake records a capped read's cap
-  through `get_chunked`, as it did through `get_within`.
+  three fail on main. `a_cancelled_stalled_part_keeps_its_permit_until_its_connection_closes`
+  (a real client and server: the cancelled read answers within a tick,
+  its permit taken until the gateway closes the connection).
+  `compose`'s `Capped` fake records a capped read's cap in `get_chunked`.
 
 ## Not in this plan
 

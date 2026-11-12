@@ -1428,29 +1428,29 @@ mod tests {
             self.running.fetch_sub(1, Ordering::SeqCst);
             answer
         }
-        fn get_within(&self, url: &str, cap: u64) -> Result<Vec<u8>, crate::http::HttpError> {
-            self.caps.lock().unwrap().push(cap);
-            std::thread::sleep(Duration::from_millis(20));
-            // The real client stops reading at the cap; the fake checks after.
-            let body = self.inner.get(url)?;
-            if body.len() as u64 > cap {
-                return Err(crate::http::HttpError::new(Some(200), crate::http::TOO_LONG));
-            }
-            Ok(body)
-        }
         fn get_streamed(&self, _: &str, _: u64, _: &mut dyn FnMut(&[u8]) -> bool) -> Result<(), crate::http::HttpError> {
             unreachable!("parts are not streamed")
         }
         /// Parts are read in chunks (performance plan, phase 6): a capped
-        /// read is recorded as `get_within` was, a whole one counted.
+        /// read's cap is recorded and its length checked after (the real
+        /// client stops reading at the cap), a whole one counted.
         fn get_chunked(
             &self,
             url: &str,
             cap: Option<u64>,
+            _held: crate::http::Held,
             chunk: &mut dyn FnMut(&[u8]) -> bool,
         ) -> Result<(), crate::http::HttpError> {
             let body = match cap {
-                Some(cap) => self.get_within(url, cap)?,
+                Some(cap) => {
+                    self.caps.lock().unwrap().push(cap);
+                    std::thread::sleep(Duration::from_millis(20));
+                    let body = self.inner.get(url)?;
+                    if body.len() as u64 > cap {
+                        return Err(crate::http::HttpError::new(Some(200), crate::http::TOO_LONG));
+                    }
+                    body
+                }
                 None => self.get(url)?,
             };
             chunk(&body);

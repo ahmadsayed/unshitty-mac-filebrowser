@@ -42,15 +42,22 @@ pub trait Http: Send + Sync {
     /// stops the read, answering `Ok` at once), so a cancel is heard while
     /// a large part downloads. A body past `cap` bytes, when given, is
     /// refused with [`TOO_LONG`] (the real client by its length before
-    /// reading, or once it reads past it). Clients that only fake reads
-    /// (the tests') hand over [`Http::get_streamed`]'s pieces.
+    /// reading, or once it reads past it). `held` (the read's limiter
+    /// permit) is kept until the connection is closed: past this call's
+    /// answer when a stop leaves the real client's reading thread blocked
+    /// on a silent gateway, so a cancelled read still counts against
+    /// `limiter::READS` until its socket is gone. Clients that only fake
+    /// reads (the tests') hand over [`Http::get_streamed`]'s pieces,
+    /// holding `held` for the call.
     fn get_chunked(
         &self,
         url: &str,
         cap: Option<u64>,
+        held: Held,
         chunk: &mut dyn FnMut(&[u8]) -> bool,
     ) -> Result<(), HttpError> {
         let _ = cap;
+        let _held = held;
         self.get_streamed(url, 0, chunk)
     }
     /// POST `body` as JSON; `session` goes in `Authorization: Session <token>`.
@@ -86,18 +93,11 @@ pub trait Http: Send + Sync {
     fn limits(&self) -> Option<crate::limiter::Limits<'_>> {
         None
     }
-    /// GET like [`Http::get`], but a body past `cap` bytes is refused with
-    /// [`TOO_LONG`] (the real client stops reading there): a part whose
-    /// size the source declares is never read far past it. Clients that
-    /// read the whole body anyway (the fakes) check it after.
-    fn get_within(&self, url: &str, cap: u64) -> Result<Vec<u8>, HttpError> {
-        let body = self.get(url)?;
-        if body.len() as u64 > cap {
-            return Err(HttpError::new(Some(200), TOO_LONG));
-        }
-        Ok(body)
-    }
 }
+
+/// What a chunked read keeps until its connection is closed (its limiter
+/// permit; see [`Http::get_chunked`]).
+pub type Held = Box<dyn Send>;
 
 /// Why a body past its cap was refused.
 pub const TOO_LONG: &str = "Arbesk sent more than File Browser reads at once.";
@@ -164,19 +164,24 @@ enum Piece {
 /// comes, `chunk` is handed an empty piece every [`TICK`]. When `chunk`
 /// answers `false` this returns `Ok` at once: the reading thread, which may
 /// be blocked on a stalled connection, is left to end by itself when its
-/// next piece finds nobody to take it, or at its request's timeout. It
-/// reads a piece only once `chunk` has taken the one before, so nothing is
-/// read past a stop.
+/// next piece finds nobody to take it, or at its request's timeout, and
+/// keeps `held` (a read permit) until then, so an abandoned connection
+/// still counts as an open read. When the read ends by itself this waits
+/// for the thread, so `held` is given back before it answers. It reads a
+/// piece only once `chunk` has taken the one before, so nothing is read
+/// past a stop.
 fn pump(
     mut next: impl FnMut() -> Result<Option<Vec<u8>>, HttpError> + Send + 'static,
+    held: Held,
     chunk: &mut dyn FnMut(&[u8]) -> bool,
 ) -> Result<(), HttpError> {
     use std::sync::mpsc;
     let (sender, receiver) = mpsc::sync_channel(1);
     let (taken, wait_taken) = mpsc::channel::<()>();
-    std::thread::Builder::new()
+    let reader = std::thread::Builder::new()
         .name("arbesk-download".into())
         .spawn(move || {
+            let _held = held;
             loop {
                 let (piece, last) = match next() {
                     Ok(Some(bytes)) => (Piece::Bytes(bytes), false),
@@ -189,6 +194,12 @@ fn pump(
             }
         })
         .map_err(|error| HttpError::new(None, error.to_string()))?;
+    // The thread has sent its last piece and is ending: wait for it, so
+    // what it holds is given back before the answer.
+    let ended = |answer: Result<(), HttpError>| {
+        let _ = reader.join();
+        answer
+    };
     loop {
         let go_on = match receiver.recv_timeout(TICK) {
             Ok(Piece::Bytes(bytes)) => {
@@ -199,11 +210,11 @@ fn pump(
                 }
                 go_on
             }
-            Ok(Piece::End) => return Ok(()),
-            Ok(Piece::Failed(error)) => return Err(error),
+            Ok(Piece::End) => return ended(Ok(())),
+            Ok(Piece::Failed(error)) => return ended(Err(error)),
             Err(mpsc::RecvTimeoutError::Timeout) => chunk(&[]),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(HttpError::new(None, "The download stopped unexpectedly."));
+                return ended(Err(HttpError::new(None, "The download stopped unexpectedly.")));
             }
         };
         if !go_on {
@@ -234,10 +245,12 @@ fn open_streamed(
 
 /// `request` sent and read [`STREAM_CHUNK`] at a time on a thread of its
 /// own ([`pump`]: the request is sent there too, so a cancel is heard while
-/// the server is silent), never more than `cap` bytes.
+/// the server is silent, and `held` kept until the connection is closed),
+/// never more than `cap` bytes.
 fn stream(
     request: reqwest::blocking::RequestBuilder,
     cap: u64,
+    held: Held,
     chunk: &mut dyn FnMut(&[u8]) -> bool,
 ) -> Result<(), HttpError> {
     use std::io::Read;
@@ -264,6 +277,7 @@ fn stream(
             buffer.truncate(n);
             Ok((n > 0).then_some(buffer))
         },
+        held,
         chunk,
     )
 }
@@ -319,20 +333,11 @@ impl ReqwestHttp {
         })
     }
 
+    /// `request` sent, reading at most the client's cap of the answer.
     fn send(
         &self,
         request: reqwest::blocking::RequestBuilder,
         session: Option<&str>,
-    ) -> Result<Vec<u8>, HttpError> {
-        self.send_within(request, session, self.cap)
-    }
-
-    /// `send`, reading at most `cap` bytes of the answer.
-    fn send_within(
-        &self,
-        request: reqwest::blocking::RequestBuilder,
-        session: Option<&str>,
-        cap: u64,
     ) -> Result<Vec<u8>, HttpError> {
         let request = match session {
             Some(token) => request.header("Authorization", format!("Session {token}")),
@@ -343,7 +348,7 @@ impl ReqwestHttp {
             // Without the URL: an upload's is a one-use pre-signed address.
             .map_err(|error| HttpError::new(None, error.without_url().to_string()))?;
         let status = response.status();
-        let bytes = read_capped(response, cap)
+        let bytes = read_capped(response, self.cap)
             .map_err(|message| HttpError::new(Some(status.as_u16()), message))?;
         if status.is_success() {
             Ok(bytes)
@@ -379,10 +384,6 @@ impl Http for ReqwestHttp {
         self.send(self.client.get(url), None)
     }
 
-    fn get_within(&self, url: &str, cap: u64) -> Result<Vec<u8>, HttpError> {
-        self.send_within(self.client.get(url), None, cap.min(self.cap))
-    }
-
     /// On the slow client, given [`transfer_timeout`] of `expected`, read
     /// [`STREAM_CHUNK`] at a time on a thread of its own ([`pump`]: the
     /// request is sent there too, so a cancel is heard while the server is
@@ -394,7 +395,7 @@ impl Http for ReqwestHttp {
         chunk: &mut dyn FnMut(&[u8]) -> bool,
     ) -> Result<(), HttpError> {
         let request = self.slow.get(url).timeout(transfer_timeout(expected));
-        stream(request, self.cap, chunk)
+        stream(request, self.cap, Box::new(()), chunk)
     }
 
     /// On the short client, as [`Http::get`]: its timeout bounds the wait
@@ -406,10 +407,11 @@ impl Http for ReqwestHttp {
         &self,
         url: &str,
         cap: Option<u64>,
+        held: Held,
         chunk: &mut dyn FnMut(&[u8]) -> bool,
     ) -> Result<(), HttpError> {
         let cap = cap.map_or(self.cap, |cap| cap.min(self.cap));
-        stream(self.client.get(url), cap, chunk)
+        stream(self.client.get(url), cap, held, chunk)
     }
 
     fn post_json(
@@ -568,7 +570,7 @@ pub mod fake {
                     piece
                 }))
             };
-            pump(next, &mut |piece| {
+            pump(next, Box::new(()), &mut |piece| {
                 if !piece.is_empty() {
                     self.chunks
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);

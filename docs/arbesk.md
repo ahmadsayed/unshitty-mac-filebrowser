@@ -340,8 +340,9 @@ again then, and only a failure then is shown; one still under way at its
 turn is waited for, and its failure is shown as the copy's.
 A model's part downloads for as long as it keeps arriving, however large
 (30 seconds with nothing from Arbesk's storage fail it), and Cancel, a
-closed preview or a skipped copy stops it mid-download, its place in the
-limits given back at once. A part its asset says is larger than the
+closed preview or a skipped copy stops it mid-download at once; its place
+among the downloads at once is given back when its connection closes, so a
+Cancel and a retry on a stalled connection never add downloads. A part its asset says is larger than the
 512 MB a build holds is refused before it is downloaded (*This asset is too
 large to open.*).
 The deployment's settings are kept for five minutes. Which manifest a

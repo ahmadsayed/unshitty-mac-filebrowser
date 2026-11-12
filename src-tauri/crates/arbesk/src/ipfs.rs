@@ -371,67 +371,66 @@ impl<'a> Gateway<'a> {
         unpack(self.get(cid)?, cap)
     }
 
-    /// The stored bytes at `cid`, as the gateway sends them. Through the
-    /// client's limits when it has some: a read permit, and a read of the
-    /// same CID already under way shared rather than asked again.
+    /// The stored bytes at `cid`, as the gateway sends them, on the short
+    /// client (a manifest, a thumbnail: small JSON and images; parts are
+    /// read with [`Gateway::download`]). Through the client's limits when
+    /// it has some: a read permit, and a read of the same CID already under
+    /// way shared rather than asked again.
     fn get(&self, cid: &str) -> Result<Vec<u8>, String> {
-        self.get_within(cid, None)
-    }
-
-    /// [`Gateway::get`], reading at most `cap` bytes when given one: past
-    /// it the answer is [`OVER`]. A capped read is only shared with reads
-    /// of the same cap.
-    fn get_within(&self, cid: &str, cap: Option<u64>) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
-        self.limited(&url, cap, || {
-            let answer = match cap {
-                Some(cap) => self.http.get_within(&url, cap),
-                None => self.http.get(&url),
-            };
-            answer.map_err(|error| read_error(cid, cap, error))
+        self.limited(&url, None, |_permit| {
+            self.http.get(&url).map_err(|error| read_error(cid, None, error))
         })
     }
 
     /// `read` of `url` (at most `cap` bytes, when given) through the
-    /// client's limits when it has some: a read permit, and a read of the
-    /// same URL and cap already under way shared rather than asked again.
+    /// client's limits when it has some: a read permit, handed to `read`
+    /// to hold for as long as its connection is open, and a read of the
+    /// same URL and cap already under way shared rather than asked again
+    /// (a capped read only with reads of the same cap).
     fn limited(
         &self,
         url: &str,
         cap: Option<u64>,
-        read: impl Fn() -> Result<Vec<u8>, String>,
+        read: impl Fn(Option<crate::limiter::Permit>) -> Result<Vec<u8>, String>,
     ) -> Result<Vec<u8>, String> {
         let Some(limits) = self.http.limits() else {
-            return read();
+            return read(None);
         };
         let key = match cap {
             Some(cap) => format!("{url} within {cap}"),
             None => url.to_string(),
         };
-        limits.limiter.shared(&key, limits.stop, || {
-            let _permit = limits.limiter.read(limits.stop)?;
-            read()
-        })
+        limits.limiter.shared(&key, limits.stop, || read(Some(limits.limiter.read(limits.stop)?)))
     }
 
     /// A part's stored bytes at `cid` (performance plan, phase 6): shared
-    /// and limited as [`Gateway::get_within`] is, and read on the same
+    /// and limited as [`Gateway::get`] is, and read on the same
     /// timeouts (`Http::get_chunked`: a stall, never a limit on the whole
     /// body), but handed over chunk by chunk, so between chunks, and every
     /// `TICK` while none arrives, the read hears its operation's stop: a
     /// Cancel or a closed preview ends it with [`CANCELLED`], its permit
     /// given back at once. Past `cap` bytes, when given, it stops with
-    /// [`OVER`].
+    /// [`OVER`]. A read stopped while the gateway is silent keeps its
+    /// permit until its connection is closed (`Http::get_chunked`), so
+    /// a cancel and a retry never open more than `limiter::READS` at once.
     fn download(&self, cid: &str, cap: Option<u64>) -> Result<Vec<u8>, String> {
         let url = format!("{}/{}", self.base, checked_cid(cid)?);
-        self.limited(&url, cap, || self.stream(&url, cid, cap))
+        self.limited(&url, cap, |permit| self.stream(&url, cid, cap, permit))
     }
 
-    /// One read of [`Gateway::download`], unshared.
-    fn stream(&self, url: &str, cid: &str, cap: Option<u64>) -> Result<Vec<u8>, String> {
+    /// One read of [`Gateway::download`], unshared, holding `permit` (when
+    /// limited) until its connection is closed.
+    fn stream(
+        &self,
+        url: &str,
+        cid: &str,
+        cap: Option<u64>,
+        permit: Option<crate::limiter::Permit>,
+    ) -> Result<Vec<u8>, String> {
         let mut bytes = Vec::new();
         let mut stopped = None;
-        let read = self.http.get_chunked(url, cap, &mut |chunk| {
+        let read = self.http.get_chunked(url, cap, Box::new(permit), &mut |chunk| {
             stopped = if self.stopped() {
                 Some(CANCELLED.to_string())
             } else if cap.is_some_and(|cap| (bytes.len() + chunk.len()) as u64 > cap) {
@@ -997,6 +996,45 @@ mod tests {
         server.join().unwrap();
         assert!(error.starts_with(STORAGE_UNREACHABLE), "{error}");
         assert!(took >= Duration::from_secs(1) && took < Duration::from_secs(3), "{took:?}");
+    }
+
+    /// A part's read cancelled while the gateway is silent answers within
+    /// a tick, but keeps its read permit until its connection is closed:
+    /// a cancel and a retry never open more than `limiter::READS` reads to
+    /// the gateway at once.
+    #[test]
+    fn a_cancelled_stalled_part_keeps_its_permit_until_its_connection_closes() {
+        use crate::limiter::{Limited, Limiter};
+        use std::sync::atomic::AtomicBool;
+        let dir = tempfile::tempdir().unwrap();
+        let (silent, end) = std::sync::mpsc::channel::<()>();
+        let (url, server) = serve_slowly(vec![1u8; 1024], 4, Duration::ZERO, 1, Some((1, end)));
+        let http = crate::http::ReqwestHttp::with_timeout(crate::http::MAX_BODY, Duration::from_secs(10)).unwrap();
+        let limiter = Limiter::new(1, 1);
+        let stopped = AtomicBool::new(false);
+        let stop = || stopped.load(Ordering::SeqCst);
+        let limited = Limited::new(&http, &limiter, &stop);
+        let gateway = Gateway::new(&limited, &url, ManifestCache::new(dir.path().to_path_buf(), 1 << 20));
+        std::thread::scope(|scope| {
+            let reading = scope.spawn(|| gateway.bytes_within("bafyPart", 1024));
+            // The first piece arrives, then the gateway goes silent.
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(limiter.reading(), 1);
+            let cancelled = std::time::Instant::now();
+            stopped.store(true, Ordering::SeqCst);
+            assert_eq!(reading.join().unwrap().unwrap_err(), CANCELLED);
+            assert!(cancelled.elapsed() < 2 * crate::http::TICK, "{:?}", cancelled.elapsed());
+        });
+        // The connection is still open: its permit is not free for a retry.
+        std::thread::sleep(2 * crate::http::TICK);
+        assert_eq!(limiter.reading(), 1, "an abandoned connection still counts");
+        silent.send(()).unwrap();
+        server.join().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while limiter.reading() != 0 {
+            assert!(std::time::Instant::now() < deadline, "the permit was never given back");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// A shared read cancelled by its leader's stop mid-download does not
